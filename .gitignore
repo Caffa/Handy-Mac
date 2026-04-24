@@ -32,6 +32,14 @@ dist-ssr
 recording_*
 .crush/
 
+# Generated code index
+.scip/
+
+# Agent session artifacts
+INSTRUCTION_HISTORY.md
+.pi/suggester/
+.pi/todos/
+
 # Playwright
 playwright-report/
 test-results/
