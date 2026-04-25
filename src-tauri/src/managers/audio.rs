@@ -1,8 +1,9 @@
 use crate::audio_toolkit::{list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
 use crate::helpers::clamshell;
 use crate::settings::{get_settings, AppSettings};
+use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -153,6 +154,7 @@ pub struct AudioRecordingManager {
     is_recording: Arc<Mutex<bool>>,
     did_mute: Arc<Mutex<bool>>,
     close_generation: Arc<AtomicU64>,
+    pub usb_watchdog: Arc<UsbWatchdog>,
 }
 
 impl AudioRecordingManager {
@@ -166,6 +168,12 @@ impl AudioRecordingManager {
             MicrophoneMode::OnDemand
         };
 
+        let usb_watchdog = Arc::new(UsbWatchdog::new(
+            settings.usb_watchdog_enabled,
+            &settings.usb_watchdog_hub_id,
+            &settings.usb_watchdog_port,
+        ));
+
         let manager = Self {
             state: Arc::new(Mutex::new(RecordingState::Idle)),
             mode: Arc::new(Mutex::new(mode.clone())),
@@ -176,6 +184,7 @@ impl AudioRecordingManager {
             is_recording: Arc::new(Mutex::new(false)),
             did_mute: Arc::new(Mutex::new(false)),
             close_generation: Arc::new(AtomicU64::new(0)),
+            usb_watchdog,
         };
 
         // Always-on?  Open immediately.
@@ -283,6 +292,37 @@ impl AudioRecordingManager {
     }
 
     pub fn start_microphone_stream(&self) -> Result<(), anyhow::Error> {
+        // Try the normal open first. If it fails and USB watchdog is enabled,
+        // attempt a power cycle + retry.
+        match self.start_microphone_stream_inner() {
+            Ok(()) => {
+                self.usb_watchdog.on_mic_open_succeeded();
+                Ok(())
+            }
+            Err(e) => {
+                if self.usb_watchdog.on_mic_open_failed() {
+                    // Watchdog initiated a power cycle. Wait for it to finish
+                    // (the cycle is synchronous within its thread), then retry.
+                    warn!("Mic open failed ({}), USB watchdog cycling - retrying after settle", e);
+                    match self.start_microphone_stream_inner() {
+                        Ok(()) => {
+                            self.usb_watchdog.on_mic_open_succeeded();
+                            info!("Mic stream recovered after USB power cycle");
+                            Ok(())
+                        }
+                        Err(retry_err) => {
+                            error!("Mic open still failed after USB power cycle: {}", retry_err);
+                            Err(retry_err)
+                        }
+                    }
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    fn start_microphone_stream_inner(&self) -> Result<(), anyhow::Error> {
         let mut open_flag = self.is_open.lock().unwrap();
         if *open_flag {
             debug!("Microphone stream already active");

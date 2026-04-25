@@ -507,6 +507,14 @@
       "recordingBuffer": {
         "title": "Extra Recording Buffer",
         "description": "Extra time (in milliseconds) to keep recording after you release the key, to capture trailing audio. 0 = no extra buffer."
+      },
+      "usbWatchdog": {
+        "label": "USB Power Watchdog",
+        "description": "Automatically power-cycle the USB hub when the microphone can't be opened. Requires uhubctl.",
+        "hubId": "Hub ID (e.g. 8-3)",
+        "port": "Port (e.g. 2)",
+        "testCycle": "Test Power Cycle",
+        "cycling": "Cycling..."
       }
     },
     "about": {

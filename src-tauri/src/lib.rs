@@ -18,6 +18,7 @@ mod signal_handle;
 mod transcription_coordinator;
 mod tray;
 mod tray_i18n;
+mod usb_watchdog;
 mod utils;
 
 pub use cli::CliArgs;
@@ -415,6 +416,11 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::set_clamshell_microphone,
             commands::audio::get_clamshell_microphone,
             commands::audio::is_recording,
+            commands::audio::is_usb_watchdog_available,
+            commands::audio::change_usb_watchdog_enabled_setting,
+            commands::audio::change_usb_watchdog_hub_id_setting,
+            commands::audio::change_usb_watchdog_port_setting,
+            commands::audio::trigger_usb_power_cycle,
             commands::transcription::set_model_unload_timeout,
             commands::transcription::get_model_load_status,
             commands::transcription::unload_model_manually,
@@ -552,6 +558,15 @@ pub fn run(cli_args: CliArgs) {
             std::thread::spawn(|| {
                 let _ = crate::managers::transcription::get_available_accelerators();
             });
+
+            // Install uhubctl if missing (macOS only, via Homebrew) so the
+            // USB watchdog can recover dead USB audio devices automatically.
+            #[cfg(target_os = "macos")]
+            {
+                std::thread::spawn(|| {
+                    crate::usb_watchdog::ensure_uhubctl_installed();
+                });
+            }
 
             // Hide tray icon if --no-tray was passed
             if cli_args.no_tray {

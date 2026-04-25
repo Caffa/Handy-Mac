@@ -155,6 +155,12 @@ const settingUpdaters: {
     commands.changeWhisperGpuDevice(value as number),
   extra_recording_buffer_ms: (value) =>
     commands.changeExtraRecordingBufferSetting(value as number),
+  usb_watchdog_enabled: (value) =>
+    commands.changeUsbWatchdogEnabledSetting(value as boolean),
+  usb_watchdog_hub_id: (value) =>
+    commands.changeUsbWatchdogHubIdSetting(value as string),
+  usb_watchdog_port: (value) =>
+    commands.changeUsbWatchdogPortSetting(value as string),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

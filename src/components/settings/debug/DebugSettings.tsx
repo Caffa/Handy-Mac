@@ -9,6 +9,7 @@ import { AlwaysOnMicrophone } from "../AlwaysOnMicrophone";
 import { SoundPicker } from "../SoundPicker";
 import { ClamshellMicrophoneSelector } from "../ClamshellMicrophoneSelector";
 import { UpdateChecksToggle } from "../UpdateChecksToggle";
+import { UsbWatchdog } from "./UsbWatchdog";
 
 export const DebugSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -27,6 +28,7 @@ export const DebugSettings: React.FC = () => {
         <RecordingBuffer descriptionMode="tooltip" grouped={true} />
         <AlwaysOnMicrophone descriptionMode="tooltip" grouped={true} />
         <ClamshellMicrophoneSelector descriptionMode="tooltip" grouped={true} />
+        <UsbWatchdog descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
     </div>
   );

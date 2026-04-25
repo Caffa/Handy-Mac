@@ -71,6 +71,41 @@ Handy is built as a Tauri application combining:
   - `rdev`: Global keyboard shortcuts and system events
   - `rubato`: Audio resampling
 
+### USB Power Watchdog (macOS)
+
+Handy can automatically recover dead USB audio devices (like USB microphones that stop responding) by power-cycling the USB hub port they're connected to. This is particularly useful for USB devices that occasionally go "zombie" and stop producing audio.
+
+**How it works:**
+
+1. When Handy fails to open the microphone stream, it increments a failure counter
+2. After 2 consecutive failures, it runs `uhubctl` to power-cycle the configured USB hub port
+3. After a 12-second settle period for the device to re-enumerate, it retries opening the mic
+4. A 30-second cooldown prevents rapid cycling
+
+**Prerequisites:**
+
+- **macOS only** — this feature requires [`uhubctl`](https://github.com/mvp/uhubctl), a command-line tool for controlling USB port power
+- **Auto-install**: On macOS, Handy will attempt to install `uhubctl` via Homebrew automatically on first launch if it's not already present. If you don't have Homebrew, install uhubctl manually:
+  ```bash
+  brew install uhubctl
+  ```
+
+**Configuration:**
+
+1. Open **Settings → Debug** (press `Cmd+Shift+D` to reveal the Debug tab)
+2. Enable **USB Power Watchdog**
+3. Set your **Hub ID** (e.g., `8-3`) and **Port** (e.g., `2`) — find these by running:
+   ```bash
+   uhubctl
+   ```
+4. Click **Test Power Cycle** to verify it works
+
+**Finding your hub and port:**
+
+Run `uhubctl` with no arguments to list all USB hubs and their ports. Look for the hub that your microphone is connected to. The Hub ID is shown in the "Hub" column (e.g., `8-3`) and the Port is the number after "Port" (e.g., `2`).
+
+> **Warning:** Power cycling a USB port briefly disconnects _all_ devices on that port. Make sure your microphone is on a dedicated port or that you don't mind other devices on the same port cycling as well.
+
 ### Debug Mode
 
 Handy includes an advanced debug mode for development and troubleshooting. Access it by pressing:

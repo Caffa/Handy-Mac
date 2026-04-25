@@ -2,6 +2,7 @@ use crate::audio_feedback;
 use crate::audio_toolkit::audio::{list_input_devices, list_output_devices};
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
 use crate::settings::{get_settings, write_settings};
+use crate::usb_watchdog;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -309,4 +310,74 @@ pub fn get_clamshell_microphone(app: AppHandle) -> Result<String, String> {
 pub fn is_recording(app: AppHandle) -> bool {
     let audio_manager = app.state::<Arc<AudioRecordingManager>>();
     audio_manager.is_recording()
+}
+
+// ============================================================================
+// USB Watchdog Commands
+// ============================================================================
+
+/// Check if uhubctl is available on the system
+#[tauri::command]
+#[specta::specta]
+pub fn is_usb_watchdog_available() -> bool {
+    usb_watchdog::is_uhubctl_available()
+}
+
+/// Enable or disable the USB watchdog
+#[tauri::command]
+#[specta::specta]
+pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    let hub_id = settings.usb_watchdog_hub_id.clone();
+    let port = settings.usb_watchdog_port.clone();
+    settings.usb_watchdog_enabled = enabled;
+    write_settings(&app, settings);
+
+    // Update the runtime watchdog state
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    rm.usb_watchdog.update_config(enabled, hub_id, port);
+
+    Ok(())
+}
+
+/// Update the USB watchdog hub ID (e.g. "8-3")
+#[tauri::command]
+#[specta::specta]
+pub fn change_usb_watchdog_hub_id_setting(app: AppHandle, hub_id: String) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    let enabled = settings.usb_watchdog_enabled;
+    let port = settings.usb_watchdog_port.clone();
+    settings.usb_watchdog_hub_id = hub_id.clone();
+    write_settings(&app, settings);
+
+    // Update the runtime watchdog state
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    rm.usb_watchdog.update_config(enabled, hub_id, port);
+
+    Ok(())
+}
+
+/// Update the USB watchdog port number (e.g. "2")
+#[tauri::command]
+#[specta::specta]
+pub fn change_usb_watchdog_port_setting(app: AppHandle, port: String) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    let enabled = settings.usb_watchdog_enabled;
+    let hub_id = settings.usb_watchdog_hub_id.clone();
+    settings.usb_watchdog_port = port.clone();
+    write_settings(&app, settings);
+
+    // Update the runtime watchdog state
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    rm.usb_watchdog.update_config(enabled, hub_id, port);
+
+    Ok(())
+}
+
+/// Manually trigger a USB power cycle (for testing)
+#[tauri::command]
+#[specta::specta]
+pub fn trigger_usb_power_cycle(app: AppHandle) -> Result<bool, String> {
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    Ok(rm.usb_watchdog.force_power_cycle())
 }
