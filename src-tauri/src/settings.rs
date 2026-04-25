@@ -432,10 +432,8 @@ pub struct AppSettings {
     pub extra_recording_buffer_ms: u64,
     #[serde(default)]
     pub usb_watchdog_enabled: bool,
-    #[serde(default = "default_usb_watchdog_hub_id")]
-    pub usb_watchdog_hub_id: String,
-    #[serde(default = "default_usb_watchdog_port")]
-    pub usb_watchdog_port: String,
+    #[serde(default)]
+    pub usb_watchdog_device_name: String,
 }
 
 fn default_model() -> String {
@@ -656,14 +654,6 @@ fn default_whisper_gpu_device() -> i32 {
     -1 // auto
 }
 
-fn default_usb_watchdog_hub_id() -> String {
-    "8-3".to_string()
-}
-
-fn default_usb_watchdog_port() -> String {
-    "2".to_string()
-}
-
 fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
 }
@@ -829,8 +819,7 @@ pub fn get_default_settings() -> AppSettings {
         whisper_gpu_device: default_whisper_gpu_device(),
         extra_recording_buffer_ms: 0,
         usb_watchdog_enabled: false,
-        usb_watchdog_hub_id: default_usb_watchdog_hub_id(),
-        usb_watchdog_port: default_usb_watchdog_port(),
+        usb_watchdog_device_name: String::new(),
     }
 }
 

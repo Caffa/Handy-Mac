@@ -78,14 +78,15 @@ Handy can automatically recover dead USB audio devices (like USB microphones tha
 **How it works:**
 
 1. When Handy fails to open the microphone stream, it increments a failure counter
-2. After 2 consecutive failures, it runs `uhubctl` to power-cycle the configured USB hub port
+2. After 2 consecutive failures, it runs `uhubctl` to power-cycle the USB port for the configured device
 3. After a 12-second settle period for the device to re-enumerate, it retries opening the mic
 4. A 30-second cooldown prevents rapid cycling
 
 **Prerequisites:**
 
 - **macOS only** — this feature requires [`uhubctl`](https://github.com/mvp/uhubctl), a command-line tool for controlling USB port power
-- **Auto-install**: On macOS, Handy will attempt to install `uhubctl` via Homebrew automatically on first launch if it's not already present. If you don't have Homebrew, install uhubctl manually:
+- **Auto-install**: On macOS, Handy will attempt to install `uhubctl` via Homebrew automatically on first launch if it's not already present
+- **Manual install**: If you don't have Homebrew, install uhubctl manually:
   ```bash
   brew install uhubctl
   ```
@@ -94,15 +95,11 @@ Handy can automatically recover dead USB audio devices (like USB microphones tha
 
 1. Open **Settings → Debug** (press `Cmd+Shift+D` to reveal the Debug tab)
 2. Enable **USB Power Watchdog**
-3. Set your **Hub ID** (e.g., `8-3`) and **Port** (e.g., `2`) — find these by running:
-   ```bash
-   uhubctl
-   ```
-4. Click **Test Power Cycle** to verify it works
+3. Click the device dropdown — it lists all USB devices currently connected to hubs visible to `uhubctl`
+4. Select your microphone from the list (e.g. "RØDE Microphones RØDE VideoMic NTG")
+5. Click **Test Power Cycle** to verify it works
 
-**Finding your hub and port:**
-
-Run `uhubctl` with no arguments to list all USB hubs and their ports. Look for the hub that your microphone is connected to. The Hub ID is shown in the "Hub" column (e.g., `8-3`) and the Port is the number after "Port" (e.g., `2`).
+At cycle time, Handy resolves the device name to the correct hub location and port number automatically.
 
 > **Warning:** Power cycling a USB port briefly disconnects _all_ devices on that port. Make sure your microphone is on a dedicated port or that you don't mind other devices on the same port cycling as well.
 

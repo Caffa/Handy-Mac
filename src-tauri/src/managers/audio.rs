@@ -170,8 +170,7 @@ impl AudioRecordingManager {
 
         let usb_watchdog = Arc::new(UsbWatchdog::new(
             settings.usb_watchdog_enabled,
-            &settings.usb_watchdog_hub_id,
-            &settings.usb_watchdog_port,
+            &settings.usb_watchdog_device_name,
         ));
 
         let manager = Self {

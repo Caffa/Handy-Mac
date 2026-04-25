@@ -510,11 +510,14 @@
       },
       "usbWatchdog": {
         "label": "USB Power Watchdog",
-        "description": "Automatically power-cycle the USB hub when the microphone can't be opened. Requires uhubctl.",
-        "hubId": "Hub ID (e.g. 8-3)",
-        "port": "Port (e.g. 2)",
+        "description": "Automatically power-cycle the USB port when the microphone can't be opened. Requires uhubctl.",
+        "device": "USB Device to Watch",
+        "selectDevice": "— Select a USB device —",
+        "loading": "Loading devices…",
+        "refreshDevices": "Refresh device list",
+        "deviceNotFound": "Device not currently connected",
         "testCycle": "Test Power Cycle",
-        "cycling": "Cycling..."
+        "cycling": "Cycling…"
       }
     },
     "about": {

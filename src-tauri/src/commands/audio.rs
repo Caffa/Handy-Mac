@@ -323,53 +323,41 @@ pub fn is_usb_watchdog_available() -> bool {
     usb_watchdog::is_uhubctl_available()
 }
 
+/// List all USB devices connected to hubs visible to uhubctl
+#[tauri::command]
+#[specta::specta]
+pub fn list_usb_devices() -> Vec<usb_watchdog::UsbDevice> {
+    usb_watchdog::list_usb_devices()
+}
+
 /// Enable or disable the USB watchdog
 #[tauri::command]
 #[specta::specta]
 pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = get_settings(&app);
-    let hub_id = settings.usb_watchdog_hub_id.clone();
-    let port = settings.usb_watchdog_port.clone();
+    let device_name = settings.usb_watchdog_device_name.clone();
     settings.usb_watchdog_enabled = enabled;
     write_settings(&app, settings);
 
     // Update the runtime watchdog state
     let rm = app.state::<Arc<AudioRecordingManager>>();
-    rm.usb_watchdog.update_config(enabled, hub_id, port);
+    rm.usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
 }
 
-/// Update the USB watchdog hub ID (e.g. "8-3")
+/// Update the USB watchdog target device name
 #[tauri::command]
 #[specta::specta]
-pub fn change_usb_watchdog_hub_id_setting(app: AppHandle, hub_id: String) -> Result<(), String> {
+pub fn change_usb_watchdog_device_name_setting(app: AppHandle, device_name: String) -> Result<(), String> {
     let mut settings = get_settings(&app);
     let enabled = settings.usb_watchdog_enabled;
-    let port = settings.usb_watchdog_port.clone();
-    settings.usb_watchdog_hub_id = hub_id.clone();
+    settings.usb_watchdog_device_name = device_name.clone();
     write_settings(&app, settings);
 
     // Update the runtime watchdog state
     let rm = app.state::<Arc<AudioRecordingManager>>();
-    rm.usb_watchdog.update_config(enabled, hub_id, port);
-
-    Ok(())
-}
-
-/// Update the USB watchdog port number (e.g. "2")
-#[tauri::command]
-#[specta::specta]
-pub fn change_usb_watchdog_port_setting(app: AppHandle, port: String) -> Result<(), String> {
-    let mut settings = get_settings(&app);
-    let enabled = settings.usb_watchdog_enabled;
-    let hub_id = settings.usb_watchdog_hub_id.clone();
-    settings.usb_watchdog_port = port.clone();
-    write_settings(&app, settings);
-
-    // Update the runtime watchdog state
-    let rm = app.state::<Arc<AudioRecordingManager>>();
-    rm.usb_watchdog.update_config(enabled, hub_id, port);
+    rm.usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
 }

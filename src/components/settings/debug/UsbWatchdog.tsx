@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { ToggleSwitch } from "../../ui/ToggleSwitch";
 import { useSettings } from "../../../hooks/useSettings";
-import { commands } from "@/bindings";
+import { commands, type UsbDevice } from "@/bindings";
 
 interface UsbWatchdogProps {
   descriptionMode?: "inline" | "tooltip";
@@ -15,9 +15,36 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
     const { getSetting, updateSetting, isUpdating } = useSettings();
 
     const enabled = getSetting("usb_watchdog_enabled") ?? false;
-    const hubId = getSetting("usb_watchdog_hub_id") ?? "8-3";
-    const port = getSetting("usb_watchdog_port") ?? "2";
+    const deviceName = getSetting("usb_watchdog_device_name") ?? "";
+    const [devices, setDevices] = useState<UsbDevice[]>([]);
     const [cycling, setCycling] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [available, setAvailable] = useState(false);
+
+    // Check uhubctl availability on mount
+    useEffect(() => {
+      commands.isUsbWatchdogAvailable().then(setAvailable);
+    }, []);
+
+    const refreshDevices = useCallback(async () => {
+      setLoading(true);
+      try {
+        const result = await commands.listUsbDevices();
+        if (result.status === "ok") {
+          setDevices(result.data);
+        }
+      } catch {
+        // uhubctl not available, list will be empty
+      } finally {
+        setLoading(false);
+      }
+    }, []);
+
+    useEffect(() => {
+      if (available && enabled) {
+        refreshDevices();
+      }
+    }, [available, enabled, refreshDevices]);
 
     const handleCycle = async () => {
       setCycling(true);
@@ -26,13 +53,9 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
       } catch (e) {
         console.error("USB power cycle failed:", e);
       } finally {
-        // Give time for uhubctl to finish
         setTimeout(() => setCycling(false), 15000);
       }
     };
-
-    // Only show on macOS where uhubctl is available
-    const available = commands.isUsbWatchdogAvailable();
 
     if (!available) {
       return null;
@@ -53,35 +76,47 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
           <div className="pl-4 space-y-3 border-l-2 border-gray-200 dark:border-gray-700 ml-1">
             <div className="flex flex-col space-y-1">
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                {t("settings.debug.usbWatchdog.hubId")}
+                {t("settings.debug.usbWatchdog.device")}
               </label>
-              <input
-                type="text"
-                value={hubId ?? ""}
-                onChange={(e) =>
-                  updateSetting("usb_watchdog_hub_id", e.target.value)
-                }
-                placeholder="8-3"
-                className="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-32"
-              />
-            </div>
-            <div className="flex flex-col space-y-1">
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                {t("settings.debug.usbWatchdog.port")}
-              </label>
-              <input
-                type="text"
-                value={port ?? ""}
-                onChange={(e) =>
-                  updateSetting("usb_watchdog_port", e.target.value)
-                }
-                placeholder="2"
-                className="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-20"
-              />
+              <div className="flex items-center gap-2">
+                <select
+                  value={deviceName ?? ""}
+                  onChange={(e) =>
+                    updateSetting("usb_watchdog_device_name", e.target.value)
+                  }
+                  className="flex-1 px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="">
+                    {loading
+                      ? t("settings.debug.usbWatchdog.loading")
+                      : t("settings.debug.usbWatchdog.selectDevice")}
+                  </option>
+                  {devices.map((device) => (
+                    <option key={`${device.hub}-${device.port}`} value={device.name}>
+                      {device.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={refreshDevices}
+                  disabled={loading}
+                  className="px-2 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+                  title={t("settings.debug.usbWatchdog.refreshDevices")}
+                >
+                  ↻
+                </button>
+              </div>
+              {deviceName && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {devices.find((d) => d.name === deviceName)
+                    ? `Hub ${devices.find((d) => d.name === deviceName)!.hub}, Port ${devices.find((d) => d.name === deviceName)!.port}`
+                    : t("settings.debug.usbWatchdog.deviceNotFound")}
+                </p>
+              )}
             </div>
             <button
               onClick={handleCycle}
-              disabled={cycling}
+              disabled={cycling || !deviceName}
               className="px-3 py-1.5 text-sm rounded-md bg-yellow-600 hover:bg-yellow-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {cycling

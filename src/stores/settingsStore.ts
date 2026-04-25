@@ -157,10 +157,8 @@ const settingUpdaters: {
     commands.changeExtraRecordingBufferSetting(value as number),
   usb_watchdog_enabled: (value) =>
     commands.changeUsbWatchdogEnabledSetting(value as boolean),
-  usb_watchdog_hub_id: (value) =>
-    commands.changeUsbWatchdogHubIdSetting(value as string),
-  usb_watchdog_port: (value) =>
-    commands.changeUsbWatchdogPortSetting(value as string),
+  usb_watchdog_device_name: (value) =>
+    commands.changeUsbWatchdogDeviceNameSetting(value as string),
 };
 
 export const useSettingsStore = create<SettingsStore>()(
