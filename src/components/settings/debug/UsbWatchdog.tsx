@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ToggleSwitch } from "../ui/ToggleSwitch";
-import { useSettings } from "../../hooks/useSettings";
+import { ToggleSwitch } from "../../ui/ToggleSwitch";
+import { useSettings } from "../../../hooks/useSettings";
 import { commands } from "@/bindings";
 
 interface UsbWatchdogProps {
@@ -42,7 +42,7 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
       <div className="space-y-3">
         <ToggleSwitch
           checked={enabled}
-          onChange={(val) => updateSetting("usb_watchdog_enabled", val)}
+          onChange={(val: boolean) => updateSetting("usb_watchdog_enabled", val)}
           isUpdating={isUpdating("usb_watchdog_enabled")}
           label={t("settings.debug.usbWatchdog.label")}
           description={t("settings.debug.usbWatchdog.description")}
