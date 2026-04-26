@@ -231,6 +231,81 @@ fn get_filler_words_for_language(lang: &str) -> &'static [&'static str] {
 
 static MULTI_SPACE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unwrap());
 
+/// Removes word fragment overlaps from transcription output.
+///
+/// CTC/Transducer models like Parakeet can emit overlapping tokens at boundaries,
+/// producing output like "it wa was a" where "wa" is a fragment of "was".
+/// This function detects when a word is a prefix (case-insensitive) of the next word
+/// and removes the fragment, with safeguards against removing common words.
+///
+/// A word is considered a fragment if:
+/// 1. It is a case-insensitive prefix of the next word
+/// 2. It is strictly shorter than the next word
+/// 3. It has at least 2 alphabetic characters (avoids removing "a", "I")
+/// 4. It is NOT a common functional word (the, to, can, for, etc.)
+///
+/// Examples:
+/// - "it wa was a" → "it was a"  ("wa" is a fragment of "was")
+/// - "for forget" → "for forget"  ("for" is common, kept)
+/// - "can cancel" → "can cancel"  ("can" is common, kept)
+fn dedup_word_fragments(text: &str) -> String {
+    // Common functional words that should never be treated as fragments,
+    // even if they are a prefix of the following word.
+    // These are short words that appear frequently and are rarely CTC artifacts.
+    const COMMON_WORDS: &[&str] = &[
+        "a", "an", "the", "to", "of", "in", "is", "it", "on", "at", "by", "or",
+        "as", "be", "do", "go", "he", "me", "my", "no", "so", "up", "we", "am",
+        "if", "can", "for", "and", "but", "not", "are", "was", "has", "had",
+        "his", "her", "how", "all", "any", "did", "its", "our", "out", "who",
+        "why", "yet", "own", "did", "get", "let", "may", "new", "now", "old",
+        "see", "way", "day", "too", "use", "say", "she", "him", "you", "one",
+    ];
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 2 {
+        return text.to_string();
+    }
+
+    let mut result: Vec<String> = Vec::new();
+    let mut i = 0;
+
+    while i < words.len() {
+        // Look ahead: if the current word is a prefix of the next word,
+        // it's a fragment that should be removed.
+        let current_alpha: String = words[i]
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .collect();
+        let current_lower = current_alpha.to_lowercase();
+
+        if i + 1 < words.len() && current_alpha.len() >= 2 {
+            let next_alpha: String = words[i + 1]
+                .chars()
+                .filter(|c| c.is_alphabetic())
+            .collect();
+            let next_lower = next_alpha.to_lowercase();
+
+            // Current word is a fragment of the next word if:
+            // 1. It's a proper prefix (current is shorter and matches the start of next)
+            // 2. The next word is strictly longer
+            // 3. Current is NOT a common functional word
+            if next_alpha.len() > current_alpha.len()
+                && next_lower.starts_with(&current_lower)
+                && !COMMON_WORDS.contains(&current_lower.as_str())
+            {
+                // Skip this word — it's a fragment of the next word
+                i += 1;
+                continue;
+            }
+        }
+
+        result.push(words[i].to_string());
+        i += 1;
+    }
+
+    result.join(" ")
+}
+
 /// Collapses repeated words (3+ repetitions) to a single instance.
 /// E.g., "wh wh wh wh" -> "wh", "I I I I" -> "I"
 fn collapse_stutters(text: &str) -> String {
@@ -274,8 +349,9 @@ fn collapse_stutters(text: &str) -> String {
 ///
 /// This function cleans up raw transcription text by:
 /// 1. Removing filler words based on the app language (or custom list)
-/// 2. Collapsing repeated word stutters (e.g., "wh wh wh" -> "wh")
-/// 3. Cleaning up excess whitespace
+/// 2. Removing word fragment overlaps from CTC/Transducer models (e.g., "it wa was" -> "it was")
+/// 3. Collapsing repeated word stutters (e.g., "wh wh wh" -> "wh")
+/// 4. Cleaning up excess whitespace
 ///
 /// # Arguments
 /// * `text` - The raw transcription text to filter
@@ -284,7 +360,7 @@ fn collapse_stutters(text: &str) -> String {
 ///   language defaults; `Some(empty vec)` disables filtering; `None` uses language defaults.
 ///
 /// # Returns
-/// The filtered text with filler words and stutters removed
+/// The filtered text with filler words, fragments, and stutters removed
 pub fn filter_transcription_output(
     text: &str,
     lang: &str,
@@ -308,6 +384,9 @@ pub fn filter_transcription_output(
     for pattern in &patterns {
         filtered = pattern.replace_all(&filtered, "").to_string();
     }
+
+    // Remove word fragment overlaps (CTC/Transducer boundary artifacts like "wa was" -> "was")
+    filtered = dedup_word_fragments(&filtered);
 
     // Collapse repeated 1-2 letter words (stutter artifacts like "wh wh wh wh")
     filtered = collapse_stutters(&filtered);
@@ -563,5 +642,139 @@ mod tests {
             "got double-counted result: {}",
             result
         );
+    }
+
+    // --- dedup_word_fragments tests ---
+
+    #[test]
+    fn test_dedup_word_fragments_basic() {
+        // "wa" is a prefix of "was" — classic CTC fragment overlap
+        let result = dedup_word_fragments("it wa was a");
+        assert_eq!(result, "it was a");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_user_reported_case() {
+        // The exact pattern from the bug report: "it wa was a"
+        let result = dedup_word_fragments("it wa was a");
+        assert_eq!(result, "it was a");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_no_overlap() {
+        // No fragment overlap — should be unchanged
+        let result = dedup_word_fragments("it was a good day");
+        assert_eq!(result, "it was a good day");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_case_insensitive() {
+        // Case-insensitive prefix matching: "Wa" is prefix of "was"
+        let result = dedup_word_fragments("it Wa was a");
+        assert_eq!(result, "it was a");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_with_punctuation() {
+        // Fragment with punctuation preserved on the next word
+        let result = dedup_word_fragments("it wa was, a");
+        assert_eq!(result, "it was, a");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_single_letter_unchanged() {
+        // Single-letter words (like "I") should not be treated as fragments
+        // even if the next word starts with the same letter
+        let result = dedup_word_fragments("I Iceland");
+        assert_eq!(result, "I Iceland");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_same_length_not_removed() {
+        // "want" and "want" are same length — "want" is NOT a fragment of "want"
+        let result = dedup_word_fragments("I want want this");
+        assert_eq!(result, "I want want this");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_empty_string() {
+        let result = dedup_word_fragments("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_single_word() {
+        let result = dedup_word_fragments("hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_two_words_no_overlap() {
+        let result = dedup_word_fragments("hello world");
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_multiple_overlaps() {
+        // Multiple fragment overlaps in one sentence
+        let result = dedup_word_fragments("I wan wanted to thi this");
+        assert_eq!(result, "I wanted to this");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_not_a_prefix() {
+        // "the" is a common word — even though it's a prefix of "then", it should be kept
+        let result = dedup_word_fragments("the then");
+        assert_eq!(result, "the then");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_independent_words() {
+        // "can" is NOT a prefix of "be" — no overlap, both kept
+        let result = dedup_word_fragments("it can be done");
+        assert_eq!(result, "it can be done");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_common_word_preserved() {
+        // "can" is a common word and a prefix of "cancel" — should NOT be removed
+        let result = dedup_word_fragments("I can cancel this");
+        assert_eq!(result, "I can cancel this");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_for_preserved() {
+        // "for" is a common word and a prefix of "forget" — should NOT be removed
+        let result = dedup_word_fragments("for forget");
+        assert_eq!(result, "for forget");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_combined_with_filter() {
+        // Test that dedup_word_fragments integrates correctly in the full pipeline
+        // "it wa was a" -> after filler removal -> after fragment dedup -> after stutter collapse
+        let result = filter_transcription_output("it wa was a", "en", &None);
+        assert_eq!(result, "it was a");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_combined_with_stutter() {
+        // Both fragment overlap AND stutter in same text
+        let result = filter_transcription_output("I I I wan wanted to go", "en", &None);
+        assert_eq!(result, "I wanted to go");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_to_preserved() {
+        // "to" is a common word and a prefix of "today" — should NOT be removed
+        let result = dedup_word_fragments("go to today");
+        assert_eq!(result, "go to today");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_longer_fragment() {
+        // "understand" is not a prefix of anything after it
+        let result = dedup_word_fragments("I understand this");
+        assert_eq!(result, "I understand this");
     }
 }
