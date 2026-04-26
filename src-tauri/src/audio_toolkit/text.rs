@@ -236,30 +236,60 @@ static MULTI_SPACE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unw
 /// CTC/Transducer models like Parakeet can emit overlapping tokens at boundaries,
 /// producing output like "it wa was a" where "wa" is a fragment of "was".
 /// This function detects when a word is a prefix (case-insensitive) of the next word
-/// and removes the fragment, with safeguards against removing common words.
+/// and removes the fragment, with strict safeguards against removing legitimate words.
 ///
-/// A word is considered a fragment if:
+/// A word is considered a **fragment artifact** (and removed) only when ALL of:
 /// 1. It is a case-insensitive prefix of the next word
-/// 2. It is strictly shorter than the next word
-/// 3. It has at least 2 alphabetic characters (avoids removing "a", "I")
-/// 4. It is NOT a common functional word (the, to, can, for, etc.)
+/// 2. The current word is no longer than MAX_FRAGMENT_LEN characters
+///    (CTC fragments are 2-3 chars like "wa", "th", "co"; real words like
+///     "under" (5) before "understand" are never fragments)
+/// 3. The next word extends the current word by at most MAX_FRAGMENT_EXTENSION characters
+///    (prevents removing "pro" before "procedure" — a 7-char extension; while
+///     "wa"→"was" extends by only 1 char and is clearly a fragment)
+/// 4. It has at least 2 alphabetic characters (avoids removing "a", "I")
+/// 5. It is NOT a common English word or short prefix that appears independently
+///    (the, to, can, for, pro, con, sub, pre, etc.)
 ///
 /// Examples:
-/// - "it wa was a" → "it was a"  ("wa" is a fragment of "was")
-/// - "for forget" → "for forget"  ("for" is common, kept)
-/// - "can cancel" → "can cancel"  ("can" is common, kept)
-fn dedup_word_fragments(text: &str) -> String {
-    // Common functional words that should never be treated as fragments,
-    // even if they are a prefix of the following word.
-    // These are short words that appear frequently and are rarely CTC artifacts.
+/// - "it wa was a" → "it was a"  ("wa" len=2, extends by 1 → fragment)
+/// - "for forget" → "for forget"  ("for" is a common word, kept)
+/// - "can cancel" → "can cancel"  ("can" is a common word, kept)
+/// - "pro process" → "pro process"  ("pro" is a known prefix, kept)
+pub(crate) fn dedup_word_fragments(text: &str) -> String {
+    // Common functional words and short independent prefixes that should never
+    // be treated as fragments, even if they are a prefix of the following word.
+    // Includes:
+    // - Function words (the, to, can, for, etc.) that are rarely CTC artifacts
+    // - Common abbreviations/prefixes (pro, con, sub, pre, per, etc.) that
+    //   appear independently in transcription and can prefix longer words
     const COMMON_WORDS: &[&str] = &[
+        // Function words
         "a", "an", "the", "to", "of", "in", "is", "it", "on", "at", "by", "or",
         "as", "be", "do", "go", "he", "me", "my", "no", "so", "up", "we", "am",
         "if", "can", "for", "and", "but", "not", "are", "was", "has", "had",
         "his", "her", "how", "all", "any", "did", "its", "our", "out", "who",
         "why", "yet", "own", "did", "get", "let", "may", "new", "now", "old",
         "see", "way", "day", "too", "use", "say", "she", "him", "you", "one",
+        // Common short words that are also productive prefixes
+        "pro", "con", "sub", "pre", "per", "dis", "app", "net", "bar", "bus", "co",
+        "cap", "car", "doc", "dry", "fin", "fix", "fan", "gas", "hot", "ice",
+        "jam", "key", "kit", "lab", "law", "led", "log", "low", "map", "mix",
+        "net", "oil", "pan", "pat", "pin", "pop", "pub", "ram", "raw", "red",
+        "row", "run", "set", "sir", "sit", "six", "sky", "son", "sun", "tap",
+        "ten", "tie", "tip", "top", "try", "van", "via", "war", "win", "yes",
     ];
+
+    // Maximum length of a word that can be considered a fragment artifact.
+    // CTC fragments are typically 2-3 characters (e.g. "wa", "th", "co").
+    // Real words can be any length, so we set a conservative cutoff.
+    const MAX_FRAGMENT_LEN: usize = 3;
+
+    // Maximum number of additional characters in the next word beyond the
+    // current word that still qualifies as a fragment overlap.
+    // "wa"→"was" extends by 1 (fragment). "pro"→"process" extends by 4 (real word).
+    // "wan"→"wanted" extends by 3 (fragment) — we allow 3 because CTC fragments
+    // like "wan" that overlap with "wanted" are common in practice.
+    const MAX_FRAGMENT_EXTENSION: usize = 3;
 
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() < 2 {
@@ -271,7 +301,7 @@ fn dedup_word_fragments(text: &str) -> String {
 
     while i < words.len() {
         // Look ahead: if the current word is a prefix of the next word,
-        // it's a fragment that should be removed.
+        // it might be a fragment that should be removed.
         let current_alpha: String = words[i]
             .chars()
             .filter(|c| c.is_alphabetic())
@@ -285,11 +315,15 @@ fn dedup_word_fragments(text: &str) -> String {
             .collect();
             let next_lower = next_alpha.to_lowercase();
 
-            // Current word is a fragment of the next word if:
-            // 1. It's a proper prefix (current is shorter and matches the start of next)
-            // 2. The next word is strictly longer
-            // 3. Current is NOT a common functional word
-            if next_alpha.len() > current_alpha.len()
+            // Current word is a fragment of the next word only when ALL conditions hold:
+            // 1. Current is short enough to be a CTC artifact (≤ MAX_FRAGMENT_LEN)
+            // 2. Next word is longer (proper prefix)
+            // 3. Extension is small enough to be a fragment overlap (≤ MAX_FRAGMENT_EXTENSION)
+            // 4. Next word starts with current (case-insensitive)
+            // 5. Current is NOT a common word/prefix
+            if current_alpha.len() <= MAX_FRAGMENT_LEN
+                && next_alpha.len() > current_alpha.len()
+                && next_alpha.len() - current_alpha.len() <= MAX_FRAGMENT_EXTENSION
                 && next_lower.starts_with(&current_lower)
                 && !COMMON_WORDS.contains(&current_lower.as_str())
             {
@@ -776,5 +810,476 @@ mod tests {
         // "understand" is not a prefix of anything after it
         let result = dedup_word_fragments("I understand this");
         assert_eq!(result, "I understand this");
+    }
+
+    // --- Regression tests: legitimate words must NOT be removed ---
+
+    #[test]
+    fn test_dedup_word_fragments_preserves_pro() {
+        // "pro" is a common abbreviation/word that prefixes "process", "procedure", etc.
+        // It must NOT be removed even though it's a prefix.
+        let result = dedup_word_fragments("pro process");
+        assert_eq!(result, "pro process");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_preserves_con() {
+        // "con" is a common word that prefixes "control", "continue", etc.
+        let result = dedup_word_fragments("con control");
+        assert_eq!(result, "con control");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_preserves_sub() {
+        // "sub" is a common word that prefixes "substance", "substantial", etc.
+        let result = dedup_word_fragments("sub substance");
+        assert_eq!(result, "sub substance");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_preserves_pre() {
+        // "pre" is a common word that prefixes "pretty", "prevent", etc.
+        let result = dedup_word_fragments("pre pretty");
+        assert_eq!(result, "pre pretty");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_preserves_per() {
+        // "per" is a common word that prefixes "percent", "person", etc.
+        let result = dedup_word_fragments("per percent");
+        assert_eq!(result, "per percent");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_preserves_long_prefix_words() {
+        // Words longer than 3 chars should never be considered fragments,
+        // even if they're a prefix of the next word.
+        // "under" (5 chars) before "understand" must be kept.
+        let result = dedup_word_fragments("under understand");
+        assert_eq!(result, "under understand");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_st_preserved() {
+        // "St" is an abbreviation for Saint/Street, should not be removed before "Street"
+        let result = dedup_word_fragments("St Street");
+        assert_eq!(result, "St Street");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_wan_wanted() {
+        // "wan" → "wanted" is a legitimate CTC fragment overlap (ext by 3, ≤ MAX 3)
+        let result = dedup_word_fragments("I wan wanted to go");
+        assert_eq!(result, "I wanted to go");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_thi_this() {
+        // "thi" → "this" is a fragment overlap (ext by 1)
+        let result = dedup_word_fragments("thi this is it");
+        assert_eq!(result, "this is it");
+    }
+
+    #[test]
+    fn test_dedup_word_fragments_co_company() {
+        // "co" before "company" — "co" is in COMMON_WORDS, must be kept
+        let result = dedup_word_fragments("co company");
+        assert_eq!(result, "co company");
+    }
+
+    // ============================================================
+    // COMPREHENSIVE BENCHMARK — Fragment dedup at chunking boundaries
+    //
+    // Golden cases (MUST PASS):
+    //   "I wa was going" → "I was going"
+    //   "my mac machine" → "my mac machine" (unchanged)
+    //
+    // These tests go far beyond the golden cases to avoid overfitting.
+    // ============================================================
+
+    // --- GOLDEN CASES ---
+
+    #[test]
+    fn bench_golden_fragment_removal() {
+        assert_eq!(dedup_word_fragments("I wa was going"), "I was going");
+    }
+
+    #[test]
+    fn bench_golden_no_false_positive() {
+        assert_eq!(dedup_word_fragments("my mac machine"), "my mac machine");
+    }
+
+    // --- SIMPLE FRAGMENT OVERLAPS (CTC artifacts) ---
+
+    #[test]
+    fn bench_fragment_thi_this() {
+        assert_eq!(dedup_word_fragments("thi this is it"), "this is it");
+    }
+
+    #[test]
+    fn bench_fragment_wan_wanted() {
+        assert_eq!(dedup_word_fragments("I wan wanted to go"), "I wanted to go");
+    }
+
+    #[test]
+    fn bench_fragment_sta_started() {
+        // "sta" is a 3-char prefix of "start", extension = 2
+        assert_eq!(dedup_word_fragments("I sta started running"), "I started running");
+    }
+
+    #[test]
+    fn bench_fragment_sta_starting() {
+        assert_eq!(dedup_word_fragments("sta starting now"), "starting now");
+    }
+
+    // --- FALSE POSITIVE PROTECTION ---
+
+    #[test]
+    fn bench_preserves_for_forget() {
+        assert_eq!(dedup_word_fragments("for forget"), "for forget");
+    }
+
+    #[test]
+    fn bench_preserves_can_cancel() {
+        assert_eq!(dedup_word_fragments("I can cancel this"), "I can cancel this");
+    }
+
+    #[test]
+    fn bench_preserves_the_then() {
+        assert_eq!(dedup_word_fragments("the then"), "the then");
+    }
+
+    #[test]
+    fn bench_preserves_to_today() {
+        assert_eq!(dedup_word_fragments("go to today"), "go to today");
+    }
+
+    #[test]
+    fn bench_preserves_pro_process() {
+        assert_eq!(dedup_word_fragments("pro process"), "pro process");
+    }
+
+    #[test]
+    fn bench_preserves_con_control() {
+        assert_eq!(dedup_word_fragments("con control"), "con control");
+    }
+
+    #[test]
+    fn bench_preserves_sub_substance() {
+        assert_eq!(dedup_word_fragments("sub substance"), "sub substance");
+    }
+
+    #[test]
+    fn bench_preserves_per_percent() {
+        assert_eq!(dedup_word_fragments("per percent"), "per percent");
+    }
+
+    #[test]
+    fn bench_preserves_pre_pretty() {
+        assert_eq!(dedup_word_fragments("pre pretty"), "pre pretty");
+    }
+
+    #[test]
+    fn bench_preserves_app_application() {
+        assert_eq!(dedup_word_fragments("app application"), "app application");
+    }
+
+    #[test]
+    fn bench_preserves_run_running() {
+        assert_eq!(dedup_word_fragments("I run running"), "I run running");
+    }
+
+    #[test]
+    fn bench_preserves_win_windows() {
+        assert_eq!(dedup_word_fragments("win windows"), "win windows");
+    }
+
+    #[test]
+    fn bench_preserves_hot_hotel() {
+        assert_eq!(dedup_word_fragments("hot hotel"), "hot hotel");
+    }
+
+    #[test]
+    fn bench_preserves_key_keyboard() {
+        assert_eq!(dedup_word_fragments("key keyboard"), "key keyboard");
+    }
+
+    #[test]
+    fn bench_preserves_car_careful() {
+        assert_eq!(dedup_word_fragments("car careful"), "car careful");
+    }
+
+    #[test]
+    fn bench_preserves_son_song() {
+        assert_eq!(dedup_word_fragments("my son song"), "my son song");
+    }
+
+    #[test]
+    fn bench_preserves_sit_sitting() {
+        assert_eq!(dedup_word_fragments("sit sitting"), "sit sitting");
+    }
+
+    #[test]
+    fn bench_preserves_bar_barely() {
+        assert_eq!(dedup_word_fragments("bar barely"), "bar barely");
+    }
+
+    #[test]
+    fn bench_preserves_bus_business() {
+        assert_eq!(dedup_word_fragments("the bus business"), "the bus business");
+    }
+
+    #[test]
+    fn bench_preserves_day_daylight() {
+        assert_eq!(dedup_word_fragments("day daylight"), "day daylight");
+    }
+
+    // --- LENGTH-BASED PROTECTION ---
+
+    #[test]
+    fn bench_preserves_four_char_word() {
+        assert_eq!(dedup_word_fragments("I read reading books"), "I read reading books");
+    }
+
+    #[test]
+    fn bench_preserves_five_char_word() {
+        assert_eq!(dedup_word_fragments("under understand"), "under understand");
+    }
+
+    #[test]
+    fn bench_preserves_six_char_word() {
+        assert_eq!(dedup_word_fragments("record recording"), "record recording");
+    }
+
+    // --- CASE VARIATIONS ---
+
+    #[test]
+    fn bench_case_insensitive_wa_Was() {
+        assert_eq!(dedup_word_fragments("it wa Was a"), "it Was a");
+    }
+
+    #[test]
+    fn bench_case_insensitive_Wa_was() {
+        assert_eq!(dedup_word_fragments("it Wa was a"), "it was a");
+    }
+
+    #[test]
+    fn bench_case_insensitive_WA_WAS() {
+        assert_eq!(dedup_word_fragments("I WA WAS going"), "I WAS going");
+    }
+
+    // --- PUNCTUATION ---
+
+    #[test]
+    fn bench_fragment_with_trailing_punctuation() {
+        assert_eq!(dedup_word_fragments("it wa was, a"), "it was, a");
+    }
+
+    #[test]
+    fn bench_preserves_words_with_punctuation() {
+        assert_eq!(dedup_word_fragments("for. forget"), "for. forget");
+    }
+
+    // --- MULTI-FRAGMENT CHAINS ---
+
+    #[test]
+    fn bench_two_fragments_in_sentence() {
+        assert_eq!(dedup_word_fragments("I wan wanted to thi this"), "I wanted to this");
+    }
+
+    #[test]
+    fn bench_fragment_at_start() {
+        assert_eq!(dedup_word_fragments("wa was going"), "was going");
+    }
+
+    #[test]
+    fn bench_consecutive_fragments() {
+        assert_eq!(dedup_word_fragments("wa was thi this"), "was this");
+    }
+
+    // --- EXTENSION LENGTH BOUNDARIES ---
+
+    #[test]
+    fn bench_extension_exact_limit_3() {
+        // "wan" (3 chars) → "wanted" (6 chars), extension = 3 == MAX_FRAGMENT_EXTENSION
+        assert_eq!(dedup_word_fragments("I wan wanted"), "I wanted");
+    }
+
+    #[test]
+    fn bench_extension_1_char() {
+        assert_eq!(dedup_word_fragments("it wa was"), "it was");
+    }
+
+    #[test]
+    fn bench_extension_2_chars() {
+        assert_eq!(dedup_word_fragments("sta starting"), "starting");
+    }
+
+    // --- COMMON WORD PROTECTION ---
+
+    #[test]
+    fn bench_preserves_in_inside() {
+        assert_eq!(dedup_word_fragments("in inside the house"), "in inside the house");
+    }
+
+    #[test]
+    fn bench_preserves_on_only() {
+        assert_eq!(dedup_word_fragments("on only one"), "on only one");
+    }
+
+    #[test]
+    fn bench_preserves_or_order() {
+        assert_eq!(dedup_word_fragments("or order them"), "or order them");
+    }
+
+    #[test]
+    fn bench_preserves_so_some() {
+        assert_eq!(dedup_word_fragments("so some people"), "so some people");
+    }
+
+    #[test]
+    fn bench_preserves_no_nothing() {
+        assert_eq!(dedup_word_fragments("no nothing happened"), "no nothing happened");
+    }
+
+    #[test]
+    fn bench_preserves_up_upon() {
+        assert_eq!(dedup_word_fragments("up upon the hill"), "up upon the hill");
+    }
+
+    #[test]
+    fn bench_preserves_my_myself() {
+        assert_eq!(dedup_word_fragments("I did it my myself"), "I did it my myself");
+    }
+
+    #[test]
+    fn bench_preserves_be_been() {
+        assert_eq!(dedup_word_fragments("I be been there"), "I be been there");
+    }
+
+    #[test]
+    fn bench_preserves_he_here() {
+        assert_eq!(dedup_word_fragments("he here comes"), "he here comes");
+    }
+
+    #[test]
+    fn bench_preserves_do_doing() {
+        assert_eq!(dedup_word_fragments("I do doing things"), "I do doing things");
+    }
+
+    // --- REMOVES NON-COMMON SHORT FRAGMENTS ---
+
+    #[test]
+    fn bench_removes_ab_about() {
+        // "ab" (2 chars) → "about" (5 chars), extension = 3
+        // "ab" is not a common word, so it's a fragment
+        assert_eq!(dedup_word_fragments("ab about that"), "about that");
+    }
+
+    // --- REAL-WORLD PATTERNS ---
+
+    #[test]
+    fn bench_real_world_wa_was_sentence() {
+        assert_eq!(
+            dedup_word_fragments("I wa was going to the store"),
+            "I was going to the store"
+        );
+    }
+
+    #[test]
+    fn bench_real_world_thi_this_sentence() {
+        assert_eq!(
+            dedup_word_fragments("thi this is what I mean"),
+            "this is what I mean"
+        );
+    }
+
+    #[test]
+    fn bench_real_world_fragment_in_middle() {
+        assert_eq!(
+            dedup_word_fragments("I went wa was walking down the street"),
+            "I went was walking down the street"
+        );
+    }
+
+    #[test]
+    fn bench_real_world_multiple_fragments() {
+        assert_eq!(
+            dedup_word_fragments("it wa was sunny and thi this is great"),
+            "it was sunny and this is great"
+        );
+    }
+
+    #[test]
+    fn bench_real_world_preserves_legitimate_repetition() {
+        assert_eq!(
+            dedup_word_fragments("I had had enough"),
+            "I had had enough"
+        );
+    }
+
+    #[test]
+    fn bench_preserves_sentence_without_fragments() {
+        assert_eq!(
+            dedup_word_fragments("the quick brown fox jumps over the lazy dog"),
+            "the quick brown fox jumps over the lazy dog"
+        );
+    }
+
+    // --- STRESS TESTS ---
+
+    #[test]
+    fn bench_all_fragments_removed() {
+        assert_eq!(dedup_word_fragments("wa was thi this"), "was this");
+    }
+
+    #[test]
+    fn bench_numbers_and_symbols_preserved() {
+        assert_eq!(dedup_word_fragments("I wa was #1!"), "I was #1!");
+    }
+
+    #[test]
+    fn bench_mixed_fragment_and_normal() {
+        assert_eq!(
+            dedup_word_fragments("hello wa was world"),
+            "hello was world"
+        );
+    }
+
+    #[test]
+    fn bench_preserves_mac_machinery() {
+        assert_eq!(
+            dedup_word_fragments("the mac machinery works"),
+            "the mac machinery works"
+        );
+    }
+
+    // --- SUFFIX OVERLAP (current algorithm handles prefix only) ---
+
+    #[test]
+    fn bench_suffix_overlap_go_going() {
+        // "go" is a common word so preserved regardless
+        assert_eq!(
+            dedup_word_fragments("I was go going"),
+            "I was go going"
+        );
+    }
+
+    // --- EDGE CASES ---
+
+    #[test]
+    fn bench_same_word_repeated() {
+        assert_eq!(dedup_word_fragments("the the"), "the the");
+    }
+
+    #[test]
+    fn bench_fragment_at_end_stays() {
+        // "wa" at end with nothing after it is not a fragment
+        assert_eq!(dedup_word_fragments("I was going wa"), "I was going wa");
+    }
+
+    #[test]
+    fn bench_consecutive_the_the() {
+        assert_eq!(dedup_word_fragments("th the the"), "the the");
     }
 }

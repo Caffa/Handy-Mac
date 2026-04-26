@@ -76,6 +76,16 @@ bun run tauri build
 
 This compiles a release binary and generates platform-specific bundles (deb, rpm, AppImage on Linux; dmg on macOS; msi on Windows).
 
+### 5. Build + serve + bump version (local updater)
+
+This builds, bumps the patch version, and serves the update so the app's built-in updater detects it as a new version:
+
+```bash
+./scripts/local-update.sh --bump
+```
+
+Then open Handy and click "Check for Updates" to install.
+
 ## Linux Install (from source)
 
 The raw binary (`src-tauri/target/release/handy`) cannot run standalone — it needs Tauri resource files (tray icons, sounds, VAD model) to be co-located at the expected path.

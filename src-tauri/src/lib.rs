@@ -559,6 +559,21 @@ pub fn run(cli_args: CliArgs) {
                 let _ = crate::managers::transcription::get_available_accelerators();
             });
 
+            // Pre-warm the ASR model on a background thread so it's ready when
+            // the user first presses the hotkey. Without this, the model is loaded
+            // lazily on the first hotkey press after the idle timeout, which blocks
+            // transcription until loading completes — losing the first part of speech.
+            // The model pre-load is idempotent: if already loaded or loading, it returns
+            // immediately, so it's safe to call every startup.
+            let app_handle_for_model_load = app_handle.clone();
+            std::thread::spawn(move || {
+                if let Some(transcription_manager) =
+                    app_handle_for_model_load.try_state::<Arc<TranscriptionManager>>()
+                {
+                    let _ = transcription_manager.initiate_model_load();
+                }
+            });
+
             // Install uhubctl if missing (macOS only, via Homebrew) so the
             // USB watchdog can recover dead USB audio devices automatically.
             #[cfg(target_os = "macos")]

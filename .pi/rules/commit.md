@@ -50,14 +50,11 @@ chore(deps): bump tauri to 2.10.2
 
 ## Triggering Auto-Build
 
-To build and install the Handy app to Applications after the commit:
+To build and install the Handy app after the commit (via local updater):
 
 ```bash
-# Option 1: Environment variable
-DEPLOY=1 git commit -m "feat(audio): add noise gate"
-
-# Option 2: Commit message tag
-git commit -m "feat(audio): add noise gate [deploy]"
+# Build + bump version + serve (so updater sees it as new) — then click "Check for Updates" in the app
+./scripts/local-update.sh --bump
 ```
 
 See `build-deploy.md` for full details.

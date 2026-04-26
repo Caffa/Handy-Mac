@@ -11,16 +11,60 @@ description: "Build and deploy Handy to /Applications (or ~/Applications)"
 and `codegen-units = 1` (see `src-tauri/Cargo.toml`). This is **very slow** —
 expect **5-30+ minutes** on first run. Do NOT trigger on every commit.
 
-## Local Deploy Target
+## Option A: Local Update (In-App Update — Recommended)
 
-| Destination | Pros | Cons |
-|-------------|------|------|
-| `~/Applications` | No sudo needed, user-owned | Not visible to other users |
-| `/Applications` | System-wide | Usually requires sudo |
+Instead of replacing the .app bundle manually, use Handy's built-in
+Tauri updater pointing at a local server. This builds, signs, and serves your
+fork — then just click "Check for Updates" in the app.
 
-**Default: `~/Applications`**. Override via `INSTALL_DEST=/Applications`.
+**One-time setup (generate signing keypair):**
 
-## Option A: Post-Commit Hook (Opt-In Per Commit)
+```bash
+mkdir -p ~/.tauri
+# Use a simple password — the script defaults to "handy"
+echo "handy" | bunx tauri signer generate -w ~/.tauri/handy-fork.key
+# The pubkey is already configured in tauri.conf.json for this fork
+```
+
+**Deploy via local update:**
+
+```bash
+# Build + serve — then click "Check for Updates" in the app
+./scripts/local-update.sh
+
+# Build + bump version so the updater sees it as new (recommended)
+# (or use [reinstall] in commit message to trigger via post-commit hook)
+./scripts/local-update.sh --bump
+
+# Bump minor version
+./scripts/local-update.sh --bump minor
+
+# Re-serve last build without rebuilding
+./scripts/local-update.sh --skip-build
+```
+
+The script:
+1. Patches `tauri.conf.json` → endpoints point to `http://localhost:4321/latest.json`
+2. Signs the build with your fork key
+3. Generates `latest.json` with signature + version
+4. Serves the update over HTTP
+5. Restores config on exit
+
+The app downloads the update in-place and relaunches — no .app swap needed.
+
+## Option B: Standalone Script (Alternative)
+
+For manual control (no commit required):
+
+```bash
+# Default to ~/Applications
+./scripts/build-and-install.sh
+
+# Or deploy to /Applications (may prompt for sudo)
+INSTALL_DEST=/Applications ./scripts/build-and-install.sh
+```
+
+## Option C: Post-Commit Hook (Alternative)
 
 The `.git/hooks/post-commit` hook does **nothing by default**. It only builds
 when you explicitly opt in.
@@ -29,16 +73,16 @@ when you explicitly opt in.
 
 ```bash
 # Via environment variable
-DEPLOY=1 git commit -m "feat(audio): add noise gate"
+REINSTALL=1 git commit -m "feat(audio): add noise gate"
 
-# Via commit message tag
-# (include [deploy] anywhere in the message)
-git commit -m "feat(audio): add noise gate [deploy]"
+# Via commit message tag (for manual .app copy)
+# (include [reinstall] anywhere in the message)
+git commit -m "feat(audio): add noise gate [reinstall]"
 ```
 
 ### What the hook does
 
-1. **Checks if deployment is requested** (`DEPLOY=1` or `[deploy]` in message)
+1. **Checks if deployment is requested** (`REINSTALL=1` or `[reinstall]` in message)
 2. **Builds** via `bun run tauri build`
 3. **Quits** running Handy gracefully (with AppleScript → fallback `pkill`)
 4. **Cleans** old bundle: `rm -rf ~/Applications/Handy.app`
@@ -47,7 +91,7 @@ git commit -m "feat(audio): add noise gate [deploy]"
 
 ### Skipping deployment
 
-Any normal commit (no `[deploy]`, no `DEPLOY=1`) will skip silently:
+Any normal commit (no `[reinstall]`, no `REINSTALL=1`) will skip silently:
 
 ```bash
 git commit -m "wip: quick save"
@@ -67,17 +111,14 @@ chmod -x .git/hooks/post-commit
 chmod +x .git/hooks/post-commit
 ```
 
-## Option B: Standalone Script
+## Local Deploy Target
 
-For manual control (no commit required):
+| Destination | Pros | Cons |
+|-------------|------|------|
+| `~/Applications` | No sudo needed, user-owned | Not visible to other users |
+| `/Applications` | System-wide | Usually requires sudo |
 
-```bash
-# Default to ~/Applications
-./scripts/build-and-install.sh
-
-# Or deploy to /Applications (may prompt for sudo)
-INSTALL_DEST=/Applications ./scripts/build-and-install.sh
-```
+**Default: `~/Applications`**. Override via `INSTALL_DEST=/Applications`.
 
 ## Build Failure Recovery
 
@@ -103,7 +144,7 @@ bun run tauri build
 
 ## Safety Notes
 
-- The hook runs `set -euo pipefail` — any error aborts the deploy.
+- The hook (Option C) runs `set -euo pipefail` — any error aborts the deploy.
 - Old bundle is **removed before copying** to avoid macOS cache corruption.
 - Force-kill is a last resort; graceful quit is attempted first.
 
@@ -112,28 +153,28 @@ bun run tauri build
 ### `git rebase` / `git commit --amend`
 
 `post-commit` hooks fire during rebases and amends too. If a replayed commit
-contains `[deploy]`, the build will trigger again:
+contains `[reinstall]`, the build will trigger again:
 
 ```bash
-# During rebase of a [deploy] commit:
+# During rebase of a [reinstall] commit:
 git rebase -i main
 # → you may see a long build mid-rebase
 ```
 
-**Workaround:** Skip `[deploy]` in commits you plan to rebase, or export
-`DEPLOY=0` before rebasing:
+**Workaround:** Skip `[reinstall]` in commits you plan to rebase, or export
+`REINSTALL=0` before rebasing:
 
 ```bash
-DEPLOY=0 git rebase -i main
+REINSTALL=0 git rebase -i main
 ```
 
 ### Uncommitted changes during deploy
 
-If you type `DEPLOY=1 git commit`, the build is clean against committed code.
+If you type `REINSTALL=1 git commit`, the build is clean against committed code.
 But if you stash + deploy:
 
 ```bash
 git stash push -m "deploy-stash"
-DEPLOY=1 git commit --allow-empty -m "chore: deploy build [deploy]"
+REINSTALL=1 git commit --allow-empty -m "chore: deploy build [reinstall]"
 git stash pop
 ```

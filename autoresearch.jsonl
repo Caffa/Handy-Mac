@@ -1,0 +1,1 @@
+{"type":"config","name":"Optimize sentence fragment dedup at chunking boundaries","metricName":"correctness_pct","metricUnit":"%","bestDirection":"higher"}

@@ -50,3 +50,10 @@ blob-report/
 
 # Nix build output
 result
+
+# Tauri updater signing keys (never commit private keys)
+*.key
+*.key.pub
+
+# Local update backup
+tauri.conf.json.local-update-backup
