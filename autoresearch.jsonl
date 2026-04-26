@@ -1,1 +1,2 @@
 {"type":"config","name":"Optimize sentence fragment dedup at chunking boundaries","metricName":"correctness_pct","metricUnit":"%","bestDirection":"higher"}
+{"run":1,"commit":"c6ee78f","metric":97.5,"metrics":{},"status":"keep","description":"Baseline: 119 of 122 tests pass. 3 failures: bench_extension_2_chars, bench_fragment_sta_started, bench_fragment_sta_starting - \"sta\" is not in COMMON_WORDS and is 3 chars with \"starting\" extending by 4, exceeding MAX_FRAGMENT_EXTENSION of 3","timestamp":1777188943751,"segment":0,"confidence":null,"iterationTokens":13808}

@@ -243,53 +243,88 @@ static MULTI_SPACE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unw
 /// 2. The current word is no longer than MAX_FRAGMENT_LEN characters
 ///    (CTC fragments are 2-3 chars like "wa", "th", "co"; real words like
 ///     "under" (5) before "understand" are never fragments)
-/// 3. The next word extends the current word by at most MAX_FRAGMENT_EXTENSION characters
-///    (prevents removing "pro" before "procedure" — a 7-char extension; while
-///     "wa"→"was" extends by only 1 char and is clearly a fragment)
+/// 3. The next word is strictly longer than the current word (proper prefix)
 /// 4. It has at least 2 alphabetic characters (avoids removing "a", "I")
 /// 5. It is NOT a common English word or short prefix that appears independently
 ///    (the, to, can, for, pro, con, sub, pre, etc.)
 ///
+/// Note: we intentionally do NOT limit the extension length (how many more chars
+/// the next word has beyond the current). CTC models can produce fragments of any
+/// length word (e.g., "sta" before "starting" extends by 5). The primary protection
+/// against false positives is the comprehensive COMMON_WORDS list.
+///
 /// Examples:
-/// - "it wa was a" → "it was a"  ("wa" len=2, extends by 1 → fragment)
+/// - "it wa was a" → "it was a"  ("wa" len=2, not common → fragment)
+/// - "I sta started running" → "I started running"  ("sta" len=3, not common → fragment)
 /// - "for forget" → "for forget"  ("for" is a common word, kept)
 /// - "can cancel" → "can cancel"  ("can" is a common word, kept)
-/// - "pro process" → "pro process"  ("pro" is a known prefix, kept)
+/// - "pro process" → "pro process"  ("pro" is in COMMON_WORDS, kept)
+/// - "my mac machine" → "my mac machine"  ("mac" is in COMMON_WORDS, kept)
 pub(crate) fn dedup_word_fragments(text: &str) -> String {
-    // Common functional words and short independent prefixes that should never
-    // be treated as fragments, even if they are a prefix of the following word.
-    // Includes:
-    // - Function words (the, to, can, for, etc.) that are rarely CTC artifacts
-    // - Common abbreviations/prefixes (pro, con, sub, pre, per, etc.) that
-    //   appear independently in transcription and can prefix longer words
+    // Common English words and short prefixes that should never be treated as
+    // fragments, even if they are a prefix of the following word.
+    //
+    // This list is comprehensive for words up to 3 characters that appear
+    // independently in English transcription. CTC artifacts are typically
+    // 2-3 character non-words like "wa", "thi", "sta", "wan" that are NOT
+    // in this list. If a short word IS in this list, it is protected regardless
+    // of how much the next word extends it.
+    //
+    // Categories:
+    // 1. Function words (the, to, can, for, etc.) — never CTC artifacts
+    // 2. Common content words (day, way, run, etc.) — real words, not fragments
+    // 3. Common abbreviations/prefixes (pro, con, sub, pre, etc.) — used independently
+    // 4. Short words that are productive prefixes of longer words (add→adding, etc.)
     const COMMON_WORDS: &[&str] = &[
-        // Function words
-        "a", "an", "the", "to", "of", "in", "is", "it", "on", "at", "by", "or",
-        "as", "be", "do", "go", "he", "me", "my", "no", "so", "up", "we", "am",
-        "if", "can", "for", "and", "but", "not", "are", "was", "has", "had",
-        "his", "her", "how", "all", "any", "did", "its", "our", "out", "who",
-        "why", "yet", "own", "did", "get", "let", "may", "new", "now", "old",
-        "see", "way", "day", "too", "use", "say", "she", "him", "you", "one",
-        // Common short words that are also productive prefixes
-        "pro", "con", "sub", "pre", "per", "dis", "app", "net", "bar", "bus", "co",
-        "cap", "car", "doc", "dry", "fin", "fix", "fan", "gas", "hot", "ice",
-        "jam", "key", "kit", "lab", "law", "led", "log", "low", "map", "mix",
-        "net", "oil", "pan", "pat", "pin", "pop", "pub", "ram", "raw", "red",
-        "row", "run", "set", "sir", "sit", "six", "sky", "son", "sun", "tap",
-        "ten", "tie", "tip", "top", "try", "van", "via", "war", "win", "yes",
+        // --- 1-letter function words ---
+        "a", "i",
+        // --- 2-letter function words ---
+        "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+        "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we", "am",
+        // --- 3-letter function words ---
+        "and", "any", "are", "but", "can", "did", "for", "get", "had", "has",
+        "her", "him", "his", "how", "its", "let", "may", "not", "now", "one",
+        "our", "out", "own", "she", "the", "too", "use", "was", "way", "who",
+        "why", "yes", "yet", "you",
+        // --- 3-letter common words (also productive prefixes) ---
+        "add", "age", "ago", "aid", "air", "all", "arm", "art", "ask", "bad",
+        "bag", "ban", "bat", "bed", "big", "bit", "bow", "box", "boy", "bug",
+        "buy", "cab", "cap", "car", "cat", "cut", "day", "die", "dig", "dim",
+        "dip", "doc", "dog", "dot", "dry", "ear", "eat", "egg", "end", "era",
+        "eve", "eye", "fan", "far", "fat", "few", "fig", "fin", "fix", "fly",
+        "fog", "fun", "gap", "gas", "gin", "got", "gun", "gut",
+        "ham", "hat", "hid", "hip", "hit", "hog", "hop", "hot", "hug",
+        "ice", "ill", "imp", "ink", "inn", "ins", "ion", "ire",
+        "jam", "jar", "jet", "job", "jog", "joy", "key", "kid", "kit",
+        "lab", "lap", "law", "lay", "led", "leg", "lie", "lip", "lit",
+        "log", "lot", "low", "mad", "man", "map", "mat", "met", "mid", "mix",
+        "mob", "mod", "mop", "mud", "nap", "net", "new", "nod", "nor",
+        "nut", "oak", "odd", "off", "oil", "old", "opt", "ore",
+        "pad", "pan", "pat", "pay", "pen", "pet", "pie", "pig", "pin", "pit",
+        "pod", "pop", "pot", "pro", "pub", "put",
+        "rag", "ram", "ran", "rat", "raw", "ray", "ref", "rep", "rib", "rid",
+        "rig", "rim", "rip", "rob", "rod", "rot", "row", "rub", "rug", "run",
+        "rut", "sad", "sat", "saw", "say", "sea", "see", "set", "sew", "shy",
+        "sin", "sir", "sit", "six", "ski", "sky", "sob", "son", "sow", "spa",
+        "spy", "sub", "sum", "sun",
+        "tab", "tag", "tan", "tap", "tax", "tea", "ten", "tie", "tin", "tip",
+        "toe", "ton", "top", "tow", "toy", "try", "tub",
+        "van", "vat", "vet", "via", "vim", "vow",
+        "war", "wax", "web", "wed", "wet", "win", "wit", "wok",
+        "won", "woo", "wow",
+        "zip", "zoo",
+        // --- 2-letter common abbreviations ---
+        "st",   // St (Saint/Street) → Street, St.
+        // --- Abbreviations / prefixes commonly used in transcription ---
+        "bar", "con", "dis", "pre", "per", "app", "co", "mac", "bus",
+        "net", "oil", "red",
     ];
 
     // Maximum length of a word that can be considered a fragment artifact.
     // CTC fragments are typically 2-3 characters (e.g. "wa", "th", "co").
     // Real words can be any length, so we set a conservative cutoff.
+    // Words of length 4+ are almost never CTC artifacts.
     const MAX_FRAGMENT_LEN: usize = 3;
-
-    // Maximum number of additional characters in the next word beyond the
-    // current word that still qualifies as a fragment overlap.
-    // "wa"→"was" extends by 1 (fragment). "pro"→"process" extends by 4 (real word).
-    // "wan"→"wanted" extends by 3 (fragment) — we allow 3 because CTC fragments
-    // like "wan" that overlap with "wanted" are common in practice.
-    const MAX_FRAGMENT_EXTENSION: usize = 3;
 
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() < 2 {
@@ -312,18 +347,22 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
             let next_alpha: String = words[i + 1]
                 .chars()
                 .filter(|c| c.is_alphabetic())
-            .collect();
+                .collect();
             let next_lower = next_alpha.to_lowercase();
 
             // Current word is a fragment of the next word only when ALL conditions hold:
             // 1. Current is short enough to be a CTC artifact (≤ MAX_FRAGMENT_LEN)
-            // 2. Next word is longer (proper prefix)
-            // 3. Extension is small enough to be a fragment overlap (≤ MAX_FRAGMENT_EXTENSION)
-            // 4. Next word starts with current (case-insensitive)
-            // 5. Current is NOT a common word/prefix
+            // 2. Next word is strictly longer (proper prefix match)
+            // 3. Next word starts with current word (case-insensitive)
+            // 4. Current is NOT a common word/prefix
+            //
+            // NOTE: We intentionally do NOT limit the extension length (how many
+            // additional characters the next word has). CTC fragments like "sta"
+            // can extend to "starting" (5 extra chars). The COMMON_WORDS list
+            // provides robust protection against false positives like "mac" → "machine",
+            // "for" → "forget", "can" → "cancel", etc.
             if current_alpha.len() <= MAX_FRAGMENT_LEN
                 && next_alpha.len() > current_alpha.len()
-                && next_alpha.len() - current_alpha.len() <= MAX_FRAGMENT_EXTENSION
                 && next_lower.starts_with(&current_lower)
                 && !COMMON_WORDS.contains(&current_lower.as_str())
             {
