@@ -322,7 +322,7 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
         "st",   // St (Saint/Street) → Street, St.
         // --- Abbreviations / prefixes commonly used in transcription ---
         "bar", "con", "dis", "pre", "per", "app", "co", "mac", "bus",
-        "net", "oil", "red", "int", "sys", "sec", "tel", "fin", "org", "dev",
+        "int", "sys", "sec", "tel", "org", "dev",
     ];
 
     // Maximum length of a word that can be considered a fragment artifact.
