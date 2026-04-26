@@ -243,6 +243,34 @@ else
     fi
 fi
 
+# ─── Re-sign with stable DR ──────────────────────────────────────────────────────
+# Ad-hoc signing (signingIdentity: "-") produces a cdhash-based designated requirement
+# that changes on every build. macOS TCC ties Accessibility, Microphone, and other
+# permissions to the DR, so a changing cdhash causes permission resets after update.
+# Re-signing with identifier-based DR ensures permissions persist across updates.
+BUNDLE_ID="com.pais.handy"
+APP_PATH="$BUNDLE_DIR/$APP_NAME.app"
+
+if [[ -d "$APP_PATH" ]]; then
+    echo ""
+    echo "🔐 Re-signing with stable designated requirement..."
+    echo "   DR: identifier \"$BUNDLE_ID\""
+
+    codesign --force -s - \
+        -r="designated => identifier \"$BUNDLE_ID\"" \
+        --entitlements "$TAURI_DIR/Entitlements.plist" \
+        --options runtime \
+        "$APP_PATH"
+
+    # Re-create the updater tar.gz with the re-signed app
+    echo "📦 Re-creating updater tar.gz with re-signed app..."
+    rm -f "$TAR_GZ"
+    cd "$BUNDLE_DIR"
+    tar -czf "$APP_NAME.app.tar.gz" "$APP_NAME.app"
+
+    echo "✅ Re-signed with stable DR"
+fi
+
 # ─── Verify/sign if no .sig file ───────────────────────────────────────────────
 if [[ ! -f "$SIG_FILE" ]]; then
     echo ""

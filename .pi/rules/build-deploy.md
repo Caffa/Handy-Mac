@@ -148,6 +148,50 @@ bun run tauri build
 - Old bundle is **removed before copying** to avoid macOS cache corruption.
 - Force-kill is a last resort; graceful quit is attempted first.
 
+## macOS Permission Persistence (Critical)
+
+When building with `signingIdentity: "-"` (ad-hoc signing), the app gets a
+**cdhash-based designated requirement** that changes on every build:
+
+```
+# Before re-signing (ad-hoc):
+designated => cdhash H"4272a9dd7cd73ae1596f0d8f6864987d3e86147c"
+# ^ changes on EVERY build — macOS resets Accessibility, Microphone, etc.
+```
+
+macOS TCC (Transparency, Consent, and Control) ties permissions to the
+designated requirement. A changed cdhash means macOS treats the updated
+app as a completely different program, **resetting all granted permissions**.
+
+The upstream Handy app avoids this because it uses a proper Apple Developer ID
+certificate, which produces a stable DR like:
+```
+identifier "com.pais.handy" and anchor apple generic and certificate leaf[...]
+```
+
+**Fix:** The `local-update.sh` script automatically re-signs the .app with
+a stable identifier-based DR after building:
+
+```
+# After re-signing:
+designated => identifier "com.pais.handy"
+# ^ stable across all builds — permissions persist
+```
+
+The standalone script `scripts/resign-stable-dr.sh` can also be run manually
+after any build to fix the signature.
+
+**To verify your build has the stable DR:**
+
+```bash
+codesign -d -r- src-tauri/target/release/bundle/macos/Handy.app
+# Should show: designated => identifier "com.pais.handy"
+# NOT: designated => cdhash H"..."
+```
+
+**Important:** If you skip the re-sign step, users will lose Accessibility and
+Microphone permissions on every update.
+
 ## Known Caveats
 
 ### `git rebase` / `git commit --amend`
