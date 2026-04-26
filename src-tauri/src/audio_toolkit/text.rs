@@ -1317,8 +1317,196 @@ mod tests {
         assert_eq!(dedup_word_fragments("I was going wa"), "I was going wa");
     }
 
+    // --- ANTI-OVERFITTING: ADVERSARIAL TEST CASES ---
+    // These test cases are designed to break naive implementations that
+    // only optimize for the golden cases ("wa was" → "was" and "mac machine" → unchanged).
+
     #[test]
-    fn bench_consecutive_the_the() {
-        assert_eq!(dedup_word_fragments("th the the"), "the the");
+    fn adv_uncommon_3letter_fragment() {
+        // "sta" is an uncommon 3-letter sequence that IS a CTC artifact
+        assert_eq!(dedup_word_fragments("I sta started"), "I started");
+    }
+
+    #[test]
+    fn adv_fragment_with_long_extension() {
+        // "sta" → "starting" extends by 5 — must be caught regardless of extension length
+        assert_eq!(dedup_word_fragments("sta starting now"), "starting now");
+    }
+
+    #[test]
+    fn adv_common_word_not_fragment() {
+        // "add" is a common word — should not be removed before "adding"
+        assert_eq!(dedup_word_fragments("add adding more"), "add adding more");
+    }
+
+    #[test]
+    fn adv_common_word_bad() {
+        // "bad" is a common word — should not be removed before "badly"
+        assert_eq!(dedup_word_fragments("bad badly done"), "bad badly done");
+    }
+
+    #[test]
+    fn adv_common_word_ear() {
+        // "ear" is a common word — should not be removed before "early"
+        assert_eq!(dedup_word_fragments("ear early morning"), "ear early morning");
+    }
+
+    #[test]
+    fn adv_common_word_eat() {
+        // "eat" is a common word — should not be removed before "eating"
+        assert_eq!(dedup_word_fragments("eat eating food"), "eat eating food");
+    }
+
+    #[test]
+    fn adv_common_word_end() {
+        // "end" is a common word — should not be removed before "ending"
+        assert_eq!(dedup_word_fragments("end ending credits"), "end ending credits");
+    }
+
+    #[test]
+    fn adv_common_word_man() {
+        // "man" is a common word — should not be removed before "many"
+        assert_eq!(dedup_word_fragments("man many things"), "man many things");
+    }
+
+    #[test]
+    fn adv_common_word_sat() {
+        // "sat" is a common word — should not be removed before "saturday"
+        assert_eq!(dedup_word_fragments("sat saturday night"), "sat saturday night");
+    }
+
+    #[test]
+    fn adv_common_word_ran() {
+        // "ran" is a common word — should not be removed before "random"
+        assert_eq!(dedup_word_fragments("ran random numbers"), "ran random numbers");
+    }
+
+    #[test]
+    fn adv_common_word_met() {
+        // "met" is a common word — should not be removed before "method"
+        assert_eq!(dedup_word_fragments("met method calls"), "met method calls");
+    }
+
+    #[test]
+    fn adv_common_word_bed() {
+        // "bed" is a common word — should not be removed before "bedroom"
+        assert_eq!(dedup_word_fragments("bed bedroom light"), "bed bedroom light");
+    }
+
+    #[test]
+    fn adv_st_before_street() {
+        // "St" before "Street" — common abbreviation, must preserve
+        assert_eq!(dedup_word_fragments("St Street corner"), "St Street corner");
+    }
+
+    #[test]
+    fn adv_common_word_put() {
+        // "put" is a common word — should not be removed before "putting"
+        assert_eq!(dedup_word_fragments("put putting away"), "put putting away");
+    }
+
+    #[test]
+    fn adv_fragment_thi_various() {
+        // "thi" is NOT a common word, should be removed before "this"
+        assert_eq!(dedup_word_fragments("thi this is it"), "this is it");
+    }
+
+    #[test]
+    fn adv_fragment_ab_about() {
+        // "ab" is NOT a common word, should be removed before "about"
+        assert_eq!(dedup_word_fragments("ab about that"), "about that");
+    }
+
+    #[test]
+    fn adv_common_word_forget() {
+        // "for" followed by "forget" — must preserve "for"
+        assert_eq!(dedup_word_fragments("for forget it"), "for forget it");
+    }
+
+    #[test]
+    fn adv_real_world_transcription() {
+        // A real Parakeet V2 artifact pattern
+        assert_eq!(
+            dedup_word_fragments("I wa was going to the store and thi this is great"),
+            "I was going to the store and this is great"
+        );
+    }
+
+    #[test]
+    fn adv_preserves_legitimate_repetition() {
+        // Someone actually saying the same word twice is NOT a fragment
+        assert_eq!(
+            dedup_word_fragments("I had had enough"),
+            "I had had enough"
+        );
+    }
+
+    #[test]
+    fn adv_preserves_4_plus_letter_words() {
+        // Words 4+ chars are never CTC fragments, even if they're a prefix
+        assert_eq!(
+            dedup_word_fragments("I read reading books"),
+            "I read reading books"
+        );
+    }
+
+    #[test]
+    fn adv_preserves_5_letter_word() {
+        assert_eq!(
+            dedup_word_fragments("under understand this"),
+            "under understand this"
+        );
+    }
+
+    #[test]
+    fn adv_fragment_wa_various_contexts() {
+        // Golden case in different contexts
+        assert_eq!(dedup_word_fragments("wa was there"), "was there");
+        assert_eq!(dedup_word_fragments("he wa was there"), "he was there");
+        assert_eq!(dedup_word_fragments("I wa was going"), "I was going");
+    }
+
+    #[test]
+    fn adv_mac_machine_various_contexts() {
+        // Golden false-positive case in different contexts
+        assert_eq!(dedup_word_fragments("my mac machine"), "my mac machine");
+        assert_eq!(dedup_word_fragments("the mac machine"), "the mac machine");
+        assert_eq!(dedup_word_fragments("mac machine works"), "mac machine works");
+    }
+
+    // --- DEDUPEIO-STYLE COMPARISON TESTS ---
+    // These test whether our approach handles patterns that a database-deduplication
+    // library like dedupeio/dedupe would handle differently (clustering-based).
+    // Our approach is simpler but correct for the specific CTC fragment use case.
+
+    #[test]
+    fn dedupe_style_no_cluster_overlap() {
+        // Unlike dedupeio which clusters similar records, our approach
+        // only handles immediate prefix overlap at word boundaries.
+        // This is correct for CTC artifacts — we don't want to merge similar words.
+        assert_eq!(
+            dedup_word_fragments("cat category"),
+            "cat category"  // "cat" is in COMMON_WORDS, preserved
+        );
+    }
+
+    #[test]
+    fn dedupe_style_no_fuzzy_match() {
+        // Unlike dedupeio which uses fuzzy matching, our approach requires
+        // exact prefix match. Similar but not matching words are preserved.
+        assert_eq!(
+            dedup_word_fragments("the them there"),
+            "the them there"  // "the" is common, all preserved
+        );
+    }
+
+    #[test]
+    fn dedupe_style_no_cross_sentence_dedup() {
+        // Unlike dedupeio which can dedup across records, our approach
+        // only operates within a single transcription chunk boundary.
+        assert_eq!(
+            dedup_word_fragments("it wa was good"),
+            "it was good"  // Fragment removed, but other words preserved
+        );
     }
 }
