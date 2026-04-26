@@ -240,24 +240,22 @@ static MULTI_SPACE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unw
 ///
 /// A word is considered a **fragment artifact** (and removed) only when ALL of:
 /// 1. It is a case-insensitive prefix of the next word
-/// 2. The current word is no longer than MAX_FRAGMENT_LEN characters
-///    (CTC fragments are 2-3 chars like "wa", "th", "co"; real words like
-///     "under" (5) before "understand" are never fragments)
-/// 3. The next word is strictly longer than the current word (proper prefix)
+/// 2. The current word is no longer than MAX_FRAGMENT_LEN characters (≤ 3)
+/// 3. The next word extends the current word by at most MAX_FRAGMENT_EXTENSION chars (≤ 5)
 /// 4. It has at least 2 alphabetic characters (avoids removing "a", "I")
-/// 5. It is NOT a common English word or short prefix that appears independently
-///    (the, to, can, for, pro, con, sub, pre, etc.)
+/// 5. It is NOT a common English word or short prefix (see COMMON_WORDS list)
 ///
-/// Note: we intentionally do NOT limit the extension length (how many more chars
-/// the next word has beyond the current). CTC models can produce fragments of any
-/// length word (e.g., "sta" before "starting" extends by 5). The primary protection
-/// against false positives is the comprehensive COMMON_WORDS list.
+/// The dual-layer protection (extension limit + common words list) ensures:
+/// - CTC artifacts are caught: "wa"→"was" (ext=1), "sta"→"starting" (ext=5)
+/// - Common words are preserved: "re"→"really" ("re" in COMMON_WORDS), "for"→"forget" (in COMMON_WORDS)
+/// - Unknown short words with bounded extensions are caught: "ab"→"about" (ext=3, not common)
+/// - Unknown short words with large extensions are preserved by the extension limit
 ///
 /// Examples:
-/// - "it wa was a" → "it was a"  ("wa" len=2, not common → fragment)
-/// - "I sta started running" → "I started running"  ("sta" len=3, not common → fragment)
-/// - "for forget" → "for forget"  ("for" is a common word, kept)
-/// - "can cancel" → "can cancel"  ("can" is a common word, kept)
+/// - "it wa was a" → "it was a"  ("wa" len=2, ext=1, not common → fragment)
+/// - "I sta started running" → "I started running"  ("sta" len=3, ext=4≤5, not common → fragment)
+/// - "for forget" → "for forget"  ("for" is common, kept)
+/// - "can cancel" → "can cancel"  ("can" is common, kept)
 /// - "pro process" → "pro process"  ("pro" is in COMMON_WORDS, kept)
 /// - "my mac machine" → "my mac machine"  ("mac" is in COMMON_WORDS, kept)
 pub(crate) fn dedup_word_fragments(text: &str) -> String {
@@ -281,6 +279,13 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
         // --- 2-letter function words ---
         "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
         "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we", "am",
+        // --- 2-letter common words (also productive prefixes) ---
+        // These are real English words that are prefixes of longer words and must
+        // NOT be treated as CTC artifacts. Without these, removing MAX_FRAGMENT_EXTENSION
+        // would cause regressions (e.g., "re really" → "really" removing "re").
+        "re", "ex", "un", "im", "de", "bi", "oh", "ah", "ha", "ad", "lo", "mo",
+        "ma", "pa", "id", "ed", "al", "bo", "fa", "sa", "sh", "ta", "ob", "op",
+        "aw", "en", "er", "es", "hi", "ho", "ok", "uh", "um", "ya", "ye", "yo",
         // --- 3-letter function words ---
         "and", "any", "are", "but", "can", "did", "for", "get", "had", "has",
         "her", "him", "his", "how", "its", "let", "may", "not", "now", "one",
@@ -313,11 +318,11 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
         "war", "wax", "web", "wed", "wet", "win", "wit", "wok",
         "won", "woo", "wow",
         "zip", "zoo",
-        // --- 2-letter common abbreviations ---
+        // --- 2-letter abbreviations ---
         "st",   // St (Saint/Street) → Street, St.
         // --- Abbreviations / prefixes commonly used in transcription ---
         "bar", "con", "dis", "pre", "per", "app", "co", "mac", "bus",
-        "net", "oil", "red",
+        "net", "oil", "red", "int", "sys", "sec", "tel", "fin", "org", "dev",
     ];
 
     // Maximum length of a word that can be considered a fragment artifact.
@@ -325,6 +330,17 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
     // Real words can be any length, so we set a conservative cutoff.
     // Words of length 4+ are almost never CTC artifacts.
     const MAX_FRAGMENT_LEN: usize = 3;
+
+    // Maximum number of additional characters in the next word beyond the
+    // current word that still qualifies as a fragment overlap.
+    // This provides a secondary safety net for 2-letter words not in COMMON_WORDS:
+    // - "re" → "really" (ext=4): protected because "re" IS in COMMON_WORDS
+    // - "wa" → "was" (ext=1): caught because ext=1 ≤ MAX_FRAGMENT_EXTENSION
+    // - "sta" → "starting" (ext=5): caught because ext=5 ≤ MAX_FRAGMENT_EXTENSION
+    // - "mac" → "machine" (ext=4): protected because "mac" IS in COMMON_WORDS
+    // Without this limit, even with COMMON_WORDS, obscure 2-letter words could be
+    // falsely removed. The limit provides defense-in-depth.
+    const MAX_FRAGMENT_EXTENSION: usize = 5;
 
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() < 2 {
@@ -353,16 +369,13 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
             // Current word is a fragment of the next word only when ALL conditions hold:
             // 1. Current is short enough to be a CTC artifact (≤ MAX_FRAGMENT_LEN)
             // 2. Next word is strictly longer (proper prefix match)
-            // 3. Next word starts with current word (case-insensitive)
-            // 4. Current is NOT a common word/prefix
-            //
-            // NOTE: We intentionally do NOT limit the extension length (how many
-            // additional characters the next word has). CTC fragments like "sta"
-            // can extend to "starting" (5 extra chars). The COMMON_WORDS list
-            // provides robust protection against false positives like "mac" → "machine",
-            // "for" → "forget", "can" → "cancel", etc.
+            // 3. Extension is within bounds (≤ MAX_FRAGMENT_EXTENSION)
+            //    This provides defense-in-depth for words not in COMMON_WORDS.
+            // 4. Next word starts with current word (case-insensitive)
+            // 5. Current is NOT a common word/prefix
             if current_alpha.len() <= MAX_FRAGMENT_LEN
                 && next_alpha.len() > current_alpha.len()
+                && next_alpha.len() - current_alpha.len() <= MAX_FRAGMENT_EXTENSION
                 && next_lower.starts_with(&current_lower)
                 && !COMMON_WORDS.contains(&current_lower.as_str())
             {
@@ -1508,5 +1521,97 @@ mod tests {
             dedup_word_fragments("it wa was good"),
             "it was good"  // Fragment removed, but other words preserved
         );
+    }
+
+    // === REGRESSION TESTS ===
+    // These test for regressions found during optimization.
+    // Removing MAX_FRAGMENT_EXTENSION caused these false positives.
+    // With MAX_FRAGMENT_EXTENSION=5 + expanded COMMON_WORDS, they should pass.
+
+    #[test]
+    fn regression_re_before_really() {
+        // "re" is a common word (regarding, musical note) — must be preserved
+        assert_eq!(dedup_word_fragments("re really good"), "re really good");
+    }
+
+    #[test]
+    fn regression_ex_before_example() {
+        // "ex" is a common word (former) — must be preserved
+        assert_eq!(dedup_word_fragments("ex example shown"), "ex example shown");
+    }
+
+    #[test]
+    fn regression_un_before_until() {
+        // "un" is a common prefix — must be preserved
+        assert_eq!(dedup_word_fragments("un until now"), "un until now");
+    }
+
+    #[test]
+    fn regression_im_before_impossible() {
+        // "im" is a common prefix — must be preserved
+        assert_eq!(dedup_word_fragments("im impossible task"), "im impossible task");
+    }
+
+    #[test]
+    fn regression_de_before_definitely() {
+        // "de" is a common prefix — must be preserved
+        assert_eq!(dedup_word_fragments("de definitely yes"), "de definitely yes");
+    }
+
+    #[test]
+    fn regression_bi_before_bisexual() {
+        // "bi" is a common prefix (binary, bisexual) — must be preserved
+        assert_eq!(dedup_word_fragments("bi bisexual community"), "bi bisexual community");
+    }
+
+    #[test]
+    fn regression_ha_before_happens() {
+        // "ha" is a filler word ("ha!") — must be preserved
+        assert_eq!(dedup_word_fragments("ha happens often"), "ha happens often");
+    }
+
+    #[test]
+    fn regression_oh_before_obviously() {
+        // "oh" is a common interjection — must be preserved
+        assert_eq!(dedup_word_fragments("oh obviously not"), "oh obviously not");
+    }
+
+    #[test]
+    fn regression_lo_before_lower() {
+        // "lo" (as in "lo and behold") — must be preserved
+        assert_eq!(dedup_word_fragments("lo lower prices"), "lo lower prices");
+    }
+
+    #[test]
+    fn regression_sta_before_starting() {
+        // This was the original failure case — must still pass
+        assert_eq!(dedup_word_fragments("sta starting now"), "starting now");
+    }
+
+    #[test]
+    fn regression_sta_before_started() {
+        // Another original failure case — must still pass
+        assert_eq!(dedup_word_fragments("I sta started running"), "I started running");
+    }
+
+    #[test]
+    fn regression_extension_boundary() {
+        // "pro" → "process" extends by 4 — within MAX_FRAGMENT_EXTENSION=5
+        // But "pro" is in COMMON_WORDS, so it should be preserved regardless
+        assert_eq!(dedup_word_fragments("pro process"), "pro process");
+    }
+
+    #[test]
+    fn regression_extension_exactly_5() {
+        // "sta" → "starting" extends by 5 — exactly MAX_FRAGMENT_EXTENSION
+        assert_eq!(dedup_word_fragments("sta starting"), "starting");
+    }
+
+    #[test]
+    fn regression_unknown_word_over_extension() {
+        // Unknown 3-letter word with extension > 5 should be preserved by extension limit.
+        // "fra" → "fraction" extends by 5, which equals MAX_FRAGMENT_EXTENSION.
+        // This should be removed since ext=5≤5 and "fra" is not in COMMON_WORDS.
+        assert_eq!(dedup_word_fragments("fra fraction"), "fraction");
     }
 }
