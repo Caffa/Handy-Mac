@@ -618,6 +618,7 @@
   },
   "overlay": {
     "transcribing": "Transcribing...",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "usbCycling": "USB cycling…"
   }
 }

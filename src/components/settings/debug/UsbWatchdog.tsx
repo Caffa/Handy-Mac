@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { listen } from "@tauri-apps/api/event";
 import { ToggleSwitch } from "../../ui/ToggleSwitch";
 import { useSettings } from "../../../hooks/useSettings";
 import { commands, type UsbDevice } from "@/bindings";
@@ -26,6 +27,33 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
       commands.isUsbWatchdogAvailable().then(setAvailable);
     }, []);
 
+    // Listen for USB power-cycle events to update the cycling state
+    useEffect(() => {
+      let unlistenStart: (() => void) | undefined;
+      let unlistenFinished: (() => void) | undefined;
+      let unlistenFailed: (() => void) | undefined;
+
+      const setup = async () => {
+        unlistenStart = await listen<string>("usb-power-cycle-started", () => {
+          setCycling(true);
+        });
+        unlistenFinished = await listen<string>("usb-power-cycle-finished", () => {
+          setCycling(false);
+        });
+        unlistenFailed = await listen<string>("usb-power-cycle-failed", () => {
+          setCycling(false);
+        });
+      };
+
+      setup();
+
+      return () => {
+        unlistenStart?.();
+        unlistenFinished?.();
+        unlistenFailed?.();
+      };
+    }, []);
+
     const refreshDevices = useCallback(async () => {
       setLoading(true);
       try {
@@ -50,10 +78,13 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
       setCycling(true);
       try {
         await commands.triggerUsbPowerCycle();
+        // The cycling state will be cleared by the usb-power-cycle-finished
+        // or usb-power-cycle-failed event from the Rust backend.
+        // Fallback: if no event arrives within 30s, reset anyway.
+        setTimeout(() => setCycling(false), 30000);
       } catch (e) {
         console.error("USB power cycle failed:", e);
-      } finally {
-        setTimeout(() => setCycling(false), 15000);
+        setCycling(false);
       }
     };
 

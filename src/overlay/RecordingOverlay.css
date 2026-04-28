@@ -60,6 +60,11 @@
   animation: transcribing-pulse 1.5s infinite ease-in-out;
 }
 
+.usb-cycling-text {
+  color: #ffd966;
+  animation: transcribing-pulse 1s infinite ease-in-out;
+}
+
 @keyframes transcribing-pulse {
   0%,
   100% {

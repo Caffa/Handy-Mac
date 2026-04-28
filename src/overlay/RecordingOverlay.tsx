@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   MicrophoneIcon,
@@ -11,7 +11,11 @@ import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
-type OverlayState = "recording" | "transcribing" | "processing";
+type OverlayState = "recording" | "transcribing" | "processing" | "usb-cycling";
+
+// If no mic-level event arrives within this many milliseconds,
+// start decaying the bars to zero to avoid a frozen visualizer.
+const LEVEL_TIMEOUT_MS = 500;
 
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
@@ -19,7 +23,32 @@ const RecordingOverlay: React.FC = () => {
   const [state, setState] = useState<OverlayState>("recording");
   const [levels, setLevels] = useState<number[]>(Array(16).fill(0));
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
+  const lastLevelTimeRef = useRef<number>(Date.now());
+  const decayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const direction = getLanguageDirection(i18n.language);
+
+  // Decay timer: if we haven't received mic-level data for LEVEL_TIMEOUT_MS,
+  // smoothly fade the bars toward zero so the overlay doesn't freeze.
+  useEffect(() => {
+    decayTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - lastLevelTimeRef.current;
+      if (elapsed > LEVEL_TIMEOUT_MS) {
+        // Exponential decay toward zero — faster the longer we've waited
+        const decayFactor = Math.max(0.5, 1 - elapsed / 2000);
+        setLevels((prev) => {
+          const newLevels = prev.map((v) => v * decayFactor);
+          // Snap to zero when very small
+          return newLevels.map((v) => (v < 0.01 ? 0 : v));
+        });
+      }
+    }, 80); // roughly matches the bar transition speed
+
+    return () => {
+      if (decayTimerRef.current) {
+        clearInterval(decayTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const setupEventListeners = async () => {
@@ -39,6 +68,7 @@ const RecordingOverlay: React.FC = () => {
 
       // Listen for mic-level updates
       const unlistenLevel = await listen<number[]>("mic-level", (event) => {
+        lastLevelTimeRef.current = Date.now();
         const newLevels = event.payload as number[];
 
         // Apply smoothing to reduce jitter
@@ -51,11 +81,41 @@ const RecordingOverlay: React.FC = () => {
         setLevels(smoothed.slice(0, 9));
       });
 
+      // Listen for USB power-cycle events from Rust
+      const unlistenUsbCycleStart = await listen<string>(
+        "usb-power-cycle-started",
+        () => {
+          // Only transition if we are currently recording (overlay is visible)
+          // This shows the user that the USB device is being power-cycled.
+          setState("usb-cycling");
+        },
+      );
+
+      const unlistenUsbCycleFinished = await listen<string>(
+        "usb-power-cycle-finished",
+        () => {
+          // Return to recording state if we were cycling
+          setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
+        },
+      );
+
+      const unlistenUsbCycleFailed = await listen<string>(
+        "usb-power-cycle-failed",
+        () => {
+          // Return to recording state (the retry may still fail, which will
+          // trigger hide-overlay from the Rust side).
+          setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
+        },
+      );
+
       // Cleanup function
       return () => {
         unlistenShow();
         unlistenHide();
         unlistenLevel();
+        unlistenUsbCycleStart();
+        unlistenUsbCycleFinished();
+        unlistenUsbCycleFailed();
       };
     };
 
@@ -69,6 +129,10 @@ const RecordingOverlay: React.FC = () => {
       return <TranscriptionIcon />;
     }
   };
+
+  const handleCancel = useCallback(() => {
+    commands.cancelOperation();
+  }, []);
 
   return (
     <div
@@ -85,9 +149,9 @@ const RecordingOverlay: React.FC = () => {
                 key={i}
                 className="bar"
                 style={{
-                  height: `${Math.min(20, 4 + Math.pow(v, 0.7) * 16)}px`, // Cap at 20px max height
-                  transition: "height 60ms ease-out, opacity 120ms ease-out",
-                  opacity: Math.max(0.2, v * 1.7), // Minimum opacity for visibility
+                  height: `${Math.min(20, 4 + Math.pow(v, 0.7) * 16)}px`,
+                  transition: "height 80ms linear, opacity 120ms ease-out",
+                  opacity: Math.max(0.2, v * 1.7),
                 }}
               />
             ))}
@@ -99,16 +163,16 @@ const RecordingOverlay: React.FC = () => {
         {state === "processing" && (
           <div className="transcribing-text">{t("overlay.processing")}</div>
         )}
+        {state === "usb-cycling" && (
+          <div className="transcribing-text usb-cycling-text">
+            {t("overlay.usbCycling", "USB cycling…")}
+          </div>
+        )}
       </div>
 
       <div className="overlay-right">
         {state === "recording" && (
-          <div
-            className="cancel-button"
-            onClick={() => {
-              commands.cancelOperation();
-            }}
-          >
+          <div className="cancel-button" onClick={handleCancel}>
             <CancelIcon />
           </div>
         )}

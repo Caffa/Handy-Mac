@@ -14,7 +14,7 @@
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long to wait after cycling power before considering the device "up"
@@ -40,25 +40,28 @@ pub struct UsbWatchdog {
     enabled: AtomicBool,
     /// Device name to watch for (set by user, resolved to hub/port at cycle time)
     device_name: Mutex<String>,
-    /// A cycle is currently in progress
-    cycling: AtomicBool,
+    /// A cycle is currently in progress (shared Arc so spawned threads can clear it)
+    cycling: Arc<AtomicBool>,
     /// Epoch seconds of last completed cycle (for cooldown)
     last_cycle_epoch: AtomicU64,
     /// Number of consecutive mic-open failures since last successful open
     consecutive_failures: AtomicU64,
     /// After how many consecutive failures to trigger a cycle (default 2)
     fail_threshold: AtomicU64,
+    /// AppHandle for emitting events to the frontend during power cycling
+    app_handle: Option<tauri::AppHandle>,
 }
 
 impl UsbWatchdog {
-    pub fn new(enabled: bool, device_name: &str) -> Self {
+    pub fn new(enabled: bool, device_name: &str, app_handle: Option<tauri::AppHandle>) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
             device_name: Mutex::new(device_name.to_string()),
-            cycling: AtomicBool::new(false),
+            cycling: Arc::new(AtomicBool::new(false)),
             last_cycle_epoch: AtomicU64::new(0),
             consecutive_failures: AtomicU64::new(0),
             fail_threshold: AtomicU64::new(2),
+            app_handle,
         }
     }
 
@@ -74,8 +77,18 @@ impl UsbWatchdog {
         self.enabled.load(Ordering::SeqCst)
     }
 
+    /// Returns `true` if a power cycle is currently in progress.
+    #[allow(dead_code)]
+    pub fn is_cycling(&self) -> bool {
+        self.cycling.load(Ordering::SeqCst)
+    }
+
     /// Called when the mic stream fails to open. Returns `true` if a
-    /// power cycle was initiated (caller should wait and retry).
+    /// power cycle was completed (caller should retry).
+    ///
+    /// This method **blocks** until the power cycle and settle period
+    /// complete, so that the caller can immediately retry the mic open
+    /// with the device re-enumerated.
     pub fn on_mic_open_failed(&self) -> bool {
         if !self.enabled.load(Ordering::SeqCst) {
             debug!("USB watchdog disabled, skipping auto-cycle");
@@ -99,7 +112,7 @@ impl UsbWatchdog {
             return false;
         }
 
-        self.power_cycle()
+        self.power_cycle_blocking()
     }
 
     /// Called when the mic stream opens successfully (resets failure counter)
@@ -110,9 +123,13 @@ impl UsbWatchdog {
         }
     }
 
-    /// Attempt a USB hub port power cycle by resolving the device name
-    /// to hub/port at cycle time. Returns `true` if a cycle was initiated.
-    pub fn power_cycle(&self) -> bool {
+    /// Attempt a USB hub port power cycle **synchronously** (blocking).
+    /// Resolves the device name to hub/port at cycle time, runs uhubctl,
+    /// waits for the settle period, then returns `true`.
+    ///
+    /// The caller (typically the mic-open retry path) can immediately
+    /// attempt to reopen the audio device after this returns.
+    fn power_cycle_blocking(&self) -> bool {
         // Check cooldown
         let now_epoch = epoch_secs();
         let last = self.last_cycle_epoch.load(Ordering::SeqCst);
@@ -152,35 +169,40 @@ impl UsbWatchdog {
             device_name, device.hub, device.port
         );
 
-        // Spawn the uhubctl command and wait for it + settle time
-        let hub = device.hub.clone();
-        let port = device.port.clone();
-        let name = device_name.clone();
-        std::thread::spawn(move || {
-            let start = Instant::now();
-            match run_uhubctl_cycle(&hub, &port) {
-                Ok(()) => {
-                    info!(
-                        "USB watchdog: uhubctl cycle completed for '{}' in {:?}",
-                        name,
-                        start.elapsed()
-                    );
-                    // Wait for device to re-enumerate
-                    std::thread::sleep(Duration::from_secs(POWER_CYCLE_SETTLE_SECS));
-                    info!("USB watchdog: settle period complete, device should be available");
-                }
-                Err(e) => {
-                    error!("USB watchdog: uhubctl failed: {}", e);
-                }
+        // Emit event so the frontend can show "USB cycling" state
+        self.emit_cycle_event("usb-power-cycle-started", &device_name);
+
+        // Run uhubctl synchronously on this thread.
+        let start = Instant::now();
+        match run_uhubctl_cycle(&device.hub, &device.port) {
+            Ok(()) => {
+                info!(
+                    "USB watchdog: uhubctl cycle completed for '{}' in {:?}",
+                    device_name,
+                    start.elapsed()
+                );
+                // Wait for device to re-enumerate
+                info!("USB watchdog: waiting {}s for device to re-enumerate…", POWER_CYCLE_SETTLE_SECS);
+                std::thread::sleep(Duration::from_secs(POWER_CYCLE_SETTLE_SECS));
+                info!("USB watchdog: settle period complete, device should be available");
             }
-        });
+            Err(e) => {
+                error!("USB watchdog: uhubctl failed: {}", e);
+                self.emit_cycle_event("usb-power-cycle-failed", &format!("uhubctl failed: {}", e));
+            }
+        }
 
         self.cycling.store(false, Ordering::SeqCst);
+        self.emit_cycle_event("usb-power-cycle-finished", &device_name);
         true
     }
 
     /// Manually trigger a power cycle (e.g. from settings UI).
     /// Ignores cooldown. Resolves device name at call time.
+    ///
+    /// Runs the cycle on a background thread so the UI stays responsive.
+    /// The `cycling` flag stays `true` for the entire duration and is
+    /// cleared only when the cycle + settle completes.
     pub fn force_power_cycle(&self) -> bool {
         if self.cycling.swap(true, Ordering::SeqCst) {
             debug!("USB watchdog: cycle already in progress");
@@ -211,9 +233,16 @@ impl UsbWatchdog {
             device_name, device.hub, device.port
         );
 
+        self.emit_cycle_event("usb-power-cycle-started", &device_name);
+
+        // Spawn the uhubctl cycle — the cycling flag will be cleared
+        // only after the cycle + settle completes.
         let hub = device.hub.clone();
         let port = device.port.clone();
         let name = device_name.clone();
+        let cycling = self.cycling.clone();
+        let app_handle = self.app_handle.clone();
+
         std::thread::spawn(move || {
             let start = Instant::now();
             match run_uhubctl_cycle(&hub, &port) {
@@ -228,12 +257,41 @@ impl UsbWatchdog {
                 }
                 Err(e) => {
                     error!("USB watchdog: forced uhubctl failed: {}", e);
+                    emit_cycle_event_with_handle(
+                        &app_handle,
+                        "usb-power-cycle-failed",
+                        &format!("uhubctl failed: {}", e),
+                    );
                 }
             }
+
+            cycling.store(false, Ordering::SeqCst);
+
+            emit_cycle_event_with_handle(
+                &app_handle,
+                "usb-power-cycle-finished",
+                &name,
+            );
         });
 
-        self.cycling.store(false, Ordering::SeqCst);
         true
+    }
+
+    /// Emit a Tauri event to the frontend about the power-cycle state.
+    fn emit_cycle_event(&self, event_name: &str, message: &str) {
+        emit_cycle_event_with_handle(&self.app_handle, event_name, message);
+    }
+}
+
+/// Emit a Tauri event about USB power-cycle progress.
+fn emit_cycle_event_with_handle(
+    app_handle: &Option<tauri::AppHandle>,
+    event_name: &str,
+    message: &str,
+) {
+    if let Some(ah) = app_handle {
+        use tauri::Emitter;
+        let _ = ah.emit(event_name, message.to_string());
     }
 }
 

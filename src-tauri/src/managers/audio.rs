@@ -171,6 +171,7 @@ impl AudioRecordingManager {
         let usb_watchdog = Arc::new(UsbWatchdog::new(
             settings.usb_watchdog_enabled,
             &settings.usb_watchdog_device_name,
+            Some(app.clone()),
         ));
 
         let manager = Self {
@@ -293,6 +294,10 @@ impl AudioRecordingManager {
     pub fn start_microphone_stream(&self) -> Result<(), anyhow::Error> {
         // Try the normal open first. If it fails and USB watchdog is enabled,
         // attempt a power cycle + retry.
+        //
+        // Note: on_mic_open_failed() blocks until the power cycle and 12-second
+        // settle period complete, so the retry below runs with the device
+        // re-enumerated and ready.
         match self.start_microphone_stream_inner() {
             Ok(()) => {
                 self.usb_watchdog.on_mic_open_succeeded();
@@ -300,9 +305,9 @@ impl AudioRecordingManager {
             }
             Err(e) => {
                 if self.usb_watchdog.on_mic_open_failed() {
-                    // Watchdog initiated a power cycle. Wait for it to finish
-                    // (the cycle is synchronous within its thread), then retry.
-                    warn!("Mic open failed ({}), USB watchdog cycling - retrying after settle", e);
+                    // Watchdog completed a power cycle (blocking). Retry the mic open now
+                    // that the device should have re-enumerated.
+                    warn!("Mic open failed ({}), USB watchdog cycled - retrying", e);
                     match self.start_microphone_stream_inner() {
                         Ok(()) => {
                             self.usb_watchdog.on_mic_open_succeeded();
