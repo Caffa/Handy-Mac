@@ -10,12 +10,14 @@ interface ModelDropdownProps {
   models: ModelInfo[];
   currentModelId: string;
   onModelSelect: (modelId: string) => void;
+  hybridRoles?: Record<string, "short" | "long">;
 }
 
 const ModelDropdown: React.FC<ModelDropdownProps> = ({
   models,
   currentModelId,
   onModelSelect,
+  hybridRoles,
 }) => {
   const { t } = useTranslation();
   const downloadedModels = models.filter((m) => m.is_downloaded);
@@ -53,6 +55,16 @@ const ModelDropdown: React.FC<ModelDropdownProps> = ({
                     {model.is_custom && (
                       <span className="ms-1.5 text-[10px] font-medium text-text/40 uppercase">
                         {t("modelSelector.custom")}
+                      </span>
+                    )}
+                    {hybridRoles?.[model.id] === "short" && (
+                      <span className="ms-1.5 text-[10px] font-semibold text-green-400 uppercase">
+                        {t("settings.advanced.hybridMode.shortBadge")}
+                      </span>
+                    )}
+                    {hybridRoles?.[model.id] === "long" && (
+                      <span className="ms-1.5 text-[10px] font-semibold text-logo-primary uppercase">
+                        {t("settings.advanced.hybridMode.longBadge")}
                       </span>
                     )}
                   </div>

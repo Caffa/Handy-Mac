@@ -398,6 +398,38 @@ async changeWhisperGpuDevice(device: number) : Promise<Result<null, string>> {
 async getAvailableAccelerators() : Promise<AvailableAccelerators> {
     return await TAURI_INVOKE("get_available_accelerators");
 },
+async changeHybridModeEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_mode_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeHybridThresholdSecsSetting(secs: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_threshold_secs_setting", { secs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeHybridShortAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_short_audio_model_setting", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeHybridLongAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_long_audio_model_setting", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Start key recording mode
  */
@@ -626,6 +658,9 @@ async hasAnyModelsOrDownloads() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Check whether benchmarking is available (requires downloaded models and history audio clips).
+ */
 async canBenchmarkModels() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("can_benchmark_models") };
@@ -634,6 +669,9 @@ async canBenchmarkModels() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Count the number of history audio clips available for benchmarking.
+ */
 async getBenchmarkClipCount() : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_benchmark_clip_count") };
@@ -642,7 +680,14 @@ async getBenchmarkClipCount() : Promise<Result<number, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async benchmarkModels() : Promise<Result<BenchmarkScore[], string>> {
+/**
+ * Run a benchmark of all downloaded models against the user's history audio clips.
+ * Models that already have valid (non-failed) benchmark data are skipped.
+ * Returns benchmark scores with measured transcription times, plus info about
+ * any models that failed or were skipped.
+ * Emits `benchmark-progress` events as each model is tested.
+ */
+async benchmarkModels() : Promise<Result<BenchmarkResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("benchmark_models") };
 } catch (e) {
@@ -901,10 +946,76 @@ historyUpdatePayload: "history-update-payload"
 
 /** user-defined types **/
 
-export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string }
+export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
+/**
+ * A model that failed during benchmarking (could not load or could not transcribe).
+ */
+export type BenchmarkModelFailure = { 
+/**
+ * Model ID that failed.
+ */
+model_id: string; 
+/**
+ * Human-readable model name.
+ */
+model_name: string; 
+/**
+ * Reason for failure: "load" if the model couldn't be loaded, "transcribe" if it loaded but produced no valid transcription.
+ */
+reason: string; 
+/**
+ * Error message from the failure, if available.
+ */
+error: string }
+/**
+ * Complete result from a benchmark run, including successful scores and failures.
+ */
+export type BenchmarkResult = { 
+/**
+ * Scores for models that were successfully benchmarked (new + re-scored existing).
+ */
+scores: BenchmarkScore[]; 
+/**
+ * Models that failed during benchmarking.
+ */
+failed_models: BenchmarkModelFailure[]; 
+/**
+ * Model IDs that were skipped because they already had benchmark data.
+ */
+skipped_model_ids: string[] }
+/**
+ * Measured speed and accuracy from benchmarking a model against history audio clips.
+ */
+export type BenchmarkScore = { 
+/**
+ * Model ID this score belongs to.
+ */
+model_id: string; 
+/**
+ * Average transcription time in milliseconds across all benchmark clips.
+ */
+avg_ms: number; 
+/**
+ * Relative speed score (0.0–1.0), computed from avg_ms across all benchmarked models.
+ * Higher is faster. 0.0 means not benchmarked.
+ */
+speed_score: number; 
+/**
+ * Number of audio clips used in the benchmark.
+ */
+clip_count: number; 
+/**
+ * Timestamp (epoch seconds) when the benchmark was run.
+ */
+benchmarked_at: number; 
+/**
+ * Whether this model failed to produce any transcription during benchmarking.
+ * If true, avg_ms and speed_score should be ignored — the model could not transcribe.
+ */
+failed?: boolean }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
@@ -924,7 +1035,6 @@ export type KeyboardImplementation = "tauri" | "handy_keys"
 export type LLMPrompt = { id: string; name: string; prompt: string }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
 export type ModelInfo = { id: string; name: string; description: string; filename: string; url: string | null; sha256: string | null; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean; dynamic_score: BenchmarkScore | null }
-export type BenchmarkScore = { model_id: string; avg_ms: number; speed_score: number; clip_count: number; benchmarked_at: number }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"

@@ -10,4 +10,4 @@ pub use audio::{
 };
 pub use text::{apply_custom_words, filter_transcription_output};
 pub use utils::get_cpal_host;
-pub use vad::{SileroVad, VoiceActivityDetector};
+pub use vad::{trim_trailing_silence, SileroVad, VoiceActivityDetector};

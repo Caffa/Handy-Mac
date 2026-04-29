@@ -219,13 +219,18 @@
         "description": "Run a speed benchmark using your recorded audio clips. This measures actual transcription speed on your hardware.",
         "runBenchmark": "Run Benchmark",
         "running": "Benchmarking...",
-        "needMoreClips": "You need at least 3 audio clips in your history to benchmark. Record some audio first.",
+        "needMoreClips": "You need at least {{needed}} audio clips in your history to benchmark ({{current}} recorded so far). Record some more audio first.",
         "canBenchmark": "{{count}} audio clips available for benchmark",
         "completed": "Benchmark complete!",
+        "completedWithCheck": "✓ Benchmark complete!",
         "speedMeasured": "Measured speed",
         "avgTime": "Avg. {{ms}}ms",
         "clearScores": "Clear Benchmark",
-        "tooltip": "Green bars show measured speed from your latest benchmark"
+        "tooltip": "Green bars show measured speed from your latest benchmark",
+        "skipped": "{{count}} models skipped (already benchmarked)",
+        "failedLoad": "failed to load",
+        "failedTranscribe": "failed to transcribe",
+        "failedBadge": "Failed"
       }
     },
     "sound": {
@@ -267,6 +272,20 @@
       "lazyStreamClose": {
         "label": "Keep Mic Open Between Transcriptions",
         "description": "Keeps the microphone stream open for 30 seconds after recording stops, reducing latency for back-to-back transcriptions. May degrade Bluetooth audio quality while active."
+      },
+      "hybridMode": {
+        "label": "Hybrid Mode",
+        "description": "Automatically pick the best model based on audio length. Short recordings use a fast, hallucination-resistant model; long recordings use a more accurate model.",
+        "thresholdLabel": "Length Threshold",
+        "thresholdDescription": "Audio shorter than this uses the short audio model; longer audio uses the long audio model.",
+        "thresholdValue": "{{seconds}}s",
+        "shortAudioModelLabel": "Short Audio Model",
+        "shortAudioModelDescription": "Model used for recordings under the threshold. Recommended: CTC models (Parakeet) or non-autoregressive models (SenseVoice) which don't hallucinate on short audio.",
+        "longAudioModelLabel": "Long Audio Model",
+        "longAudioModelDescription": "Model used for recordings at or above the threshold. Whisper models work well for longer audio.",
+        "modelPlaceholder": "Use default model...",
+        "shortBadge": "SHORT",
+        "longBadge": "LONG"
       },
       "acceleration": {
         "whisper": {

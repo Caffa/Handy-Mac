@@ -434,6 +434,14 @@ pub struct AppSettings {
     pub usb_watchdog_enabled: bool,
     #[serde(default)]
     pub usb_watchdog_device_name: String,
+    #[serde(default)]
+    pub hybrid_mode_enabled: bool,
+    #[serde(default = "default_hybrid_threshold_secs")]
+    pub hybrid_threshold_secs: f64,
+    #[serde(default)]
+    pub hybrid_short_audio_model: Option<String>,
+    #[serde(default)]
+    pub hybrid_long_audio_model: Option<String>,
 }
 
 fn default_model() -> String {
@@ -658,6 +666,10 @@ fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
 }
 
+fn default_hybrid_threshold_secs() -> f64 {
+    20.0
+}
+
 fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     for provider in default_post_process_providers() {
@@ -820,6 +832,10 @@ pub fn get_default_settings() -> AppSettings {
         extra_recording_buffer_ms: 0,
         usb_watchdog_enabled: false,
         usb_watchdog_device_name: String::new(),
+        hybrid_mode_enabled: false,
+        hybrid_threshold_secs: default_hybrid_threshold_secs(),
+        hybrid_short_audio_model: None,
+        hybrid_long_audio_model: None,
     }
 }
 

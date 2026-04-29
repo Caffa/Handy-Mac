@@ -1,6 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import {
+  AlertTriangle,
   Check,
   Download,
   Globe,
@@ -54,6 +55,7 @@ interface ModelCardProps {
   downloadProgress?: number;
   downloadSpeed?: number; // MB/s
   showRecommended?: boolean;
+  hybridRole?: "short" | "long" | null;
 }
 
 const ModelCard: React.FC<ModelCardProps> = ({
@@ -69,6 +71,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
   downloadProgress,
   downloadSpeed,
   showRecommended = true,
+  hybridRole = null,
 }) => {
   const { t } = useTranslation();
   const isFeatured = variant === "featured";
@@ -150,6 +153,16 @@ const ModelCard: React.FC<ModelCardProps> = ({
             {model.is_custom && (
               <Badge variant="secondary">{t("modelSelector.custom")}</Badge>
             )}
+            {hybridRole === "short" && (
+              <Badge variant="success">
+                {t("settings.advanced.hybridMode.shortBadge")}
+              </Badge>
+            )}
+            {hybridRole === "long" && (
+              <Badge variant="primary">
+                {t("settings.advanced.hybridMode.longBadge")}
+              </Badge>
+            )}
             {status === "switching" && (
               <Badge variant="secondary">
                 <Loader2 className="w-3 h-3 mr-1 animate-spin" />
@@ -179,12 +192,28 @@ const ModelCard: React.FC<ModelCardProps> = ({
                  <p className="text-xs text-text/60 w-24 text-end">
                    {t("onboarding.modelCard.speed")}
                  </p>
-                 <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
-                   <div
-                     className={`h-full rounded-full ${model.dynamic_score ? "bg-green-500" : "bg-logo-primary"}`}
-                     style={{ width: `${(model.dynamic_score?.speed_score ?? model.speed_score) * 100}%` }}
-                   />
-                 </div>
+                 {model.dynamic_score?.failed ? (
+                   <span className="text-xs text-red-400 flex items-center gap-0.5">
+                     <AlertTriangle className="w-3 h-3" />
+                     {t("settings.models.benchmark.failedBadge")}
+                   </span>
+                 ) : (
+                   <>
+                     <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+                       <div
+                         className={`h-full rounded-full ${model.dynamic_score ? "bg-green-500" : "bg-logo-primary"}`}
+                         style={{ width: `${(model.dynamic_score?.speed_score ?? model.speed_score) * 100}%` }}
+                       />
+                     </div>
+                     {model.dynamic_score && (
+                       <span className="text-[10px] text-text/40 tabular-nums">
+                         {t("settings.models.benchmark.avgTime", {
+                           ms: Math.round(model.dynamic_score.avg_ms),
+                         })}
+                       </span>
+                     )}
+                   </>
+                 )}
                </div>
              </div>
            </div>

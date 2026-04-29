@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { commands } from "@/bindings";
 import { getTranslatedModelName } from "../../lib/utils/modelTranslation";
 import { useModelStore } from "../../stores/modelStore";
+import { useSettings } from "../../hooks/useSettings";
 import ModelStatusButton from "./ModelStatusButton";
 import ModelDropdown from "./ModelDropdown";
 import DownloadProgressDisplay from "./DownloadProgressDisplay";
@@ -35,6 +36,21 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
     extractingModels,
     selectModel,
   } = useModelStore();
+
+  const { getSetting } = useSettings();
+
+  const hybridModeEnabled = getSetting("hybrid_mode_enabled") ?? false;
+  const hybridShortModel = getSetting("hybrid_short_audio_model") ?? null;
+  const hybridLongModel = getSetting("hybrid_long_audio_model") ?? null;
+
+  // Build hybrid roles map: model_id -> "short" | "long"
+  const hybridRoles = useMemo<Record<string, "short" | "long">>(() => {
+    if (!hybridModeEnabled) return {};
+    const roles: Record<string, "short" | "long"> = {};
+    if (hybridShortModel) roles[hybridShortModel] = "short";
+    if (hybridLongModel) roles[hybridLongModel] = "long";
+    return roles;
+  }, [hybridModeEnabled, hybridShortModel, hybridLongModel]);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [modelError, setModelError] = useState<string | null>(null);
@@ -259,6 +275,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
             models={models}
             currentModelId={displayModelId}
             onModelSelect={handleModelSelect}
+            hybridRoles={hybridRoles}
           />
         )}
       </div>

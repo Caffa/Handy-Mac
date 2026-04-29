@@ -159,6 +159,14 @@ const settingUpdaters: {
     commands.changeUsbWatchdogEnabledSetting(value as boolean),
   usb_watchdog_device_name: (value) =>
     commands.changeUsbWatchdogDeviceNameSetting(value as string),
+  hybrid_mode_enabled: (value) =>
+    commands.changeHybridModeEnabledSetting(value as boolean),
+  hybrid_threshold_secs: (value) =>
+    commands.changeHybridThresholdSecsSetting(value as number),
+  hybrid_short_audio_model: (value) =>
+    commands.changeHybridShortAudioModelSetting(value as string | null),
+  hybrid_long_audio_model: (value) =>
+    commands.changeHybridLongAudioModelSetting(value as string | null),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

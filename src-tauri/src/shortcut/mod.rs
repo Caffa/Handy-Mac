@@ -1155,3 +1155,47 @@ pub async fn get_available_accelerators() -> crate::managers::transcription::Ava
         .await
         .expect("get_available_accelerators panicked")
 }
+
+// ── Hybrid Mode Settings ──────────────────────────────────────────
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_mode_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_mode_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_threshold_secs_setting(app: AppHandle, secs: f64) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_threshold_secs = secs;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_short_audio_model_setting(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_short_audio_model = model_id;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_long_audio_model_setting(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_long_audio_model = model_id;
+    settings::write_settings(&app, settings);
+    Ok(())
+}

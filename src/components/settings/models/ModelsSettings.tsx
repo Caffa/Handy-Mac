@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Globe, Gauge, Loader2, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, Globe, Gauge, Loader2, Trash2 } from "lucide-react";
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
 import { useModelStore } from "@/stores/modelStore";
+import { useSettings } from "../../../hooks/useSettings";
 import { LANGUAGES } from "@/lib/constants/languages.ts";
 import { commands } from "@/bindings";
-import type { ModelInfo } from "@/bindings";
+import type { BenchmarkModelFailure, ModelInfo } from "@/bindings";
 
 // check if model supports a language based on its supported_languages list
 const modelSupportsLanguage = (model: ModelInfo, langCode: string): boolean => {
@@ -27,6 +28,10 @@ export const ModelsSettings: React.FC = () => {
     progress?: number;
   } | null>(null);
   const [clipCount, setClipCount] = useState<number>(0);
+  const [benchmarkFailures, setBenchmarkFailures] = useState<
+    BenchmarkModelFailure[]
+  >([]);
+  const [benchmarkSkipped, setBenchmarkSkipped] = useState<number>(0);
   const languageDropdownRef = useRef<HTMLDivElement>(null);
   const languageSearchInputRef = useRef<HTMLInputElement>(null);
   const {
@@ -44,6 +49,20 @@ export const ModelsSettings: React.FC = () => {
     deleteModel,
     loadModels,
   } = useModelStore();
+  const { getSetting } = useSettings();
+
+  const hybridModeEnabled = getSetting("hybrid_mode_enabled") ?? false;
+  const hybridShortModel = getSetting("hybrid_short_audio_model") ?? null;
+  const hybridLongModel = getSetting("hybrid_long_audio_model") ?? null;
+
+  // Build hybrid roles map: model_id -> "short" | "long"
+  const hybridRoles = useMemo<Record<string, "short" | "long">>(() => {
+    if (!hybridModeEnabled) return {};
+    const roles: Record<string, "short" | "long"> = {};
+    if (hybridShortModel) roles[hybridShortModel] = "short";
+    if (hybridLongModel) roles[hybridLongModel] = "long";
+    return roles;
+  }, [hybridModeEnabled, hybridShortModel, hybridLongModel]);
 
   // click outside handler for language dropdown
   useEffect(() => {
@@ -95,10 +114,14 @@ export const ModelsSettings: React.FC = () => {
   const handleRunBenchmark = async () => {
     setBenchmarkRunning(true);
     setBenchmarkProgress({ stage: "started" });
+    setBenchmarkFailures([]);
+    setBenchmarkSkipped(0);
     try {
       const result = await commands.benchmarkModels();
       if (result.status === "ok") {
         setBenchmarkProgress({ stage: "completed" });
+        setBenchmarkFailures(result.data.failed_models);
+        setBenchmarkSkipped(result.data.skipped_model_ids.length);
         // Reload models to get updated dynamic_score
         await loadModels();
       } else {
@@ -280,9 +303,9 @@ export const ModelsSettings: React.FC = () => {
           <button
             type="button"
             onClick={handleRunBenchmark}
-            disabled={benchmarkRunning || clipCount < 3}
+            disabled={benchmarkRunning || clipCount < 20}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
-              benchmarkRunning || clipCount < 3
+              benchmarkRunning || clipCount < 20
                 ? "bg-mid-gray/10 text-text/30 cursor-not-allowed"
                 : "bg-logo-primary/20 text-logo-primary hover:bg-logo-primary/30"
             }`}
@@ -298,8 +321,11 @@ export const ModelsSettings: React.FC = () => {
           </button>
         </div>
         <p className="text-xs text-text/50">
-          {clipCount < 3
-            ? t("settings.models.benchmark.needMoreClips")
+          {clipCount < 20
+            ? t("settings.models.benchmark.needMoreClips", {
+                current: clipCount,
+                needed: 20,
+              })
             : t("settings.models.benchmark.canBenchmark", {
                 count: clipCount,
               })}
@@ -324,13 +350,40 @@ export const ModelsSettings: React.FC = () => {
           </div>
         )}
         {benchmarkProgress?.stage === "completed" && (
-          <p className="text-xs text-green-500 font-medium">
-            ✓ {t("settings.models.benchmark.completed")}{" "}
-            {t("settings.models.benchmark.tooltip")}
-          </p>
+          <div className="space-y-1.5">
+            <p className="text-xs text-green-500 font-medium">
+              {t("settings.models.benchmark.completedWithCheck")}{" "}
+              {t("settings.models.benchmark.tooltip")}
+            </p>
+            {benchmarkSkipped > 0 && (
+              <p className="text-xs text-text/50">
+                {t("settings.models.benchmark.skipped", {
+                  count: benchmarkSkipped,
+                })}
+              </p>
+            )}
+            {benchmarkFailures.length > 0 && (
+              <div className="space-y-1">
+                {benchmarkFailures.map((f) => (
+                  <p
+                    key={f.model_id}
+                    className="text-xs text-red-400 flex items-center gap-1"
+                  >
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    <span>
+                      {f.model_name}:{" "}
+                      {f.reason === "load"
+                        ? t("settings.models.benchmark.failedLoad")
+                        : t("settings.models.benchmark.failedTranscribe")}
+                    </span>
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
         )}
         {/* Show measured score indicator if any model has been benchmarked */}
-        {models.some((m: ModelInfo) => m.dynamic_score) && (
+        {models.some((m: ModelInfo) => m.dynamic_score && !m.dynamic_score.failed) && (
           <p className="text-xs text-text/40 italic">
             {t("settings.models.benchmark.tooltip")}
           </p>
@@ -449,6 +502,7 @@ export const ModelsSettings: React.FC = () => {
                 downloadProgress={getDownloadProgress(model.id)}
                 downloadSpeed={getDownloadSpeed(model.id)}
                 showRecommended={false}
+                hybridRole={hybridRoles[model.id] ?? null}
               />
             ))}
           </div>
@@ -471,6 +525,7 @@ export const ModelsSettings: React.FC = () => {
                   downloadProgress={getDownloadProgress(model.id)}
                   downloadSpeed={getDownloadSpeed(model.id)}
                   showRecommended={false}
+                  hybridRole={hybridRoles[model.id] ?? null}
                 />
               ))}
             </div>

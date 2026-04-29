@@ -1,4 +1,4 @@
-use crate::audio_toolkit::{apply_custom_words, filter_transcription_output};
+use crate::audio_toolkit::{apply_custom_words, filter_transcription_output, trim_trailing_silence};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::settings::{
@@ -492,14 +492,101 @@ impl TranscriptionManager {
         // Get current settings for configuration
         let settings = get_settings(&self.app_handle);
 
-        // Validate selected language against the model's supported languages.
+        // Determine which model to use (hybrid mode or standard).
+        // Hybrid mode picks a different model based on audio length:
+        // short audio uses the "short audio model", long audio uses the "long audio model".
+        let effective_model_id = if settings.hybrid_mode_enabled {
+            let audio_duration_secs = audio.len() as f64 / 16000.0;
+            if audio_duration_secs < settings.hybrid_threshold_secs {
+                debug!(
+                    "Hybrid mode: audio is {:.1}s (< {}s threshold), using short audio model",
+                    audio_duration_secs, settings.hybrid_threshold_secs
+                );
+                settings
+                    .hybrid_short_audio_model
+                    .clone()
+                    .unwrap_or(settings.selected_model.clone())
+            } else {
+                debug!(
+                    "Hybrid mode: audio is {:.1}s (>= {}s threshold), using long audio model",
+                    audio_duration_secs, settings.hybrid_threshold_secs
+                );
+                settings
+                    .hybrid_long_audio_model
+                    .clone()
+                    .unwrap_or(settings.selected_model.clone())
+            }
+        } else {
+            settings.selected_model.clone()
+        };
+
+        // If hybrid mode selected a different model than what's loaded, load it.
+        // This handles the case where the user switches between short/long models.
+        let current_loaded = self.current_model_id.lock().unwrap().clone();
+        if effective_model_id != current_loaded.clone().unwrap_or_default() {
+            debug!(
+                "Loading effective model '{}' for transcription (currently loaded: {:?})",
+                effective_model_id,
+                current_loaded
+            );
+            // Release any locks before loading
+            drop(current_loaded);
+            if let Err(e) = self.load_model(&effective_model_id) {
+                error!("Failed to load effective model '{}': {}", effective_model_id, e);
+                return Err(anyhow::anyhow!(
+                    "Failed to load model '{}': {}",
+                    effective_model_id,
+                    e
+                ));
+            }
+        } else {
+            drop(current_loaded);
+        }
+
+        // Trim trailing silence from audio before transcription.
+        // This is critical for Whisper models which hallucinate on trailing silence
+        // (the 30-second zero-padded window causes text generation from silence).
+        // CTC/non-autoregressive models (Parakeet, SenseVoice) have explicit blank
+        // tokens and don't hallucinate, but trimming doesn't hurt them either.
+        let effective_model_info = self.model_manager.get_model_info(&effective_model_id);
+        let is_whisper_engine = effective_model_info
+            .as_ref()
+            .map(|info| matches!(info.engine_type, EngineType::Whisper))
+            .unwrap_or(false);
+
+        let audio = if is_whisper_engine {
+            match self.app_handle.path().resolve(
+                "resources/models/silero_vad_v4.onnx",
+                tauri::path::BaseDirectory::Resource,
+            ) {
+                Ok(vad_path) => {
+                    let path_str = vad_path.to_str().unwrap_or("");
+                    trim_trailing_silence(&audio, path_str, 0.3)
+                }
+                Err(e) => {
+                    warn!("Could not resolve VAD model path for trimming ({}), skipping", e);
+                    audio
+                }
+            }
+        } else {
+            audio
+        };
+
+        // Re-check empty after possible trim
+        if audio.is_empty() {
+            debug!("Audio became empty after VAD trim");
+            self.maybe_unload_immediately("empty audio after trim");
+            return Ok(String::new());
+        }
+
+        // Validate selected language against the effective model's supported languages.
         // If the language isn't supported, fall back to "auto" to prevent errors.
         let validated_language = if settings.selected_language == "auto" {
             "auto".to_string()
         } else {
             let is_supported = self
                 .model_manager
-                .get_model_info(&settings.selected_model)
+                .get_model_info(&effective_model_id)
                 .map(|info| {
                     info.supported_languages.is_empty()
                         || info
@@ -726,7 +813,7 @@ impl TranscriptionManager {
         // Skip for Whisper models since custom words are already passed as initial_prompt.
         let is_whisper = self
             .model_manager
-            .get_model_info(&settings.selected_model)
+            .get_model_info(&effective_model_id)
             .map(|info| matches!(info.engine_type, EngineType::Whisper))
             .unwrap_or(false);
 
