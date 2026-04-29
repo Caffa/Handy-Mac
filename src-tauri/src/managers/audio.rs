@@ -427,6 +427,10 @@ impl AudioRecordingManager {
 
     /* ---------- recording --------------------------------------------------- */
 
+    /// Duration (ms) without receiving audio data before we consider the
+    /// microphone stream dead and attempt to restart it.
+    const STREAM_LIVENESS_TIMEOUT_MS: u64 = 3000;
+
     pub fn try_start_recording(&self, binding_id: &str) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
 
@@ -439,6 +443,30 @@ impl AudioRecordingManager {
                     let msg = format!("{e}");
                     error!("Failed to open microphone stream: {msg}");
                     return Err(msg);
+                }
+            } else {
+                // Always-on mode: check if the stream is actually alive.
+                // If the audio device disconnected (USB, Bluetooth), the
+                // is_open flag may still be true but no data is flowing.
+                let stream_alive = self
+                    .recorder
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map_or(false, |r| r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS));
+
+                if *self.is_open.lock().unwrap() && !stream_alive {
+                    warn!(
+                        "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
+                        Self::STREAM_LIVENESS_TIMEOUT_MS
+                    );
+                    self.close_generation.fetch_add(1, Ordering::SeqCst);
+                    self.stop_microphone_stream();
+                    if let Err(e) = self.start_microphone_stream() {
+                        let msg = format!("{e}");
+                        error!("Failed to restart dead microphone stream: {msg}");
+                        return Err(msg);
+                    }
                 }
             }
 

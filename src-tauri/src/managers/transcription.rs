@@ -412,23 +412,22 @@ impl TranscriptionManager {
         Ok(())
     }
 
-    /// Kicks off the model loading in a background thread if it's not already loaded
+    /// Kicks off the model loading in a background thread if it's not already loaded.
+    /// Uses LoadingGuard to ensure `is_loading` is always reset even if the thread panics.
     pub fn initiate_model_load(&self) {
-        let mut is_loading = self.is_loading.lock().unwrap();
-        if *is_loading || self.is_model_loaded() {
-            return;
-        }
+        let guard = match self.try_start_loading() {
+            Some(g) => g,
+            None => return, // already loading or loaded
+        };
 
-        *is_loading = true;
         let self_clone = self.clone();
         thread::spawn(move || {
+            // LoadingGuard's Drop impl will reset is_loading and notify waiters
+            let _guard = guard;
             let settings = get_settings(&self_clone.app_handle);
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
                 error!("Failed to load model: {}", e);
             }
-            let mut is_loading = self_clone.is_loading.lock().unwrap();
-            *is_loading = false;
-            self_clone.loading_condvar.notify_all();
         });
     }
 
@@ -460,10 +459,28 @@ impl TranscriptionManager {
 
         // Check if model is loaded, if not try to load it
         {
-            // If the model is loading, wait for it to complete.
+            // If the model is loading, wait for it to complete (with timeout).
+            // A previous bug caused hangs when the loading thread panicked without
+            // resetting the is_loading flag, blocking transcribe() forever.
             let mut is_loading = self.is_loading.lock().unwrap();
+            let wait_deadline = std::time::Instant::now() + Duration::from_secs(120);
             while *is_loading {
-                is_loading = self.loading_condvar.wait(is_loading).unwrap();
+                let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    // Timed out waiting for model to load. Force-reset the flag
+                    // so subsequent calls don't also hang, and return an error.
+                    warn!("Timed out waiting for model to load after 120s — transcription aborted");
+                    *is_loading = false;
+                    self.loading_condvar.notify_all();
+                    return Err(anyhow::anyhow!(
+                        "Timed out waiting for model to load. Please try again."
+                    ));
+                }
+                let result = self
+                    .loading_condvar
+                    .wait_timeout(is_loading, remaining)
+                    .unwrap();
+                is_loading = result.0;
             }
 
             let engine_guard = self.lock_engine();

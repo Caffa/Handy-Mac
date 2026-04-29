@@ -94,10 +94,16 @@ impl TranscriptionCoordinator {
                         Command::Cancel {
                             recording_was_active,
                         } => {
-                            // Don't reset during processing — wait for the pipeline to finish.
-                            if !matches!(stage, Stage::Processing)
-                                && (recording_was_active || matches!(stage, Stage::Recording(_)))
+                            if recording_was_active
+                                || matches!(stage, Stage::Recording(_))
                             {
+                                stage = Stage::Idle;
+                            } else if matches!(stage, Stage::Processing) {
+                                // Allow cancel during processing too — if the
+                                // transcription pipeline hangs, the user needs a
+                                // way to unstick the app. The FinishGuard will
+                                // still fire when (if) the pipeline completes.
+                                debug!("Cancelling stuck processing stage");
                                 stage = Stage::Idle;
                             }
                         }

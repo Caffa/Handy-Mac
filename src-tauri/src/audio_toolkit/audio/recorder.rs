@@ -1,7 +1,7 @@
 use std::{
     io::Error,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     time::Duration,
@@ -36,6 +36,9 @@ pub struct AudioRecorder {
     worker_handle: Option<std::thread::JoinHandle<()>>,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
+    /// Timestamp (ms since epoch) of the last audio chunk received by
+    /// the consumer thread. Used to detect dead microphone streams.
+    last_chunk_ms: Arc<AtomicU64>,
 }
 
 impl AudioRecorder {
@@ -46,6 +49,7 @@ impl AudioRecorder {
             worker_handle: None,
             vad: None,
             level_cb: None,
+            last_chunk_ms: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -67,6 +71,9 @@ impl AudioRecorder {
             return Ok(()); // already open
         }
 
+        // Reset stream liveness timestamp
+        self.last_chunk_ms.store(0, Ordering::Relaxed);
+
         let (sample_tx, sample_rx) = mpsc::channel::<AudioChunk>();
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
         let (init_tx, init_rx) = mpsc::sync_channel::<Result<(), String>>(1);
@@ -83,6 +90,7 @@ impl AudioRecorder {
         let vad = self.vad.clone();
         // Move the optional level callback into the worker thread
         let level_cb = self.level_cb.clone();
+        let last_chunk_ms = self.last_chunk_ms.clone();
 
         let worker = std::thread::spawn(move || {
             let stop_flag = Arc::new(AtomicBool::new(false));
@@ -159,7 +167,7 @@ impl AudioRecorder {
                 Ok((stream, sample_rate)) => {
                     let _ = init_tx.send(Ok(()));
                     // Keep the stream alive while we process samples.
-                    run_consumer(sample_rate, vad, sample_rx, cmd_rx, level_cb, stop_flag);
+                    run_consumer(sample_rate, vad, sample_rx, cmd_rx, level_cb, stop_flag, last_chunk_ms);
                     drop(stream);
                 }
                 Err(error_message) => {
@@ -218,7 +226,30 @@ impl AudioRecorder {
             let _ = h.join();
         }
         self.device = None;
+        self.last_chunk_ms.store(0, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Returns true if the microphone stream has received audio data within
+    /// the last `timeout_ms` milliseconds. Returns false if the stream has
+    /// never received data or if data stopped flowing.
+    pub fn is_stream_alive(&self, timeout_ms: u64) -> bool {
+        if self.cmd_tx.is_none() {
+            // Stream not open
+            return false;
+        }
+        let last = self.last_chunk_ms.load(Ordering::Relaxed);
+        if last == 0 {
+            // No data received yet — give it a brief grace period.
+            // The stream just opened, so we'll trust it for now.
+            // The caller should check again after a short delay.
+            return true;
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        now_ms.saturating_sub(last) < timeout_ms
     }
 
     fn build_stream<T>(
@@ -399,6 +430,7 @@ fn run_consumer(
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     stop_flag: Arc<AtomicBool>,
+    last_chunk_ms: Arc<AtomicU64>,
 ) {
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
@@ -451,6 +483,13 @@ fn run_consumer(
             AudioChunk::Samples(s) => s,
             AudioChunk::EndOfStream => continue,
         };
+
+        // Track stream liveness: update timestamp whenever audio is received
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        last_chunk_ms.store(now_ms, Ordering::Relaxed);
 
         // ---------- spectrum processing ---------------------------------- //
         if let Some(buckets) = visualizer.feed(&raw) {

@@ -726,17 +726,21 @@ async getClamshellMicrophone() : Promise<Result<string, string>> {
 async isRecording() : Promise<boolean> {
     return await TAURI_INVOKE("is_recording");
 },
+/**
+ * Check if uhubctl is available on the system
+ */
 async isUsbWatchdogAvailable() : Promise<boolean> {
     return await TAURI_INVOKE("is_usb_watchdog_available");
 },
-async listUsbDevices() : Promise<Result<UsbDevice[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("list_usb_devices") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
+/**
+ * List all USB devices connected to hubs visible to uhubctl
+ */
+async listUsbDevices() : Promise<UsbDevice[]> {
+    return await TAURI_INVOKE("list_usb_devices");
 },
+/**
+ * Enable or disable the USB watchdog
+ */
 async changeUsbWatchdogEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_usb_watchdog_enabled_setting", { enabled }) };
@@ -745,6 +749,9 @@ async changeUsbWatchdogEnabledSetting(enabled: boolean) : Promise<Result<null, s
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Update the USB watchdog target device name
+ */
 async changeUsbWatchdogDeviceNameSetting(deviceName: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_usb_watchdog_device_name_setting", { deviceName }) };
@@ -753,6 +760,9 @@ async changeUsbWatchdogDeviceNameSetting(deviceName: string) : Promise<Result<nu
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Manually trigger a USB power cycle (for testing)
+ */
 async triggerUsbPowerCycle() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("trigger_usb_power_cycle") };
@@ -869,7 +879,6 @@ historyUpdatePayload: "history-update-payload"
 
 export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
-export type UsbDevice = { name: string; hub: string; port: string }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
@@ -904,6 +913,22 @@ export type SecretMap = Partial<{ [key in string]: string }>
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
+/**
+ * A USB device discovered by `uhubctl`.
+ */
+export type UsbDevice = { 
+/**
+ * Human-readable device name (e.g. "RØDE Microphones RØDE VideoMic NTG 762210B9")
+ */
+name: string; 
+/**
+ * Hub location ID (e.g. "8-3")
+ */
+hub: string; 
+/**
+ * Port number on the hub (e.g. "1")
+ */
+port: string }
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 
