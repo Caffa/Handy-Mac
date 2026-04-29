@@ -305,6 +305,21 @@ impl Default for OrtAcceleratorSetting {
     }
 }
 
+/// A custom word with optional pronunciation variants for advanced fuzzy matching.
+///
+/// When `pronunciations` is non-empty, the matching algorithm will also compare
+/// transcription n-grams against each pronunciation variant. Any match replaces
+/// the transcript text with the canonical `word`.
+///
+/// Example: `CustomWord { word: "ChargeBee", pronunciations: vec!["charge b", "charge bee"] }`
+/// will match "charge b" or "charge bee" in the transcript and replace it with "ChargeBee".
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct CustomWord {
+    pub word: String,
+    #[serde(default)]
+    pub pronunciations: Vec<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub(crate) struct SecretMap(HashMap<String, String>);
@@ -371,6 +386,10 @@ pub struct AppSettings {
     pub log_level: LogLevel,
     #[serde(default)]
     pub custom_words: Vec<String>,
+    #[serde(default)]
+    pub advanced_custom_words: Vec<CustomWord>,
+    #[serde(default)]
+    pub use_advanced_custom_words: bool,
     #[serde(default)]
     pub model_unload_timeout: ModelUnloadTimeout,
     #[serde(default = "default_word_correction_threshold")]
@@ -800,6 +819,8 @@ pub fn get_default_settings() -> AppSettings {
         debug_mode: false,
         log_level: default_log_level(),
         custom_words: Vec::new(),
+        advanced_custom_words: Vec::new(),
+        use_advanced_custom_words: false,
         model_unload_timeout: ModelUnloadTimeout::default(),
         word_correction_threshold: default_word_correction_threshold(),
         history_limit: default_history_limit(),

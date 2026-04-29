@@ -26,6 +26,7 @@ export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
   const { getSetting } = useSettings();
   const experimentalEnabled = getSetting("experimental_enabled") || false;
+  const useAdvancedCustomWords = getSetting("use_advanced_custom_words") || false;
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
@@ -46,7 +47,8 @@ export const AdvancedSettings: React.FC = () => {
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.transcription")}>
-        <CustomWords descriptionMode="tooltip" grouped />
+        {/* Hide simple custom words when advanced mode is enabled (shown in Debug instead) */}
+        {!useAdvancedCustomWords && <CustomWords descriptionMode="tooltip" grouped />}
         <AppendTrailingSpace descriptionMode="tooltip" grouped={true} />
         <HybridMode descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>

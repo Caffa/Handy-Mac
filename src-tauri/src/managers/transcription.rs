@@ -1,4 +1,7 @@
-use crate::audio_toolkit::{apply_custom_words, filter_transcription_output, trim_trailing_silence};
+use crate::audio_toolkit::{
+    apply_advanced_custom_words, apply_custom_words, filter_transcription_output,
+    trim_trailing_silence,
+};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::settings::{
@@ -667,10 +670,22 @@ impl TranscriptionManager {
                             let params = WhisperInferenceParams {
                                 language: whisper_language,
                                 translate: settings.translate_to_english,
-                                initial_prompt: if settings.custom_words.is_empty() {
-                                    None
-                                } else {
+                                initial_prompt: if settings.use_advanced_custom_words
+                                    && !settings.advanced_custom_words.is_empty()
+                                {
+                                    // Advanced mode: use only canonical words
+                                    Some(
+                                        settings
+                                            .advanced_custom_words
+                                            .iter()
+                                            .map(|cw| cw.word.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", "),
+                                    )
+                                } else if !settings.custom_words.is_empty() {
                                     Some(settings.custom_words.join(", "))
+                                } else {
+                                    None
                                 },
                                 single_segment: is_short_audio,
                                 use_greedy: is_short_audio,
@@ -817,12 +832,26 @@ impl TranscriptionManager {
             .map(|info| matches!(info.engine_type, EngineType::Whisper))
             .unwrap_or(false);
 
-        let corrected_result = if !settings.custom_words.is_empty() && !is_whisper {
-            apply_custom_words(
-                &result.text,
-                &settings.custom_words,
-                settings.word_correction_threshold,
-            )
+        let has_words = if settings.use_advanced_custom_words {
+            !settings.advanced_custom_words.is_empty()
+        } else {
+            !settings.custom_words.is_empty()
+        };
+
+        let corrected_result = if has_words && !is_whisper {
+            if settings.use_advanced_custom_words {
+                apply_advanced_custom_words(
+                    &result.text,
+                    &settings.advanced_custom_words,
+                    settings.word_correction_threshold,
+                )
+            } else {
+                apply_custom_words(
+                    &result.text,
+                    &settings.custom_words,
+                    settings.word_correction_threshold,
+                )
+            }
         } else {
             result.text
         };

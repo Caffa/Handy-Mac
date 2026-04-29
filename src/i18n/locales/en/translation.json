@@ -487,6 +487,22 @@
         "title": "Word Correction Threshold",
         "description": "Sensitivity for custom word corrections"
       },
+      "advancedCustomWords": {
+        "title": "Advanced Custom Words",
+        "description": "Add custom words with pronunciation variants. When the transcription matches a pronunciation, it will be replaced with the canonical word.",
+        "toggleLabel": "Advanced Custom Words",
+        "toggleDescription": "Enable advanced custom word matching with pronunciation variants. When enabled, the simple custom words list is replaced with an advanced editor in Debug settings.",
+        "placeholder": "Add a word",
+        "add": "Add",
+        "addPronunciation": "Add",
+        "removePronunciation": "Remove {{pronunciation}}",
+        "duplicate": "\"{{word}}\" already exists",
+        "duplicatePronunciation": "\"{{pronunciation}}\" already exists for this word",
+        "pronunciation": "pronunciation",
+        "pronunciations": "pronunciations",
+        "pronunciationHint": "Add ways the word might be transcribed. Each pronunciation will be used as a fuzzy match target.",
+        "pronunciationPlaceholder": "Add pronunciation..."
+      },
       "historyLimit": {
         "title": "History Limit",
         "description": "Maximum number of history entries to keep",

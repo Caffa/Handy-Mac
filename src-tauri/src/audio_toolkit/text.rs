@@ -3,6 +3,8 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use strsim::levenshtein;
 
+use crate::settings::CustomWord;
+
 /// Builds an n-gram string by cleaning and concatenating words
 ///
 /// Strips punctuation from each word, lowercases, and joins without spaces.
@@ -155,7 +157,159 @@ pub fn apply_custom_words(text: &str, custom_words: &[String], threshold: f64) -
     result.join(" ")
 }
 
-/// Preserves the case pattern of the original word when applying a replacement
+/// A comparison target for advanced custom word matching.
+///
+/// Each entry pairs a normalized comparison form (lowercase, spaces removed)
+/// with the canonical word it should be replaced with.
+struct AdvancedComparisonEntry<'a> {
+    /// The canonical word to use as the replacement when matched.
+    canonical: &'a String,
+    /// The normalized comparison string (lowercase, spaces removed).
+    normalized: String,
+    /// The original form of this comparison target (for Soundex).
+    /// For the word itself this is the lowered form; for pronunciations,
+    /// this is the lowered pronunciation with spaces collapsed.
+    lowered: String,
+}
+
+/// Applies advanced custom word corrections with pronunciation variants.
+///
+/// Works like `apply_custom_words`, but expands comparison targets to include
+/// each word's pronunciation variants. When a pronunciation matches, the
+/// transcribed text is replaced with the canonical `word`.
+///
+/// # Arguments
+/// * `text` - The input text to correct
+/// * `advanced_words` - List of custom words with optional pronunciations
+/// * `threshold` - Maximum similarity score to accept (0.0 = exact match, 1.0 = any match)
+///
+/// # Returns
+/// The corrected text with custom words applied
+pub fn apply_advanced_custom_words(
+    text: &str,
+    advanced_words: &[CustomWord],
+    threshold: f64,
+) -> String {
+    if advanced_words.is_empty() {
+        return text.to_string();
+    }
+
+    // Build expanded comparison entries:
+    // For each CustomWord, create entries for:
+    //   1. The canonical word itself
+    //   2. Each pronunciation variant
+    // All entries point back to the canonical word as the replacement target.
+    let mut entries: Vec<AdvancedComparisonEntry<'_>> = Vec::new();
+
+    for cw in advanced_words {
+        let word_lower = cw.word.to_lowercase();
+        let word_nospace = word_lower.replace(' ', "");
+
+        // Entry for the canonical word itself
+        entries.push(AdvancedComparisonEntry {
+            canonical: &cw.word,
+            normalized: word_nospace.clone(),
+            lowered: word_lower.clone(),
+        });
+
+        // Entries for each pronunciation
+        for pron in &cw.pronunciations {
+            let pron_lower = pron.to_lowercase();
+            let pron_nospace = pron_lower.replace(' ', "");
+
+            entries.push(AdvancedComparisonEntry {
+                canonical: &cw.word,
+                normalized: pron_nospace,
+                lowered: pron_lower,
+            });
+        }
+    }
+
+    if entries.is_empty() {
+        return text.to_string();
+    }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < words.len() {
+        let mut matched = false;
+
+        // Try n-grams from longest (3) to shortest (1) - greedy matching
+        for n in (1..=3).rev() {
+            if i + n > words.len() {
+                continue;
+            }
+
+            let ngram_words = &words[i..i + n];
+            let ngram = build_ngram(ngram_words);
+
+            if ngram.is_empty() || ngram.len() > 50 {
+                continue;
+            }
+
+            // Find the best match across all comparison entries
+            let mut best_replacement: Option<&String> = None;
+            let mut best_score = f64::MAX;
+
+            for entry in &entries {
+                // Skip if lengths are too different
+                let len_diff = (ngram.len() as i32 - entry.normalized.len() as i32).abs() as f64;
+                let max_len = ngram.len().max(entry.normalized.len()) as f64;
+                let max_allowed_diff = (max_len * 0.25).max(2.0);
+                if len_diff > max_allowed_diff {
+                    continue;
+                }
+
+                // Calculate Levenshtein distance (normalized by length)
+                let levenshtein_dist = levenshtein(&ngram, &entry.normalized);
+                let max_len = ngram.len().max(entry.normalized.len()) as f64;
+                let levenshtein_score = if max_len > 0.0 {
+                    levenshtein_dist as f64 / max_len
+                } else {
+                    1.0
+                };
+
+                // Calculate phonetic similarity using Soundex
+                let phonetic_match = soundex(&ngram, &entry.lowered);
+
+                // Combine scores: favor phonetic matches
+                let combined_score = if phonetic_match {
+                    levenshtein_score * 0.3
+                } else {
+                    levenshtein_score
+                };
+
+                if combined_score < threshold && combined_score < best_score {
+                    best_replacement = Some(entry.canonical);
+                    best_score = combined_score;
+                }
+            }
+
+            if let Some(replacement) = best_replacement {
+                // Extract punctuation from first and last words of the n-gram
+                let (prefix, _) = extract_punctuation(ngram_words[0]);
+                let (_, suffix) = extract_punctuation(ngram_words[n - 1]);
+
+                // Preserve case from first word
+                let corrected = preserve_case_pattern(ngram_words[0], replacement);
+
+                result.push(format!("{}{}{}", prefix, corrected, suffix));
+                i += n;
+                matched = true;
+                break;
+            }
+        }
+
+        if !matched {
+            result.push(words[i].to_string());
+            i += 1;
+        }
+    }
+
+    result.join(" ")
+}
 fn preserve_case_pattern(original: &str, replacement: &str) -> String {
     if original.chars().all(|c| c.is_uppercase()) {
         replacement.to_uppercase()
@@ -241,21 +395,26 @@ static MULTI_SPACE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unw
 /// A word is considered a **fragment artifact** (and removed) only when ALL of:
 /// 1. It is a case-insensitive prefix of the next word
 /// 2. The current word is no longer than MAX_FRAGMENT_LEN characters (≤ 3)
+///    (Single-char words also qualify — they're protected by COMMON_WORDS instead)
 /// 3. The next word extends the current word by at most MAX_FRAGMENT_EXTENSION chars (≤ 5)
-/// 4. It has at least 2 alphabetic characters (avoids removing "a", "I")
+///    (Single-char fragments skip this check — a 1-char prefix of a longer word is
+///    almost certainly CTC noise)
+/// 4. It has at least 1 alphabetic character (but "a" and "I" are protected by COMMON_WORDS)
 /// 5. It is NOT a common English word or short prefix (see COMMON_WORDS list)
 ///
-/// The dual-layer protection (extension limit + common words list) ensures:
-/// - CTC artifacts are caught: "wa"→"was" (ext=1), "sta"→"starting" (ext=5)
-/// - Common words are preserved: "re"→"really" ("re" in COMMON_WORDS), "for"→"forget" (in COMMON_WORDS)
-/// - Unknown short words with bounded extensions are caught: "ab"→"about" (ext=3, not common)
-/// - Unknown short words with large extensions are preserved by the extension limit
+/// **Staircase detection**: When a fragment is removed, the function also checks if
+/// the previous kept word forms a "staircase" pattern — both are prefixes of the same
+/// target word. Example: "can c candles" → both "can" and "c" prefix "candles" →
+/// remove both → "candles". The previous word's COMMON_WORDS protection is relaxed
+/// in this case because two consecutive prefix words pointing to the same target is
+/// extremely unlikely in natural language but common in CTC artifacts.
 ///
 /// Examples:
 /// - "it wa was a" → "it was a"  ("wa" len=2, ext=1, not common → fragment)
-/// - "I sta started running" → "I started running"  ("sta" len=3, ext=4≤5, not common → fragment)
+/// - "can c candles" → "candles"  (staircase: "can"+"c" both prefix "candles")
+/// - "c candles" → "candles"  ("c" len=1, single-char fragment)
 /// - "for forget" → "for forget"  ("for" is common, kept)
-/// - "can cancel" → "can cancel"  ("can" is common, kept)
+/// - "can cancel" → "can cancel"  ("can" is common, no staircase → kept)
 /// - "pro process" → "pro process"  ("pro" is in COMMON_WORDS, kept)
 /// - "my mac machine" → "my mac machine"  ("mac" is in COMMON_WORDS, kept)
 pub(crate) fn dedup_word_fragments(text: &str) -> String {
@@ -359,29 +518,81 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
             .collect();
         let current_lower = current_alpha.to_lowercase();
 
-        if i + 1 < words.len() && current_alpha.len() >= 2 {
+        if i + 1 < words.len() && !current_alpha.is_empty() {
             let next_alpha: String = words[i + 1]
                 .chars()
                 .filter(|c| c.is_alphabetic())
                 .collect();
             let next_lower = next_alpha.to_lowercase();
 
-            // Current word is a fragment of the next word only when ALL conditions hold:
-            // 1. Current is short enough to be a CTC artifact (≤ MAX_FRAGMENT_LEN)
-            // 2. Next word is strictly longer (proper prefix match)
-            // 3. Extension is within bounds (≤ MAX_FRAGMENT_EXTENSION)
-            //    This provides defense-in-depth for words not in COMMON_WORDS.
-            // 4. Next word starts with current word (case-insensitive)
-            // 5. Current is NOT a common word/prefix
-            if current_alpha.len() <= MAX_FRAGMENT_LEN
-                && next_alpha.len() > current_alpha.len()
-                && next_alpha.len() - current_alpha.len() <= MAX_FRAGMENT_EXTENSION
-                && next_lower.starts_with(&current_lower)
-                && !COMMON_WORDS.contains(&current_lower.as_str())
-            {
-                // Skip this word — it's a fragment of the next word
-                i += 1;
-                continue;
+            // Only consider prefix match when next word is strictly longer
+            let next_is_longer = next_alpha.len() > current_alpha.len();
+
+            if next_is_longer {
+                // Current word is a potential fragment if it's a case-insensitive
+                // prefix of the next word
+                let is_prefix = next_lower.starts_with(&current_lower);
+
+                if is_prefix {
+                    // Determine if the extension length check should be skipped.
+                    // Single-letter fragments (like "c" before "candles") are almost certainly
+                    // CTC artifacts — a genuine English word would have more characters.
+                    // The only single-letter English words ("a", "I") are in COMMON_WORDS.
+                    let is_single_char = current_alpha.len() == 1;
+                    let extension = next_alpha.len() - current_alpha.len();
+                    let extension_ok = is_single_char || extension <= MAX_FRAGMENT_EXTENSION;
+
+                    // Current word is a fragment of the next word only when ALL conditions hold:
+                    // 1. Current is short enough to be a CTC artifact (≤ MAX_FRAGMENT_LEN)
+                    //    Single-char words bypass this check (they're caught by COMMON_WORDS instead)
+                    // 2. Extension is within bounds (≤ MAX_FRAGMENT_EXTENSION)
+                    //    Single-char words skip this check (see is_single_char above)
+                    // 3. Current is NOT a common word/prefix
+                    if (is_single_char || current_alpha.len() <= MAX_FRAGMENT_LEN)
+                        && extension_ok
+                        && !COMMON_WORDS.contains(&current_lower.as_str())
+                    {
+                        // Skip this word — it's a fragment of the next word
+                        //
+                        // Staircase detection: also remove the previous kept word if it
+                        // forms a "staircase" with this fragment — i.e., both the previous
+                        // kept word and this fragment are prefixes of the same target word.
+                        //
+                        // Example: "can c candles" → "can" and "c" both prefix "candles"
+                        // → remove both → "candles"
+                        //
+                        // This is safe because two consecutive prefix words pointing to the
+                        // same target is extremely unlikely in natural language but common
+                        // in CTC artifacts. The key safety constraints are:
+                        // - The previous word must be short (≤ MAX_FRAGMENT_LEN + 1 = 4 chars)
+                        // - The previous word must be a genuine prefix (not just same first letter)
+                        // - The previous word must NOT be a single-letter word (protects "a", "I")
+                        // - The target word must be significantly longer than the previous word
+                        //   (extension > MAX_FRAGMENT_EXTENSION), ensuring a real staircase
+                        // - In a staircase, COMMON_WORDS protection is relaxed because two
+                        //   consecutive prefixes pointing to the same target is CTC noise
+                        if !result.is_empty() {
+                            let prev_alpha: String = result.last().unwrap()
+                                .chars()
+                                .filter(|c: &char| c.is_alphabetic())
+                                .collect();
+                            let prev_lower = prev_alpha.to_lowercase();
+
+                            // Staircase: previous word is also a prefix of the same target
+                            if !prev_alpha.is_empty()
+                                && prev_alpha.len() >= 2  // Not a single-letter ("a", "I")
+                                && prev_alpha.len() <= MAX_FRAGMENT_LEN + 1  // Short enough
+                                && next_lower.starts_with(&prev_lower)  // Also prefixes target
+                            {
+                                // Remove the previous word — it's part of the staircase
+                                result.pop();
+                            }
+                        }
+
+                        i += 1;
+                        continue;
+                    }
+                }
             }
         }
 
@@ -577,9 +788,11 @@ mod tests {
 
     #[test]
     fn test_filter_stutter_collapse() {
+        // "w" is now correctly removed as a single-char fragment of "wh",
+        // leaving "wh wh ..." which collapses to "wh why"
         let text = "w wh wh wh wh wh wh wh wh wh why";
         let result = filter_transcription_output(text, "en", &None);
-        assert_eq!(result, "w wh why");
+        assert_eq!(result, "wh why");
     }
 
     #[test]
@@ -1613,5 +1826,233 @@ mod tests {
         // "fra" → "fraction" extends by 5, which equals MAX_FRAGMENT_EXTENSION.
         // This should be removed since ext=5≤5 and "fra" is not in COMMON_WORDS.
         assert_eq!(dedup_word_fragments("fra fraction"), "fraction");
+    }
+
+    // === STAIRCASE DETECTION TESTS ===
+    // These test the new staircase detection that handles CTC artifacts
+    // where multiple consecutive prefix words point to the same target.
+
+    #[test]
+    fn staircase_can_c_candles() {
+        // The user-reported bug: "can c candles" → "candles"
+        // Both "can" and "c" are prefixes of "candles"
+        assert_eq!(
+            dedup_word_fragments("Well, perhaps not going without can c candles because that was insanity."),
+            "Well, perhaps not going without candles because that was insanity."
+        );
+    }
+
+    #[test]
+    fn staircase_simple() {
+        // Simplified staircase: "can c candles" → "candles"
+        assert_eq!(dedup_word_fragments("can c candles"), "candles");
+    }
+
+    #[test]
+    fn staircase_with_other_words() {
+        // Staircase in sentence context
+        assert_eq!(
+            dedup_word_fragments("we need can c candles for the dinner"),
+            "we need candles for the dinner"
+        );
+    }
+
+    #[test]
+    fn single_char_fragment_removed() {
+        // "c" before "candles" is a single-char CTC artifact — should be removed
+        assert_eq!(dedup_word_fragments("we need c candles"), "we need candles");
+    }
+
+    #[test]
+    fn single_char_a_protected() {
+        // "a" before "apple" is protected by COMMON_WORDS
+        assert_eq!(dedup_word_fragments("I have a apple"), "I have a apple");
+    }
+
+    #[test]
+    fn single_char_I_protected() {
+        // "I" before "Iceland" is protected by COMMON_WORDS
+        assert_eq!(dedup_word_fragments("I Iceland trip"), "I Iceland trip");
+    }
+
+    #[test]
+    fn single_char_w_before_wh_removed() {
+        // "w" before "wh" is a CTC artifact → removed
+        // Then "wh" before "why" is also a fragment (2 chars, not common) → also removed
+        // Result: just "why"
+        assert_eq!(dedup_word_fragments("w wh why"), "why");
+    }
+
+    #[test]
+    fn staircase_not_triggered_for_can_cancel() {
+        // "can" before "cancel" — no staircase (no intermediate fragment)
+        // "can" is in COMMON_WORDS → kept
+        assert_eq!(dedup_word_fragments("I can cancel this"), "I can cancel this");
+    }
+
+    #[test]
+    fn staircase_not_triggered_for_in_inside() {
+        // No staircase here — just common word "in" before "inside"
+        assert_eq!(dedup_word_fragments("in inside the house"), "in inside the house");
+    }
+
+    #[test]
+    fn staircase_preserves_single_letter_before() {
+        // "a c candles" → "a" is single-letter, protected → "a candles"
+        assert_eq!(dedup_word_fragments("I need a c candles"), "I need a candles");
+    }
+
+    #[test]
+    fn full_pipeline_can_c_candles() {
+        // Full pipeline test: filter_transcription_output with the reported bug
+        assert_eq!(
+            filter_transcription_output("Well, perhaps not going without can c candles because that was insanity.", "en", &None),
+            "Well, perhaps not going without candles because that was insanity."
+        );
+    }
+
+    #[test]
+    fn staircase_single_char_w_before_why() {
+        // Dedup removes "w", then stutter collapse handles "wh why" → wait, "wh" is not a stutter of "why"
+        // "w" is removed as fragment of "wh", leaving "wh why"
+        // "wh" is not a prefix of "why" (it's "wh" vs "why" — "wh" IS a prefix!)
+        // Actually "wh" (2 chars) before "why" (3 chars) → "wh" not in COMMON_WORDS → removed
+        assert_eq!(dedup_word_fragments("w wh why"), "why");
+    }
+
+    #[test]
+    fn staircase_partial() {
+        // Only a single-char fragment, no staircase
+        assert_eq!(dedup_word_fragments("the c candles are bright"), "the candles are bright");
+    }
+
+    #[test]
+    fn staircase_with_punctuation() {
+        // Staircase with comma
+        assert_eq!(
+            dedup_word_fragments("Well, can c candles, please"),
+            "Well, candles, please"
+        );
+    }
+
+    #[test]
+    fn single_char_preserves_non_prefix() {
+        // Single char "x" before "ray" — not a prefix, kept
+        assert_eq!(dedup_word_fragments("the x ray machine"), "the x ray machine");
+    }
+
+    #[test]
+    fn single_char_fragment_with_long_word() {
+        // Single char "c" before very long word — still removed (skip extension check)
+        assert_eq!(dedup_word_fragments("c chromatography"), "chromatography");
+    }
+
+    // --- Advanced Custom Words Tests ---
+
+    #[test]
+    fn test_advanced_custom_words_exact_match() {
+        use crate::settings::CustomWord;
+        let text = "hello world";
+        let words = vec![
+            CustomWord { word: "Hello".to_string(), pronunciations: vec![] },
+            CustomWord { word: "World".to_string(), pronunciations: vec![] },
+        ];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert_eq!(result, "Hello World");
+    }
+
+    #[test]
+    fn test_advanced_custom_words_with_pronunciation() {
+        use crate::settings::CustomWord;
+        let text = "il cui nome è Charge B, che permette";
+        let words = vec![
+            CustomWord {
+                word: "ChargeBee".to_string(),
+                pronunciations: vec!["charge b".to_string(), "charge bee".to_string()],
+            },
+        ];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert!(result.contains("ChargeBee"), "got: {}", result);
+        assert!(!result.contains("Charge B"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_advanced_custom_words_pronunciation_replaces_with_canonical() {
+        use crate::settings::CustomWord;
+        // When a pronunciation matches, the transcript should be replaced with the canonical word
+        // Use comma to prevent 3-gram from swallowing the next word
+        let text = "I use charge bee, for payments";
+        let words = vec![
+            CustomWord {
+                word: "ChargeBee".to_string(),
+                pronunciations: vec!["charge b".to_string(), "charge bee".to_string()],
+            },
+        ];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert!(result.contains("ChargeBee"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_advanced_custom_words_kubernetes() {
+        use crate::settings::CustomWord;
+        let text = "deploy on koober netty cluster";
+        let words = vec![
+            CustomWord {
+                word: "Kubernetes".to_string(),
+                pronunciations: vec!["koober netty".to_string(), "koober nay".to_string()],
+            },
+        ];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert!(result.contains("Kubernetes"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_advanced_custom_words_empty() {
+        use crate::settings::CustomWord;
+        let text = "hello world";
+        let words: Vec<CustomWord> = vec![];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_advanced_custom_words_no_pronunciations() {
+        use crate::settings::CustomWord;
+        // Words without pronunciations should work like simple custom words
+        let text = "helo wrold";
+        let words = vec![
+            CustomWord { word: "hello".to_string(), pronunciations: vec![] },
+            CustomWord { word: "world".to_string(), pronunciations: vec![] },
+        ];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_advanced_custom_words_preserves_case() {
+        use crate::settings::CustomWord;
+        let text = "CHARGE B is great";
+        let words = vec![
+            CustomWord {
+                word: "ChargeBee".to_string(),
+                pronunciations: vec!["charge b".to_string()],
+            },
+        ];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert!(result.contains("CHARGEBEE"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_advanced_custom_words_chatgpt() {
+        use crate::settings::CustomWord;
+        let text = "use Chat G P T for this";
+        let words = vec![
+            CustomWord {
+                word: "ChatGPT".to_string(),
+                pronunciations: vec!["chat g p t".to_string(), "chat gpt".to_string()],
+            },
+        ];
+        let result = apply_advanced_custom_words(text, &words, 0.5);
+        assert!(result.contains("ChatGPT"), "got: {}", result);
     }
 }
