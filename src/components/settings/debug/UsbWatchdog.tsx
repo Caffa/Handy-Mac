@@ -58,9 +58,7 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
       setLoading(true);
       try {
         const result = await commands.listUsbDevices();
-        if (result.status === "ok") {
-          setDevices(result.data);
-        }
+        setDevices(result);
       } catch {
         // uhubctl not available, list will be empty
       } finally {
