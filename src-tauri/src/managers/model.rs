@@ -29,6 +29,22 @@ pub enum EngineType {
     Cohere,
 }
 
+/// Measured speed and accuracy from benchmarking a model against history audio clips.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BenchmarkScore {
+    /// Model ID this score belongs to.
+    pub model_id: String,
+    /// Average transcription time in milliseconds across all benchmark clips.
+    pub avg_ms: f64,
+    /// Relative speed score (0.0–1.0), computed from avg_ms across all benchmarked models.
+    /// Higher is faster. 0.0 means not benchmarked.
+    pub speed_score: f32,
+    /// Number of audio clips used in the benchmark.
+    pub clip_count: u32,
+    /// Timestamp (epoch seconds) when the benchmark was run.
+    pub benchmarked_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ModelInfo {
     pub id: String,
@@ -50,6 +66,7 @@ pub struct ModelInfo {
     pub supported_languages: Vec<String>, // Languages this model can transcribe
     pub supports_language_selection: bool, // Whether the user can explicitly pick a language
     pub is_custom: bool,            // Whether this is a user-provided custom model
+    pub dynamic_score: Option<BenchmarkScore>, // Measured speed score from benchmarking, None if not benchmarked
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -147,6 +164,7 @@ impl ModelManager {
                 supported_languages: whisper_languages.clone(),
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -175,6 +193,7 @@ impl ModelManager {
                 supported_languages: whisper_languages.clone(),
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -202,6 +221,7 @@ impl ModelManager {
                 supported_languages: whisper_languages.clone(),
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -229,6 +249,7 @@ impl ModelManager {
                 supported_languages: whisper_languages.clone(),
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -257,6 +278,7 @@ impl ModelManager {
                 supported_languages: whisper_languages,
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -285,6 +307,7 @@ impl ModelManager {
                 supported_languages: vec!["en".to_string()],
                 supports_language_selection: false,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -322,6 +345,7 @@ impl ModelManager {
                 supported_languages: parakeet_v3_languages,
                 supports_language_selection: false,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -349,6 +373,7 @@ impl ModelManager {
                 supported_languages: vec!["en".to_string()],
                 supports_language_selection: false,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -378,6 +403,7 @@ impl ModelManager {
                 supported_languages: vec!["en".to_string()],
                 supports_language_selection: false,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -407,6 +433,7 @@ impl ModelManager {
                 supported_languages: vec!["en".to_string()],
                 supports_language_selection: false,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -436,6 +463,7 @@ impl ModelManager {
                 supported_languages: vec!["en".to_string()],
                 supports_language_selection: false,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -471,6 +499,7 @@ impl ModelManager {
                 supported_languages: sense_voice_languages,
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -501,6 +530,7 @@ impl ModelManager {
                 supported_languages: gigaam_languages,
                 supports_language_selection: false,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -535,6 +565,7 @@ impl ModelManager {
                 supported_languages: canary_flash_languages,
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -572,6 +603,7 @@ impl ModelManager {
                 supported_languages: canary_1b_languages,
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -607,6 +639,7 @@ impl ModelManager {
                 supported_languages: cohere_languages,
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 
@@ -634,6 +667,9 @@ impl ModelManager {
 
         // Auto-select a model if none is currently selected
         manager.auto_select_model_if_needed()?;
+
+        // Load persisted benchmark scores
+        manager.load_benchmark_scores();
 
         Ok(manager)
     }
@@ -927,6 +963,7 @@ impl ModelManager {
                     supported_languages: vec![],
                     supports_language_selection: true,
                     is_custom: true,
+                dynamic_score: None,
                 },
             );
         }
@@ -1470,6 +1507,72 @@ impl ModelManager {
         info!("Download cancellation initiated for: {}", model_id);
         Ok(())
     }
+
+    /// Update the dynamic_score for a specific model and persist all scores.
+    pub fn set_benchmark_score(&self, score: BenchmarkScore) {
+        let mut models = self.available_models.lock().unwrap();
+        if let Some(model) = models.get_mut(&score.model_id) {
+            model.dynamic_score = Some(score.clone());
+        }
+        drop(models);
+
+        // Persist all benchmark scores
+        self.persist_benchmark_scores();
+    }
+
+    /// Update all model scores from a list of benchmark results.
+    pub fn set_benchmark_scores(&self, scores: Vec<BenchmarkScore>) {
+        let mut models = self.available_models.lock().unwrap();
+        for score in &scores {
+            if let Some(model) = models.get_mut(&score.model_id) {
+                model.dynamic_score = Some(score.clone());
+            }
+        }
+        drop(models);
+
+        self.persist_benchmark_scores();
+    }
+
+    /// Load persisted benchmark scores from storage into model_info.
+    pub fn load_benchmark_scores(&self) {
+        use tauri::Manager;
+        let store = tauri_plugin_store::StoreExt::get_store(
+            self.app_handle.app_handle(),
+            "benchmark_scores.json",
+        );
+        if let Some(store) = store {
+            if let Some(value) = store.get("scores") {
+                if let Ok(scores) = serde_json::from_value::<Vec<BenchmarkScore>>(value.clone()) {
+                    let mut models = self.available_models.lock().unwrap();
+                    for score in scores {
+                        if let Some(model) = models.get_mut(&score.model_id) {
+                            model.dynamic_score = Some(score);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn persist_benchmark_scores(&self) {
+        use tauri::Manager;
+        let models = self.available_models.lock().unwrap();
+        let scores: Vec<BenchmarkScore> = models
+            .values()
+            .filter_map(|m| m.dynamic_score.clone())
+            .collect();
+        drop(models);
+
+        if let Some(store) = tauri_plugin_store::StoreExt::get_store(
+            self.app_handle.app_handle(),
+            "benchmark_scores.json",
+        ) {
+            if let Ok(value) = serde_json::to_value(&scores) {
+                let _ = store.set("scores", value);
+                let _ = store.save();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1520,6 +1623,7 @@ mod tests {
                 supported_languages: vec!["en".to_string()],
                 supports_language_selection: true,
                 is_custom: false,
+                dynamic_score: None,
             },
         );
 

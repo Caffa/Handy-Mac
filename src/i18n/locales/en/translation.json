@@ -213,7 +213,20 @@
         "translation": "Translation",
         "allLanguages": "All Languages"
       },
-      "noModelsMatch": "No models match this filter."
+      "noModelsMatch": "No models match this filter.",
+      "benchmark": {
+        "title": "Benchmark Models",
+        "description": "Run a speed benchmark using your recorded audio clips. This measures actual transcription speed on your hardware.",
+        "runBenchmark": "Run Benchmark",
+        "running": "Benchmarking...",
+        "needMoreClips": "You need at least 3 audio clips in your history to benchmark. Record some audio first.",
+        "canBenchmark": "{{count}} audio clips available for benchmark",
+        "completed": "Benchmark complete!",
+        "speedMeasured": "Measured speed",
+        "avgTime": "Avg. {{ms}}ms",
+        "clearScores": "Clear Benchmark",
+        "tooltip": "Green bars show measured speed from your latest benchmark"
+      }
     },
     "sound": {
       "title": "Sound",

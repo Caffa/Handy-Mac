@@ -162,32 +162,32 @@ const ModelCard: React.FC<ModelCardProps> = ({
           </p>
         </div>
         {(model.accuracy_score > 0 || model.speed_score > 0) && (
-          <div className="hidden sm:flex items-center ms-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-text/60 w-24 text-end">
-                  {t("onboarding.modelCard.accuracy")}
-                </p>
-                <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-logo-primary rounded-full"
-                    style={{ width: `${model.accuracy_score * 100}%` }}
-                  />
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-text/60 w-24 text-end">
-                  {t("onboarding.modelCard.speed")}
-                </p>
-                <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-logo-primary rounded-full"
-                    style={{ width: `${model.speed_score * 100}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
+           <div className="hidden sm:flex items-center ms-4">
+             <div className="space-y-1">
+               <div className="flex items-center gap-2">
+                 <p className="text-xs text-text/60 w-24 text-end">
+                   {t("onboarding.modelCard.accuracy")}
+                 </p>
+                 <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+                   <div
+                     className="h-full bg-logo-primary rounded-full"
+                     style={{ width: `${model.accuracy_score * 100}%` }}
+                   />
+                 </div>
+               </div>
+               <div className="flex items-center gap-2">
+                 <p className="text-xs text-text/60 w-24 text-end">
+                   {t("onboarding.modelCard.speed")}
+                 </p>
+                 <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+                   <div
+                     className={`h-full rounded-full ${model.dynamic_score ? "bg-green-500" : "bg-logo-primary"}`}
+                     style={{ width: `${(model.dynamic_score?.speed_score ?? model.speed_score) * 100}%` }}
+                   />
+                 </div>
+               </div>
+             </div>
+           </div>
         )}
       </div>
 

@@ -60,6 +60,10 @@ impl TranscriptionManager {
     pub fn transcribe(&self, _audio: Vec<f32>) -> Result<String> {
         Ok(String::new())
     }
+
+    pub fn transcribe_for_benchmark(&self, _audio: Vec<f32>) -> Result<String> {
+        Ok(String::new())
+    }
 }
 
 /// No-op in CI mock.

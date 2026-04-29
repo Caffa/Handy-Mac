@@ -585,6 +585,43 @@ impl HistoryManager {
         self.recordings_dir.join(file_name)
     }
 
+    /// Get the total number of history entries (for benchmark eligibility check).
+    pub fn get_history_count(&self) -> Result<usize> {
+        let conn = self.get_connection()?;
+        let count: usize = conn
+            .query_row("SELECT COUNT(*) FROM transcription_history", [], |row| {
+                row.get(0)
+            })?;
+        Ok(count)
+    }
+
+    /// Get the N most recent history entries (for benchmarking audio clips).
+    pub async fn get_recent_entries(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT
+                id,
+                file_name,
+                timestamp,
+                saved,
+                title,
+                transcription_text,
+                post_processed_text,
+                post_process_prompt,
+                post_process_requested
+             FROM transcription_history
+             ORDER BY timestamp DESC
+             LIMIT ?1",
+        )?;
+
+        let entries = stmt
+            .query_map([limit as i64], Self::map_history_entry)?
+            .filter_map(|e| e.ok())
+            .collect::<Vec<_>>();
+
+        Ok(entries)
+    }
+
     pub async fn get_entry_by_id(&self, id: i64) -> Result<Option<HistoryEntry>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(

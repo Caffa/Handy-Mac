@@ -557,6 +557,26 @@ impl TranscriptionManager {
                                 Some(normalized)
                             };
 
+                            // Optimize Whisper inference params based on audio length.
+                            // Short audio (< 30s at 16kHz = 480000 samples) benefits from
+                            // single_segment mode (skips segmentation) and greedy decoding
+                            // (faster with negligible accuracy loss for clear speech).
+                            let audio_sample_count = audio.len();
+                            // 30 seconds at 16kHz
+                            let short_audio_threshold = 16000 * 30;
+                            let is_short_audio = audio_sample_count < short_audio_threshold;
+
+                            // Reduce CPU threads when GPU acceleration is active.
+                            // On GPU the encoder runs on the GPU; extra CPU threads only
+                            // help the decoder and can cause sync overhead.
+                            let gpu_threads: i32 = if settings.whisper_accelerator
+                                != crate::settings::WhisperAcceleratorSetting::Cpu
+                            {
+                                4 // GPU handles heavy lifting, 4 CPU threads for decoder
+                            } else {
+                                0 // 0 = whisper.cpp default (min(4, num_cores))
+                            };
+
                             let params = WhisperInferenceParams {
                                 language: whisper_language,
                                 translate: settings.translate_to_english,
@@ -565,6 +585,9 @@ impl TranscriptionManager {
                                 } else {
                                     Some(settings.custom_words.join(", "))
                                 },
+                                single_segment: is_short_audio,
+                                use_greedy: is_short_audio,
+                                n_threads: gpu_threads,
                                 ..Default::default()
                             };
 
@@ -747,6 +770,116 @@ impl TranscriptionManager {
         self.maybe_unload_immediately("transcription");
 
         Ok(final_result)
+    }
+
+    /// Transcribe audio for benchmarking purposes.
+    /// Similar to `transcribe()` but uses default settings (no custom words, no post-processing)
+    /// and always uses greedy+single_segment for consistency.
+    pub fn transcribe_for_benchmark(&self, audio: Vec<f32>) -> Result<String> {
+        if audio.is_empty() {
+            return Err(anyhow::anyhow!("Empty audio for benchmark"));
+        }
+
+        // Wait for model to be loaded (if loading)
+        {
+            let is_loading = self.is_loading.lock().unwrap();
+            if *is_loading {
+                return Err(anyhow::anyhow!("Model is still loading"));
+            }
+        }
+
+        let result = {
+            let mut engine_guard = self.lock_engine();
+            let mut engine = match engine_guard.take() {
+                Some(e) => e,
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Model not loaded for benchmark. Call load_model first."
+                    ));
+                }
+            };
+            drop(engine_guard);
+
+            // Use greedy + single_segment for consistent benchmarking
+            let transcribe_result = catch_unwind(AssertUnwindSafe(|| {
+                match &mut engine {
+                    LoadedEngine::Whisper(whisper_engine) => {
+                        let params = WhisperInferenceParams {
+                            language: None, // auto-detect
+                            translate: false,
+                            single_segment: true,
+                            use_greedy: true,
+                            ..Default::default()
+                        };
+                        whisper_engine
+                            .transcribe_with(&audio, &params)
+                            .map_err(|e| anyhow::anyhow!("Whisper benchmark failed: {}", e))
+                    }
+                    LoadedEngine::Parakeet(parakeet_engine) => parakeet_engine
+                        .transcribe(&audio, &TranscribeOptions::default())
+                        .map_err(|e| anyhow::anyhow!("Parakeet benchmark failed: {}", e)),
+                    LoadedEngine::Moonshine(moonshine_engine) => moonshine_engine
+                        .transcribe(&audio, &TranscribeOptions::default())
+                        .map_err(|e| anyhow::anyhow!("Moonshine benchmark failed: {}", e)),
+                    LoadedEngine::MoonshineStreaming(streaming_engine) => streaming_engine
+                        .transcribe(&audio, &TranscribeOptions::default())
+                        .map_err(|e| {
+                            anyhow::anyhow!("Moonshine streaming benchmark failed: {}", e)
+                        }),
+                    LoadedEngine::SenseVoice(sense_voice_engine) => {
+                        let params = SenseVoiceParams {
+                            language: None,
+                            use_itn: Some(true),
+                        };
+                        sense_voice_engine
+                            .transcribe_with(&audio, &params)
+                            .map_err(|e| {
+                                anyhow::anyhow!("SenseVoice benchmark failed: {}", e)
+                            })
+                    }
+                    LoadedEngine::GigaAM(gigaam_engine) => gigaam_engine
+                        .transcribe(&audio, &TranscribeOptions::default())
+                        .map_err(|e| anyhow::anyhow!("GigaAM benchmark failed: {}", e)),
+                    LoadedEngine::Canary(canary_engine) => canary_engine
+                        .transcribe(&audio, &TranscribeOptions::default())
+                        .map_err(|e| anyhow::anyhow!("Canary benchmark failed: {}", e)),
+                    LoadedEngine::Cohere(cohere_engine) => cohere_engine
+                        .transcribe(&audio, &TranscribeOptions::default())
+                        .map_err(|e| anyhow::anyhow!("Cohere benchmark failed: {}", e)),
+                }
+            }));
+
+            match transcribe_result {
+                Ok(inner_result) => {
+                    // Success or normal error — put the engine back
+                    let mut engine_guard = self.lock_engine();
+                    *engine_guard = Some(engine);
+                    inner_result?
+                }
+                Err(panic_payload) => {
+                    // Engine panicked — do NOT put it back
+                    let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    warn!("Benchmark engine panicked: {}", panic_msg);
+                    // Clear model ID
+                    {
+                        let mut current_model = self
+                            .current_model_id
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        *current_model = None;
+                    }
+                    return Err(anyhow::anyhow!("Benchmark engine panicked: {}", panic_msg));
+                }
+            }
+        };
+
+        Ok(result.text.trim().to_string())
     }
 }
 

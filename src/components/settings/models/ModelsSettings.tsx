@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Globe } from "lucide-react";
+import { ChevronDown, Globe, Gauge, Loader2, Trash2 } from "lucide-react";
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
 import { useModelStore } from "@/stores/modelStore";
 import { LANGUAGES } from "@/lib/constants/languages.ts";
+import { commands } from "@/bindings";
 import type { ModelInfo } from "@/bindings";
 
 // check if model supports a language based on its supported_languages list
@@ -19,6 +20,13 @@ export const ModelsSettings: React.FC = () => {
   const [languageFilter, setLanguageFilter] = useState("all");
   const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false);
   const [languageSearch, setLanguageSearch] = useState("");
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+  const [benchmarkProgress, setBenchmarkProgress] = useState<{
+    stage: string;
+    model_name?: string;
+    progress?: number;
+  } | null>(null);
+  const [clipCount, setClipCount] = useState<number>(0);
   const languageDropdownRef = useRef<HTMLDivElement>(null);
   const languageSearchInputRef = useRef<HTMLInputElement>(null);
   const {
@@ -34,6 +42,7 @@ export const ModelsSettings: React.FC = () => {
     cancelDownload,
     selectModel,
     deleteModel,
+    loadModels,
   } = useModelStore();
 
   // click outside handler for language dropdown
@@ -57,6 +66,50 @@ export const ModelsSettings: React.FC = () => {
       languageSearchInputRef.current.focus();
     }
   }, [languageDropdownOpen]);
+
+  // Check if benchmarking is available
+  useEffect(() => {
+    commands.getBenchmarkClipCount().then((result) => {
+      if (result.status === "ok") {
+        setClipCount(result.data);
+      }
+    });
+  }, [models]);
+
+  // Listen for benchmark progress events
+  useEffect(() => {
+    if (!benchmarkRunning) return;
+    const unlisten = import("@tauri-apps/api/event").then(({ listen }) =>
+      listen<{ stage: string; model_name?: string; progress?: number }>(
+        "benchmark-progress",
+        (event) => {
+          setBenchmarkProgress(event.payload);
+        },
+      ),
+    );
+    return () => {
+      unlisten.then((unlistenFn) => unlistenFn());
+    };
+  }, [benchmarkRunning]);
+
+  const handleRunBenchmark = async () => {
+    setBenchmarkRunning(true);
+    setBenchmarkProgress({ stage: "started" });
+    try {
+      const result = await commands.benchmarkModels();
+      if (result.status === "ok") {
+        setBenchmarkProgress({ stage: "completed" });
+        // Reload models to get updated dynamic_score
+        await loadModels();
+      } else {
+        setBenchmarkProgress(null);
+      }
+    } catch {
+      setBenchmarkProgress(null);
+    } finally {
+      setBenchmarkRunning(false);
+    }
+  };
 
   // filtered languages for dropdown (exclude "auto")
   const filteredLanguages = useMemo(() => {
@@ -214,6 +267,74 @@ export const ModelsSettings: React.FC = () => {
         <p className="text-sm text-text/60">
           {t("settings.models.description")}
         </p>
+      </div>
+      {/* Benchmark section */}
+      <div className="border border-mid-gray/20 rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Gauge className="w-4 h-4 text-logo-primary" />
+            <h3 className="text-sm font-medium">
+              {t("settings.models.benchmark.title")}
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={handleRunBenchmark}
+            disabled={benchmarkRunning || clipCount < 3}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+              benchmarkRunning || clipCount < 3
+                ? "bg-mid-gray/10 text-text/30 cursor-not-allowed"
+                : "bg-logo-primary/20 text-logo-primary hover:bg-logo-primary/30"
+            }`}
+          >
+            {benchmarkRunning ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Gauge className="w-3.5 h-3.5" />
+            )}
+            {benchmarkRunning
+              ? t("settings.models.benchmark.running")
+              : t("settings.models.benchmark.runBenchmark")}
+          </button>
+        </div>
+        <p className="text-xs text-text/50">
+          {clipCount < 3
+            ? t("settings.models.benchmark.needMoreClips")
+            : t("settings.models.benchmark.canBenchmark", {
+                count: clipCount,
+              })}
+        </p>
+        {benchmarkProgress && benchmarkProgress.stage !== "completed" && (
+          <div className="space-y-1">
+            <div className="w-full h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-logo-primary rounded-full transition-all duration-300 animate-pulse"
+                style={{
+                  width: `${Math.max(benchmarkProgress.progress ?? 5, 5)}%`,
+                }}
+              />
+            </div>
+            {benchmarkProgress.model_name && (
+              <p className="text-xs text-text/50">
+                {benchmarkProgress.stage === "loading"
+                  ? `Loading ${benchmarkProgress.model_name}...`
+                  : `Testing ${benchmarkProgress.model_name}...`}
+              </p>
+            )}
+          </div>
+        )}
+        {benchmarkProgress?.stage === "completed" && (
+          <p className="text-xs text-green-500 font-medium">
+            ✓ {t("settings.models.benchmark.completed")}{" "}
+            {t("settings.models.benchmark.tooltip")}
+          </p>
+        )}
+        {/* Show measured score indicator if any model has been benchmarked */}
+        {models.some((m: ModelInfo) => m.dynamic_score) && (
+          <p className="text-xs text-text/40 italic">
+            {t("settings.models.benchmark.tooltip")}
+          </p>
+        )}
       </div>
       {filteredModels.length > 0 ? (
         <div className="space-y-6">
