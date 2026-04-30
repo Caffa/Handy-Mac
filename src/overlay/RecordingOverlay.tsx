@@ -27,6 +27,13 @@ const RecordingOverlay: React.FC = () => {
   const decayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const direction = getLanguageDirection(i18n.language);
 
+  // Hybrid mode indicator state
+  const [hybridEnabled, setHybridEnabled] = useState(false);
+  const [hybridThresholdSecs, setHybridThresholdSecs] = useState(20);
+  const [recordingElapsedSecs, setRecordingElapsedSecs] = useState(0);
+  const recordingStartRef = useRef<number>(0);
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // Decay timer: if we haven't received mic-level data for LEVEL_TIMEOUT_MS,
   // smoothly fade the bars toward zero so the overlay doesn't freeze.
   useEffect(() => {
@@ -49,6 +56,47 @@ const RecordingOverlay: React.FC = () => {
       }
     };
   }, []);
+
+  // Fetch hybrid mode settings when overlay becomes visible
+  useEffect(() => {
+    if (!isVisible) return;
+    const fetchHybridSettings = async () => {
+      try {
+        const result = await commands.getAppSettings();
+        if (result.status === "ok" && result.data) {
+          setHybridEnabled(result.data.hybrid_mode_enabled ?? false);
+          setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
+        }
+      } catch {
+        // Silently ignore — indicator simply won't show
+      }
+    };
+    fetchHybridSettings();
+  }, [isVisible]);
+
+  // Track recording elapsed time for hybrid mode indicator
+  useEffect(() => {
+    if (state === "recording" && isVisible) {
+      recordingStartRef.current = Date.now();
+      setRecordingElapsedSecs(0);
+      elapsedTimerRef.current = setInterval(() => {
+        const elapsed = (Date.now() - recordingStartRef.current) / 1000;
+        setRecordingElapsedSecs(elapsed);
+      }, 200);
+    } else {
+      if (elapsedTimerRef.current) {
+        clearInterval(elapsedTimerRef.current);
+        elapsedTimerRef.current = null;
+      }
+      setRecordingElapsedSecs(0);
+    }
+    return () => {
+      if (elapsedTimerRef.current) {
+        clearInterval(elapsedTimerRef.current);
+        elapsedTimerRef.current = null;
+      }
+    };
+  }, [state, isVisible]);
 
   useEffect(() => {
     const setupEventListeners = async () => {
@@ -143,18 +191,29 @@ const RecordingOverlay: React.FC = () => {
 
       <div className="overlay-middle">
         {state === "recording" && (
-          <div className="bars-container">
-            {levels.map((v, i) => (
+          <div className="bars-wrapper">
+            {hybridEnabled && (
               <div
-                key={i}
-                className="bar"
-                style={{
-                  height: `${Math.min(20, 4 + Math.pow(v, 0.7) * 16)}px`,
-                  transition: "height 80ms linear, opacity 120ms ease-out",
-                  opacity: Math.max(0.2, v * 1.7),
-                }}
-              />
-            ))}
+                className={`hybrid-indicator ${recordingElapsedSecs >= hybridThresholdSecs ? "hybrid-long" : "hybrid-short"}`}
+              >
+                {recordingElapsedSecs >= hybridThresholdSecs
+                  ? t("overlay.hybridLong")
+                  : t("overlay.hybridShort")}
+              </div>
+            )}
+            <div className="bars-container">
+              {levels.map((v, i) => (
+                <div
+                  key={i}
+                  className="bar"
+                  style={{
+                    height: `${Math.min(20, 4 + Math.pow(v, 0.7) * 16)}px`,
+                    transition: "height 80ms linear, opacity 120ms ease-out",
+                    opacity: Math.max(0.2, v * 1.7),
+                  }}
+                />
+              ))}
+            </div>
           </div>
         )}
         {state === "transcribing" && (

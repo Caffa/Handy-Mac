@@ -43,6 +43,34 @@ pub struct BenchmarkScore {
     pub clip_count: u32,
     /// Timestamp (epoch seconds) when the benchmark was run.
     pub benchmarked_at: i64,
+    /// Whether this model failed to produce any transcription during benchmarking.
+    /// If true, avg_ms and speed_score should be ignored — the model could not transcribe.
+    #[serde(default)]
+    pub failed: bool,
+}
+
+/// A model that failed during benchmarking (could not load or could not transcribe).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BenchmarkModelFailure {
+    /// Model ID that failed.
+    pub model_id: String,
+    /// Human-readable model name.
+    pub model_name: String,
+    /// Reason for failure: "load" if the model couldn't be loaded, "transcribe" if it loaded but produced no valid transcription.
+    pub reason: String,
+    /// Error message from the failure, if available.
+    pub error: String,
+}
+
+/// Complete result from a benchmark run, including successful scores and failures.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BenchmarkResult {
+    /// Scores for models that were successfully benchmarked (new + re-scored existing).
+    pub scores: Vec<BenchmarkScore>,
+    /// Models that failed during benchmarking.
+    pub failed_models: Vec<BenchmarkModelFailure>,
+    /// Model IDs that were skipped because they already had benchmark data.
+    pub skipped_model_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -1509,6 +1537,7 @@ impl ModelManager {
     }
 
     /// Update the dynamic_score for a specific model and persist all scores.
+    #[allow(dead_code)]
     pub fn set_benchmark_score(&self, score: BenchmarkScore) {
         let mut models = self.available_models.lock().unwrap();
         if let Some(model) = models.get_mut(&score.model_id) {
@@ -1521,15 +1550,89 @@ impl ModelManager {
     }
 
     /// Update all model scores from a list of benchmark results.
+    /// Also recalculates speed_score across ALL models (new + previously benchmarked)
+    /// so the relative ranking is always consistent.
     pub fn set_benchmark_scores(&self, scores: Vec<BenchmarkScore>) {
+        // First pass: update the new scores into models
         let mut models = self.available_models.lock().unwrap();
         for score in &scores {
             if let Some(model) = models.get_mut(&score.model_id) {
                 model.dynamic_score = Some(score.clone());
             }
         }
+
+        // Collect all non-failed benchmark scores (new + existing) for re-scoring
+        let all_scores: Vec<BenchmarkScore> = models
+            .values()
+            .filter_map(|m| m.dynamic_score.as_ref())
+            .filter(|s| !s.failed)
+            .cloned()
+            .collect();
+
+        // Recalculate relative speed scores across all models
+        if !all_scores.is_empty() {
+            let min_ms = all_scores.iter().map(|r| r.avg_ms).fold(f64::INFINITY, f64::min);
+            let max_ms = all_scores.iter().map(|r| r.avg_ms).fold(f64::NEG_INFINITY, f64::max);
+            let range = max_ms - min_ms;
+
+            for score_ref in &all_scores {
+                let new_speed_score = if range > 0.0 {
+                    (1.0 - (score_ref.avg_ms - min_ms) / range) as f32
+                } else {
+                    1.0
+                };
+                // Clamp to [0.05, 1.0] so no model shows as 0% speed
+                let clamped = new_speed_score.max(0.05).min(1.0);
+
+                if let Some(model) = models.get_mut(&score_ref.model_id) {
+                    if let Some(ref mut ds) = model.dynamic_score {
+                        ds.speed_score = clamped;
+                    }
+                }
+            }
+        }
+
         drop(models);
 
+        self.persist_benchmark_scores();
+    }
+
+    /// Get the set of model IDs that already have benchmark data (non-failed).
+    pub fn get_benchmarked_model_ids(&self) -> HashSet<String> {
+        let models = self.available_models.lock().unwrap();
+        models
+            .values()
+            .filter_map(|m| {
+                m.dynamic_score.as_ref().and_then(|ds| {
+                    if ds.failed {
+                        None // Re-benchmark failed models
+                    } else {
+                        Some(m.id.clone())
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// Clear the benchmark data for a specific model.
+    #[allow(dead_code)]
+    pub fn clear_benchmark_score(&self, model_id: &str) {
+        let mut models = self.available_models.lock().unwrap();
+        if let Some(model) = models.get_mut(model_id) {
+            model.dynamic_score = None;
+        }
+        drop(models);
+        self.persist_benchmark_scores();
+    }
+
+    /// Clear all benchmark data and re-score remaining models.
+    #[allow(dead_code)]
+    pub fn clear_all_benchmark_scores(&self) {
+        let mut models = self.available_models.lock().unwrap();
+        for model in models.values_mut() {
+            model.dynamic_score = None;
+        }
+        drop(models);
         self.persist_benchmark_scores();
     }
 
@@ -1545,6 +1648,11 @@ impl ModelManager {
                 if let Ok(scores) = serde_json::from_value::<Vec<BenchmarkScore>>(value.clone()) {
                     let mut models = self.available_models.lock().unwrap();
                     for score in scores {
+                        // Backward compat: old scores lack `failed` field, default to false
+                        if score.failed {
+                            // Don't load failed scores — they should be re-benchmarked
+                            continue;
+                        }
                         if let Some(model) = models.get_mut(&score.model_id) {
                             model.dynamic_score = Some(score);
                         }

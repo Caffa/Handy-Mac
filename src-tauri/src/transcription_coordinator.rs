@@ -9,6 +9,13 @@ use tauri::{AppHandle, Manager};
 
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
+/// Maximum time the coordinator will stay in `Processing` before
+/// auto-resetting to `Idle`. Prevents the app from becoming permanently
+/// unresponsive when the async transcription pipeline hangs (e.g. dead
+/// USB microphone, model load timeout, or engine panic that didn't fire
+/// the `FinishGuard`).
+const PROCESSING_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Commands processed sequentially by the coordinator thread.
 enum Command {
     Input {
@@ -21,13 +28,17 @@ enum Command {
         recording_was_active: bool,
     },
     ProcessingFinished,
+    /// Internal: the processing-timeout timer fired.
+    ProcessingTimeout,
 }
 
 /// Pipeline lifecycle, owned exclusively by the coordinator thread.
 enum Stage {
     Idle,
     Recording(String), // binding_id
-    Processing,
+    Processing {
+        since: Instant,
+    },
 }
 
 /// Serialises all transcription lifecycle events through a single thread
@@ -50,7 +61,37 @@ impl TranscriptionCoordinator {
                 let mut stage = Stage::Idle;
                 let mut last_press: Option<Instant> = None;
 
-                while let Ok(cmd) = rx.recv() {
+                loop {
+                    // Calculate recv timeout: if in Processing, wake up to check the timeout.
+                    let timeout = match &stage {
+                        Stage::Processing { since } => {
+                            let elapsed = since.elapsed();
+                            if elapsed >= PROCESSING_TIMEOUT {
+                                // Already past the deadline — reset immediately.
+                                warn!(
+                                    "Processing stage exceeded {:?} timeout, auto-resetting to Idle",
+                                    PROCESSING_TIMEOUT
+                                );
+                                stage = Stage::Idle;
+                                continue; // re-evaluate in next iteration
+                            }
+                            Some(PROCESSING_TIMEOUT - elapsed)
+                        }
+                        _ => None,
+                    };
+
+                    let cmd = match timeout {
+                        Some(dur) => match rx.recv_timeout(dur) {
+                            Ok(c) => c,
+                            Err(mpsc::RecvTimeoutError::Timeout) => Command::ProcessingTimeout,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        },
+                        None => match rx.recv() {
+                            Ok(c) => c,
+                            Err(_) => break,
+                        },
+                    };
+
                     match cmd {
                         Command::Input {
                             binding_id,
@@ -98,7 +139,7 @@ impl TranscriptionCoordinator {
                                 || matches!(stage, Stage::Recording(_))
                             {
                                 stage = Stage::Idle;
-                            } else if matches!(stage, Stage::Processing) {
+                            } else if matches!(stage, Stage::Processing { .. }) {
                                 // Allow cancel during processing too — if the
                                 // transcription pipeline hangs, the user needs a
                                 // way to unstick the app. The FinishGuard will
@@ -108,7 +149,21 @@ impl TranscriptionCoordinator {
                             }
                         }
                         Command::ProcessingFinished => {
-                            stage = Stage::Idle;
+                            if matches!(stage, Stage::Processing { .. }) {
+                                stage = Stage::Idle;
+                            }
+                        }
+                        Command::ProcessingTimeout => {
+                            // Handled above in the timeout calculation, but
+                            // also reachable if the timer fires exactly. Reset
+                            // to Idle so the pipeline can be triggered again.
+                            if matches!(stage, Stage::Processing { .. }) {
+                                warn!(
+                                    "Processing stage timed out after {:?}, auto-resetting to Idle",
+                                    PROCESSING_TIMEOUT
+                                );
+                                stage = Stage::Idle;
+                            }
                         }
                     }
                 }
@@ -186,5 +241,7 @@ fn stop(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &st
         return;
     };
     action.stop(app, binding_id, hotkey_string);
-    *stage = Stage::Processing;
+    *stage = Stage::Processing {
+        since: Instant::now(),
+    };
 }

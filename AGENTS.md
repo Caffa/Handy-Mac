@@ -23,6 +23,17 @@ CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri dev
 # Build for production
 bun run tauri build
 
+# Build + clean reinstall to /Applications (via Rapidmg)
+# This quits Handy, deletes the old app, builds, creates a DMG,
+# installs via Rapidmg, and re-signs with stable DR.
+./scripts/build-reinstall.sh
+
+# Same, but also launch the app after install
+./scripts/build-reinstall.sh --launch
+
+# Reinstall from last build (skip build step)
+./scripts/build-reinstall.sh --skip-build
+
 # Frontend only development
 bun run dev        # Start Vite dev server
 bun run build      # Build frontend (TypeScript + Vite)

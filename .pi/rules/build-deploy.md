@@ -52,9 +52,42 @@ The script:
 
 The app downloads the update in-place and relaunches — no .app swap needed.
 
-## Option B: Standalone Script (Alternative)
+## Option B: Build + DMG + Rapidmg Install (Recommended for AI Agents)
 
-For manual control (no commit required):
+The cleanest full reinstall workflow. Builds the app, packages a DMG, and uses
+Rapidmg to auto-install to `/Applications`. Ensures a pristine install every time.
+
+**Prerequisites:** [Rapidmg](https://rapidmg.app) installed at `/Applications/Rapidmg.app`.
+
+**Steps:**
+
+1. **Quit** Handy if running
+2. **Delete** `/Applications/Handy.app`
+3. **Build** the Tauri app (the DMG bundler often fails for local builds)
+4. **Create DMG** manually with `hdiutil` (since Tauri's `bundle_dmg.sh` fails)
+5. **Open the DMG** with Rapidmg — it auto-installs to `/Applications`
+6. **Re-sign** with stable DR so macOS permissions persist
+
+**One-liner for AI agents (see below for full script):**
+
+```bash
+# Full build + clean reinstall to /Applications via Rapidmg
+./scripts/build-reinstall.sh
+```
+
+**What the script does:**
+
+1. Gracefully quits Handy (AppleScript → `pkill` fallback → `kill -9` last resort)
+2. Removes `/Applications/Handy.app`
+3. Runs `CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri build`
+4. Creates a DMG with `hdiutil` from the built `.app` bundle
+5. Opens the DMG with `open -a Rapidmg <dmg>` for auto-install
+6. Re-signs the installed app with stable DR (`identifier "com.pais.handy"`)
+7. Verifies the signature
+
+## Option C: Standalone Script (Direct Copy — Alternative)
+
+For manual control without Rapidmg (copies .app directly):
 
 ```bash
 # Default to ~/Applications
@@ -64,7 +97,7 @@ For manual control (no commit required):
 INSTALL_DEST=/Applications ./scripts/build-and-install.sh
 ```
 
-## Option C: Post-Commit Hook (Alternative)
+## Option D: Post-Commit Hook (Alternative)
 
 The `.git/hooks/post-commit` hook does **nothing by default**. It only builds
 when you explicitly opt in.
@@ -113,12 +146,13 @@ chmod +x .git/hooks/post-commit
 
 ## Local Deploy Target
 
-| Destination | Pros | Cons |
-|-------------|------|------|
-| `~/Applications` | No sudo needed, user-owned | Not visible to other users |
-| `/Applications` | System-wide | Usually requires sudo |
+| Destination | Used by | Pros | Cons |
+|-------------|---------|------|------|
+| `/Applications` | Option B (Rapidmg) | System-wide, standard | Rapidmg handles permissions |
+| `~/Applications` | Option C (standalone script default) | No sudo needed | Not visible to other users |
 
-**Default: `~/Applications`**. Override via `INSTALL_DEST=/Applications`.
+**Option B always installs to `/Applications`** (Rapidmg default).
+**Option C defaults to `~/Applications`** — override via `INSTALL_DEST=/Applications`.
 
 ## Build Failure Recovery
 
@@ -144,7 +178,7 @@ bun run tauri build
 
 ## Safety Notes
 
-- The hook (Option C) runs `set -euo pipefail` — any error aborts the deploy.
+- The hook (Option D) runs `set -euo pipefail` — any error aborts the deploy.
 - Old bundle is **removed before copying** to avoid macOS cache corruption.
 - Force-kill is a last resort; graceful quit is attempted first.
 

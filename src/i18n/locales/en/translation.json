@@ -667,6 +667,8 @@
   "overlay": {
     "transcribing": "Transcribing...",
     "processing": "Processing...",
-    "usbCycling": "USB cycling…"
+    "usbCycling": "USB cycling…",
+    "hybridShort": "S",
+    "hybridLong": "L"
   }
 }

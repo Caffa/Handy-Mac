@@ -8,8 +8,16 @@
   background: #000000cc;
   border-radius: 18px;
   opacity: 0;
-  transition: opacity 300ms ease-out;
+  transition: opacity 300ms ease-out, height 200ms ease-out;
   box-sizing: border-box;
+  /* Center the pill vertically within the taller transparent window */
+  margin: auto 0;
+}
+
+/* Expand overlay pill when hybrid indicator is shown */
+.recording-overlay:has(.hybrid-indicator) {
+  height: 52px;
+  border-radius: 26px;
 }
 
 .overlay-left {
@@ -37,6 +45,42 @@
   padding-bottom: 0px;
   height: 24px;
   overflow: hidden;
+}
+
+/* Give bars more room when hybrid indicator is present */
+.recording-overlay:has(.hybrid-indicator) .bars-container {
+  height: 30px;
+}
+
+.bars-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.hybrid-indicator {
+  font-size: 8px;
+  font-weight: 700;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  transition:
+    background-color 300ms ease,
+    color 300ms ease;
+}
+
+.hybrid-short {
+  color: #4ade80;
+  background: #4ade8020;
+}
+
+.hybrid-long {
+  color: #818cf8;
+  background: #818cf820;
 }
 
 .bar {

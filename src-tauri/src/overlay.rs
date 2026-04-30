@@ -32,7 +32,12 @@ tauri_panel! {
 }
 
 const OVERLAY_WIDTH: f64 = 172.0;
-const OVERLAY_HEIGHT: f64 = 36.0;
+/// Native window height — must accommodate the tallest overlay state
+/// (hybrid mode indicator + bars). The visible pill is shorter and
+/// vertically centered via CSS `margin: auto 0`.
+const OVERLAY_WINDOW_HEIGHT: f64 = 52.0;
+/// Visible pill height used for position calculations.
+const OVERLAY_PILL_HEIGHT: f64 = 36.0;
 
 #[cfg(target_os = "macos")]
 const OVERLAY_TOP_OFFSET: f64 = 46.0;
@@ -214,7 +219,11 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64)> {
     let y = match settings.overlay_position {
         OverlayPosition::Top => monitor_y + OVERLAY_TOP_OFFSET,
         OverlayPosition::Bottom | OverlayPosition::None => {
-            monitor_y + monitor_height - OVERLAY_HEIGHT - OVERLAY_BOTTOM_OFFSET
+            // Use pill height for positioning so the visible content sits at
+            // the same screen position regardless of the taller transparent window.
+            let window_extra = OVERLAY_WINDOW_HEIGHT - OVERLAY_PILL_HEIGHT;
+            monitor_y + monitor_height - OVERLAY_PILL_HEIGHT - OVERLAY_BOTTOM_OFFSET
+                - window_extra / 2.0
         }
     };
 
@@ -244,7 +253,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
     )
     .title("Recording")
     .resizable(false)
-    .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+    .inner_size(OVERLAY_WIDTH, OVERLAY_WINDOW_HEIGHT)
     .shadow(false)
     .maximizable(false)
     .minimizable(false)
@@ -295,7 +304,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
             .level(PanelLevel::Status)
             .size(tauri::Size::Logical(tauri::LogicalSize {
                 width: OVERLAY_WIDTH,
-                height: OVERLAY_HEIGHT,
+                height: OVERLAY_WINDOW_HEIGHT,
             }))
             .has_shadow(false)
             .transparent(true)
@@ -319,7 +328,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
     }
 }
 
-fn show_overlay_state(app_handle: &AppHandle, state: &str) {
+pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str) {
     // Check if overlay should be shown based on position setting
     let settings = settings::get_settings(app_handle);
     if settings.overlay_position == OverlayPosition::None {

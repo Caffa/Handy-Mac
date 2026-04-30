@@ -1,7 +1,7 @@
-use crate::managers::model::{BenchmarkScore, ModelInfo, ModelManager};
+use crate::managers::model::{BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager};
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
-use log::warn;
+use log::{info, warn};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -231,7 +231,7 @@ pub async fn can_benchmark_models(
     let history_manager = app_handle.state::<Arc<crate::managers::history::HistoryManager>>();
 
     let has_downloaded = model_manager.get_available_models().iter().any(|m| m.is_downloaded);
-    let has_clips = history_manager.get_history_count().map_err(|e| e.to_string())? >= 3;
+    let has_clips = history_manager.get_history_count().map_err(|e| e.to_string())? >= 20;
 
     Ok(has_downloaded && has_clips)
 }
@@ -249,13 +249,15 @@ pub async fn get_benchmark_clip_count(
 }
 
 /// Run a benchmark of all downloaded models against the user's history audio clips.
-/// Returns benchmark scores with measured transcription times.
+/// Models that already have valid (non-failed) benchmark data are skipped.
+/// Returns benchmark scores with measured transcription times, plus info about
+/// any models that failed or were skipped.
 /// Emits `benchmark-progress` events as each model is tested.
 #[tauri::command]
 #[specta::specta]
 pub async fn benchmark_models(
     app_handle: AppHandle,
-) -> Result<Vec<BenchmarkScore>, String> {
+) -> Result<BenchmarkResult, String> {
     use crate::managers::transcription::TranscriptionManager;
 
     let model_manager = app_handle.state::<Arc<ModelManager>>();
@@ -273,14 +275,57 @@ pub async fn benchmark_models(
         return Err("No downloaded models to benchmark".to_string());
     }
 
-    // Get history audio clips (up to 5 for benchmarking)
+    // Determine which models already have valid (non-failed) benchmark data
+    let already_benchmarked = model_manager.get_benchmarked_model_ids();
+
+    // Filter to models that need benchmarking (no score or failed)
+    let models_to_benchmark: Vec<&ModelInfo> = downloaded_models
+        .iter()
+        .filter(|m| !already_benchmarked.contains(&m.id))
+        .collect();
+
+    let skipped_model_ids: Vec<String> = already_benchmarked
+        .iter()
+        .filter(|id| downloaded_models.iter().any(|m| m.id == **id))
+        .cloned()
+        .collect();
+
+    if models_to_benchmark.is_empty() && !already_benchmarked.is_empty() {
+        // All models already benchmarked — just re-score them and return
+        info!("All models already benchmarked, re-scoring with existing data");
+        model_manager.set_benchmark_scores(vec![]); // triggers re-scoring of all existing
+
+        // Collect re-scored results
+        let all_models = model_manager.get_available_models();
+        let scores: Vec<BenchmarkScore> = all_models
+            .iter()
+            .filter_map(|m| m.dynamic_score.clone())
+            .collect();
+
+        let _ = app_handle.emit(
+            "benchmark-progress",
+            serde_json::json!({
+                "stage": "completed",
+                "results_count": scores.len(),
+                "skipped_count": skipped_model_ids.len()
+            }),
+        );
+
+        return Ok(BenchmarkResult {
+            scores,
+            failed_models: vec![],
+            skipped_model_ids,
+        });
+    }
+
+    // Get history audio clips (up to 20 for benchmarking)
     let entries = history_manager
-        .get_recent_entries(5)
+        .get_recent_entries(20)
         .await
         .map_err(|e| e.to_string())?;
 
     if entries.is_empty() {
-        return Err("No audio clips in history for benchmarking. Record at least 3 clips first.".to_string());
+        return Err("No audio clips in history for benchmarking. Record at least 20 clips first.".to_string());
     }
 
     // Load audio samples from history
@@ -294,9 +339,9 @@ pub async fn benchmark_models(
         }
     }
 
-    if audio_clips.len() < 3 {
+    if audio_clips.len() < 20 {
         return Err(format!(
-            "Need at least 3 audio clips with valid audio for benchmarking, found {}",
+            "Need at least 20 audio clips with valid audio for benchmarking, found {}",
             audio_clips.len()
         ));
     }
@@ -306,15 +351,17 @@ pub async fn benchmark_models(
         "benchmark-progress",
         serde_json::json!({
             "stage": "started",
-            "model_count": downloaded_models.len(),
-            "clip_count": audio_clips.len()
+            "model_count": models_to_benchmark.len(),
+            "clip_count": audio_clips.len(),
+            "skipped_count": skipped_model_ids.len()
         }),
     );
 
-    let total_models = downloaded_models.len();
+    let total_models = models_to_benchmark.len();
     let mut results: Vec<BenchmarkScore> = Vec::new();
+    let mut failed_models: Vec<BenchmarkModelFailure> = Vec::new();
 
-    for (idx, model) in downloaded_models.iter().enumerate() {
+    for (idx, model) in models_to_benchmark.iter().enumerate() {
         // Emit progress for this model
         let _ = app_handle.emit(
             "benchmark-progress",
@@ -329,6 +376,12 @@ pub async fn benchmark_models(
         // Load the model
         if let Err(e) = transcription_manager.load_model(&model.id) {
             warn!("Skipping model {} in benchmark: failed to load: {}", model.id, e);
+            failed_models.push(BenchmarkModelFailure {
+                model_id: model.id.clone(),
+                model_name: model.name.clone(),
+                reason: "load".to_string(),
+                error: e.to_string(),
+            });
             continue;
         }
 
@@ -346,19 +399,30 @@ pub async fn benchmark_models(
         // Benchmark: transcribe each clip and measure time
         let mut total_ms: f64 = 0.0;
         let mut clip_count: u32 = 0;
+        let mut clip_errors: u32 = 0;
 
         for (clip_idx, clip) in audio_clips.iter().enumerate() {
             let start = std::time::Instant::now();
             match transcription_manager.transcribe_for_benchmark(clip.clone()) {
-                Ok(_) => {
-                    total_ms += start.elapsed().as_secs_f64() * 1000.0;
-                    clip_count += 1;
+                Ok(text) => {
+                    // Check if transcription produced actual content (not empty/whitespace)
+                    if text.trim().is_empty() {
+                        warn!(
+                            "Benchmark: model {} produced empty transcription on clip {}",
+                            model.id, clip_idx
+                        );
+                        clip_errors += 1;
+                    } else {
+                        total_ms += start.elapsed().as_secs_f64() * 1000.0;
+                        clip_count += 1;
+                    }
                 }
                 Err(e) => {
                     warn!(
                         "Benchmark: model {} failed on clip {}: {}",
                         model.id, clip_idx, e
                     );
+                    clip_errors += 1;
                 }
             }
         }
@@ -371,6 +435,28 @@ pub async fn benchmark_models(
                 speed_score: 0.0, // Will be computed after all models are done
                 clip_count,
                 benchmarked_at: chrono::Utc::now().timestamp(),
+                failed: false,
+            });
+        } else {
+            // Model loaded but couldn't transcribe any clips
+            failed_models.push(BenchmarkModelFailure {
+                model_id: model.id.clone(),
+                model_name: model.name.clone(),
+                reason: "transcribe".to_string(),
+                error: format!(
+                    "Failed to transcribe any of the {} clips ({} errors)",
+                    audio_clips.len(),
+                    clip_errors
+                ),
+            });
+            // Also store a failed score so we know this model was benchmarked but failed
+            results.push(BenchmarkScore {
+                model_id: model.id.clone(),
+                avg_ms: 0.0,
+                speed_score: 0.0,
+                clip_count: 0,
+                benchmarked_at: chrono::Utc::now().timestamp(),
+                failed: true,
             });
         }
 
@@ -378,36 +464,30 @@ pub async fn benchmark_models(
         let _ = transcription_manager.unload_model();
     }
 
-    // Calculate relative speed scores (0.0–1.0)
-    if !results.is_empty() {
-        let min_ms = results.iter().map(|r| r.avg_ms).fold(f64::INFINITY, f64::min);
-        let max_ms = results.iter().map(|r| r.avg_ms).fold(f64::NEG_INFINITY, f64::max);
-        let range = max_ms - min_ms;
-
-        for result in &mut results {
-            if range > 0.0 {
-                // Invert: faster (lower ms) = higher score
-                result.speed_score = (1.0 - (result.avg_ms - min_ms) / range) as f32;
-            } else {
-                // All models have same speed
-                result.speed_score = 1.0;
-            }
-            // Clamp to [0.05, 1.0] so no model shows as 0% speed
-            result.speed_score = result.speed_score.max(0.05).min(1.0);
-        }
-    }
-
-    // Update the model manager with the new scores
+    // Update the model manager with all new scores (which triggers re-scoring across ALL models)
     model_manager.set_benchmark_scores(results.clone());
+
+    // Collect all final scores (including previously benchmarked + newly scored)
+    let all_models = model_manager.get_available_models();
+    let final_scores: Vec<BenchmarkScore> = all_models
+        .iter()
+        .filter_map(|m| m.dynamic_score.clone())
+        .collect();
 
     // Emit completion event
     let _ = app_handle.emit(
         "benchmark-progress",
         serde_json::json!({
             "stage": "completed",
-            "results_count": results.len()
+            "results_count": final_scores.len(),
+            "failed_count": failed_models.len(),
+            "skipped_count": skipped_model_ids.len()
         }),
     );
 
-    Ok(results)
+    Ok(BenchmarkResult {
+        scores: final_scores,
+        failed_models,
+        skipped_model_ids,
+    })
 }

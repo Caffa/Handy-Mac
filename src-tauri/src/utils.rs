@@ -41,6 +41,13 @@ pub fn cancel_current_operation(app: &AppHandle) {
     info!("Operation cancellation completed - returned to idle state");
 }
 
+/// Show the recording overlay in "USB cycling" mode.
+/// Used during dead-stream recovery when the USB watchdog is power-cycling
+/// the hub port so the user sees visual feedback instead of a frozen app.
+pub fn show_usb_cycling_overlay(app: &AppHandle) {
+    show_overlay_state(app, "usb-cycling");
+}
+
 /// Check if using the Wayland display server protocol
 #[cfg(target_os = "linux")]
 pub fn is_wayland() -> bool {

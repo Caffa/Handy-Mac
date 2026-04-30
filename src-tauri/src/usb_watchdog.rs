@@ -17,8 +17,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long to wait after cycling power before considering the device "up"
-const POWER_CYCLE_SETTLE_SECS: u64 = 12;
+/// How long to poll for the device to re-appear after cycling power.
+/// The RØDE VideoMic NTG typically comes back in 2-4s over USB.
+/// We poll every 500ms and bail out early once the device is seen.
+const POWER_CYCLE_SETTLE_SECS: u64 = 6;
+
+/// How often to poll for the device to re-appear (in ms)
+const POWER_CYCLE_POLL_INTERVAL_MS: u64 = 500;
 
 /// Minimum seconds between two automatic power cycles (cooldown)
 const RESET_COOLDOWN_SECS: u64 = 30;
@@ -89,6 +94,9 @@ impl UsbWatchdog {
     /// This method **blocks** until the power cycle and settle period
     /// complete, so that the caller can immediately retry the mic open
     /// with the device re-enumerated.
+    ///
+    /// The overlay should be showing "USB cycling…" state before this
+    /// is called so the user sees feedback during the long wait.
     pub fn on_mic_open_failed(&self) -> bool {
         if !self.enabled.load(Ordering::SeqCst) {
             debug!("USB watchdog disabled, skipping auto-cycle");
@@ -129,6 +137,10 @@ impl UsbWatchdog {
     ///
     /// The caller (typically the mic-open retry path) can immediately
     /// attempt to reopen the audio device after this returns.
+    ///
+    /// Wrapped in `catch_unwind` to prevent a uhubctl crash from taking
+    /// down the entire app (the RØDE VideoMic NTG is known to have
+    /// flaky USB connections).
     fn power_cycle_blocking(&self) -> bool {
         // Check cooldown
         let now_epoch = epoch_secs();
@@ -172,23 +184,58 @@ impl UsbWatchdog {
         // Emit event so the frontend can show "USB cycling" state
         self.emit_cycle_event("usb-power-cycle-started", &device_name);
 
-        // Run uhubctl synchronously on this thread.
-        let start = Instant::now();
-        match run_uhubctl_cycle(&device.hub, &device.port) {
-            Ok(()) => {
-                info!(
-                    "USB watchdog: uhubctl cycle completed for '{}' in {:?}",
-                    device_name,
-                    start.elapsed()
-                );
-                // Wait for device to re-enumerate
-                info!("USB watchdog: waiting {}s for device to re-enumerate…", POWER_CYCLE_SETTLE_SECS);
-                std::thread::sleep(Duration::from_secs(POWER_CYCLE_SETTLE_SECS));
-                info!("USB watchdog: settle period complete, device should be available");
+        // Run uhubctl inside catch_unwind to prevent panics from crashing the app.
+        // USB device issues can cause unexpected behavior in child processes.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let start = Instant::now();
+            match run_uhubctl_cycle(&device.hub, &device.port) {
+                Ok(()) => {
+                    info!(
+                        "USB watchdog: uhubctl cycle completed for '{}' in {:?}",
+                        device_name,
+                        start.elapsed()
+                    );
+                    // Poll for the device to re-appear instead of sleeping the full settle time.
+                    // USB devices typically come back in 2-4 seconds; polling saves 6-10s.
+                    let settle_start = Instant::now();
+                    let settle_max = Duration::from_secs(POWER_CYCLE_SETTLE_SECS);
+                    let poll_interval = Duration::from_millis(POWER_CYCLE_POLL_INTERVAL_MS);
+                    loop {
+                        if resolve_device(&device_name).is_some() {
+                            info!(
+                                "USB watchdog: device '{}' re-appeared after {:?}",
+                                device_name,
+                                settle_start.elapsed()
+                            );
+                            // Small extra delay for the audio subsystem to recognise it
+                            std::thread::sleep(Duration::from_millis(300));
+                            break;
+                        }
+                        if settle_start.elapsed() >= settle_max {
+                            warn!(
+                                "USB watchdog: device '{}' did not re-appear within {}s, proceeding anyway",
+                                device_name, POWER_CYCLE_SETTLE_SECS
+                            );
+                            break;
+                        }
+                        std::thread::sleep(poll_interval);
+                    }
+                }
+                Err(e) => {
+                    error!("USB watchdog: uhubctl failed: {}", e);
+                    self.emit_cycle_event("usb-power-cycle-failed", &format!("uhubctl failed: {}", e));
+                }
             }
-            Err(e) => {
-                error!("USB watchdog: uhubctl failed: {}", e);
-                self.emit_cycle_event("usb-power-cycle-failed", &format!("uhubctl failed: {}", e));
+        }));
+
+        if let Err(panic) = result {
+            error!("USB watchdog: power_cycle_blocking panicked — recovering without crashing");
+            self.emit_cycle_event("usb-power-cycle-failed", "power cycle panicked");
+            // Log the panic info for debugging
+            if let Some(s) = panic.downcast_ref::<&str>() {
+                error!("USB watchdog panic: {}", s);
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                error!("USB watchdog panic: {}", s);
             }
         }
 
@@ -203,6 +250,8 @@ impl UsbWatchdog {
     /// Runs the cycle on a background thread so the UI stays responsive.
     /// The `cycling` flag stays `true` for the entire duration and is
     /// cleared only when the cycle + settle completes.
+    ///
+    /// Wrapped in `catch_unwind` to prevent panics from crashing the app.
     pub fn force_power_cycle(&self) -> bool {
         if self.cycling.swap(true, Ordering::SeqCst) {
             debug!("USB watchdog: cycle already in progress");
@@ -244,24 +293,62 @@ impl UsbWatchdog {
         let app_handle = self.app_handle.clone();
 
         std::thread::spawn(move || {
-            let start = Instant::now();
-            match run_uhubctl_cycle(&hub, &port) {
-                Ok(()) => {
-                    info!(
-                        "USB watchdog: forced uhubctl cycle completed for '{}' in {:?}",
-                        name,
-                        start.elapsed()
-                    );
-                    std::thread::sleep(Duration::from_secs(POWER_CYCLE_SETTLE_SECS));
-                    info!("USB watchdog: settle period complete after forced cycle");
+            // Wrap in catch_unwind to prevent panics from crashing the app
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let start = Instant::now();
+                match run_uhubctl_cycle(&hub, &port) {
+                    Ok(()) => {
+                        info!(
+                            "USB watchdog: forced uhubctl cycle completed for '{}' in {:?}",
+                            name,
+                            start.elapsed()
+                        );
+                        // Poll for the device to re-appear instead of sleeping blindly
+                        let settle_start = Instant::now();
+                        let settle_max = Duration::from_secs(POWER_CYCLE_SETTLE_SECS);
+                        let poll_interval = Duration::from_millis(POWER_CYCLE_POLL_INTERVAL_MS);
+                        loop {
+                            if resolve_device(&name).is_some() {
+                                info!(
+                                    "USB watchdog: device '{}' re-appeared after {:?} (forced cycle)",
+                                    name,
+                                    settle_start.elapsed()
+                                );
+                                std::thread::sleep(Duration::from_millis(300));
+                                break;
+                            }
+                            if settle_start.elapsed() >= settle_max {
+                                warn!(
+                                    "USB watchdog: device '{}' did not re-appear within {}s after forced cycle",
+                                    name, POWER_CYCLE_SETTLE_SECS
+                                );
+                                break;
+                            }
+                            std::thread::sleep(poll_interval);
+                        }
+                    }
+                    Err(e) => {
+                        error!("USB watchdog: forced uhubctl failed: {}", e);
+                        emit_cycle_event_with_handle(
+                            &app_handle,
+                            "usb-power-cycle-failed",
+                            &format!("uhubctl failed: {}", e),
+                        );
+                    }
                 }
-                Err(e) => {
-                    error!("USB watchdog: forced uhubctl failed: {}", e);
-                    emit_cycle_event_with_handle(
-                        &app_handle,
-                        "usb-power-cycle-failed",
-                        &format!("uhubctl failed: {}", e),
-                    );
+            }));
+
+            if let Err(panic) = result {
+                error!("USB watchdog: force_power_cycle thread panicked — recovering without crashing");
+                emit_cycle_event_with_handle(
+                    &app_handle,
+                    "usb-power-cycle-failed",
+                    "forced power cycle panicked",
+                );
+                if let Some(s) = panic.downcast_ref::<&str>() {
+                    error!("USB watchdog panic: {}", s);
+                } else if let Some(s) = panic.downcast_ref::<String>() {
+                    error!("USB watchdog panic: {}", s);
                 }
             }
 
@@ -434,29 +521,57 @@ fn which_uhubctl() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-/// Run `uhubctl -l <hub> -p <port> -a cycle -d 3`
+/// Maximum time to wait for `uhubctl` to complete before giving up.
+/// Prevents the app from hanging indefinitely if uhubctl itself gets stuck.
+const UHUBCTL_TIMEOUT_SECS: u64 = 15;
+
+/// Run `uhubctl -l <hub> -p <port> -a cycle -d 3` with a timeout.
+///
+/// If uhubctl doesn't finish within `UHUBCTL_TIMEOUT_SECS`, the child
+/// process is killed to prevent the app from hanging indefinitely.
 fn run_uhubctl_cycle(hub_id: &str, port: &str) -> Result<(), String> {
     let bin = uhubctl_bin().ok_or_else(|| "uhubctl not found on system".to_string())?;
 
-    let output = std::process::Command::new(&bin)
+    let mut child = std::process::Command::new(&bin)
         .args(["-l", hub_id, "-p", port, "-a", "cycle", "-d", "3"])
         .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
-        .output()
-        .map_err(|e| format!("Failed to execute uhubctl: {}", e))?;
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn uhubctl: {}", e))?;
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        debug!("uhubctl stdout: {}", stdout.trim());
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Err(format!(
-            "uhubctl exited with {}: stderr={}, stdout={}",
-            output.status,
-            stderr.trim(),
-            stdout.trim()
-        ))
+    let timeout = Duration::from_secs(UHUBCTL_TIMEOUT_SECS);
+    let start = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    debug!("uhubctl completed successfully");
+                    // Reap the child to collect stdout/stderr
+                    let _ = child.wait();
+                    return Ok(());
+                }
+                let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "killed by signal".to_string());
+                return Err(format!("uhubctl exited with {}", code));
+            }
+            Ok(None) => {
+                // Still running — check timeout
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "uhubctl timed out after {}s — killed",
+                        UHUBCTL_TIMEOUT_SECS
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => {
+                return Err(format!("uhubctl wait error: {}", e));
+            }
+        }
     }
 }
 
