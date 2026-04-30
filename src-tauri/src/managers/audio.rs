@@ -603,37 +603,60 @@ impl AudioRecordingManager {
     }
 
     pub fn stop_recording(&self, binding_id: &str) -> Option<Vec<f32>> {
-        let mut state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap();
 
         match *state {
             RecordingState::Recording {
                 binding_id: ref active,
             } if active == binding_id => {
-                *state = RecordingState::Idle;
+                // NOTE: We intentionally keep the state as Recording during the
+                // smart-stop buffer period so that try_start_recording() rejects
+                // new recordings while we are still capturing trailing audio.
                 drop(state);
 
-                // Optionally keep recording for a bit longer to capture trailing audio
+                // Use volume-aware stop when an extra recording buffer is
+                // configured.  This continues recording for up to the configured
+                // time but stops early when the microphone level drops below the
+                // estimated noise floor, avoiding unnecessary waiting.
                 let settings = get_settings(&self.app_handle);
-                if settings.extra_recording_buffer_ms > 0 {
+
+                let samples = if settings.extra_recording_buffer_ms > 0 {
                     debug!(
-                        "Extra recording buffer: sleeping {}ms before stopping",
+                        "Smart-stop: starting volume-aware buffer (max {}ms)",
                         settings.extra_recording_buffer_ms
                     );
-                    std::thread::sleep(Duration::from_millis(settings.extra_recording_buffer_ms));
-                }
-
-                let samples = if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
-                    match rec.stop() {
-                        Ok(buf) => buf,
-                        Err(e) => {
-                            error!("stop() failed: {e}");
-                            Vec::new()
+                    if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+                        match rec.smart_stop(settings.extra_recording_buffer_ms) {
+                            Ok(buf) => buf,
+                            Err(e) => {
+                                error!("smart_stop() failed: {e}");
+                                Vec::new()
+                            }
                         }
+                    } else {
+                        error!("Recorder not available for smart_stop");
+                        Vec::new()
                     }
                 } else {
-                    error!("Recorder not available");
-                    Vec::new()
+                    if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+                        match rec.stop() {
+                            Ok(buf) => buf,
+                            Err(e) => {
+                                error!("stop() failed: {e}");
+                                Vec::new()
+                            }
+                        }
+                    } else {
+                        error!("Recorder not available");
+                        Vec::new()
+                    }
                 };
+
+                // Now transition to Idle after the buffer is complete.
+                {
+                    let mut state = self.state.lock().unwrap();
+                    *state = RecordingState::Idle;
+                }
 
                 *self.is_recording.lock().unwrap() = false;
 

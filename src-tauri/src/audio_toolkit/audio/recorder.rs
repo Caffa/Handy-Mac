@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cpal::{
@@ -22,8 +22,72 @@ use crate::audio_toolkit::{
 enum Cmd {
     Start,
     Stop(mpsc::Sender<Vec<f32>>),
+    /// Continue recording for up to `max_buffer_ms` after the hotkey is
+    /// released, but stop early when sustained silence is detected (based
+    /// on the microphone volume relative to the noise floor).
+    SmartStop {
+        max_buffer_ms: u64,
+        reply_tx: mpsc::Sender<Vec<f32>>,
+    },
     Shutdown,
 }
+
+/// Classification of a VAD-processed audio frame, used for noise
+/// floor estimation during recording.
+#[derive(Debug)]
+enum FrameClass {
+    /// Frame classified as speech by VAD (or no VAD configured).
+    Speech,
+    /// Frame classified as noise by VAD.
+    Noise,
+    /// Not recording – frame was ignored.
+    NotRecording,
+}
+
+/// State tracked during a smart-stop (volume-aware) trailing buffer.
+struct SmartStopState {
+    /// When the smart buffer period started.
+    start: Instant,
+    /// Maximum duration of the smart buffer.
+    max_duration: Duration,
+    /// Channel to send the final audio samples on completion.
+    reply_tx: mpsc::Sender<Vec<f32>>,
+    /// Estimated noise floor (RMS) built from VAD-noise frames during
+    /// the preceding recording.
+    noise_floor: f32,
+    /// Timestamp of the most recent frame whose RMS exceeded the
+    /// silence threshold (noise_floor × multiplier).
+    last_voice_above_floor: Instant,
+}
+
+// ─── Smart-stop tuning constants ──────────────────────────────────────
+//
+// SILENCE_RMS_MULTIPLIER: A frame is considered "voice" when its RMS
+//   exceeds `noise_floor * SILENCE_RMS_MULTIPLIER`.  3× means that
+//   even modest speech (3× louder than background noise) keeps the
+//   buffer open, while pure silence or steady ambient noise closes it.
+const SILENCE_RMS_MULTIPLIER: f32 = 3.0;
+
+// SILENCE_THRESHOLD_MS: How long the volume must stay below the
+//   threshold before we decide the user has finished speaking.
+//   300 ms ≈ the length of a very short pause; it avoids cutting off
+//   natural micro-pauses in continuous speech.
+const SILENCE_THRESHOLD_MS: u64 = 300;
+
+// MIN_BUFFER_MS: The shortest time we *always* wait before considering
+//   an early stop.  Guarantees we capture trailing consonants or a
+//   brief final syllable that might dip below threshold for a few ms.
+const MIN_BUFFER_MS: u64 = 100;
+
+// NOISE_ALPHA: Exponential moving average (EMA) coefficient for noise
+//   floor estimation.  0.05 adapts fairly quickly to background changes
+//   while staying resistant to brief speech spikes classified as noise.
+const NOISE_ALPHA: f32 = 0.05;
+
+// DEFAULT_NOISE_FLOOR: Fallback noise floor when no VAD-noise frames
+//   have been observed yet (e.g. user spoke continuously with no gaps).
+//   ≈ RMS of –46 dBFS in 16-bit audio – quiet but not silence.
+const DEFAULT_NOISE_FLOOR: f32 = 0.005;
 
 enum AudioChunk {
     Samples(Vec<f32>),
@@ -214,6 +278,25 @@ impl AudioRecorder {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
+        }
+        Ok(resp_rx.recv()?) // wait for the samples
+    }
+
+    /// Volume-aware stop: continues recording for up to `max_buffer_ms`
+    /// after the hotkey is released, but stops early when the microphone
+    /// level drops below the noise floor for a sustained period.
+    ///
+    /// The noise floor is estimated from VAD-classified "noise" frames
+    /// collected during the preceding recording, so noisy environments
+    /// are handled naturally — the threshold adapts to whatever
+    /// background level was present while the user was speaking.
+    pub fn smart_stop(&self, max_buffer_ms: u64) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        if let Some(tx) = &self.cmd_tx {
+            tx.send(Cmd::SmartStop {
+                max_buffer_ms,
+                reply_tx: resp_tx,
+            })?;
         }
         Ok(resp_rx.recv()?) // wait for the samples
     }
@@ -423,6 +506,45 @@ mod tests {
     }
 }
 
+/// Compute the root-mean-square (RMS) of a slice of f32 samples.
+/// Returns 0.0 for empty slices.
+#[inline]
+fn compute_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    (sum / samples.len() as f64).sqrt() as f32
+}
+
+/// Process a resampled audio frame through VAD and optionally append
+/// speech to the output buffer.  Returns the VAD classification so
+/// the caller can update the noise floor estimate.
+fn handle_frame(
+    samples: &[f32],
+    recording: bool,
+    vad: &Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
+    out_buf: &mut Vec<f32>,
+) -> FrameClass {
+    if !recording {
+        return FrameClass::NotRecording;
+    }
+
+    if let Some(vad_arc) = vad {
+        let mut det = vad_arc.lock().unwrap();
+        match det.push_frame(samples).unwrap_or(VadFrame::Speech(samples)) {
+            VadFrame::Speech(buf) => {
+                out_buf.extend_from_slice(buf);
+                FrameClass::Speech
+            }
+            VadFrame::Noise => FrameClass::Noise,
+        }
+    } else {
+        out_buf.extend_from_slice(samples);
+        FrameClass::Speech
+    }
+}
+
 fn run_consumer(
     in_sample_rate: u32,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
@@ -441,6 +563,18 @@ fn run_consumer(
     let mut processed_samples = Vec::<f32>::new();
     let mut recording = false;
 
+    // Running estimate of background noise level, built from the RMS of
+    // frames that VAD classifies as Noise during an active recording.
+    let mut noise_floor: f32 = DEFAULT_NOISE_FLOOR;
+    // Whether at least one noise frame has been observed (so noise_floor
+    // reflects actual data rather than the default).
+    let mut noise_floor_initialised = false;
+
+    // Active smart-stop state.  When Some, we are in the trailing buffer
+    // period after the user released the hotkey, continuing to record
+    // until silence is detected or the maximum time expires.
+    let mut smart_stop: Option<SmartStopState> = None;
+
     // ---------- spectrum visualisation setup ---------------------------- //
     const BUCKETS: usize = 16;
     const WINDOW_SIZE: usize = 512;
@@ -452,31 +586,51 @@ fn run_consumer(
         4000.0, // vocal_max_hz
     );
 
-    fn handle_frame(
-        samples: &[f32],
-        recording: bool,
-        vad: &Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
-        out_buf: &mut Vec<f32>,
-    ) {
-        if !recording {
-            return;
-        }
-
-        if let Some(vad_arc) = vad {
-            let mut det = vad_arc.lock().unwrap();
-            match det.push_frame(samples).unwrap_or(VadFrame::Speech(samples)) {
-                VadFrame::Speech(buf) => out_buf.extend_from_slice(buf),
-                VadFrame::Noise => {}
+    loop {
+        // ------------------------------------------------------------------
+        // Receive audio chunk.
+        // When a smart-stop is in progress we use recv_timeout() so the loop
+        // can check whether the max buffer duration has expired even if no
+        // audio is arriving (e.g. mic stream died mid-buffer).  Without this
+        // the consumer would block on recv() forever and never finalise.
+        // ------------------------------------------------------------------
+        let chunk = if smart_stop.is_some() {
+            match sample_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(c) => c,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // No audio in 50 ms — check whether the smart buffer
+                    // should be finalised due to elapsed time.
+                    if let Some(ref ss) = smart_stop {
+                        let elapsed = Instant::now() - ss.start;
+                        if elapsed >= ss.max_duration {
+                            // Max time reached without audio: finalise now.
+                            recording = false;
+                            frame_resampler.finish(&mut |frame: &[f32]| {
+                                let _ = handle_frame(
+                                    frame,
+                                    true, // force-record remaining frames
+                                    &vad,
+                                    &mut processed_samples,
+                                );
+                            });
+                            if let Some(ss) = smart_stop.take() {
+                                log::debug!(
+                                    "Smart-stop: max duration reached (no audio) after {}ms",
+                                    elapsed.as_millis(),
+                                );
+                                let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         } else {
-            out_buf.extend_from_slice(samples);
-        }
-    }
-
-    loop {
-        let chunk = match sample_rx.recv() {
-            Ok(c) => c,
-            Err(_) => break, // stream closed
+            match sample_rx.recv() {
+                Ok(c) => c,
+                Err(_) => break, // stream closed
+            }
         };
 
         let raw = match chunk {
@@ -498,10 +652,76 @@ fn run_consumer(
             }
         }
 
-        // ---------- existing pipeline ------------------------------------ //
+        // ---------- audio pipeline + noise/smart-stop tracking ---------- //
+        // Flag set inside the push closure when the smart-stop condition
+        // is met, so we can finalise after the closure returns (we cannot
+        // borrow frame_resampler inside the closure).
+        //
+        // We intentionally do NOT set recording=false inside the closure
+        // so that subsequent frames in the same push() batch are still
+        // processed by VAD and added to processed_samples.  Finalisation
+        // sets recording=false after push() returns.
+        let mut smart_stop_triggered = false;
+
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
-            handle_frame(frame, recording, &vad, &mut processed_samples)
+            let rms = compute_rms(frame);
+            let class = handle_frame(frame, recording, &vad, &mut processed_samples);
+
+            // Update the running noise floor from VAD-noise frames while
+            // recording (but NOT during smart-stop – those frames are
+            // still part of the utterance tail and should not shift the
+            // baseline).
+            if recording && matches!(class, FrameClass::Noise) && smart_stop.is_none() {
+                if noise_floor_initialised {
+                    noise_floor = NOISE_ALPHA * rms + (1.0 - NOISE_ALPHA) * noise_floor;
+                } else {
+                    noise_floor = rms;
+                    noise_floor_initialised = true;
+                }
+            }
+
+            // ---- smart-stop (volume-aware trailing buffer) ---- //
+            if let Some(ref mut ss) = smart_stop {
+                let now = Instant::now();
+                let elapsed = now - ss.start;
+
+                // If volume exceeds the silence threshold, mark it as voice.
+                if rms > ss.noise_floor * SILENCE_RMS_MULTIPLIER {
+                    ss.last_voice_above_floor = now;
+                }
+
+                let silence_duration = now - ss.last_voice_above_floor;
+                let min_buffer_elapsed = elapsed >= Duration::from_millis(MIN_BUFFER_MS);
+                let max_buffer_elapsed = elapsed >= ss.max_duration;
+                let silence_detected = min_buffer_elapsed
+                    && silence_duration >= Duration::from_millis(SILENCE_THRESHOLD_MS);
+
+                if max_buffer_elapsed || silence_detected {
+                    // Do NOT set recording=false here; do it in the
+                    // finalisation block after push() returns, so that
+                    // subsequent frames in this batch are still collected.
+                    smart_stop_triggered = true;
+                    log::debug!(
+                        "Smart-stop: finalising after {}ms (silence detected: {})",
+                        elapsed.as_millis(),
+                        silence_detected,
+                    );
+                }
+            }
         });
+
+        // ---- smart-stop finalisation (outside the push closure) ---- //
+        if smart_stop_triggered {
+            recording = false;
+
+            frame_resampler.finish(&mut |frame: &[f32]| {
+                let _ = handle_frame(frame, true, &vad, &mut processed_samples);
+            });
+
+            if let Some(ss) = smart_stop.take() {
+                let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+            }
+        }
 
         // non-blocking check for a command
         while let Ok(cmd) = cmd_rx.try_recv() {
@@ -510,12 +730,26 @@ fn run_consumer(
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
                     recording = true;
+                    noise_floor = DEFAULT_NOISE_FLOOR;
+                    noise_floor_initialised = false;
+                    smart_stop = None;
                     visualizer.reset();
                     if let Some(v) = &vad {
                         v.lock().unwrap().reset();
                     }
                 }
                 Cmd::Stop(reply_tx) => {
+                    // If a smart-stop is in progress, resolve it with
+                    // whatever samples we have so far so the caller
+                    // doesn’t hang forever on resp_rx.recv().
+                    if let Some(ss) = smart_stop.take() {
+                        frame_resampler.finish(&mut |frame: &[f32]| {
+                            let _ = handle_frame(frame, true, &vad, &mut processed_samples);
+                        });
+                        let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                        log::debug!("Smart-stop: resolved by Cmd::Stop (cancel)");
+                    }
+
                     recording = false;
                     stop_flag.store(true, Ordering::Relaxed);
 
@@ -527,7 +761,7 @@ fn run_consumer(
                         match sample_rx.recv_timeout(Duration::from_secs(2)) {
                             Ok(AudioChunk::Samples(remaining)) => {
                                 frame_resampler.push(&remaining, &mut |frame: &[f32]| {
-                                    handle_frame(frame, true, &vad, &mut processed_samples)
+                                    let _ = handle_frame(frame, true, &vad, &mut processed_samples);
                                 });
                             }
                             Ok(AudioChunk::EndOfStream) => break,
@@ -539,7 +773,7 @@ fn run_consumer(
                     }
 
                     frame_resampler.finish(&mut |frame: &[f32]| {
-                        handle_frame(frame, true, &vad, &mut processed_samples)
+                        let _ = handle_frame(frame, true, &vad, &mut processed_samples);
                     });
 
                     let _ = reply_tx.send(std::mem::take(&mut processed_samples));
@@ -547,6 +781,27 @@ fn run_consumer(
                     // Resume the audio callback so the consumer loop can continue
                     // receiving chunks (important for always-on microphone mode).
                     stop_flag.store(false, Ordering::Relaxed);
+                }
+                Cmd::SmartStop {
+                    max_buffer_ms,
+                    reply_tx,
+                } => {
+                    // Enter volume-aware trailing buffer mode.
+                    // Recording continues; we monitor volume and stop
+                    // early when sustained silence is detected.
+                    let now = Instant::now();
+                    smart_stop = Some(SmartStopState {
+                        start: now,
+                        max_duration: Duration::from_millis(max_buffer_ms),
+                        reply_tx,
+                        noise_floor,
+                        last_voice_above_floor: now,
+                    });
+                    log::debug!(
+                        "Smart-stop: entering trailing buffer (max {}ms, noise_floor={:.6})",
+                        max_buffer_ms,
+                        noise_floor,
+                    );
                 }
                 Cmd::Shutdown => {
                     stop_flag.store(true, Ordering::Relaxed);
