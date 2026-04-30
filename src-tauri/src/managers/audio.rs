@@ -1,4 +1,4 @@
-use crate::audio_toolkit::{list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
+use crate::audio_toolkit::{is_bluetooth_audio_active, list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
 use crate::helpers::clamshell;
 use crate::settings::{get_settings, AppSettings};
 use crate::usb_watchdog::UsbWatchdog;
@@ -155,6 +155,13 @@ pub struct AudioRecordingManager {
     did_mute: Arc<Mutex<bool>>,
     close_generation: Arc<AtomicU64>,
     pub usb_watchdog: Arc<UsbWatchdog>,
+    /// When a Bluetooth output device is detected, we keep the mic stream
+    /// alive permanently (like always-on mode) regardless of the user's
+    /// microphone mode setting. This prevents macOS from repeatedly
+    /// switching the BT headset between A2DP (stereo) and HFP/SCO (mono)
+    /// profiles every time the stream opens/closes, which causes audio
+    /// dropouts on the headphones.
+    bt_keep_alive: Arc<Mutex<bool>>,
 }
 
 impl AudioRecordingManager {
@@ -185,10 +192,18 @@ impl AudioRecordingManager {
             did_mute: Arc::new(Mutex::new(false)),
             close_generation: Arc::new(AtomicU64::new(0)),
             usb_watchdog,
+            bt_keep_alive: Arc::new(Mutex::new(false)),
         };
 
-        // Always-on?  Open immediately.
-        if matches!(mode, MicrophoneMode::AlwaysOn) {
+        // Check for Bluetooth output devices — if detected, keep the mic
+        // stream alive permanently to prevent A2DP↔HFP profile switching
+        // that causes audio dropouts on Bluetooth headphones.
+        let bt_active = manager.is_bluetooth_output_active();
+        if bt_active {
+            info!("Bluetooth output device detected at startup — enabling mic stream keep-alive to prevent audio dropouts");
+            *manager.bt_keep_alive.lock().unwrap() = true;
+            manager.start_microphone_stream()?;
+        } else if matches!(mode, MicrophoneMode::AlwaysOn) {
             manager.start_microphone_stream()?;
         }
 
@@ -224,9 +239,22 @@ impl AudioRecordingManager {
         }
     }
 
+    /// Returns true if a Bluetooth output device is currently active (either the
+    /// system default or the user's selected output device). When Bluetooth audio
+    /// is active, we keep the microphone stream alive between recordings to
+    /// prevent macOS from repeatedly switching the Bluetooth headset between
+    /// A2DP (stereo) and HFP/SCO (mono with mic) profiles, which causes audio
+    /// dropouts on the headphones.
+    fn is_bluetooth_output_active(&self) -> bool {
+        let settings = get_settings(&self.app_handle);
+        let selected = settings.selected_output_device.as_deref();
+        is_bluetooth_audio_active(selected)
+    }
+
     fn schedule_lazy_close(&self) {
         let gen = self.close_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let app = self.app_handle.clone();
+        let bt_keep_alive = self.bt_keep_alive.clone();
         std::thread::spawn(move || {
             std::thread::sleep(STREAM_IDLE_TIMEOUT);
             let rm = app.state::<Arc<AudioRecordingManager>>();
@@ -234,6 +262,13 @@ impl AudioRecordingManager {
             // try_start_recording, preventing a race where the stream is closed
             // under an active recording.
             let state = rm.state.lock().unwrap();
+            // Never close the stream if BT keep-alive is active
+            if *bt_keep_alive.lock().unwrap() {
+                debug!(
+                    "Skipping lazy close: BT keep-alive is active"
+                );
+                return;
+            }
             if rm.close_generation.load(Ordering::SeqCst) == gen
                 && matches!(*state, RecordingState::Idle)
             {
@@ -409,14 +444,20 @@ impl AudioRecordingManager {
 
         match (cur_mode, &new_mode) {
             (MicrophoneMode::AlwaysOn, MicrophoneMode::OnDemand) => {
-                if matches!(*self.state.lock().unwrap(), RecordingState::Idle) {
+                // Don't close the stream if BT keep-alive is active
+                if *self.bt_keep_alive.lock().unwrap() {
+                    info!("BT keep-alive active: keeping mic stream open despite mode switch to OnDemand");
+                } else if matches!(*self.state.lock().unwrap(), RecordingState::Idle) {
                     self.close_generation.fetch_add(1, Ordering::SeqCst);
                     self.stop_microphone_stream();
                 }
             }
             (MicrophoneMode::OnDemand, MicrophoneMode::AlwaysOn) => {
-                self.close_generation.fetch_add(1, Ordering::SeqCst);
-                self.start_microphone_stream()?;
+                // Stream may already be open from BT keep-alive
+                if !*self.is_open.lock().unwrap() {
+                    self.close_generation.fetch_add(1, Ordering::SeqCst);
+                    self.start_microphone_stream()?;
+                }
             }
             _ => {}
         }
@@ -432,44 +473,71 @@ impl AudioRecordingManager {
     const STREAM_LIVENESS_TIMEOUT_MS: u64 = 3000;
 
     pub fn try_start_recording(&self, binding_id: &str) -> Result<(), String> {
-        let mut state = self.state.lock().unwrap();
+        // Quick check under lock — just verify we're in Idle state.
+        {
+            let state = self.state.lock().unwrap();
+            if !matches!(*state, RecordingState::Idle) {
+                return Err("Already recording".to_string());
+            }
+        }
+        // State lock is released here. The actual state transition happens
+        // below, after the potentially-slow liveness check.
 
-        if let RecordingState::Idle = *state {
-            // Ensure microphone is open in on-demand mode
-            if matches!(*self.mode.lock().unwrap(), MicrophoneMode::OnDemand) {
-                // Cancel any pending lazy close
+        // Ensure microphone is open in on-demand mode
+        // (unless BT keep-alive has already opened it)
+        let bt_keep_alive = *self.bt_keep_alive.lock().unwrap();
+        if matches!(*self.mode.lock().unwrap(), MicrophoneMode::OnDemand) && !bt_keep_alive {
+            // Cancel any pending lazy close
+            self.close_generation.fetch_add(1, Ordering::SeqCst);
+            if let Err(e) = self.start_microphone_stream() {
+                let msg = format!("{e}");
+                error!("Failed to open microphone stream: {msg}");
+                return Err(msg);
+            }
+        } else {
+            // Always-on mode: check if the stream is actually alive.
+            // If the audio device disconnected (USB, Bluetooth), the
+            // is_open flag may still be true but no data is flowing.
+            let stream_alive = self
+                .recorder
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map_or(false, |r| r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS));
+
+            if *self.is_open.lock().unwrap() && !stream_alive {
+                warn!(
+                    "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
+                    Self::STREAM_LIVENESS_TIMEOUT_MS
+                );
+
+                // Show USB-cycling indicator on overlay so the user knows
+                // the mic is being recovered (this can take 10+ seconds if
+                // the USB watchdog triggers a power cycle).
+                utils::show_usb_cycling_overlay(&self.app_handle);
+                crate::tray::change_tray_icon(&self.app_handle, crate::tray::TrayIconState::Recording);
+
                 self.close_generation.fetch_add(1, Ordering::SeqCst);
+                self.stop_microphone_stream();
                 if let Err(e) = self.start_microphone_stream() {
                     let msg = format!("{e}");
-                    error!("Failed to open microphone stream: {msg}");
+                    error!("Failed to restart dead microphone stream: {msg}");
+                    utils::hide_recording_overlay(&self.app_handle);
+                    crate::tray::change_tray_icon(&self.app_handle, crate::tray::TrayIconState::Idle);
                     return Err(msg);
                 }
-            } else {
-                // Always-on mode: check if the stream is actually alive.
-                // If the audio device disconnected (USB, Bluetooth), the
-                // is_open flag may still be true but no data is flowing.
-                let stream_alive = self
-                    .recorder
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map_or(false, |r| r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS));
 
-                if *self.is_open.lock().unwrap() && !stream_alive {
-                    warn!(
-                        "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
-                        Self::STREAM_LIVENESS_TIMEOUT_MS
-                    );
-                    self.close_generation.fetch_add(1, Ordering::SeqCst);
-                    self.stop_microphone_stream();
-                    if let Err(e) = self.start_microphone_stream() {
-                        let msg = format!("{e}");
-                        error!("Failed to restart dead microphone stream: {msg}");
-                        return Err(msg);
-                    }
-                }
+                // Don't hide the cycling overlay here — the caller
+                // (TranscribeAction::start) will show the recording overlay
+                // which seamlessly transitions from USB-cycling to recording.
+                // Only reset the tray icon; the overlay will be replaced.
+                crate::tray::change_tray_icon(&self.app_handle, crate::tray::TrayIconState::Idle);
             }
+        }
 
+        // Re-acquire the state lock for the actual state transition.
+        let mut state = self.state.lock().unwrap();
+        if let RecordingState::Idle = *state {
             if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
                 if rec.start().is_ok() {
                     *self.is_recording.lock().unwrap() = true;
@@ -491,9 +559,47 @@ impl AudioRecordingManager {
         if *self.is_open.lock().unwrap() {
             self.close_generation.fetch_add(1, Ordering::SeqCst);
             self.stop_microphone_stream();
-            self.start_microphone_stream()?;
+            // Re-evaluate BT keep-alive after device change
+            self.refresh_bluetooth_keep_alive();
+            if *self.bt_keep_alive.lock().unwrap()
+                || matches!(*self.mode.lock().unwrap(), MicrophoneMode::AlwaysOn)
+            {
+                self.start_microphone_stream()?;
+            }
         }
         Ok(())
+    }
+
+    /// Re-evaluate whether a Bluetooth output device is active and update
+    /// the keep-alive flag accordingly. When BT output becomes active, open
+    /// the mic stream if it isn't already. When BT output goes away, close
+    /// the stream if we're in OnDemand mode and not recording.
+    pub fn refresh_bluetooth_keep_alive(&self) {
+        let bt_active = self.is_bluetooth_output_active();
+        let mut bt_keep_alive = self.bt_keep_alive.lock().unwrap();
+
+        if bt_active && !*bt_keep_alive {
+            info!("Bluetooth output device detected — enabling mic stream keep-alive to prevent audio dropouts");
+            *bt_keep_alive = true;
+            drop(bt_keep_alive);
+            // Open the mic stream if not already open
+            if !*self.is_open.lock().unwrap() {
+                if let Err(e) = self.start_microphone_stream() {
+                    error!("Failed to open mic stream for BT keep-alive: {}", e);
+                }
+            }
+        } else if !bt_active && *bt_keep_alive {
+            info!("Bluetooth output device no longer detected — disabling mic stream keep-alive");
+            *bt_keep_alive = false;
+            drop(bt_keep_alive);
+            // Close the stream if we're in OnDemand mode and not recording
+            if matches!(*self.mode.lock().unwrap(), MicrophoneMode::OnDemand)
+                && !self.is_recording()
+            {
+                self.close_generation.fetch_add(1, Ordering::SeqCst);
+                self.stop_microphone_stream();
+            }
+        }
     }
 
     pub fn stop_recording(&self, binding_id: &str) -> Option<Vec<f32>> {
@@ -531,9 +637,15 @@ impl AudioRecordingManager {
 
                 *self.is_recording.lock().unwrap() = false;
 
-                // In on-demand mode, close the mic (lazily if the setting is enabled)
+                // In on-demand mode, decide whether to close the mic stream.
+                // When a Bluetooth output device is active, we keep the stream
+                // alive permanently to prevent the A2DP↔HFP profile switch that
+                // causes audio dropouts on BT headphones.
                 if matches!(*self.mode.lock().unwrap(), MicrophoneMode::OnDemand) {
-                    if get_settings(&self.app_handle).lazy_stream_close {
+                    let bt_keep_alive = *self.bt_keep_alive.lock().unwrap();
+                    if bt_keep_alive {
+                        debug!("BT keep-alive active: keeping mic stream open");
+                    } else if get_settings(&self.app_handle).lazy_stream_close {
                         self.schedule_lazy_close();
                     } else {
                         self.stop_microphone_stream();
@@ -575,9 +687,14 @@ impl AudioRecordingManager {
 
             *self.is_recording.lock().unwrap() = false;
 
-            // In on-demand mode, close the mic (lazily if the setting is enabled)
+            // In on-demand mode, decide whether to close the mic stream.
+            // When a Bluetooth output device is active, we keep the stream
+            // alive permanently to prevent the A2DP↔HFP profile switch.
             if matches!(*self.mode.lock().unwrap(), MicrophoneMode::OnDemand) {
-                if get_settings(&self.app_handle).lazy_stream_close {
+                let bt_keep_alive = *self.bt_keep_alive.lock().unwrap();
+                if bt_keep_alive {
+                    debug!("BT keep-alive active: keeping mic stream open");
+                } else if get_settings(&self.app_handle).lazy_stream_close {
                     self.schedule_lazy_close();
                 } else {
                     self.stop_microphone_stream();
