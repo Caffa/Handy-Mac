@@ -21,10 +21,13 @@ import { KeyboardImplementationSelector } from "../debug/KeyboardImplementationS
 import { AccelerationSelector } from "../AccelerationSelector";
 import { LazyStreamClose } from "../LazyStreamClose";
 import { HybridMode } from "../HybridMode";
+import { ToggleSwitch } from "../../ui/ToggleSwitch";
+import { WordCorrectionThreshold } from "../WordCorrectionThreshold";
+import { AdvancedCustomWords } from "../AdvancedCustomWords";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
-  const { getSetting } = useSettings();
+  const { getSetting, updateSetting, isUpdating } = useSettings();
   const experimentalEnabled = getSetting("experimental_enabled") || false;
   const useAdvancedCustomWords = getSetting("use_advanced_custom_words") || false;
 
@@ -47,8 +50,24 @@ export const AdvancedSettings: React.FC = () => {
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.transcription")}>
-        {/* Hide simple custom words when advanced mode is enabled (shown in Debug instead) */}
-        {!useAdvancedCustomWords && <CustomWords descriptionMode="tooltip" grouped />}
+        <ToggleSwitch
+          checked={useAdvancedCustomWords}
+          onChange={(checked) => updateSetting("use_advanced_custom_words", checked)}
+          disabled={isUpdating("use_advanced_custom_words")}
+          isUpdating={isUpdating("use_advanced_custom_words")}
+          label={t("settings.debug.advancedCustomWords.toggleLabel")}
+          description={t("settings.debug.advancedCustomWords.toggleDescription")}
+          descriptionMode="tooltip"
+          grouped={true}
+        />
+        {!useAdvancedCustomWords ? (
+          <>
+            <CustomWords descriptionMode="tooltip" grouped />
+            <WordCorrectionThreshold descriptionMode="tooltip" grouped />
+          </>
+        ) : (
+          <AdvancedCustomWords descriptionMode="tooltip" grouped />
+        )}
         <AppendTrailingSpace descriptionMode="tooltip" grouped={true} />
         <HybridMode descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>

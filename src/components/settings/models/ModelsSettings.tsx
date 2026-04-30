@@ -49,11 +49,27 @@ export const ModelsSettings: React.FC = () => {
     deleteModel,
     loadModels,
   } = useModelStore();
-  const { getSetting } = useSettings();
+  const { getSetting, updateSetting } = useSettings();
 
   const hybridModeEnabled = getSetting("hybrid_mode_enabled") ?? false;
   const hybridShortModel = getSetting("hybrid_short_audio_model") ?? null;
   const hybridLongModel = getSetting("hybrid_long_audio_model") ?? null;
+
+  const handleHybridRoleChange = (modelId: string, role: "short" | "long" | null) => {
+    if (role === "short") {
+      updateSetting("hybrid_short_audio_model", modelId);
+    } else if (role === "long") {
+      updateSetting("hybrid_long_audio_model", modelId);
+    } else {
+      // Unassign: figure out which role this model currently holds
+      if (hybridShortModel === modelId) {
+        updateSetting("hybrid_short_audio_model", null);
+      }
+      if (hybridLongModel === modelId) {
+        updateSetting("hybrid_long_audio_model", null);
+      }
+    }
+  };
 
   // Build hybrid roles map: model_id -> "short" | "long"
   const hybridRoles = useMemo<Record<string, "short" | "long">>(() => {
@@ -503,6 +519,8 @@ export const ModelsSettings: React.FC = () => {
                 downloadSpeed={getDownloadSpeed(model.id)}
                 showRecommended={false}
                 hybridRole={hybridRoles[model.id] ?? null}
+                hybridModeEnabled={hybridModeEnabled}
+                onHybridRoleChange={handleHybridRoleChange}
               />
             ))}
           </div>
@@ -526,6 +544,8 @@ export const ModelsSettings: React.FC = () => {
                   downloadSpeed={getDownloadSpeed(model.id)}
                   showRecommended={false}
                   hybridRole={hybridRoles[model.id] ?? null}
+                  hybridModeEnabled={hybridModeEnabled}
+                  onHybridRoleChange={handleHybridRoleChange}
                 />
               ))}
             </div>
