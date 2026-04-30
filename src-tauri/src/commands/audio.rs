@@ -1,9 +1,10 @@
 use crate::audio_feedback;
 use crate::audio_toolkit::audio::{list_input_devices, list_output_devices};
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
+use crate::managers::transcription::TranscriptionManager;
 use crate::settings::{get_settings, write_settings};
 use crate::usb_watchdog;
-use log::warn;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::sync::Arc;
@@ -368,4 +369,71 @@ pub fn change_usb_watchdog_device_name_setting(app: AppHandle, device_name: Stri
 pub fn trigger_usb_power_cycle(app: AppHandle) -> Result<bool, String> {
     let rm = app.state::<Arc<AudioRecordingManager>>();
     Ok(rm.usb_watchdog.force_power_cycle())
+}
+
+/// Special binding ID used for pronunciation recordings to distinguish them
+/// from regular transcription recordings.
+const PRONUNCIATION_BINDING_ID: &str = "__pronunciation__";
+
+/// Start a short recording for capturing a pronunciation sample.
+///
+/// This reuses the existing audio recording infrastructure but uses a special
+/// binding ID to avoid conflicts with regular transcription recordings.
+/// The recording must be stopped with `stop_and_transcribe_pronunciation`.
+#[tauri::command]
+#[specta::specta]
+pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+
+    // Don't interfere with an active transcription recording
+    if rm.is_recording() {
+        return Err("A recording is already in progress".to_string());
+    }
+
+    rm.try_start_recording(PRONUNCIATION_BINDING_ID)
+        .map_err(|e| format!("Failed to start pronunciation recording: {}", e))?;
+
+    info!("Pronunciation recording started");
+    Ok(())
+}
+
+/// Stop the pronunciation recording and transcribe the captured audio.
+///
+/// Returns the transcription text (i.e., what the model "heard").
+/// This text can be used as a pronunciation variant for custom words.
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_and_transcribe_pronunciation(app: AppHandle) -> Result<String, String> {
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+
+    // Stop recording and get audio samples
+    let samples = rm
+        .stop_recording(PRONUNCIATION_BINDING_ID)
+        .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
+
+    if samples.is_empty() {
+        return Err("Recording produced no audio samples".to_string());
+    }
+
+    info!(
+        "Pronunciation recording stopped, {} samples captured",
+        samples.len()
+    );
+
+    // Transcribe using the loaded model
+    let tm = app.state::<Arc<TranscriptionManager>>();
+    let tm = Arc::clone(&tm);
+    tm.initiate_model_load();
+
+    let transcription = tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples))
+        .await
+        .map_err(|e| format!("Transcription task failed: {}", e))?
+        .map_err(|e| format!("Transcription failed: {}", e))?;
+
+    if transcription.is_empty() {
+        return Err("No speech detected in recording. Try speaking louder or closer to the microphone.".to_string());
+    }
+
+    info!("Pronunciation transcription result: '{}'", transcription);
+    Ok(transcription)
 }

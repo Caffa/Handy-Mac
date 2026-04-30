@@ -430,6 +430,8 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::change_usb_watchdog_enabled_setting,
             commands::audio::change_usb_watchdog_device_name_setting,
             commands::audio::trigger_usb_power_cycle,
+            commands::audio::start_pronunciation_recording,
+            commands::audio::stop_and_transcribe_pronunciation,
             commands::transcription::set_model_unload_timeout,
             commands::transcription::get_model_load_status,
             commands::transcription::unload_model_manually,

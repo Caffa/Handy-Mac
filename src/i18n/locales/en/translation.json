@@ -278,6 +278,7 @@
         "description": "Automatically pick the best model based on audio length. Short recordings use a fast, hallucination-resistant model; long recordings use a more accurate model.",
         "thresholdLabel": "Length Threshold",
         "thresholdDescription": "Audio shorter than this uses the short audio model; longer audio uses the long audio model.",
+        "assignHint": "Assign models as SHORT or LONG in the Models section above. Each role uses a different model based on recording length.",
         "thresholdValue": "{{seconds}}s",
         "shortAudioModelLabel": "Short Audio Model",
         "shortAudioModelDescription": "Model used for recordings under the threshold. Recommended: CTC models (Parakeet) or non-autoregressive models (SenseVoice) which don't hallucinate on short audio.",
@@ -491,7 +492,7 @@
         "title": "Advanced Custom Words",
         "description": "Add custom words with pronunciation variants. When the transcription matches a pronunciation, it will be replaced with the canonical word.",
         "toggleLabel": "Advanced Custom Words",
-        "toggleDescription": "Enable advanced custom word matching with pronunciation variants. When enabled, the simple custom words list is replaced with an advanced editor in Debug settings.",
+        "toggleDescription": "Enable advanced custom word matching with pronunciation variants. When enabled, the simple custom words list and word correction threshold are replaced with an advanced editor below.",
         "placeholder": "Add a word",
         "add": "Add",
         "addPronunciation": "Add",
@@ -501,7 +502,15 @@
         "pronunciation": "pronunciation",
         "pronunciations": "pronunciations",
         "pronunciationHint": "Add ways the word might be transcribed. Each pronunciation will be used as a fuzzy match target.",
-        "pronunciationPlaceholder": "Add pronunciation..."
+        "pronunciationPlaceholder": "Add pronunciation...",
+        "recordPronunciation": "Record",
+        "recordTooltip": "Record yourself saying the word to automatically detect how the model transcribes it",
+        "stopRecording": "Stop Recording",
+        "transcribing": "Transcribing...",
+        "recordingEmpty": "No speech was detected. Try speaking louder or closer to the microphone.",
+        "recordingSuccess": "Detected pronunciation: \"{{pronunciation}}\"",
+        "recordingError": "Failed to transcribe: {{error}}",
+        "recordingStartError": "Failed to start recording: {{error}}"
       },
       "historyLimit": {
         "title": "History Limit",
@@ -553,8 +562,8 @@
         "description": "Delay before sending paste keystroke (in milliseconds). Increase if wrong text is being pasted."
       },
       "recordingBuffer": {
-        "title": "Extra Recording Buffer",
-        "description": "Extra time (in milliseconds) to keep recording after you release the key, to capture trailing audio. 0 = no extra buffer."
+        "title": "Recording Buffer",
+        "description": "Maximum extra time (ms) to keep recording after releasing the key. The buffer stops early when the microphone detects silence, so it rarely waits the full duration. 0 = no extra buffer."
       },
       "usbWatchdog": {
         "label": "USB Power Watchdog",
