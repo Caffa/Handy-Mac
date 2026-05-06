@@ -322,6 +322,57 @@ else
     echo "6/6 ⏭️  Skipping re-sign (app not yet installed)."
 fi
 
+# ─── Step 7: Reset icon cache ─────────────────────────
+# Clear macOS icon cache so the new app icon shows up correctly.
+# This fixes the "missing cover image" issue where Finder caches old icons.
+echo "7/7 🧹 Resetting icon cache..."
+if [[ -d "$DEST_APP" ]]; then
+    # Wait for Rapidmg to fully finish writing all files (including icon.icns)
+    echo "   Waiting for Rapidmg to fully finish..."
+    for i in {1..20}; do
+        if [[ -f "$DEST_APP/Contents/Resources/icon.icns" ]]; then
+            ICON_SIZE=$(stat -f%z "$DEST_APP/Contents/Resources/icon.icns" 2>/dev/null || echo "0")
+            if [[ "$ICON_SIZE" -gt 1000 ]]; then
+                break
+            fi
+        fi
+        sleep 0.5
+    done
+
+    # Touch the app to update its modification date
+    touch "$DEST_APP"
+
+    # Clear user-level icon caches
+    rm -rf ~/Library/Caches/com.apple.iconservices* 2>/dev/null || true
+    rm -rf ~/Library/Caches/com.apple.IconServices* 2>/dev/null || true
+
+    # Restart services that cache icons
+    killall Finder 2>/dev/null || true
+    killall Dock 2>/dev/null || true
+    sudo killall iconservicesagent 2>/dev/null || true
+
+    echo "   ✅ Icon cache cleared, Finder/Dock restarted."
+    echo "   (Icon will rebuild automatically in a few seconds)"
+else
+    echo "   ⏭️  Skipping cache reset (app not installed)."
+fi
+
+echo ""
+echo "═════════════════════════════════════════════════════════════"
+echo "  ✅ Build + Reinstall complete!"
+echo "═════════════════════════════════════════════════════════════"
+echo ""
+echo "  App:  $DEST_APP"
+echo "  DMG:  $DMG_PATH"
+echo ""
+
+if [[ "$DO_LAUNCH" == true ]]; then
+    echo "🚀 Launching Handy..."
+    open "$DEST_APP"
+else
+    echo "  To launch: open \"$DEST_APP\""
+fi
+
 # ─── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
