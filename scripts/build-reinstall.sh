@@ -171,7 +171,7 @@ fi
 
 echo "   ✅ DMG created: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
 
-# ─── Step 5: Install via Rapidmg ─────────────────────────────────────────────────
+# ─── Step 5: Install via Rapidmg ─────────────────────────────────────────────
 echo "5/6 🚀 Opening DMG with Rapidmg for auto-install..."
 
 RAPIDMG_APP="/Applications/Rapidmg.app"
@@ -184,15 +184,29 @@ fi
 
 open -a Rapidmg "$DMG_PATH"
 
-# Wait for install to complete.
-# IMPORTANT: The .app directory can appear before Rapidmg has finished
-# writing all files. If we re-sign while Rapidmg is still copying, the
-# signature gets overwritten. We must wait for the main binary to exist
-# and its size to stabilize.
+# Wait for install to complete using a three-phase approach.
+#
+# The .app directory can appear on disk before Rapidmg has finished writing
+# all files. If we re-sign while Rapidmg is still copying, the signature
+# gets overwritten — this is the Rapidmg race condition. The three phases
+# below eliminate it:
+#
+#   Phase 1: Wait for the .app bundle to appear on disk.
+#   Phase 2: Wait for the DMG volume to be ejected — Rapidmg auto-ejects
+#            after install, which is the strongest signal that all writes
+#            are complete.
+#   Phase 3: Wait for the entire bundle (not just the main binary) to
+#            stabilize — file count and total size must be steady for 5
+#            consecutive checks. This catches lingering writes even if
+#            the DMG eject signal was missed (e.g. manual DMG mount).
+#
 DEST_BIN="$DEST_APP/Contents/MacOS/handy"
+DMG_VOLUME="/Volumes/$APP_NAME"
+
+# Phase 1: Wait for app to appear
 echo "   Waiting for Rapidmg to install..."
 APP_APPEARED=false
-for i in {1..30}; do
+for i in {1..60}; do
     if [[ -d "$DEST_APP" ]] && [[ -f "$DEST_BIN" ]]; then
         APP_APPEARED=true
         break
@@ -201,81 +215,108 @@ for i in {1..30}; do
 done
 
 if [[ "$APP_APPEARED" != true ]]; then
-    echo "   ⚠️  $DEST_APP not found after 15s — Rapidmg may still be processing."
+    echo "   ⚠️  $DEST_APP not found after 30s — Rapidmg may still be processing."
     echo "   Check Rapidmg manually. The DMG is at: $DMG_PATH"
 fi
 
-# Wait for the binary size to stabilize (Rapidmg finishes writing)
-if [[ -f "$DEST_BIN" ]]; then
-    echo "   Waiting for file copy to complete..."
-    PREV_SIZE=0
+# Phase 2: Wait for the DMG volume to be ejected.
+# Rapidmg auto-ejects the DMG after finishing the install — this is the
+# strongest signal that all file writes are complete.
+if [[ -d "$DMG_VOLUME" ]]; then
+    echo "   Waiting for DMG volume to be ejected (Rapidmg finishing)..."
+    for i in {1..60}; do
+        if [[ ! -d "$DMG_VOLUME" ]]; then
+            echo "   ✅ DMG ejected — Rapidmg install complete."
+            break
+        fi
+        sleep 0.5
+    done
+    if [[ -d "$DMG_VOLUME" ]]; then
+        echo "   ⚠️  DMG still mounted after 30s — falling through to stability check."
+    fi
+fi
+
+# Phase 3: Wait for entire bundle to stabilize.
+# Rapidmg may write Frameworks and resources after the main binary is done,
+# so checking only the binary size is insufficient. We track file count and
+# total size recursively across the whole .app bundle.
+if [[ -d "$DEST_APP" ]]; then
+    echo "   Waiting for bundle to stabilize..."
+    PREV_INFO=""
     STABLE_COUNT=0
-    for i in {1..20}; do
-        CURR_SIZE=$(stat -f%z "$DEST_BIN" 2>/dev/null || echo 0)
-        if [[ "$CURR_SIZE" -eq "$PREV_SIZE" ]] && [[ "$CURR_SIZE" -gt 0 ]]; then
+    for i in {1..40}; do
+        FILE_COUNT=$(find "$DEST_APP" -type f 2>/dev/null | wc -l | tr -d ' ') || FILE_COUNT=0
+        TOTAL_SIZE=$(du -sk "$DEST_APP" 2>/dev/null | cut -f1) || TOTAL_SIZE=0
+        CURR_INFO="${FILE_COUNT}:${TOTAL_SIZE}"
+        if [[ "$CURR_INFO" == "$PREV_INFO" ]] && [[ "$FILE_COUNT" -gt 0 ]]; then
             STABLE_COUNT=$((STABLE_COUNT + 1))
-            if [[ $STABLE_COUNT -ge 3 ]]; then
-                echo "   ✅ $DEST_APP installed and stable."
+            if [[ $STABLE_COUNT -ge 5 ]]; then
+                echo "   ✅ Bundle stable (${FILE_COUNT} files, ${TOTAL_SIZE}KB)."
                 break
             fi
         else
             STABLE_COUNT=0
         fi
-        PREV_SIZE=$CURR_SIZE
+        PREV_INFO="$CURR_INFO"
         sleep 0.5
     done
 fi
 
-# ─── Step 6: Re-sign with stable DR ──────────────────────────────────────────────
+# ─── Step 6: Re-sign with stable DR ──────────────────────────────────────────
+# Re-sign in a verification loop. Even with the three-phase wait above,
+# there can be edge cases where a write completes after our stability
+# check (e.g. APFS CoW filesystem timing, or Rapidmg finalizing metadata).
+# The loop catches this: sign, verify the DR is correct on disk, and
+# retry if the signature was overwritten.
 if [[ -d "$DEST_APP" ]]; then
     echo "6/6 🔐 Re-signing with stable designated requirement..."
     echo "   DR: identifier \"$BUNDLE_ID\""
 
-    if [[ -f "$ENTITLEMENTS" ]]; then
-        codesign --force -s - \
-            -r="designated => identifier \"$BUNDLE_ID\"" \
-            --entitlements "$ENTITLEMENTS" \
-            --options runtime \
-            "$DEST_APP" 2>&1
-    else
-        # No entitlements file — sign without it
-        codesign --force -s - \
-            -r="designated => identifier \"$BUNDLE_ID\"" \
-            "$DEST_APP" 2>&1
-    fi
+    MAX_SIGN_ATTEMPTS=5
+    SIGN_CONFIRMED=false
 
-    # Verify — must anchor to ^designated => to avoid false positive from
-    # the Executable= line which also contains the bundle identifier
-    ACTUAL_DR=$(codesign -d -r- "$DEST_APP" 2>&1 | grep "^designated =>" || true)
-    echo "   Signature: $ACTUAL_DR"
+    for ATTEMPT in $(seq 1 $MAX_SIGN_ATTEMPTS); do
+        if [[ $ATTEMPT -gt 1 ]]; then
+            echo "   Retry $((ATTEMPT-1))/$((MAX_SIGN_ATTEMPTS-1))..."
+            # Wait a beat before retrying — gives any lingering
+            # writes time to settle
+            sleep 2
+        fi
 
-    if echo "$ACTUAL_DR" | grep -q "^designated => identifier \"$BUNDLE_ID\""; then
-        echo "   ✅ Stable DR confirmed — permissions will persist across updates."
-    else
-        echo "   ❌ DR is not identifier-based (got: $ACTUAL_DR)."
-        echo "   This means macOS permissions (Accessibility, etc.) will reset on next build."
-        echo "   Retrying re-sign..."
-        # Retry: Rapidmg may have overwritten after the first attempt
-        sleep 1
+        # Use || true to prevent `set -e` from aborting the script on
+        # non-zero exit — we rely on the verification step below to determine
+        # whether signing actually succeeded.
         if [[ -f "$ENTITLEMENTS" ]]; then
             codesign --force -s - \
                 -r="designated => identifier \"$BUNDLE_ID\"" \
                 --entitlements "$ENTITLEMENTS" \
                 --options runtime \
-                "$DEST_APP" 2>&1
+                "$DEST_APP" 2>&1 || true
         else
+            # No entitlements file — sign without it
             codesign --force -s - \
                 -r="designated => identifier \"$BUNDLE_ID\"" \
-                "$DEST_APP" 2>&1
+                "$DEST_APP" 2>&1 || true
         fi
+
+        # Verify — must anchor to ^designated => to avoid false positive from
+        # the Executable= line which also contains the bundle identifier.
+        # A line starting with "# designated =>" is the derived (computed) DR;
+        # we need the explicit one (without #) to confirm our identifier-based
+        # requirement was written to disk.
         ACTUAL_DR=$(codesign -d -r- "$DEST_APP" 2>&1 | grep "^designated =>" || true)
-        echo "   Signature (retry): $ACTUAL_DR"
+
         if echo "$ACTUAL_DR" | grep -q "^designated => identifier \"$BUNDLE_ID\""; then
-            echo "   ✅ Stable DR confirmed on retry."
-        else
-            echo "   ❌ DR still not identifier-based after retry. Permissions may reset."
-            echo "   Run manually: scripts/resign-stable-dr.sh"
+            echo "   ✅ Stable DR confirmed — permissions will persist across updates."
+            SIGN_CONFIRMED=true
+            break
         fi
+    done
+
+    if [[ "$SIGN_CONFIRMED" != true ]]; then
+        echo "   ❌ DR is not identifier-based after $MAX_SIGN_ATTEMPTS attempts (got: $ACTUAL_DR)."
+        echo "   This means macOS permissions (Accessibility, etc.) may reset on next build."
+        echo "   Run manually: scripts/resign-stable-dr.sh"
     fi
 else
     echo "6/6 ⏭️  Skipping re-sign (app not yet installed)."

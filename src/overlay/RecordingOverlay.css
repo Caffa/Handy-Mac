@@ -104,9 +104,43 @@
   animation: transcribing-pulse 1.5s infinite ease-in-out;
 }
 
-.usb-cycling-text {
+.usb-cycling-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.usb-cycling-stage {
   color: #ffd966;
-  animation: transcribing-pulse 1s infinite ease-in-out;
+  font-size: 11px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  animation: transcribing-pulse 1.5s infinite ease-in-out;
+  white-space: nowrap;
+}
+
+.usb-cycling-progress {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.usb-cycling-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255, 217, 102, 0.25);
+  transition: background 300ms ease, box-shadow 300ms ease;
+}
+
+.usb-cycling-dot.dot-active {
+  background: rgba(255, 217, 102, 0.6);
+}
+
+.usb-cycling-dot.dot-current {
+  background: #ffd966;
+  box-shadow: 0 0 4px rgba(255, 217, 102, 0.5);
 }
 
 @keyframes transcribing-pulse {

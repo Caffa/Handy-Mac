@@ -89,18 +89,19 @@ pub async fn retry_history_entry_transcription(
         .map_err(|e| format!("Transcription task panicked: {}", e))?
         .map_err(|e| e.to_string())?;
 
-    if transcription.is_empty() {
+    if transcription.text.is_empty() {
         return Err("Recording contains no speech".to_string());
     }
 
     let processed =
-        process_transcription_output(&app, &transcription, entry.post_process_requested).await;
+        process_transcription_output(&app, &transcription.text, entry.post_process_requested).await;
     history_manager
         .update_transcription(
             id,
-            transcription,
+            transcription.text,
             processed.post_processed_text,
             processed.post_process_prompt,
+            Some(transcription.model_id),
         )
         .map(|_| ())
         .map_err(|e| e.to_string())

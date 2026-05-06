@@ -9,9 +9,12 @@ mod commands;
 mod helpers;
 mod input;
 mod llm_client;
+mod health;
+mod logging;
 mod managers;
 mod overlay;
 pub mod portable;
+mod session;
 mod settings;
 mod shortcut;
 mod signal_handle;
@@ -31,6 +34,7 @@ use managers::audio::AudioRecordingManager;
 use managers::history::HistoryManager;
 use managers::model::ModelManager;
 use managers::transcription::TranscriptionManager;
+use session::SessionTracker;
 #[cfg(unix)]
 use signal_hook::consts::{SIGUSR1, SIGUSR2};
 #[cfg(unix)]
@@ -144,6 +148,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // after onboarding completes. This avoids triggering permission dialogs
     // on macOS before the user is ready.
 
+    // Initialise the structured JSONL event logger
+    logging::init(app_handle);
+
     // Initialize the managers
     let recording_manager = Arc::new(
         AudioRecordingManager::new(app_handle).expect("Failed to initialize recording manager"),
@@ -165,6 +172,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(model_manager.clone());
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
+    app_handle.manage(Arc::new(session::SessionTracker::new()));
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -431,7 +439,9 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::change_usb_watchdog_device_name_setting,
             commands::audio::trigger_usb_power_cycle,
             commands::audio::start_pronunciation_recording,
-            commands::audio::stop_and_transcribe_pronunciation,
+            commands::audio::cancel_pronunciation_recording,
+            commands::audio::stop_and_schedule_pronunciation,
+            commands::audio::stop_and_transcribe_pronunciation_all_models,
             commands::transcription::set_model_unload_timeout,
             commands::transcription::get_model_load_status,
             commands::transcription::unload_model_manually,
@@ -442,6 +452,9 @@ pub fn run(cli_args: CliArgs) {
             commands::history::retry_history_entry_transcription,
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
+            session::get_session_history,
+            health::get_health_report,
+            health::get_log_entries,
             helpers::clamshell::is_laptop,
         ])
         .events(collect_events![managers::history::HistoryUpdatePayload,]);
@@ -597,6 +610,21 @@ pub fn run(cli_args: CliArgs) {
             // Hide tray icon if --no-tray was passed
             if cli_args.no_tray {
                 tray::set_tray_visibility(&app_handle, false);
+            }
+
+            // Emit structured AppStarted event with version and platform info
+            {
+                let version = app_handle.package_info().version.to_string();
+                let platform = if cfg!(target_os = "macos") {
+                    "macos".to_string()
+                } else if cfg!(target_os = "windows") {
+                    "windows".to_string()
+                } else if cfg!(target_os = "linux") {
+                    "linux".to_string()
+                } else {
+                    "unknown".to_string()
+                };
+                logging::emit(logging::AppEvent::AppStarted { version, platform });
             }
 
             // Show main window only if not starting hidden.

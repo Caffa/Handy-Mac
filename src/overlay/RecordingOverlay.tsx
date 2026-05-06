@@ -17,6 +17,14 @@ type OverlayState = "recording" | "transcribing" | "processing" | "usb-cycling";
 // start decaying the bars to zero to avoid a frozen visualizer.
 const LEVEL_TIMEOUT_MS = 500;
 
+// Safety timeout for USB cycling state. If the Rust backend never
+// emits a "finished" or "failed" event (e.g. event delivery failure,
+// uhubctl hang, thread panic), the overlay will auto-recover after
+// this duration instead of being stuck on "USB cycling…" forever.
+// The backend blocks for up to ~9s (5s uhubctl + 4s settle), so
+// 15s gives comfortable margin without hanging the UI for too long.
+const USB_CYCLING_SAFETY_TIMEOUT_MS = 15_000;
+
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
@@ -33,6 +41,11 @@ const RecordingOverlay: React.FC = () => {
   const [recordingElapsedSecs, setRecordingElapsedSecs] = useState(0);
   const recordingStartRef = useRef<number>(0);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [usbCycleStage, setUsbCycleStage] = useState<{
+    stage: string;
+    message: string;
+  } | null>(null);
 
   // Decay timer: if we haven't received mic-level data for LEVEL_TIMEOUT_MS,
   // smoothly fade the bars toward zero so the overlay doesn't freeze.
@@ -73,6 +86,29 @@ const RecordingOverlay: React.FC = () => {
     };
     fetchHybridSettings();
   }, [isVisible]);
+
+  // Safety timeout: if we stay in "usb-cycling" state for too long,
+  // fall back to "recording" so the overlay doesn't get stuck forever.
+  // This handles cases where the Rust backend fails to emit the
+  // usb-power-cycle-finished or usb-power-cycle-failed event.
+  useEffect(() => {
+    if (state !== "usb-cycling") return;
+
+    const timer = setTimeout(() => {
+      setState((prev) => {
+        if (prev === "usb-cycling") {
+          console.warn(
+            "USB cycling safety timeout: no completion event received after %dms, recovering to recording",
+            USB_CYCLING_SAFETY_TIMEOUT_MS,
+          );
+          return "recording";
+        }
+        return prev;
+      });
+    }, USB_CYCLING_SAFETY_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [state]);
 
   // Track recording elapsed time for hybrid mode indicator
   useEffect(() => {
@@ -142,7 +178,7 @@ const RecordingOverlay: React.FC = () => {
       const unlistenUsbCycleFinished = await listen<string>(
         "usb-power-cycle-finished",
         () => {
-          // Return to recording state if we were cycling
+          setUsbCycleStage(null);
           setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
         },
       );
@@ -150,11 +186,27 @@ const RecordingOverlay: React.FC = () => {
       const unlistenUsbCycleFailed = await listen<string>(
         "usb-power-cycle-failed",
         () => {
-          // Return to recording state (the retry may still fail, which will
-          // trigger hide-overlay from the Rust side).
+          setUsbCycleStage(null);
           setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
         },
       );
+
+      const unlistenUsbCycleStage = await listen<{
+        stage: string;
+        message: string;
+      }>("usb-power-cycle-stage", (event) => {
+        setUsbCycleStage(event.payload);
+        // Also ensure we are in usb-cycling state and visible — the stage
+        // event may arrive before the usb-power-cycle-started event, or
+        // the overlay might not have transitioned/shown yet.
+        setState((prev) => {
+          if (prev === "recording") {
+            return "usb-cycling";
+          }
+          return prev;
+        });
+        setIsVisible(true);
+      });
 
       // Cleanup function
       return () => {
@@ -164,6 +216,7 @@ const RecordingOverlay: React.FC = () => {
         unlistenUsbCycleStart();
         unlistenUsbCycleFinished();
         unlistenUsbCycleFailed();
+        unlistenUsbCycleStage();
       };
     };
 
@@ -223,8 +276,27 @@ const RecordingOverlay: React.FC = () => {
           <div className="transcribing-text">{t("overlay.processing")}</div>
         )}
         {state === "usb-cycling" && (
-          <div className="transcribing-text usb-cycling-text">
-            {t("overlay.usbCycling", "USB cycling…")}
+          <div className="usb-cycling-container">
+            <div className="usb-cycling-stage">
+              {usbCycleStage
+                ? usbCycleStage.message
+                : t("overlay.usbCycling", "USB cycling…")}
+            </div>
+            {usbCycleStage && (
+              <div className="usb-cycling-progress">
+                {["resolving", "cycling", "waiting", "recovered"].map((s) => (
+                  <div
+                    key={s}
+                    className={`usb-cycling-dot ${
+                      ["resolving", "cycling", "waiting", "recovered"].indexOf(usbCycleStage.stage) >=
+                      ["resolving", "cycling", "waiting", "recovered"].indexOf(s)
+                        ? "dot-active"
+                        : ""
+                    } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

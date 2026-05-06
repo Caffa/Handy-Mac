@@ -18,15 +18,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long to poll for the device to re-appear after cycling power.
-/// The RØDE VideoMic NTG typically comes back in 2-4s over USB.
-/// We poll every 500ms and bail out early once the device is seen.
-const POWER_CYCLE_SETTLE_SECS: u64 = 6;
+/// The RØDE VideoMic NTG typically comes back in 2-3s over USB.
+/// We poll every 250ms and bail out early once the device is seen.
+const POWER_CYCLE_SETTLE_SECS: u64 = 4;
 
 /// How often to poll for the device to re-appear (in ms)
-const POWER_CYCLE_POLL_INTERVAL_MS: u64 = 500;
+const POWER_CYCLE_POLL_INTERVAL_MS: u64 = 250;
 
 /// Minimum seconds between two automatic power cycles (cooldown)
 const RESET_COOLDOWN_SECS: u64 = 30;
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct UsbCycleStage {
+    pub stage: String,
+    pub message: String,
+}
 
 /// A USB device discovered by `uhubctl`.
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -163,12 +169,19 @@ impl UsbWatchdog {
             return false;
         }
 
+        // Emit event so the frontend can show "USB cycling" state
+        self.emit_cycle_event("usb-power-cycle-started", &device_name);
+
+        // Stage 1: Resolve the device name to a hub/port location.
+        self.emit_stage_event("resolving", "Locating USB device...");
+
         // Resolve device name → hub/port at cycle time
         let device = match resolve_device(&device_name) {
             Some(d) => d,
             None => {
                 warn!("USB watchdog: device '{}' not found in USB tree, cannot cycle", device_name);
                 self.cycling.store(false, Ordering::SeqCst);
+                self.emit_cycle_event("usb-power-cycle-failed", "device not found in USB tree");
                 return false;
             }
         };
@@ -181,11 +194,14 @@ impl UsbWatchdog {
             device_name, device.hub, device.port
         );
 
-        // Emit event so the frontend can show "USB cycling" state
-        self.emit_cycle_event("usb-power-cycle-started", &device_name);
+        // Stage 2: Power cycling the USB port via uhubctl.
+        self.emit_stage_event("cycling", "Power cycling port...");
 
         // Run uhubctl inside catch_unwind to prevent panics from crashing the app.
         // USB device issues can cause unexpected behavior in child processes.
+        let app_handle = self.app_handle.clone();
+        let mut cycle_succeeded = false;
+
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let start = Instant::now();
             match run_uhubctl_cycle(&device.hub, &device.port) {
@@ -195,8 +211,10 @@ impl UsbWatchdog {
                         device_name,
                         start.elapsed()
                     );
+                    // Stage3: Waiting for the device to reconnect after power cycle.
+                    emit_stage_event_with_handle(&app_handle, "waiting", "Waiting for device...");
                     // Poll for the device to re-appear instead of sleeping the full settle time.
-                    // USB devices typically come back in 2-4 seconds; polling saves 6-10s.
+                    // USB devices typically come back in 2-3 seconds; polling saves time.
                     let settle_start = Instant::now();
                     let settle_max = Duration::from_secs(POWER_CYCLE_SETTLE_SECS);
                     let poll_interval = Duration::from_millis(POWER_CYCLE_POLL_INTERVAL_MS);
@@ -209,6 +227,9 @@ impl UsbWatchdog {
                             );
                             // Small extra delay for the audio subsystem to recognise it
                             std::thread::sleep(Duration::from_millis(300));
+                            // Stage4: Device recovered.
+                            emit_stage_event_with_handle(&app_handle, "recovered", "Device recovered!");
+                            cycle_succeeded = true;
                             break;
                         }
                         if settle_start.elapsed() >= settle_max {
@@ -216,6 +237,7 @@ impl UsbWatchdog {
                                 "USB watchdog: device '{}' did not re-appear within {}s, proceeding anyway",
                                 device_name, POWER_CYCLE_SETTLE_SECS
                             );
+                            // Device did NOT re-appear — cycle failed
                             break;
                         }
                         std::thread::sleep(poll_interval);
@@ -223,7 +245,12 @@ impl UsbWatchdog {
                 }
                 Err(e) => {
                     error!("USB watchdog: uhubctl failed: {}", e);
-                    self.emit_cycle_event("usb-power-cycle-failed", &format!("uhubctl failed: {}", e));
+                    emit_cycle_event_with_handle(
+                        &app_handle,
+                        "usb-power-cycle-failed",
+                        &format!("uhubctl failed: {}", e),
+                    );
+                    // uhubctl failed — cycle failed
                 }
             }
         }));
@@ -237,21 +264,22 @@ impl UsbWatchdog {
             } else if let Some(s) = panic.downcast_ref::<String>() {
                 error!("USB watchdog panic: {}", s);
             }
+            // Panic occurred — cycle failed
         }
 
         self.cycling.store(false, Ordering::SeqCst);
-        self.emit_cycle_event("usb-power-cycle-finished", &device_name);
-        true
-    }
 
-    /// Manually trigger a power cycle (e.g. from settings UI).
-    /// Ignores cooldown. Resolves device name at call time.
-    ///
-    /// Runs the cycle on a background thread so the UI stays responsive.
-    /// The `cycling` flag stays `true` for the entire duration and is
-    /// cleared only when the cycle + settle completes.
-    ///
-    /// Wrapped in `catch_unwind` to prevent panics from crashing the app.
+        // Only emit "finished" if the cycle actually succeeded.
+        // If it failed, "usb-power-cycle-failed" was already emitted above
+        // (or a panic was handled), and we should return false so the caller
+        // knows the retry will likely fail.
+        if cycle_succeeded {
+            self.emit_cycle_event("usb-power-cycle-finished", &device_name);
+            true
+        } else {
+            false
+        }
+    }
     pub fn force_power_cycle(&self) -> bool {
         if self.cycling.swap(true, Ordering::SeqCst) {
             debug!("USB watchdog: cycle already in progress");
@@ -265,11 +293,18 @@ impl UsbWatchdog {
             return false;
         }
 
+        // Emit start event
+        self.emit_cycle_event("usb-power-cycle-started", &device_name);
+
+        // Stage 1: Resolve the device name
+        self.emit_stage_event("resolving", "Locating USB device...");
+
         let device = match resolve_device(&device_name) {
             Some(d) => d,
             None => {
                 warn!("USB watchdog: device '{}' not found for forced cycle", device_name);
                 self.cycling.store(false, Ordering::SeqCst);
+                self.emit_cycle_event("usb-power-cycle-failed", "device not found for forced cycle");
                 return false;
             }
         };
@@ -282,7 +317,8 @@ impl UsbWatchdog {
             device_name, device.hub, device.port
         );
 
-        self.emit_cycle_event("usb-power-cycle-started", &device_name);
+        // Stage 2: Power cycling the port
+        self.emit_stage_event("cycling", "Power cycling port...");
 
         // Spawn the uhubctl cycle — the cycling flag will be cleared
         // only after the cycle + settle completes.
@@ -293,6 +329,8 @@ impl UsbWatchdog {
         let app_handle = self.app_handle.clone();
 
         std::thread::spawn(move || {
+            let mut cycle_succeeded = false;
+
             // Wrap in catch_unwind to prevent panics from crashing the app
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let start = Instant::now();
@@ -303,6 +341,8 @@ impl UsbWatchdog {
                             name,
                             start.elapsed()
                         );
+                        // Stage 3: Waiting for device to reconnect
+                        emit_stage_event_with_handle(&app_handle, "waiting", "Waiting for device...");
                         // Poll for the device to re-appear instead of sleeping blindly
                         let settle_start = Instant::now();
                         let settle_max = Duration::from_secs(POWER_CYCLE_SETTLE_SECS);
@@ -315,6 +355,9 @@ impl UsbWatchdog {
                                     settle_start.elapsed()
                                 );
                                 std::thread::sleep(Duration::from_millis(300));
+                                // Stage 4: Device recovered
+                                emit_stage_event_with_handle(&app_handle, "recovered", "Device recovered!");
+                                cycle_succeeded = true;
                                 break;
                             }
                             if settle_start.elapsed() >= settle_max {
@@ -354,14 +397,20 @@ impl UsbWatchdog {
 
             cycling.store(false, Ordering::SeqCst);
 
-            emit_cycle_event_with_handle(
-                &app_handle,
-                "usb-power-cycle-finished",
-                &name,
-            );
+            // Only emit "finished" if the cycle actually succeeded.
+            if cycle_succeeded {
+                emit_cycle_event_with_handle(
+                    &app_handle,
+                    "usb-power-cycle-finished",
+                    &name,
+                );
+            }
         });
 
         true
+    }
+    fn emit_stage_event(&self, stage: &str, message: &str) {
+        emit_stage_event_with_handle(&self.app_handle, stage, message);
     }
 
     /// Emit a Tauri event to the frontend about the power-cycle state.
@@ -371,6 +420,8 @@ impl UsbWatchdog {
 }
 
 /// Emit a Tauri event about USB power-cycle progress.
+/// Emits to both the app handle (all windows) and directly to the
+/// recording overlay window to ensure the overlay always receives the event.
 fn emit_cycle_event_with_handle(
     app_handle: &Option<tauri::AppHandle>,
     event_name: &str,
@@ -378,7 +429,29 @@ fn emit_cycle_event_with_handle(
 ) {
     if let Some(ah) = app_handle {
         use tauri::Emitter;
+        use tauri::Manager;
         let _ = ah.emit(event_name, message.to_string());
+        // Also emit directly to the recording overlay window — the overlay
+        // webview may not reliably receive events via ah.emit() alone.
+        if let Some(overlay) = ah.get_webview_window("recording_overlay") {
+            let _ = overlay.emit(event_name, message.to_string());
+        }
+    }
+}
+
+pub fn emit_stage_event_with_handle(app_handle: &Option<tauri::AppHandle>, stage: &str, message: &str) {
+    if let Some(ah) = app_handle {
+        use tauri::Emitter;
+        use tauri::Manager;
+        let payload = UsbCycleStage {
+            stage: stage.to_string(),
+            message: message.to_string(),
+        };
+        let _ = ah.emit("usb-power-cycle-stage", payload.clone());
+        // Also emit directly to the recording overlay window.
+        if let Some(overlay) = ah.get_webview_window("recording_overlay") {
+            let _ = overlay.emit("usb-power-cycle-stage", payload);
+        }
     }
 }
 
@@ -523,7 +596,10 @@ fn which_uhubctl() -> Option<std::path::PathBuf> {
 
 /// Maximum time to wait for `uhubctl` to complete before giving up.
 /// Prevents the app from hanging indefinitely if uhubctl itself gets stuck.
-const UHUBCTL_TIMEOUT_SECS: u64 = 15;
+/// A power cycle typically completes in 1-3s; with `-d 3` the delay is at most
+/// 3s. 5s is generous enough to handle slow USB hubs without leaving the
+/// user stuck on "USB cycling…" for an unreasonable time.
+const UHUBCTL_TIMEOUT_SECS: u64 = 5;
 
 /// Run `uhubctl -l <hub> -p <port> -a cycle -d 3` with a timeout.
 ///

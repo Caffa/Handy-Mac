@@ -1,6 +1,7 @@
 use crate::audio_feedback;
 use crate::audio_toolkit::audio::{list_input_devices, list_output_devices};
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
+use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings::{get_settings, write_settings};
 use crate::usb_watchdog;
@@ -8,7 +9,42 @@ use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager};
+use std::thread;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager};
+
+/// macOS idle detection via CGEventSourceSecondsSinceLastEventType.
+/// Returns how long (in Duration) since the last mouse/keyboard event.
+#[cfg(target_os = "macos")]
+pub mod macos_idle {
+    use std::time::Duration;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(
+            state: u32,
+            event_type: u32,
+        ) -> f64;
+    }
+
+    // Constants from CGEventSource.h
+    const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: u32 = 1;
+    const K_CG_ANY_INPUT_EVENT_TYPE: u32 = 0;
+
+    pub fn get_idle_time() -> Option<Duration> {
+        let seconds = unsafe {
+            CGEventSourceSecondsSinceLastEventType(
+                K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE,
+                K_CG_ANY_INPUT_EVENT_TYPE,
+            )
+        };
+        if seconds > 0.0 {
+            Some(Duration::from_secs_f64(seconds))
+        } else {
+            None
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 use winreg::{
@@ -375,11 +411,38 @@ pub fn trigger_usb_power_cycle(app: AppHandle) -> Result<bool, String> {
 /// from regular transcription recordings.
 const PRONUNCIATION_BINDING_ID: &str = "__pronunciation__";
 
+/// Result of transcribing a pronunciation sample with a single model.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct PronunciationResult {
+    /// The model ID used for this transcription.
+    pub model_id: String,
+    /// Human-readable model name.
+    pub model_name: String,
+    /// What the model heard (raw transcription text).
+    pub transcription: String,
+    /// Whether this transcription matches the canonical word after normalization.
+    /// If true, this result should NOT be saved as a pronunciation variant
+    /// because the model already heard the word correctly.
+    pub matches_canonical: bool,
+}
+
+/// Normalizes text for comparison by stripping punctuation and lowercasing.
+/// Used to determine if a model's transcription matches the canonical word.
+/// Examples: "Hogwarts." -> "hogwarts", "Hello!" -> "hello", "CHARGE B" -> "charge b"
+fn normalize_for_comparison(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .collect::<String>()
+        .to_lowercase()
+        .trim()
+        .to_string()
+}
+
 /// Start a short recording for capturing a pronunciation sample.
 ///
 /// This reuses the existing audio recording infrastructure but uses a special
 /// binding ID to avoid conflicts with regular transcription recordings.
-/// The recording must be stopped with `stop_and_transcribe_pronunciation`.
+/// The recording must be stopped with `stop_and_schedule_pronunciation`.
 #[tauri::command]
 #[specta::specta]
 pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
@@ -397,13 +460,38 @@ pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Stop the pronunciation recording and transcribe the captured audio.
+/// Cancel an active pronunciation recording without processing.
 ///
-/// Returns the transcription text (i.e., what the model "heard").
-/// This text can be used as a pronunciation variant for custom words.
+/// Stops the recording and discards the audio.
 #[tauri::command]
 #[specta::specta]
-pub async fn stop_and_transcribe_pronunciation(app: AppHandle) -> Result<String, String> {
+pub fn cancel_pronunciation_recording(app: AppHandle) -> Result<(), String> {
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+
+    // Stop recording and discard audio
+    let _ = rm.stop_recording(PRONUNCIATION_BINDING_ID);
+
+    // Clear any pending pronunciation data
+    {
+        let mut pending = rm.pending_pronunciation.lock().unwrap();
+        *pending = None;
+    }
+
+    info!("Pronunciation recording cancelled");
+    Ok(())
+}
+
+/// Stop the pronunciation recording and schedule deferred processing.
+///
+/// Stops the recording, stores the audio + canonical word, and spawns a
+/// background thread that will process with all downloaded models after a delay.
+/// The frontend is notified via events when processing completes.
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_and_schedule_pronunciation(
+    app: AppHandle,
+    canonical_word: String,
+) -> Result<String, String> {
     let rm = app.state::<Arc<AudioRecordingManager>>();
 
     // Stop recording and get audio samples
@@ -416,24 +504,454 @@ pub async fn stop_and_transcribe_pronunciation(app: AppHandle) -> Result<String,
     }
 
     info!(
-        "Pronunciation recording stopped, {} samples captured",
+        "Pronunciation recording stopped, {} samples captured. Scheduling deferred processing.",
         samples.len()
     );
 
-    // Transcribe using the loaded model
-    let tm = app.state::<Arc<TranscriptionManager>>();
-    let tm = Arc::clone(&tm);
-    tm.initiate_model_load();
-
-    let transcription = tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples))
-        .await
-        .map_err(|e| format!("Transcription task failed: {}", e))?
-        .map_err(|e| format!("Transcription failed: {}", e))?;
-
-    if transcription.is_empty() {
-        return Err("No speech detected in recording. Try speaking louder or closer to the microphone.".to_string());
+    // Store the audio + word for deferred processing
+    {
+        let mut pending = rm.pending_pronunciation.lock().unwrap();
+        *pending = Some((samples, canonical_word.clone()));
     }
 
-    info!("Pronunciation transcription result: '{}'", transcription);
-    Ok(transcription)
+    // Spawn a background thread that will process after a delay
+    let rm_clone = Arc::clone(&rm);
+    let app_clone = app.clone();
+    let canonical_word_clone = canonical_word.clone();
+
+    // Cancel any existing processing thread
+    {
+        let mut thread_handle = rm.pronunciation_thread.lock().unwrap();
+        if let Some(handle) = thread_handle.take() {
+            // We can't cancel a thread directly, but we can let it run and it will
+            // check if new data is available
+            info!("Cancelling previous pronunciation processing thread");
+        }
+        *thread_handle = Some(thread::spawn(move || {
+            process_pronunciation_deferred(&app_clone, &canonical_word_clone);
+        }));
+    }
+
+    info!(
+        "Pronunciation scheduled for deferred processing. Word: '{}'",
+        canonical_word
+    );
+
+    Ok(format!(
+        "Recording saved. Will process pronunciation for '{}' when idle.",
+        canonical_word
+    ))
+}
+
+/// Process pronunciation after the system has been idle (no mouse/keyboard input).
+/// This runs in a background thread.
+fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
+    info!(
+        "Waiting for system idle before processing pronunciation for '{}'...",
+        canonical_word
+    );
+
+    let idle_threshold = Duration::from_secs(60); // 1 minute of idle required
+    let check_interval = Duration::from_secs(5); // Check every 5 seconds
+
+    // Poll until system is idle
+    loop {
+        // Check if pending data changed (cancellation)
+        let rm = app.state::<Arc<AudioRecordingManager>>();
+        let pending = rm.pending_pronunciation.lock().unwrap();
+        let (samples, word) = match &*pending {
+            Some((s, w)) if w == canonical_word => (s.clone(), w.clone()),
+            _ => {
+                info!(
+                    "Pronunciation data changed or cleared, skipping processing for '{}'",
+                    canonical_word
+                );
+                return;
+            }
+        };
+        drop(pending);
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(idle) = macos_idle::get_idle_time() {
+                info!("System idle for {:?}", idle);
+                if idle >= idle_threshold {
+                    info!("System is idle, starting pronunciation processing");
+                    break;
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Fallback: just wait 60 seconds on non-macOS
+            thread::sleep(Duration::from_secs(60));
+            break;
+        }
+
+        thread::sleep(check_interval);
+    }
+
+    // Now process with all models
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let pending = rm.pending_pronunciation.lock().unwrap();
+    let (samples, word) = match &*pending {
+        Some((s, w)) if w == canonical_word => (s.clone(), w.clone()),
+        _ => {
+            info!(
+                "Pronunciation data changed before processing started for '{}'",
+                canonical_word
+            );
+            return;
+        }
+    };
+    drop(pending);
+
+    info!(
+        "Starting deferred multi-model pronunciation processing for '{}'",
+        canonical_word
+    );
+
+    // Emit progress start
+    let _ = app.emit(
+        "pronunciation-model-progress",
+        serde_json::json!({
+            "model_id": "",
+            "model_name": "Starting...",
+            "current": 0,
+            "total": 0,
+            "started": true,
+        }),
+    );
+
+    // Process with all models
+    match process_pronunciation_with_all_models(&app, &word, samples) {
+        Ok(results) => {
+            let canonical_normalized = normalize_for_comparison(canonical_word);
+            let new_pronunciations: Vec<String> = results
+                .iter()
+                .filter(|r| !r.matches_canonical)
+                .map(|r| r.transcription.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+
+            if new_pronunciations.is_empty() {
+                let _ = app.emit(
+                    "pronunciation-processing-done",
+                    serde_json::json!({
+                        "success": true,
+                        "message": format!("All models heard '{}' correctly", canonical_word),
+                        "count": 0,
+                    }),
+                );
+            } else {
+                let _ = app.emit(
+                    "pronunciation-processing-done",
+                    serde_json::json!({
+                        "success": true,
+                        "message": format!("Added {} pronunciations for '{}'", new_pronunciations.len(), canonical_word),
+                        "count": new_pronunciations.len(),
+                        "pronunciations": new_pronunciations,
+                        "word": canonical_word,
+                    }),
+                );
+            }
+
+            // Clear pending
+            let rm = app.state::<Arc<AudioRecordingManager>>();
+            let mut pending = rm.pending_pronunciation.lock().unwrap();
+            *pending = None;
+        }
+        Err(e) => {
+            warn!(
+                "Deferred pronunciation processing failed for '{}': {}",
+                canonical_word, e
+            );
+            let _ = app.emit(
+                "pronunciation-processing-done",
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("Processing failed: {}", e),
+                    "count": 0,
+                }),
+            );
+        }
+    }
+
+    // Clear the thread handle
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let mut thread_handle = rm.pronunciation_thread.lock().unwrap();
+    *thread_handle = None;
+}
+
+/// Process pronunciation with all downloaded models (shared logic).
+fn process_pronunciation_with_all_models(
+    app: &AppHandle,
+    canonical_word: &str,
+    samples: Vec<f32>,
+) -> Result<Vec<PronunciationResult>, String> {
+    let mm = app.state::<Arc<ModelManager>>();
+    let downloaded_models: Vec<(String, String)> = mm
+        .get_available_models()
+        .into_iter()
+        .filter(|m| m.is_downloaded && !m.is_downloading)
+        .map(|m| (m.id.clone(), m.name.clone()))
+        .collect();
+
+    if downloaded_models.is_empty() {
+        return Err("No models are downloaded".to_string());
+    }
+
+    let canonical_normalized = normalize_for_comparison(canonical_word);
+    let tm = app.state::<Arc<TranscriptionManager>>();
+    let tm = Arc::clone(&tm);
+
+    let total_models = downloaded_models.len();
+    let mut results: Vec<PronunciationResult> = Vec::new();
+    let mut seen_transcriptions: Vec<String> = Vec::new();
+
+    for (idx, (model_id, model_name)) in downloaded_models.iter().enumerate() {
+        // Emit progress
+        let _ = app.emit(
+            "pronunciation-model-progress",
+            serde_json::json!({
+                "model_id": model_id,
+                "model_name": model_name,
+                "current": idx + 1,
+                "total": total_models,
+            }),
+        );
+
+        let tm_clone = Arc::clone(&tm);
+        let model_id_clone = model_id.clone();
+        let samples_clone = samples.clone();
+
+        let transcription_result = thread::spawn(move || {
+            // Load the specific model
+            if let Err(e) = tm_clone.load_model(&model_id_clone) {
+                return Err(format!("Failed to load model {}: {}", model_id_clone, e));
+            }
+
+            // Transcribe with this model
+            tm_clone
+                .transcribe(samples_clone)
+                .map_err(|e| format!("Transcription failed: {}", e))
+        })
+        .join()
+        .map_err(|_| "Thread panicked".to_string())?;
+
+        match transcription_result {
+            Ok(output) => {
+                let transcription_text = output.text.trim().to_string();
+
+                if transcription_text.is_empty() {
+                    continue;
+                }
+
+                let normalized = normalize_for_comparison(&transcription_text);
+                let matches_canonical = normalized == canonical_normalized;
+
+                let transcription_lower = transcription_text.to_lowercase();
+                if seen_transcriptions
+                    .iter()
+                    .any(|s| s.to_lowercase() == transcription_lower)
+                {
+                    continue;
+                }
+
+                seen_transcriptions.push(transcription_text.clone());
+
+                results.push(PronunciationResult {
+                    model_id: model_id.clone(),
+                    model_name: model_name.clone(),
+                    transcription: transcription_text,
+                    matches_canonical,
+                });
+            }
+            Err(e) => {
+                warn!("Model {} failed: {}", model_id, e);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Stop the pronunciation recording and transcribe with ALL downloaded models.
+///
+/// This iterates through each downloaded model, loads it, transcribes the
+/// pronunciation audio, and collects results. Transcriptions that match the
+/// canonical word (after stripping punctuation and lowercasing) are marked
+/// with `matches_canonical: true` so the frontend can skip them.
+///
+/// The original model is restored after all transcriptions are complete.
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_and_transcribe_pronunciation_all_models(
+    app: AppHandle,
+    canonical_word: String,
+) -> Result<Vec<PronunciationResult>, String> {
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+
+    // Stop recording and get audio samples
+    let samples = rm
+        .stop_recording(PRONUNCIATION_BINDING_ID)
+        .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
+
+    if samples.is_empty() {
+        return Err("Recording produced no audio samples".to_string());
+    }
+
+    info!(
+        "Pronunciation recording stopped for multi-model transcription, {} samples captured. \
+         Canonical word: '{}'",
+        samples.len(),
+        canonical_word
+    );
+
+    // Get all downloaded models
+    let mm = app.state::<Arc<ModelManager>>();
+    let downloaded_models: Vec<(String, String)> = mm
+        .get_available_models()
+        .into_iter()
+        .filter(|m| m.is_downloaded && !m.is_downloading)
+        .map(|m| (m.id.clone(), m.name.clone()))
+        .collect();
+
+    if downloaded_models.is_empty() {
+        return Err("No models are downloaded. Please download at least one model first.".to_string());
+    }
+
+    // Remember the currently selected model so we can restore it
+    let original_model = {
+        let settings = get_settings(&app);
+        settings.selected_model.clone()
+    };
+
+    let canonical_normalized = normalize_for_comparison(&canonical_word);
+    let tm = app.state::<Arc<TranscriptionManager>>();
+    let tm = Arc::clone(&tm);
+
+    let total_models = downloaded_models.len();
+    let mut results: Vec<PronunciationResult> = Vec::new();
+    let mut seen_transcriptions: Vec<String> = Vec::new();
+
+    // Transcribe with each downloaded model
+    for (idx, (model_id, model_name)) in downloaded_models.iter().enumerate() {
+        // Emit progress event so the frontend can show which model is being processed
+        let _ = app.emit(
+            "pronunciation-model-progress",
+            serde_json::json!({
+                "model_id": model_id,
+                "model_name": model_name,
+                "current": idx + 1,
+                "total": total_models,
+            }),
+        );
+
+        info!(
+            "Transcribing pronunciation with model {}/{}: {} ({})",
+            idx + 1,
+            total_models,
+            model_name,
+            model_id
+        );
+
+        let tm_clone = Arc::clone(&tm);
+        let model_id_clone = model_id.clone();
+        let samples_clone = samples.clone();
+
+        let transcription_result = tauri::async_runtime::spawn_blocking(move || {
+            // Load the specific model
+            if let Err(e) = tm_clone.load_model(&model_id_clone) {
+                return Err(format!("Failed to load model {}: {}", model_id_clone, e));
+            }
+
+            // Transcribe with this model
+            tm_clone
+                .transcribe(samples_clone)
+                .map_err(|e| format!("Transcription failed with model {}: {}", model_id_clone, e))
+        })
+        .await
+        .map_err(|e| format!("Transcription task failed for model {}: {}", model_id, e))?;
+
+        match transcription_result {
+            Ok(output) => {
+                let transcription_text = output.text.trim().to_string();
+
+                if transcription_text.is_empty() {
+                    info!(
+                        "Model {} ({}) produced empty transcription, skipping",
+                        model_id, model_name
+                    );
+                    continue;
+                }
+
+                let normalized = normalize_for_comparison(&transcription_text);
+                let matches_canonical = normalized == canonical_normalized;
+
+                // Deduplicate: skip if we've already seen this exact transcription
+                let transcription_lower = transcription_text.to_lowercase();
+                if seen_transcriptions.iter().any(|s| s.to_lowercase() == transcription_lower) {
+                    info!(
+                        "Model {} ({}) produced duplicate transcription '{}', skipping",
+                        model_id, model_name, transcription_text
+                    );
+                    continue;
+                }
+
+                info!(
+                    "Model {} ({}) transcribed: '{}' (normalized: '{}', matches_canonical: {})",
+                    model_id, model_name, transcription_text, normalized, matches_canonical
+                );
+
+                seen_transcriptions.push(transcription_text.clone());
+
+                results.push(PronunciationResult {
+                    model_id: model_id.clone(),
+                    model_name: model_name.clone(),
+                    transcription: transcription_text,
+                    matches_canonical,
+                });
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to transcribe pronunciation with model {}: {}",
+                    model_id, e
+                );
+                // Continue to next model rather than failing entirely
+            }
+        }
+    }
+
+    // Restore the original model
+    if !original_model.is_empty() {
+        let tm_restore = Arc::clone(&tm);
+        let original_model_clone = original_model.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            info!("Restoring original model: {}", original_model_clone);
+            tm_restore.load_model(&original_model_clone)
+        })
+        .await;
+    }
+
+    // Emit completion event
+    let _ = app.emit(
+        "pronunciation-model-progress",
+        serde_json::json!({
+            "model_id": "",
+            "model_name": "",
+            "current": total_models,
+            "total": total_models,
+            "completed": true,
+        }),
+    );
+
+    info!(
+        "Multi-model pronunciation transcription complete. {} unique results from {} models",
+        results.len(),
+        total_models
+    );
+
+    Ok(results)
 }

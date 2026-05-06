@@ -2,9 +2,11 @@
 use crate::apple_intelligence;
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
 use crate::audio_toolkit::{is_microphone_access_denied, is_no_input_device_error};
+use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
+use crate::session::SessionTracker;
 use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
@@ -13,7 +15,7 @@ use crate::utils::{
 };
 use crate::TranscriptionCoordinator;
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -391,6 +393,27 @@ impl ShortcutAction for TranscribeAction {
         let start_time = Instant::now();
         debug!("TranscribeAction::start called for binding: {}", binding_id);
 
+        // ── Structured session tracking ──
+        let settings = get_settings(app);
+        let is_always_on = settings.always_on_microphone;
+        let mic_name = settings
+            .selected_microphone
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
+        if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
+            let sid = tracker.start_session(&mic_name, is_always_on);
+            logging::emit(AppEvent::ShortcutTriggered {
+                binding_id: binding_id.to_string(),
+                action: if self.post_process {
+                    "transcribe_with_post_process".to_string()
+                } else {
+                    "transcribe".to_string()
+                },
+            });
+            debug!("Session {} started", sid);
+        }
+
         // Load model in the background
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
@@ -473,6 +496,14 @@ impl ShortcutAction for TranscribeAction {
                 } else {
                     "unknown"
                 };
+
+                // ── Structured event: recording failed ──
+                if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
+                    if let Some(sid) = tracker.current_session_id() {
+                        tracker.fail_session(&sid, &err);
+                    }
+                }
+
                 let _ = app.emit(
                     "recording-error",
                     RecordingErrorEvent {
@@ -500,6 +531,11 @@ impl ShortcutAction for TranscribeAction {
         let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
         let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
         let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
+
+        // Capture the current session ID for structured tracking in the async task
+        let sid: Option<SessionId> = app
+            .try_state::<Arc<SessionTracker>>()
+            .and_then(|t| t.current_session_id());
 
         change_tray_icon(app, TrayIconState::Transcribing);
         show_transcribing_overlay(app);
@@ -547,6 +583,26 @@ impl ShortcutAction for TranscribeAction {
                     let transcription_time = Instant::now();
                     let transcription_result = tm.transcribe(samples);
 
+                    // ── Structured session tracking: advance to Transcribing phase ──
+                    let model_id = transcription_result
+                        .as_ref()
+                        .map(|r| r.model_id.clone())
+                        .unwrap_or_else(|e| {
+                            warn!("Transcription failed: {}", e);
+                            "unknown".to_string()
+                        });
+
+                    if let (Some(ref s), Some(tracker)) =
+                        (&sid, ah.try_state::<Arc<SessionTracker>>())
+                    {
+                        tracker.advance_to_transcribing(
+                            s,
+                            &model_id,
+                            sample_count,
+                            stop_recording_time.elapsed().as_millis() as u64,
+                        );
+                    }
+
                     // Await WAV save and verify
                     let wav_saved = match wav_handle.await {
                         Ok(Ok(())) => {
@@ -574,26 +630,39 @@ impl ShortcutAction for TranscribeAction {
                     match transcription_result {
                         Ok(transcription) => {
                             debug!(
-                                "Transcription completed in {:?}: '{}'",
+                                "Transcription completed in {:?}: '{}' (model: {})",
                                 transcription_time.elapsed(),
-                                transcription
+                                transcription.text,
+                                transcription.model_id,
                             );
+
+                            // ── Structured session tracking: transcription completed ──
+                            if let (Some(ref s), Some(tracker)) =
+                                (&sid, ah.try_state::<Arc<SessionTracker>>())
+                            {
+                                tracker.advance_to_post_processing(
+                                    s,
+                                    transcription.text.len(),
+                                    transcription_time.elapsed().as_millis() as u64,
+                                );
+                            }
 
                             if post_process {
                                 show_processing_overlay(&ah);
                             }
                             let processed =
-                                process_transcription_output(&ah, &transcription, post_process)
+                                process_transcription_output(&ah, &transcription.text, post_process)
                                     .await;
 
                             // Save to history if WAV was saved
                             if wav_saved {
                                 if let Err(err) = hm.save_entry(
                                     file_name,
-                                    transcription,
+                                    transcription.text.clone(),
                                     post_process,
                                     processed.post_processed_text.clone(),
                                     processed.post_process_prompt.clone(),
+                                    Some(transcription.model_id.clone()),
                                 ) {
                                     error!("Failed to save history entry: {}", err);
                                 }
@@ -606,35 +675,67 @@ impl ShortcutAction for TranscribeAction {
                                 let ah_clone = ah.clone();
                                 let paste_time = Instant::now();
                                 let final_text = processed.final_text;
-                                ah.run_on_main_thread(move || {
+                                info!("Submitting paste to main thread, text length={}", final_text.len());
+                                let result = ah.run_on_main_thread(move || {
+                                    info!("Paste function starting on main thread...");
                                     match utils::paste(final_text, ah_clone.clone()) {
-                                        Ok(()) => debug!(
-                                            "Text pasted successfully in {:?}",
-                                            paste_time.elapsed()
-                                        ),
+                                        Ok(()) => {
+                                            info!(
+                                                "Text pasted successfully in {:?}",
+                                                paste_time.elapsed()
+                                            );
+                                            // ── Structured event: paste succeeded, finish session ──
+                                            if let (Some(ref s), Some(tracker)) =
+                                                (&sid, ah_clone.try_state::<Arc<SessionTracker>>())
+                                            {
+                                                tracker.finish_session(
+                                                    s,
+                                                    paste_time.elapsed().as_millis() as u64,
+                                                );
+                                            }
+                                        }
                                         Err(e) => {
                                             error!("Failed to paste transcription: {}", e);
+
+                                            // ── Structured event: paste failed ──
+                                            if let (Some(ref s), Some(tracker)) =
+                                                (&sid, ah_clone.try_state::<Arc<SessionTracker>>())
+                                            {
+                                                tracker.fail_session(s, &format!("Paste failed: {}", e));
+                                            }
+
                                             let _ = ah_clone.emit("paste-error", ());
                                         }
                                     }
                                     utils::hide_recording_overlay(&ah_clone);
                                     change_tray_icon(&ah_clone, TrayIconState::Idle);
-                                })
-                                .unwrap_or_else(|e| {
-                                    error!("Failed to run paste on main thread: {:?}", e);
-                                    utils::hide_recording_overlay(&ah);
-                                    change_tray_icon(&ah, TrayIconState::Idle);
                                 });
+                                
+                                match result {
+                                    Ok(()) => info!("Main thread paste task submitted successfully"),
+                                    Err(e) => {
+                                        error!("Failed to run paste on main thread: {:?}", e);
+                                        utils::hide_recording_overlay(&ah);
+                                        change_tray_icon(&ah, TrayIconState::Idle);
+                                    }
+                                }
                             }
                         }
                         Err(err) => {
                             debug!("Global Shortcut Transcription error: {}", err);
+                            // ── Structured event: transcription failed ──
+                            if let (Some(ref s), Some(tracker)) =
+                                (&sid, ah.try_state::<Arc<SessionTracker>>())
+                            {
+                                tracker.fail_session(s, &err.to_string());
+                            }
                             // Save entry with empty text so user can retry
                             if wav_saved {
                                 if let Err(save_err) = hm.save_entry(
                                     file_name,
                                     String::new(),
                                     post_process,
+                                    None,
                                     None,
                                     None,
                                 ) {
@@ -648,6 +749,12 @@ impl ShortcutAction for TranscribeAction {
                 }
             } else {
                 debug!("No samples retrieved from recording stop");
+                // ── Structured event: no samples ──
+                if let (Some(ref s), Some(tracker)) =
+                    (&sid, ah.try_state::<Arc<SessionTracker>>())
+                {
+                    tracker.fail_session(s, "No audio samples from recording stop");
+                }
                 utils::hide_recording_overlay(&ah);
                 change_tray_icon(&ah, TrayIconState::Idle);
             }

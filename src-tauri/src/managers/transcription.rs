@@ -31,6 +31,15 @@ use transcribe_rs::{
     SpeechModel, TranscribeOptions,
 };
 
+/// Result of a transcription call, including metadata about which model was used.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct TranscriptionOutput {
+    /// The transcribed text.
+    pub text: String,
+    /// The model ID that produced this transcription (e.g. "turbo", "parakeet-tdt-0.6b-v2").
+    pub model_id: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelStateEvent {
     pub event_type: String,
@@ -439,7 +448,7 @@ impl TranscriptionManager {
         current_model.clone()
     }
 
-    pub fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
+    pub fn transcribe(&self, audio: Vec<f32>) -> Result<TranscriptionOutput> {
         #[cfg(debug_assertions)]
         if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
             return Err(anyhow::anyhow!(
@@ -457,7 +466,10 @@ impl TranscriptionManager {
         if audio.is_empty() {
             debug!("Empty audio vector");
             self.maybe_unload_immediately("empty audio");
-            return Ok(String::new());
+            return Ok(TranscriptionOutput {
+                text: String::new(),
+                model_id: String::new(),
+            });
         }
 
         // Check if model is loaded, if not try to load it
@@ -579,7 +591,10 @@ impl TranscriptionManager {
         if audio.is_empty() {
             debug!("Audio became empty after VAD trim");
             self.maybe_unload_immediately("empty audio after trim");
-            return Ok(String::new());
+            return Ok(TranscriptionOutput {
+                text: String::new(),
+                model_id: effective_model_id,
+            });
         }
 
         // Validate selected language against the effective model's supported languages.
@@ -648,9 +663,22 @@ impl TranscriptionManager {
                             };
 
                             // Optimize Whisper inference params based on audio length.
-                            // Short audio (< 30s at 16kHz = 480000 samples) benefits from
-                            // single_segment mode (skips segmentation) and greedy decoding
-                            // (faster with negligible accuracy loss for clear speech).
+                            //
+                            // Short audio (< 30s at 16kHz = 480000 samples):
+                            //   - single_segment: skips whisper.cpp's internal segmentation,
+                            //     treating the entire clip as one utterance (faster, simpler).
+                            //   - greedy decoding: fastest strategy, negligible accuracy loss
+                            //     for short, clear speech.
+                            //   - no_context: true (default) — each segment starts fresh,
+                            //     which is fine for single-segment audio.
+                            //
+                            // Long audio (>= 30s):
+                            //   - multi-segment: whisper.cpp splits audio into 30-second windows.
+                            //   - beam search (beam_size=3): more robust decoding across segment
+                            //     boundaries, reduces hallucination and dropped text.
+                            //   - no_context: false — preserves decoder state across segments so
+                            //     the model carries context from one 30-second window to the next.
+                            //     This prevents mid-sentence chunk drops at segment boundaries.
                             let audio_sample_count = audio.len();
                             // 30 seconds at 16kHz
                             let short_audio_threshold = 16000 * 30;
@@ -689,6 +717,10 @@ impl TranscriptionManager {
                                 },
                                 single_segment: is_short_audio,
                                 use_greedy: is_short_audio,
+                                // For long audio, carry decoder state across 30-second segments
+                                // to prevent mid-sentence text drops at segment boundaries.
+                                // Short audio doesn't need this (single segment = no boundaries).
+                                no_context: is_short_audio,
                                 n_threads: gpu_threads,
                                 ..Default::default()
                             };
@@ -885,7 +917,10 @@ impl TranscriptionManager {
 
         self.maybe_unload_immediately("transcription");
 
-        Ok(final_result)
+        Ok(TranscriptionOutput {
+            text: final_result,
+            model_id: effective_model_id,
+        })
     }
 
     /// Transcribe audio for benchmarking purposes.

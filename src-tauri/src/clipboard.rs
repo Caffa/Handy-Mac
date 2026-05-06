@@ -3,9 +3,9 @@ use crate::input::{self, EnigoState};
 use crate::settings::TypingTool;
 use crate::settings::{get_settings, AutoSubmitKey, ClipboardHandling, PasteMethod};
 use enigo::{Direction, Enigo, Key, Keyboard};
-use log::info;
+use log::{error, info};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -601,65 +601,84 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     };
 
     info!(
-        "Using paste method: {:?}, delay: {}ms",
-        paste_method, paste_delay_ms
+        "Paste started: method={:?}, delay={}ms, text_len={}",
+        paste_method, paste_delay_ms, text.len()
     );
 
     // Get the managed Enigo instance
     let enigo_state = app_handle
         .try_state::<EnigoState>()
         .ok_or("Enigo state not initialized")?;
+    
+    info!("Acquiring Enigo lock...");
     let mut enigo = enigo_state
         .0
         .lock()
-        .map_err(|e| format!("Failed to lock Enigo: {}", e))?;
+        .map_err(|e| {
+            error!("Enigo mutex poisoned: {:?}", e);
+            format!("Failed to lock Enigo: {}", e)
+        })?;
+    info!("Enigo lock acquired");
 
     // Perform the paste operation
-    match paste_method {
+    let result = match paste_method {
         PasteMethod::None => {
             info!("PasteMethod::None selected - skipping paste action");
+            Ok(())
         }
         PasteMethod::Direct => {
+            info!("Pasting via Direct method");
             paste_direct(
                 &mut enigo,
                 &text,
                 #[cfg(target_os = "linux")]
                 settings.typing_tool,
-            )?;
+            )
         }
         PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
+            info!("Pasting via clipboard method");
             paste_via_clipboard(
                 &mut enigo,
                 &text,
                 &app_handle,
                 &paste_method,
                 paste_delay_ms,
-            )?
+            )
         }
         PasteMethod::ExternalScript => {
+            info!("Pasting via external script");
             let script_path = settings
                 .external_script_path
                 .as_ref()
                 .filter(|p| !p.is_empty())
                 .ok_or("External script path is not configured")?;
-            paste_via_external_script(&text, script_path)?;
+            paste_via_external_script(&text, script_path)
         }
+    };
+
+    match &result {
+        Ok(()) => info!("Paste completed successfully"),
+        Err(e) => error!("Paste failed: {}", e),
     }
 
     if should_send_auto_submit(settings.auto_submit, paste_method) {
-        std::thread::sleep(Duration::from_millis(50));
-        send_return_key(&mut enigo, settings.auto_submit_key)?;
+        info!("Sending auto-submit key");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if let Err(e) = send_return_key(&mut enigo, settings.auto_submit_key) {
+            error!("Auto-submit failed: {}", e);
+        }
     }
 
     // After pasting, optionally copy to clipboard based on settings
     if settings.clipboard_handling == ClipboardHandling::CopyToClipboard {
+        info!("Copying text to clipboard");
         let clipboard = app_handle.clipboard();
-        clipboard
-            .write_text(&text)
-            .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
+        if let Err(e) = clipboard.write_text(&text) {
+            error!("Failed to copy to clipboard: {}", e);
+        }
     }
 
-    Ok(())
+    result
 }
 
 #[cfg(test)]

@@ -856,6 +856,13 @@ async triggerUsbPowerCycle() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Start a short recording for capturing a pronunciation sample.
+ * 
+ * This reuses the existing audio recording infrastructure but uses a special
+ * binding ID to avoid conflicts with regular transcription recordings.
+ * The recording must be stopped with `stop_and_schedule_pronunciation`.
+ */
 async startPronunciationRecording() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("start_pronunciation_recording") };
@@ -864,9 +871,47 @@ async startPronunciationRecording() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopAndTranscribePronunciation() : Promise<Result<string, string>> {
+/**
+ * Cancel an active pronunciation recording without processing.
+ * 
+ * Stops the recording and discards the audio.
+ */
+async cancelPronunciationRecording() : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("stop_and_transcribe_pronunciation") };
+    return { status: "ok", data: await TAURI_INVOKE("cancel_pronunciation_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop the pronunciation recording and schedule deferred processing.
+ * 
+ * Stops the recording, stores the audio + canonical word, and spawns a
+ * background thread that will process with all downloaded models after a delay.
+ * The frontend is notified via events when processing completes.
+ */
+async stopAndSchedulePronunciation(canonicalWord: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_and_schedule_pronunciation", { canonicalWord }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop the pronunciation recording and transcribe with ALL downloaded models.
+ * 
+ * This iterates through each downloaded model, loads it, transcribes the
+ * pronunciation audio, and collects results. Transcriptions that match the
+ * canonical word (after stripping punctuation and lowercasing) are marked
+ * with `matches_canonical: true` so the frontend can skip them.
+ * 
+ * The original model is restored after all transcriptions are complete.
+ */
+async stopAndTranscribePronunciationAllModels(canonicalWord: string) : Promise<Result<PronunciationResult[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_and_transcribe_pronunciation_all_models", { canonicalWord }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -942,6 +987,33 @@ async updateHistoryLimit(limit: number) : Promise<Result<null, string>> {
 async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_recording_retention_period", { period }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command to get recent session summaries.
+ */
+async getSessionHistory(limit: number | null) : Promise<Result<SessionSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_session_history", { limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getHealthReport() : Promise<Result<HealthReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_health_report") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getLogEntries(filter: LogFilter) : Promise<Result<LogEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_log_entries", { filter }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1050,11 +1122,23 @@ benchmarked_at: number;
 failed?: boolean }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
-export type CustomWord = { word: string; pronunciations: string[] }
 export type CustomSounds = { start: boolean; stop: boolean }
+/**
+ * A custom word with optional pronunciation variants for advanced fuzzy matching.
+ * 
+ * When `pronunciations` is non-empty, the matching algorithm will also compare
+ * transcription n-grams against each pronunciation variant. Any match replaces
+ * the transcript text with the canonical `word`.
+ * 
+ * Example: `CustomWord { word: "ChargeBee", pronunciations: vec!["charge b", "charge bee"] }`
+ * will match "charge b" or "charge bee" in the transcript and replace it with "ChargeBee".
+ */
+export type CustomWord = { word: string; pronunciations?: string[] }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
+export type ErrorRecord = { timestamp_ms: number; event_type: string; message: string; session_id: string | null }
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
-export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean }
+export type HealthReport = { app_version: string; platform: string; uptime_secs: number; total_sessions: number; successful_sessions: number; failed_sessions: number; avg_transcription_ms: number; p95_transcription_ms: number; model_load_times: ModelLoadStat[]; recent_errors: ErrorRecord[]; usb_watchdog_cycles: number; device_changes: number; current_mic: string; current_model: string; log_level: string }
+export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; model_id: string | null }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
@@ -1066,8 +1150,11 @@ export type ImplementationChangeResult = { success: boolean;
 reset_bindings: string[] }
 export type KeyboardImplementation = "tauri" | "handy_keys"
 export type LLMPrompt = { id: string; name: string; prompt: string }
+export type LogEntry = { timestamp: string; level: string; event_type: string; session_id: string | null; raw_json: string }
+export type LogFilter = { event_type: string | null; session_id: string | null; level: string | null; limit: number | null }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
 export type ModelInfo = { id: string; name: string; description: string; filename: string; url: string | null; sha256: string | null; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean; dynamic_score: BenchmarkScore | null }
+export type ModelLoadStat = { model_id: string; avg_load_ms: number; load_count: number }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
@@ -1076,8 +1163,47 @@ export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
+/**
+ * Result of transcribing a pronunciation sample with a single model.
+ */
+export type PronunciationResult = { 
+/**
+ * The model ID used for this transcription.
+ */
+model_id: string; 
+/**
+ * Human-readable model name.
+ */
+model_name: string; 
+/**
+ * What the model heard (raw transcription text).
+ */
+transcription: string; 
+/**
+ * Whether this transcription matches the canonical word after normalization.
+ * If true, this result should NOT be saved as a pronunciation variant
+ * because the model already heard the word correctly.
+ */
+matches_canonical: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
 export type SecretMap = Partial<{ [key in string]: string }>
+/**
+ * Summary of a completed (or failed) session — stored in the ring buffer
+ * for the frontend to query.
+ */
+export type SessionSummary = { id: string; started_at_ms: number; 
+/**
+ * Total wall-clock duration in milliseconds (start → end).
+ */
+duration_ms: number | null; success: boolean; model_id: string | null; text_length: number | null; had_post_processing: boolean; 
+/**
+ * JSON-encoded phase durations for convenience (avoids HashMap specta issues).
+ */
+phases_json: string | null; 
+/**
+ * Errors encountered during the session.
+ */
+errors: string[] }
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"

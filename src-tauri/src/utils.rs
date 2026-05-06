@@ -2,7 +2,7 @@ use crate::managers::audio::AudioRecordingManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::shortcut;
 use crate::TranscriptionCoordinator;
-use log::info;
+use log::{info, warn};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
@@ -18,14 +18,17 @@ pub fn cancel_current_operation(app: &AppHandle) {
     info!("Initiating operation cancellation...");
 
     // Unregister the cancel shortcut asynchronously
+    info!("Unregistering cancel shortcut...");
     shortcut::unregister_cancel_shortcut(app);
 
     // Cancel any ongoing recording
     let audio_manager = app.state::<Arc<AudioRecordingManager>>();
     let recording_was_active = audio_manager.is_recording();
+    info!("Cancelling recording (was_active={})", recording_was_active);
     audio_manager.cancel_recording();
 
     // Update tray icon and hide overlay
+    info!("Updating UI state...");
     change_tray_icon(app, crate::tray::TrayIconState::Idle);
     hide_recording_overlay(app);
 
@@ -35,7 +38,10 @@ pub fn cancel_current_operation(app: &AppHandle) {
 
     // Notify coordinator so it can keep lifecycle state coherent.
     if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
+        info!("Notifying transcription coordinator");
         coordinator.notify_cancel(recording_was_active);
+    } else {
+        warn!("TranscriptionCoordinator not available");
     }
 
     info!("Operation cancellation completed - returned to idle state");

@@ -1,6 +1,6 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -55,6 +55,7 @@ pub fn is_transcribe_binding(id: &str) -> bool {
 impl TranscriptionCoordinator {
     pub fn new(app: AppHandle) -> Self {
         let (tx, rx) = mpsc::channel();
+        info!("Starting transcription coordinator thread");
 
         thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -84,11 +85,17 @@ impl TranscriptionCoordinator {
                         Some(dur) => match rx.recv_timeout(dur) {
                             Ok(c) => c,
                             Err(mpsc::RecvTimeoutError::Timeout) => Command::ProcessingTimeout,
-                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                info!("Transcription coordinator channel disconnected, shutting down");
+                                break;
+                            }
                         },
                         None => match rx.recv() {
                             Ok(c) => c,
-                            Err(_) => break,
+                            Err(_) => {
+                                info!("Transcription coordinator channel disconnected, shutting down");
+                                break;
+                            }
                         },
                     };
 
@@ -112,18 +119,22 @@ impl TranscriptionCoordinator {
 
                             if push_to_talk {
                                 if is_pressed && matches!(stage, Stage::Idle) {
+                                    info!("Coordinator: starting recording for '{}'", binding_id);
                                     start(&app, &mut stage, &binding_id, &hotkey_string);
                                 } else if !is_pressed
                                     && matches!(&stage, Stage::Recording(id) if id == &binding_id)
                                 {
+                                    info!("Coordinator: stopping recording for '{}'", binding_id);
                                     stop(&app, &mut stage, &binding_id, &hotkey_string);
                                 }
                             } else if is_pressed {
                                 match &stage {
                                     Stage::Idle => {
+                                        info!("Coordinator: starting recording for '{}'", binding_id);
                                         start(&app, &mut stage, &binding_id, &hotkey_string);
                                     }
                                     Stage::Recording(id) if id == &binding_id => {
+                                        info!("Coordinator: stopping recording for '{}'", binding_id);
                                         stop(&app, &mut stage, &binding_id, &hotkey_string);
                                     }
                                     _ => {
@@ -135,21 +146,24 @@ impl TranscriptionCoordinator {
                         Command::Cancel {
                             recording_was_active,
                         } => {
+                            info!("Coordinator: cancel received, recording_was_active={}", recording_was_active);
                             if recording_was_active
                                 || matches!(stage, Stage::Recording(_))
                             {
                                 stage = Stage::Idle;
+                                info!("Coordinator: cancelled, reset to Idle");
                             } else if matches!(stage, Stage::Processing { .. }) {
                                 // Allow cancel during processing too — if the
                                 // transcription pipeline hangs, the user needs a
                                 // way to unstick the app. The FinishGuard will
                                 // still fire when (if) the pipeline completes.
-                                debug!("Cancelling stuck processing stage");
+                                warn!("Cancelling stuck processing stage");
                                 stage = Stage::Idle;
                             }
                         }
                         Command::ProcessingFinished => {
                             if matches!(stage, Stage::Processing { .. }) {
+                                info!("Coordinator: processing finished, reset to Idle");
                                 stage = Stage::Idle;
                             }
                         }
@@ -170,7 +184,8 @@ impl TranscriptionCoordinator {
                 debug!("Transcription coordinator exited");
             }));
             if let Err(e) = result {
-                error!("Transcription coordinator panicked: {e:?}");
+                error!("Transcription coordinator panicked: {:?}", e);
+                error!("This is likely the cause of sudden app crashes!");
             }
         });
 

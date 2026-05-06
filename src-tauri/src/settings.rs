@@ -686,7 +686,7 @@ fn default_typing_tool() -> TypingTool {
 }
 
 fn default_hybrid_threshold_secs() -> f64 {
-    20.0
+    30.0
 }
 
 fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
