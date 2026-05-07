@@ -817,4 +817,28 @@ impl AudioRecordingManager {
             }
         }
     }
+
+    /// Restart the microphone stream if it should be active.
+    /// Called after USB power cycling completes to fix the "mic not listening,
+    /// volume bars not moving" issue.
+    /// Returns Ok(()) if the stream was restarted or wasn't needed, Err if restart failed.
+    pub fn restart_microphone_if_needed(&self) -> Result<(), anyhow::Error> {
+        let is_always_on = matches!(*lock_with_log(&self.mode, "mode"), MicrophoneMode::AlwaysOn);
+        let bt_keep_alive = *lock_with_log(&self.bt_keep_alive, "bt_keep_alive");
+
+        if is_always_on || bt_keep_alive {
+            info!("Restarting microphone stream after USB power cycle");
+            // Stop the current stream if open
+            if *lock_with_log(&self.is_open, "is_open") {
+                self.stop_microphone_stream();
+            }
+            // Recreate the recorder to discard stale CPAL handles
+            self.recreate_recorder()?;
+            // Start a fresh stream
+            self.start_microphone_stream()
+        } else {
+            debug!("Microphone stream not needed (not always-on, no BT keep-alive)");
+            Ok(())
+        }
+    }
 }

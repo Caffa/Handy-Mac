@@ -179,7 +179,16 @@ const RecordingOverlay: React.FC = () => {
         "usb-power-cycle-finished",
         () => {
           setUsbCycleStage(null);
+          // Close and reopen the overlay to reinitialize the transcription
+          // visualizer. This fixes the "mic not listening, volume bars
+          // not moving" issue after USB cycling.
+          setIsVisible(false);
           setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
+          // Reopen after a short delay to allow the backend microphone
+          // stream to stabilize and the React state to reset.
+          setTimeout(() => {
+            setIsVisible(true);
+          }, 300);
         },
       );
 

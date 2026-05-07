@@ -11,11 +11,13 @@
 //! Ported from the Hammerspoon Rode watchdog script at:
 //!   ~/.hammerspoon/init.lua
 
+use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tauri::Manager;
 
 /// How long to poll for the device to re-appear after cycling power.
 /// The RØDE VideoMic NTG typically comes back in 2-3s over USB.
@@ -404,6 +406,17 @@ impl UsbWatchdog {
                     "usb-power-cycle-finished",
                     &name,
                 );
+
+                // After a successful forced power cycle, restart the microphone
+                // stream if it should be active (always-on mode or BT keep-alive).
+                // This fixes the "mic not listening, volume bars not moving" issue.
+                if let Some(ah) = &app_handle {
+                    if let Some(rm) = ah.try_state::<Arc<AudioRecordingManager>>() {
+                        if let Err(e) = rm.restart_microphone_if_needed() {
+                            error!("Failed to restart microphone after forced USB cycle: {}", e);
+                        }
+                    }
+                }
             }
         });
 
