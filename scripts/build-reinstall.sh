@@ -3,8 +3,21 @@
 # scripts/build-reinstall.sh — Full clean reinstall of Handy via Rapidmg
 #
 # This is the recommended build+deploy workflow for AI agents.
+#
+# NOTE: This script runs in a non-interactive shell by default, so ~/.zshrc
+# won't be loaded. If you get "command not found" errors for bun/cargo,
+# either:
+#   1. Run with:  zsh -i -c "./scripts/build-reinstall.sh"
+#   2. Or add your PATH exports below:
+#
+# export PATH="$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"
+#
+
+# Uncomment and customize the line below if running without an interactive shell:
+# export PATH="/Users/caffae/.bun/bin:/Users/caffae/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # It quits Handy, deletes the old app, builds, creates a DMG,
-# opens it with Rapidmg for auto-install, and re-signs with a stable DR.
+# opens it with Rapidmg for auto-install, re-signs with a stable DR,
+# and launches the app automatically.
 #
 # Prerequisites:
 #   - Bun (https://bun.sh)
@@ -12,9 +25,8 @@
 #   - Rapidmg installed at /Applications/Rapidmg.app
 #
 # Usage:
-#   ./scripts/build-reinstall.sh              # Full build + reinstall
+#   ./scripts/build-reinstall.sh              # Full build + reinstall (auto-launches)
 #   ./scripts/build-reinstall.sh --skip-build # Reinstall last build only
-#   ./scripts/build-reinstall.sh --launch      # Also launch after install
 #
 # Environment variables:
 #   INSTALL_DEST  Where to install (default: /Applications)
@@ -33,19 +45,16 @@ BUNDLE_DIR="$TAURI_DIR/target/release/bundle/macos"
 ENTITLEMENTS="$TAURI_DIR/Entitlements.plist"
 INSTALL_DEST="${INSTALL_DEST:-/Applications}"
 DO_SKIP_BUILD=false
-DO_LAUNCH=false
 
-# ─── Parse args ───────────────────────────────────────────────────────────────
+# ─── Parse args ───────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-build) DO_SKIP_BUILD=true ;;
-        --launch)     DO_LAUNCH=true ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --skip-build   Skip build, reinstall from existing .app bundle"
-            echo "  --launch       Launch Handy after install"
             echo "  --help         Show this help message"
             echo ""
             echo "Environment variables:"
@@ -70,7 +79,7 @@ echo ""
 # Binary is named "handy" (lowercase) inside the bundle, but the app process
 # may show as either. Use case-insensitive match to catch both.
 if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
-    echo "1/6 🛑 Quitting $APP_NAME..."
+    echo "1/8 🛑 Quitting $APP_NAME..."
     osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true
 
     # Wait up to 5s for graceful exit
@@ -102,28 +111,28 @@ if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
         exit 1
     fi
 else
-    echo "1/6 ✅ $APP_NAME not running."
+    echo "1/8 ✅ $APP_NAME not running."
 fi
 
 # ─── Step 2: Delete old app ───────────────────────────────────────────────────
 DEST_APP="$INSTALL_DEST/$APP_BUNDLE"
 if [[ -d "$DEST_APP" ]]; then
-    echo "2/6 🗑️  Removing $DEST_APP..."
+    echo "2/8 🗑️  Removing $DEST_APP..."
     rm -rf "$DEST_APP"
 else
-    echo "2/6 ✅ No existing $DEST_APP to remove."
+    echo "2/8 ✅ No existing $DEST_APP to remove."
 fi
 
 # ─── Step 3: Build ─────────────────────────────────────────────────────────────
 if [[ "$DO_SKIP_BUILD" == true ]]; then
-    echo "3/6 ⏩ Skipping build (--skip-build)"
+    echo "3/8 ⏩ Skipping build (--skip-build)"
     if [[ ! -d "$BUNDLE_DIR/$APP_BUNDLE" ]]; then
         echo "   ❌ No built .app found at $BUNDLE_DIR/$APP_BUNDLE"
         echo "   Run without --skip-build first."
         exit 1
     fi
 else
-    echo "3/6 🔨 Building Handy (production)..."
+    echo "3/8 🔨 Building Handy (production)..."
     echo "   This takes 3-10 minutes on incremental builds."
     echo ""
 
@@ -143,7 +152,7 @@ else
 fi
 
 # ─── Step 4: Create DMG ───────────────────────────────────────────────────────
-echo "4/6 📦 Creating DMG..."
+echo "4/8 📦 Creating DMG..."
 
 # Read version for DMG filename
 VERSION=$(grep '"version"' "$TAURI_DIR/tauri.conf.json" | head -1 | sed 's/.*: "//;s/".*//;s/\s*,//')
@@ -172,7 +181,7 @@ fi
 echo "   ✅ DMG created: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
 
 # ─── Step 5: Install via Rapidmg ─────────────────────────────────────────────
-echo "5/6 🚀 Opening DMG with Rapidmg for auto-install..."
+echo "5/8 🚀 Opening DMG with Rapidmg for auto-install..."
 
 RAPIDMG_APP="/Applications/Rapidmg.app"
 if [[ ! -d "$RAPIDMG_APP" ]]; then
@@ -269,7 +278,7 @@ fi
 # The loop catches this: sign, verify the DR is correct on disk, and
 # retry if the signature was overwritten.
 if [[ -d "$DEST_APP" ]]; then
-    echo "6/6 🔐 Re-signing with stable designated requirement..."
+    echo "6/8 🔐 Re-signing with stable designated requirement..."
     echo "   DR: identifier \"$BUNDLE_ID\""
 
     MAX_SIGN_ATTEMPTS=5
@@ -319,13 +328,13 @@ if [[ -d "$DEST_APP" ]]; then
         echo "   Run manually: scripts/resign-stable-dr.sh"
     fi
 else
-    echo "6/6 ⏭️  Skipping re-sign (app not yet installed)."
+    echo "6/8 ⏭️  Skipping re-sign (app not yet installed)."
 fi
 
 # ─── Step 7: Reset icon cache ─────────────────────────
 # Clear macOS icon cache so the new app icon shows up correctly.
 # This fixes the "missing cover image" issue where Finder caches old icons.
-echo "7/7 🧹 Resetting icon cache..."
+echo "7/8 🧹 Resetting icon cache..."
 if [[ -d "$DEST_APP" ]]; then
     # Wait for Rapidmg to fully finish writing all files (including icon.icns)
     echo "   Waiting for Rapidmg to fully finish..."
@@ -349,7 +358,7 @@ if [[ -d "$DEST_APP" ]]; then
     # Restart services that cache icons
     killall Finder 2>/dev/null || true
     killall Dock 2>/dev/null || true
-    sudo killall iconservicesagent 2>/dev/null || true
+    killall iconservicesagent 2>/dev/null || true
 
     echo "   ✅ Icon cache cleared, Finder/Dock restarted."
     echo "   (Icon will rebuild automatically in a few seconds)"
@@ -357,35 +366,40 @@ else
     echo "   ⏭️  Skipping cache reset (app not installed)."
 fi
 
+# ─── Step 8: Reload launchd agent ───────────────────────────────────
+# If a Handy launch agent exists, reload it so launchd picks up the new
+# binary path. Without this, launchd caches the old binary path and the
+# "RunAtLoad" or "launchctl kickstart" will try to run the stale copy
+# from the build directory, causing "Abort trap: 6" crashes.
+LAUNCHD_LABEL="Handy"
+PLIST_PATH="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+LAUNCHD_ID="gui/$(id -u)/${LAUNCHD_LABEL}"
+
+if [[ -f "$PLIST_PATH" ]]; then
+    echo "8/8 🔄 Reloading launchd agent..."
+    # Unload the old job (ignore errors if not loaded)
+    launchctl bootout "$LAUNCHD_ID" 2>/dev/null || true
+    # Reload from the plist
+    if launchctl bootstrap "$LAUNCHD_ID" "$PLIST_PATH" 2>/dev/null; then
+        echo "   ✅ Launch agent reloaded — Handy will auto-start on login."
+    else
+        echo "   ⚠️  Bootstrap failed (may already be loaded). Trying kickstart..."
+        launchctl kickstart -k "$LAUNCHD_ID" 2>/dev/null || true
+        echo "   ✅ Launch agent restarted via kickstart."
+    fi
+else
+    echo "8/8 ⏭️  No launch agent plist found at $PLIST_PATH — skipping."
+fi
+
+# ─── Launch Handy ─────────────────────────────────────────────────
+echo "🚀 Launching Handy..."
+open "$DEST_APP"
+
 echo ""
-echo "═════════════════════════════════════════════════════════════"
+echo "═══════════════════════════════════════════════════════════"
 echo "  ✅ Build + Reinstall complete!"
-echo "═════════════════════════════════════════════════════════════"
+echo "═══════════════════════════════════════════════════════════"
 echo ""
 echo "  App:  $DEST_APP"
 echo "  DMG:  $DMG_PATH"
 echo ""
-
-if [[ "$DO_LAUNCH" == true ]]; then
-    echo "🚀 Launching Handy..."
-    open "$DEST_APP"
-else
-    echo "  To launch: open \"$DEST_APP\""
-fi
-
-# ─── Done ─────────────────────────────────────────────────────────────────────
-echo ""
-echo "═══════════════════════════════════════════════════════════════"
-echo "  ✅ Build + Reinstall complete!"
-echo "═══════════════════════════════════════════════════════════════"
-echo ""
-echo "  App:  $DEST_APP"
-echo "  DMG:  $DMG_PATH"
-echo ""
-
-if [[ "$DO_LAUNCH" == true ]]; then
-    echo "🚀 Launching Handy..."
-    open "$DEST_APP"
-else
-    echo "  To launch: open \"$DEST_APP\""
-fi
