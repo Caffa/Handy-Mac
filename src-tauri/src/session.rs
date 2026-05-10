@@ -25,6 +25,7 @@ const SESSION_HISTORY_CAP: usize = 200;
 /// Phases a session can be in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // Variants used selectively; some reserved for future lifecycle stages
 pub enum SessionPhase {
     Recording,
     Transcribing,
@@ -59,7 +60,7 @@ struct ActiveSession {
     /// Epoch milliseconds of session start, for stable serialisation.
     started_at_ms: u64,
     /// Name of the microphone device, captured at recording start.
-    mic_device: String,
+    _mic_device: String,
     /// Which ASR model is being used (set when transcription starts).
     model_id: Option<String>,
     /// Current phase of the session.
@@ -117,7 +118,7 @@ impl SessionTracker {
             id: sid.clone(),
             started_at: now,
             started_at_ms,
-            mic_device: mic_device.to_string(),
+            _mic_device: mic_device.to_string(),
             model_id: None,
             phase: SessionPhase::Recording,
             phase_started_at: now,
@@ -271,6 +272,7 @@ impl SessionTracker {
     }
 
     /// Record a post-processing failure.
+    #[allow(dead_code)]
     pub fn post_process_failed(&self, sid: &SessionId, provider: &str, error: &str) {
         let mut guard = self.current.lock().unwrap();
         if let Some(ref mut session) = *guard {
@@ -287,6 +289,7 @@ impl SessionTracker {
     }
 
     /// Mark that post-processing was requested for this session.
+    #[allow(dead_code)]
     pub fn set_post_process(&self, sid: &SessionId, provider: &str) {
         let mut guard = self.current.lock().unwrap();
         if let Some(ref mut session) = *guard {
@@ -302,6 +305,7 @@ impl SessionTracker {
     }
 
     /// Record a post-processing completion.
+    #[allow(dead_code)]
     pub fn post_process_completed(&self, sid: &SessionId, provider: &str, duration_ms: u64) {
         let mut guard = self.current.lock().unwrap();
         if let Some(ref mut session) = *guard {

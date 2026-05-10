@@ -25,11 +25,8 @@ bun run tauri build
 
 # Build + clean reinstall to /Applications (via Rapidmg)
 # This quits Handy, deletes the old app, builds, creates a DMG,
-# installs via Rapidmg, and re-signs with stable DR.
+# installs via Rapidmg, re-signs with stable DR, and auto-launches.
 ./scripts/build-reinstall.sh
-
-# Same, but also launch the app after install
-./scripts/build-reinstall.sh --launch
 
 # Reinstall from last build (skip build step)
 ./scripts/build-reinstall.sh --skip-build

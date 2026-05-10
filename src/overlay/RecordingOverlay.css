@@ -23,6 +23,7 @@
 .overlay-left {
   display: flex;
   align-items: center;
+  padding-left: 6px;
 }
 
 .overlay-middle {
@@ -35,6 +36,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  padding-right: 4px;
 }
 
 .bars-container {

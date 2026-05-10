@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// macOS idle detection via CGEventSourceSecondsSinceLastEventType.
@@ -515,14 +515,14 @@ pub async fn stop_and_schedule_pronunciation(
     }
 
     // Spawn a background thread that will process after a delay
-    let rm_clone = Arc::clone(&rm);
+    let _rm_clone = Arc::clone(&rm);
     let app_clone = app.clone();
     let canonical_word_clone = canonical_word.clone();
 
     // Cancel any existing processing thread
     {
         let mut thread_handle = rm.pronunciation_thread.lock().unwrap();
-        if let Some(handle) = thread_handle.take() {
+        if let Some(_handle) = thread_handle.take() {
             // We can't cancel a thread directly, but we can let it run and it will
             // check if new data is available
             info!("Cancelling previous pronunciation processing thread");
@@ -559,7 +559,7 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
         // Check if pending data changed (cancellation)
         let rm = app.state::<Arc<AudioRecordingManager>>();
         let pending = rm.pending_pronunciation.lock().unwrap();
-        let (samples, word) = match &*pending {
+        let (_samples, _word) = match &*pending {
             Some((s, w)) if w == canonical_word => (s.clone(), w.clone()),
             _ => {
                 info!(
@@ -627,7 +627,7 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     // Process with all models
     match process_pronunciation_with_all_models(&app, &word, samples) {
         Ok(results) => {
-            let canonical_normalized = normalize_for_comparison(canonical_word);
+            let _canonical_normalized = normalize_for_comparison(canonical_word);
             let new_pronunciations: Vec<String> = results
                 .iter()
                 .filter(|r| !r.matches_canonical)

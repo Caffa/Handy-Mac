@@ -439,6 +439,14 @@ pub struct AppSettings {
     #[serde(default = "default_typing_tool")]
     pub typing_tool: TypingTool,
     pub external_script_path: Option<String>,
+    /// Path to boss_router.py for the "Transcribe with Router" action.
+    /// Set to Some(path) to enable router integration.
+    #[serde(default)]
+    pub router_script_path: Option<String>,
+    /// Path to a .env file containing env vars (e.g. TELEGRAM_DAILY_LOG_BOT)
+    /// to pass to the router script subprocess.
+    #[serde(default)]
+    pub router_env_file: Option<String>,
     #[serde(default)]
     pub custom_filler_words: Option<Vec<String>>,
     #[serde(default)]
@@ -788,6 +796,45 @@ pub fn get_default_settings() -> AppSettings {
             current_binding: default_post_process_shortcut.to_string(),
         },
     );
+    #[cfg(target_os = "macos")]
+    let default_router_shortcut = "option+ctrl+space";
+    #[cfg(target_os = "windows")]
+    let default_router_shortcut = "ctrl+alt+space";
+    #[cfg(target_os = "linux")]
+    let default_router_shortcut = "ctrl+alt+space";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let default_router_shortcut = "ctrl+alt+space";
+
+    bindings.insert(
+        "transcribe_with_router".to_string(),
+        ShortcutBinding {
+            id: "transcribe_with_router".to_string(),
+            name: "Transcribe with Router".to_string(),
+            description: "Records speech, transcribes, and sends text to your router system for classification and filing.".to_string(),
+            default_binding: default_router_shortcut.to_string(),
+            current_binding: default_router_shortcut.to_string(),
+        },
+    );
+
+    #[cfg(target_os = "macos")]
+    let default_router_shortcut = "option+ctrl+space";
+    #[cfg(target_os = "windows")]
+    let default_router_shortcut = "ctrl+alt+space";
+    #[cfg(target_os = "linux")]
+    let default_router_shortcut = "ctrl+alt+space";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let default_router_shortcut = "alt+ctrl+space";
+
+    bindings.insert(
+        "transcribe_with_router".to_string(),
+        ShortcutBinding {
+            id: "transcribe_with_router".to_string(),
+            name: "Transcribe with Router".to_string(),
+            description: "Records speech, transcribes, and routes to your notes via boss_router.".to_string(),
+            default_binding: default_router_shortcut.to_string(),
+            current_binding: default_router_shortcut.to_string(),
+        },
+    );
     bindings.insert(
         "cancel".to_string(),
         ShortcutBinding {
@@ -846,6 +893,8 @@ pub fn get_default_settings() -> AppSettings {
         paste_delay_ms: default_paste_delay_ms(),
         typing_tool: default_typing_tool(),
         external_script_path: None,
+        router_script_path: Some("/Users/caffae/Local-Projects-2026/Router-Actuator/boss_router.py".to_string()),
+        router_env_file: Some("/Users/caffae/Local-Projects-2026/Voice-Memo-to-Router/.env".to_string()),
         custom_filler_words: None,
         whisper_accelerator: WhisperAcceleratorSetting::default(),
         ort_accelerator: OrtAcceleratorSetting::default(),
@@ -906,9 +955,24 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                     }
                 }
 
+                // Migrate new settings fields: if they're None, fill in defaults.
+                // This handles the case where the settings JSON was created before
+                // the field existed, so it deserializes as None.
+                if settings.router_script_path.is_none() && default_settings.router_script_path.is_some() {
+                    debug!("Migrating router_script_path from default");
+                    settings.router_script_path = default_settings.router_script_path.clone();
+                    updated = true;
+                }
+                if settings.router_env_file.is_none() && default_settings.router_env_file.is_some() {
+                    debug!("Migrating router_env_file from default");
+                    settings.router_env_file = default_settings.router_env_file.clone();
+                    updated = true;
+                }
+
                 if updated {
                     debug!("Settings updated with new bindings");
                     store.set("settings", serde_json::to_value(&settings).unwrap());
+                    let _ = store.save(); // Persist binding migrations to disk
                 }
 
                 settings
@@ -950,6 +1014,35 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         store.set("settings", serde_json::to_value(&default_settings).unwrap());
         default_settings
     };
+
+    // Migrate new settings fields that may be None in existing configs
+    let default_settings = get_default_settings();
+    let mut needs_save = false;
+
+    if settings.router_script_path.is_none() && default_settings.router_script_path.is_some() {
+        debug!("Migrating router_script_path from default");
+        settings.router_script_path = default_settings.router_script_path.clone();
+        needs_save = true;
+    }
+    if settings.router_env_file.is_none() && default_settings.router_env_file.is_some() {
+        debug!("Migrating router_env_file from default");
+        settings.router_env_file = default_settings.router_env_file.clone();
+        needs_save = true;
+    }
+
+    // Merge missing bindings too
+    for (key, value) in default_settings.bindings {
+        if !settings.bindings.contains_key(&key) {
+            debug!("Adding missing binding: {}", key);
+            settings.bindings.insert(key, value);
+            needs_save = true;
+        }
+    }
+
+    if needs_save {
+        store.set("settings", serde_json::to_value(&settings).unwrap());
+        let _ = store.save(); // Persist migration to disk immediately
+    }
 
     if ensure_post_process_defaults(&mut settings) {
         store.set("settings", serde_json::to_value(&settings).unwrap());

@@ -24,7 +24,17 @@ export default defineConfig(async () => ({
         main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "src/overlay/index.html"),
       },
+      output: {
+        // Split vendor code into separate chunks to keep individual bundles small
+        manualChunks: {
+          "vendor-ui": ["react-select", "lucide-react", "sonner"],
+          "vendor-i18n": ["i18next", "react-i18next"],
+          "vendor-state": ["zustand", "immer", "zod"],
+        },
+      },
     },
+    // Raise threshold slightly — vendor splits bring chunks under 500kB
+    chunkSizeWarningLimit: 600,
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

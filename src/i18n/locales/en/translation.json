@@ -176,6 +176,10 @@
           "transcribe_with_post_process": {
             "name": "Post-Processing Hotkey",
             "description": "Optional: A dedicated hotkey that always applies AI post-processing to your transcription."
+          },
+          "transcribe_with_router": {
+            "name": "Router Hotkey",
+            "description": "Records speech, transcribes it, and sends the text to your router system for classification and filing. No text is pasted — you'll get a notification via Telegram."
           }
         },
         "errors": {

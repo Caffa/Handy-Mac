@@ -32,6 +32,7 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_prompt TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_requested BOOLEAN NOT NULL DEFAULT 0;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN model_id TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN routed BOOLEAN NOT NULL DEFAULT 0;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -65,6 +66,7 @@ pub struct HistoryEntry {
     pub post_process_prompt: Option<String>,
     pub post_process_requested: bool,
     pub model_id: Option<String>,
+    pub routed: bool,
 }
 
 pub struct HistoryManager {
@@ -210,6 +212,7 @@ impl HistoryManager {
             post_process_prompt: row.get("post_process_prompt")?,
             post_process_requested: row.get("post_process_requested")?,
             model_id: row.get("model_id")?,
+            routed: row.get("routed")?,
         })
     }
 
@@ -227,6 +230,7 @@ impl HistoryManager {
         post_processed_text: Option<String>,
         post_process_prompt: Option<String>,
         model_id: Option<String>,
+        routed: bool,
     ) -> Result<HistoryEntry> {
         let timestamp = Utc::now().timestamp();
         let title = self.format_timestamp_title(timestamp);
@@ -242,8 +246,9 @@ impl HistoryManager {
                 post_processed_text,
                 post_process_prompt,
                 post_process_requested,
-                model_id
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                model_id,
+                routed
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 &file_name,
                 timestamp,
@@ -254,6 +259,7 @@ impl HistoryManager {
                 &post_process_prompt,
                 post_process_requested,
                 &model_id,
+                routed,
             ],
         )?;
 
@@ -268,6 +274,7 @@ impl HistoryManager {
             post_process_prompt,
             post_process_requested,
             model_id,
+            routed,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -318,7 +325,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -469,7 +476,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -483,7 +490,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -495,7 +502,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
                      FROM transcription_history
                      ORDER BY id DESC",
                 )?;
@@ -718,7 +725,8 @@ mod tests {
                 post_processed_text TEXT,
                 post_process_prompt TEXT,
                 post_process_requested BOOLEAN NOT NULL DEFAULT 0,
-                model_id TEXT
+                model_id TEXT,
+                routed BOOLEAN NOT NULL DEFAULT 0
             );",
         )
         .expect("create transcription_history table");

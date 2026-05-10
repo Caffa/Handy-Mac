@@ -17,7 +17,6 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::Manager;
 
 /// Unique identifier for a recording→transcription session.
 /// Generated from a timestamp so it's human-sortable and unique per session.
@@ -35,6 +34,7 @@ pub fn new_session_id() -> SessionId {
 /// without reading free-form log messages.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "evt")]
+#[allow(dead_code)] // Variants used selectively via emit(); some reserved for future instrumentation
 pub enum AppEvent {
     // ── Recording lifecycle ──────────────────────────────────────
     RecordingStarted {
@@ -195,7 +195,7 @@ impl AppEvent {
 /// Wrapper type so we can store the file handle in a Mutex.
 struct LogWriter {
     file: File,
-    path: PathBuf,
+    _path: PathBuf,
 }
 
 /// Global structured log writer. Set once during app setup.
@@ -234,7 +234,7 @@ pub fn init(app_handle: &tauri::AppHandle) {
 
     log::info!("Structured event log: {}", path.display());
 
-    let _ = STRUCTURED_LOGGER.set(Mutex::new(Some(LogWriter { file, path })));
+    let _ = STRUCTURED_LOGGER.set(Mutex::new(Some(LogWriter { file, _path: path })));
 }
 
 /// Emit a structured event to the JSONL log file **and** the standard `log`

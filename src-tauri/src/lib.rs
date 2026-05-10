@@ -34,7 +34,7 @@ use managers::audio::AudioRecordingManager;
 use managers::history::HistoryManager;
 use managers::model::ModelManager;
 use managers::transcription::TranscriptionManager;
-use session::SessionTracker;
+
 #[cfg(unix)]
 use signal_hook::consts::{SIGUSR1, SIGUSR2};
 #[cfg(unix)]

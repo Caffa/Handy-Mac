@@ -1449,6 +1449,7 @@ where
 }
 
 // Validate signature
+#[allow(dead_code)] // Vendored code — signature verification may be needed for future update flows
 fn verify_signature(data: &[u8], release_signature: &str, pub_key: &str) -> Result<bool> {
     // we need to convert the pub key
     let pub_key_decoded = base64_to_string(pub_key)?;
@@ -1461,6 +1462,7 @@ fn verify_signature(data: &[u8], release_signature: &str, pub_key: &str) -> Resu
     Ok(true)
 }
 
+#[allow(dead_code)] // Vendored code — helper for verify_signature
 fn base64_to_string(base64_string: &str) -> Result<String> {
     let decoded_string = &base64::engine::general_purpose::STANDARD.decode(base64_string)?;
     let result = std::str::from_utf8(decoded_string)

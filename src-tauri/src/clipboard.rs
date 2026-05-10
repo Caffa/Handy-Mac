@@ -5,7 +5,7 @@ use crate::settings::{get_settings, AutoSubmitKey, ClipboardHandling, PasteMetho
 use enigo::{Direction, Enigo, Key, Keyboard};
 use log::{error, info};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 

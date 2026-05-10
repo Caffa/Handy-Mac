@@ -29,6 +29,19 @@ struct RecordingErrorEvent {
     detail: Option<String>,
 }
 
+/// Emitted when the router subprocess completes (success or failure).
+#[derive(Clone, serde::Serialize)]
+pub struct RouterResultEvent {
+    /// Whether the router subprocess succeeded.
+    pub success: bool,
+    /// Human-readable summary of handlers (e.g. "✔️ Daily – ✔️ Zettelkasten – My Note").
+    pub summary: Option<String>,
+    /// Error message if the router failed.
+    pub error: Option<String>,
+    /// The transcription text that was sent.
+    pub transcription_text: String,
+}
+
 /// Drop guard that notifies the [`TranscriptionCoordinator`] when the
 /// transcription pipeline finishes — whether it completes normally or panics.
 struct FinishGuard(AppHandle);
@@ -663,6 +676,7 @@ impl ShortcutAction for TranscribeAction {
                                     processed.post_processed_text.clone(),
                                     processed.post_process_prompt.clone(),
                                     Some(transcription.model_id.clone()),
+                                    false, // routed: not sent to router
                                 ) {
                                     error!("Failed to save history entry: {}", err);
                                 }
@@ -738,6 +752,7 @@ impl ShortcutAction for TranscribeAction {
                                     None,
                                     None,
                                     None,
+                                    false, // routed: not sent to router
                                 ) {
                                     error!("Failed to save failed history entry: {}", save_err);
                                 }
@@ -803,6 +818,542 @@ impl ShortcutAction for TestAction {
     }
 }
 
+// Transcribe With Router Action
+//
+// Records speech → transcribes → sends text to boss_router.py subprocess.
+// The recording overlay is shown during recording (same as normal transcribe),
+// but after recording stops the overlay is hidden immediately and the rest
+// (transcription + routing) happens in the background. The user gets
+// feedback later via the router's Telegram notification.
+struct TranscribeWithRouterAction;
+
+impl ShortcutAction for TranscribeWithRouterAction {
+    fn start(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+        let start_time = Instant::now();
+        debug!("TranscribeWithRouterAction::start called for binding: {}", binding_id);
+
+        // ── Structured session tracking ──
+        let settings = get_settings(app);
+        let is_always_on = settings.always_on_microphone;
+        let mic_name = settings
+            .selected_microphone
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
+        if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
+            let sid = tracker.start_session(&mic_name, is_always_on);
+            logging::emit(AppEvent::ShortcutTriggered {
+                binding_id: binding_id.to_string(),
+                action: "transcribe_with_router".to_string(),
+            });
+            debug!("Session {} started", sid);
+        }
+
+        // Load model in the background
+        let tm = app.state::<Arc<TranscriptionManager>>();
+        let rm = app.state::<Arc<AudioRecordingManager>>();
+        tm.initiate_model_load();
+        let rm_clone = Arc::clone(&rm);
+        std::thread::spawn(move || {
+            if let Err(e) = rm_clone.preload_vad() {
+                debug!("VAD pre-load failed: {}", e);
+            }
+        });
+
+        let binding_id = binding_id.to_string();
+        change_tray_icon(app, TrayIconState::Recording);
+        show_recording_overlay(app);
+
+        // Recording start logic — identical to TranscribeAction
+        let settings = get_settings(app);
+        let is_always_on = settings.always_on_microphone;
+        let mut recording_error: Option<String> = None;
+
+        if is_always_on {
+            debug!("Always-on mode: Playing audio feedback immediately");
+            let rm_clone = Arc::clone(&rm);
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                play_feedback_sound_blocking(&app_clone, SoundType::Start);
+                rm_clone.apply_mute();
+            });
+
+            if let Err(e) = rm.try_start_recording(&binding_id) {
+                debug!("Recording failed: {}", e);
+                recording_error = Some(e);
+            }
+        } else {
+            debug!("On-demand mode: Starting recording first, then audio feedback");
+            match rm.try_start_recording(&binding_id) {
+                Ok(()) => {
+                    debug!("Recording started in {:?}", start_time.elapsed());
+                    let app_clone = app.clone();
+                    let rm_clone = Arc::clone(&rm);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        play_feedback_sound_blocking(&app_clone, SoundType::Start);
+                        rm_clone.apply_mute();
+                    });
+                }
+                Err(e) => {
+                    debug!("Failed to start recording: {}", e);
+                    recording_error = Some(e);
+                }
+            }
+        }
+
+        if recording_error.is_none() {
+            shortcut::register_cancel_shortcut(app);
+        } else {
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
+            if let Some(err) = recording_error {
+                let error_type = if is_microphone_access_denied(&err) {
+                    "microphone_permission_denied"
+                } else if is_no_input_device_error(&err) {
+                    "no_input_device"
+                } else {
+                    "unknown"
+                };
+                if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
+                    if let Some(sid) = tracker.current_session_id() {
+                        tracker.fail_session(&sid, &err);
+                    }
+                }
+                let _ = app.emit(
+                    "recording-error",
+                    RecordingErrorEvent {
+                        error_type: error_type.to_string(),
+                        detail: Some(err),
+                    },
+                );
+            }
+        }
+
+        debug!(
+            "TranscribeWithRouterAction::start completed in {:?}",
+            start_time.elapsed()
+        );
+    }
+
+    fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+        // Unregister cancel shortcut
+        shortcut::unregister_cancel_shortcut(app);
+
+        let stop_time = Instant::now();
+        debug!("TranscribeWithRouterAction::stop called for binding: {}", binding_id);
+
+        let ah = app.clone();
+        let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
+        let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
+        let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
+
+        let sid: Option<SessionId> = app
+            .try_state::<Arc<SessionTracker>>()
+            .and_then(|t| t.current_session_id());
+
+        // ── KEY DIFFERENCE from TranscribeAction ──
+        // Hide the recording overlay IMMEDIATELY and return to idle.
+        // Transcription + routing happens entirely in the background.
+        change_tray_icon(app, TrayIconState::Idle);
+        utils::hide_recording_overlay(app);
+
+        // Unmute before playing audio feedback
+        rm.remove_mute();
+        play_feedback_sound(app, SoundType::Stop);
+
+        let binding_id = binding_id.to_string(); // Clone for async task
+
+        tauri::async_runtime::spawn(async move {
+            let _guard = FinishGuard(ah.clone());
+            debug!("Starting async router task for binding: {}", binding_id);
+
+            let stop_recording_time = Instant::now();
+            if let Some(samples) = rm.stop_recording(&binding_id) {
+                debug!(
+                    "Recording stopped, sample count: {}",
+                    samples.len()
+                );
+
+                if samples.is_empty() {
+                    debug!("Recording produced no audio samples; skipping");
+                    if let (Some(ref s), Some(tracker)) =
+                        (&sid, ah.try_state::<Arc<SessionTracker>>())
+                    {
+                        tracker.fail_session(s, "No audio samples from recording stop");
+                    }
+                    return;
+                }
+
+                // Save WAV concurrently with transcription
+                let sample_count = samples.len();
+                let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
+                let wav_path = hm.recordings_dir().join(&file_name);
+                let wav_path_for_verify = wav_path.clone();
+                let samples_for_wav = samples.clone();
+                let wav_handle = tauri::async_runtime::spawn_blocking(move || {
+                    crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
+                });
+
+                // Transcribe
+                let transcription_time = Instant::now();
+                let transcription_result = tm.transcribe(samples);
+
+                // ── Structured session tracking ──
+                let model_id = transcription_result
+                    .as_ref()
+                    .map(|r| r.model_id.clone())
+                    .unwrap_or_else(|e| {
+                        warn!("Transcription failed: {}", e);
+                        "unknown".to_string()
+                    });
+
+                if let (Some(ref s), Some(tracker)) =
+                    (&sid, ah.try_state::<Arc<SessionTracker>>())
+                {
+                    tracker.advance_to_transcribing(
+                        s,
+                        &model_id,
+                        sample_count,
+                        stop_recording_time.elapsed().as_millis() as u64,
+                    );
+                }
+
+                // Await WAV save
+                let wav_saved = match wav_handle.await {
+                    Ok(Ok(())) => {
+                        match crate::audio_toolkit::verify_wav_file(
+                            &wav_path_for_verify,
+                            sample_count,
+                        ) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                error!("WAV verification failed: {}", e);
+                                false
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        error!("Failed to save WAV file: {}", e);
+                        false
+                    }
+                    Err(e) => {
+                        error!("WAV save task panicked: {}", e);
+                        false
+                    }
+                };
+
+                match transcription_result {
+                    Ok(transcription) => {
+                        debug!(
+                            "Transcription completed in {:?}: '{}' (model: {})",
+                            transcription_time.elapsed(),
+                            transcription.text,
+                            transcription.model_id,
+                        );
+
+                        // ── Structured session tracking ──
+                        if let (Some(ref s), Some(tracker)) =
+                            (&sid, ah.try_state::<Arc<SessionTracker>>())
+                        {
+                            tracker.advance_to_post_processing(
+                                s,
+                                transcription.text.len(),
+                                transcription_time.elapsed().as_millis() as u64,
+                            );
+                        }
+
+                        // Save to history with routed=true
+                        let transcription_text = transcription.text.clone();
+                        let model_id_for_history = transcription.model_id.clone();
+                        if wav_saved {
+                            if let Err(err) = hm.save_entry(
+                                file_name,
+                                transcription_text.clone(),
+                                false, // post_process_requested
+                                None,   // post_processed_text
+                                None,   // post_process_prompt
+                                Some(model_id_for_history),
+                                true,   // routed
+                            ) {
+                                error!("Failed to save history entry: {}", err);
+                            }
+                        }
+
+                        // ── Send transcription to boss_router ──
+                        let settings = get_settings(&ah);
+                        let router_path = settings.router_script_path.clone();
+                        let env_file = settings.router_env_file.clone();
+
+                        if let Some(router_script) = router_path {
+                            let now = chrono::Local::now();
+                            let datetime_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+                            info!(
+                                "Sending transcription to router: {} chars, datetime={}",
+                                transcription_text.len(),
+                                datetime_str
+                            );
+
+                            // Clone values needed by the router thread
+                            let ah_for_router = ah.clone();
+                            let sid_for_router = sid.clone();
+                            let transcription_text_for_router = transcription_text.clone();
+
+                            // Spawn the router as a subprocess
+                            // This is fire-and-forget from UX but we emit a notification on completion.
+                            std::thread::spawn(move || {
+                                let result = run_router_subprocess(
+                                    &router_script,
+                                    &transcription_text_for_router,
+                                    &datetime_str,
+                                    env_file.as_deref(),
+                                );
+
+                                match result {
+                                    Ok(handler_summary) => {
+                                        let summary_text = handler_summary
+                                            .unwrap_or_else(|| "No handlers".to_string());
+                                        info!("Router completed: {}", summary_text);
+
+                                        let event = RouterResultEvent {
+                                            success: true,
+                                            summary: Some(summary_text.clone()),
+                                            error: None,
+                                            transcription_text: transcription_text_for_router,
+                                        };
+                                        let _ = ah_for_router.emit("router-result", &event);
+
+                                        // Send macOS notification for router success
+                                        let notification_text = if summary_text.len() > 100 {
+                                            format!("Route: {}...", &summary_text[..100])
+                                        } else {
+                                            format!("Route: {}", summary_text)
+                                        };
+                                        send_macos_notification("Handy Router", &notification_text);
+                                    }
+                                    Err(e) => {
+                                        error!("Router subprocess failed: {}", e);
+
+                                        let event = RouterResultEvent {
+                                            success: false,
+                                            summary: None,
+                                            error: Some(e.clone()),
+                                            transcription_text: transcription_text_for_router,
+                                        };
+                                        let _ = ah_for_router.emit("router-result", &event);
+
+                                        // Send macOS notification for router failure
+                                        let error_display = if e.len() > 150 {
+                                                format!("{}...", &e[..150])
+                                            } else {
+                                                e.clone()
+                                            };
+                                        send_macos_notification("Handy Router Error", &error_display);
+                                    }
+                                }
+
+                                // ── Finish session after routing ──
+                                if let (Some(ref s), Some(tracker)) =
+                                    (&sid_for_router, ah_for_router.try_state::<Arc<SessionTracker>>())
+                                {
+                                    tracker.finish_session(s, 0);
+                                }
+                            });
+                        } else {
+                            warn!("No router_script_path configured; transcription not routed.");
+
+                            // Emit event so frontend can show feedback
+                            let event = RouterResultEvent {
+                                success: false,
+                                summary: None,
+                                error: Some("No router_script_path configured. Set it in Settings to enable routing.".to_string()),
+                                transcription_text: transcription_text.clone(),
+                            };
+                            let _ = ah.emit("router-result", &event);
+                            send_macos_notification("Handy Router", "No router path configured. Check Settings.");
+
+                            // Fall back to paste if no router configured
+                            if !transcription_text.is_empty() {
+                                let ah_for_paste = ah.clone();
+                                let _ = ah.run_on_main_thread(move || {
+                                    let _ = utils::paste(transcription_text, ah_for_paste.clone());
+                                    utils::hide_recording_overlay(&ah_for_paste);
+                                });
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        debug!("Router transcription error: {}", err);
+                        if let (Some(ref s), Some(tracker)) =
+                            (&sid, ah.try_state::<Arc<SessionTracker>>())
+                        {
+                            tracker.fail_session(s, &err.to_string());
+                        }
+                        // Save entry with empty text so user can retry
+                        if wav_saved {
+                            if let Err(save_err) = hm.save_entry(
+                                file_name,
+                                String::new(),
+                                false,
+                                None,
+                                None,
+                                None,
+                                true, // routed
+                            ) {
+                                error!("Failed to save failed history entry: {}", save_err);
+                            }
+                        }
+                    }
+                }
+            } else {
+                debug!("No samples retrieved from recording stop");
+                if let (Some(ref s), Some(tracker)) =
+                    (&sid, ah.try_state::<Arc<SessionTracker>>())
+                {
+                    tracker.fail_session(s, "No audio samples from recording stop");
+                }
+            }
+        });
+
+        debug!(
+            "TranscribeWithRouterAction::stop completed in {:?}",
+            stop_time.elapsed()
+        );
+    }
+}
+
+/// Run boss_router.py as a subprocess and return a summary of what happened.
+fn run_router_subprocess(
+    router_script: &str,
+    transcription_text: &str,
+    datetime_str: &str,
+    env_file: Option<&str>,
+) -> Result<Option<String>, String> {
+    use std::process::Command;
+
+    // Build the command
+    let mut cmd = Command::new("python3");
+    cmd.arg(router_script)
+        .arg("--text")
+        .arg(transcription_text)
+        .arg("--datetime")
+        .arg(datetime_str)
+        .arg("--json");
+
+    // Load environment variables from .env file if provided
+    if let Some(env_path) = env_file {
+        let env_path = std::path::Path::new(env_path);
+        if env_path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(env_path) {
+                for line in contents.lines() {
+                    let line = line.trim();
+                    // Skip comments and empty lines
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    if let Some((key, value)) = line.split_once('=') {
+                        let key = key.trim();
+                        let value = value.trim().strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(value.trim());
+                        cmd.env(key, value);
+                    }
+                }
+            } else {
+                warn!("Router env file not readable: {}", env_path.display());
+            }
+        } else {
+            warn!("Router env file does not exist: {}", env_path.display());
+        }
+    }
+
+    // Set working directory to the router script's directory
+    if let Some(parent) = std::path::Path::new(router_script).parent() {
+        cmd.current_dir(parent);
+    }
+
+    debug!("Running router command: {:?}", cmd);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute router: {}", e))?;
+
+    // Timeout: if the router takes more than 5 minutes, something is wrong.
+    // Using .output() is blocking, so we rely on the OS process timeout.
+    // For a true timeout, we'd need .spawn() + wait_with_timeout, but
+    // boss_router.py should complete within a few minutes for most inputs.
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Router exited with code {}: {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let handler_summary = parse_router_json_output(&stdout);
+    Ok(handler_summary)
+}
+
+/// Parse the JSON output from boss_router.py --json.
+/// Returns a human-readable summary of the handlers that ran.
+fn parse_router_json_output(stdout: &str) -> Option<String> {
+    // The JSON is on the last line of output (there may be log lines before it)
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        if line.starts_with('{') {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                // Extract handler summaries
+                let handlers = json.get("handlers").and_then(|h| h.as_array());
+                if let Some(handlers) = handlers {
+                    let summaries: Vec<String> = handlers
+                        .iter()
+                        .filter_map(|h| {
+                            let handler = h.get("handler").and_then(|v| v.as_str()).unwrap_or("?");
+                            let status = h.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                            let file_path = h.get("file_path").and_then(|v| v.as_str());
+                            if let Some(path) = file_path {
+                                let filename = std::path::Path::new(path)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(path);
+                                Some(format!("{} {} ({})", status, handler, filename))
+                            } else {
+                                Some(format!("{} {}", status, handler))
+                            }
+                        })
+                        .collect();
+                    if summaries.is_empty() {
+                        return None;
+                    }
+                    return Some(summaries.join(" | "));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Send a macOS notification via osascript.
+/// Used for router success/failure feedback since the overlay is already hidden.
+fn send_macos_notification(title: &str, message: &str) {
+    // Escape special characters for AppleScript
+    let escaped_message = message.replace('\\', "\\\\").replace('"', "\\\\\"").replace('\n', " ");
+    let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\\\"");
+    let script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        escaped_message, escaped_title
+    );
+    match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .spawn()
+    {
+        Ok(_) => debug!("macOS notification sent: {} - {}", title, message),
+        Err(e) => warn!("Failed to send macOS notification: {}", e),
+    }
+}
+
 // Static Action Map
 pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::new(|| {
     let mut map = HashMap::new();
@@ -815,6 +1366,10 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
     map.insert(
         "transcribe_with_post_process".to_string(),
         Arc::new(TranscribeAction { post_process: true }) as Arc<dyn ShortcutAction>,
+    );
+    map.insert(
+        "transcribe_with_router".to_string(),
+        Arc::new(TranscribeWithRouterAction) as Arc<dyn ShortcutAction>,
     );
     map.insert(
         "cancel".to_string(),
