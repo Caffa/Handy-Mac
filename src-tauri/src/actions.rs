@@ -1233,13 +1233,23 @@ fn run_router_subprocess(
     use std::process::Command;
 
     // Build the command
-    let mut cmd = Command::new("python3");
+    // IMPORTANT: Use the miniforge3 Python path because the system /usr/bin/python3
+    // (found when launched as a GUI app) lacks required deps (soundfile, etc.).
+    // The decision_integration.py module already uses this full path internally.
+    let python_bin = "/Users/caffae/miniforge3/bin/python3";
+    let mut cmd = Command::new(python_bin);
     cmd.arg(router_script)
         .arg("--text")
         .arg(transcription_text)
         .arg("--datetime")
         .arg(datetime_str)
         .arg("--json");
+
+    // Prepend miniforge3 to PATH so the subprocess and any children (e.g.
+    // decision_router.py → llm_client.py) find the correct python + deps.
+    // GUI-launched apps get a minimal PATH from macOS that excludes conda.
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("/Users/caffae/miniforge3/bin:{}", current_path));
 
     // Load environment variables from .env file if provided
     if let Some(env_path) = env_file {
