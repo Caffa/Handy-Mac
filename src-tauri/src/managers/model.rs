@@ -1194,8 +1194,9 @@ impl ModelManager {
                 drop(file);
                 info!("Download cancelled for: {}", model_id);
                 // Keep partial file for resume functionality.
-                // Guard handles is_downloading + cancel_flags cleanup on drop.
-                return Ok(());
+                // Guard (DownloadCleanup) handles is_downloading + cancel_flags cleanup on drop.
+                // Return Err so the success path (which sets is_downloaded = true) is NOT reached.
+                return Err(anyhow::anyhow!("Download cancelled for: {}", model_id));
             }
 
             let chunk = chunk?;
@@ -1507,7 +1508,12 @@ impl ModelManager {
     pub fn cancel_download(&self, model_id: &str) -> Result<()> {
         debug!("ModelManager: cancel_download called for: {}", model_id);
 
-        // Set the cancellation flag to stop the download loop
+        // Set the cancellation flag to stop the download loop.
+        // The DownloadCleanup guard will set is_downloading = false and remove
+        // the cancel flag when the download task sees the flag and drops.
+        // Do NOT set is_downloading = false here — the download task may still
+        // be running and emitting progress events. The guard's Drop will handle
+        // cleanup once the download loop exits.
         {
             let flags = self.cancel_flags.lock().unwrap();
             if let Some(flag) = flags.get(model_id) {
@@ -1518,18 +1524,8 @@ impl ModelManager {
             }
         }
 
-        // Update state immediately for UI responsiveness
-        {
-            let mut models = self.available_models.lock().unwrap();
-            if let Some(model) = models.get_mut(model_id) {
-                model.is_downloading = false;
-            }
-        }
-
-        // Update download status to reflect current state
-        self.update_download_status()?;
-
-        // Emit cancellation event so all UI components can clear their state
+        // Emit cancellation event so all UI components can clear their state.
+        // The frontend modelStore already clears downloading state on this event.
         let _ = self.app_handle.emit("model-download-cancelled", model_id);
 
         info!("Download cancellation initiated for: {}", model_id);
