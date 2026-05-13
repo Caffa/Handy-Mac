@@ -324,14 +324,30 @@ fn preserve_case_pattern(original: &str, replacement: &str) -> String {
     }
 }
 
-/// Extracts punctuation prefix and suffix from a word
+/// Extracts punctuation prefix and suffix from a word.
+/// Returns (prefix, suffix) where prefix is leading non-alphanumeric characters
+/// and suffix is trailing non-alphanumeric characters.
+///
+/// Uses byte indices from char_indices() to correctly handle multi-byte UTF-8
+/// characters (CJK, emoji, etc.) — plain char counting would produce invalid
+/// byte offsets that panic on non-ASCII text.
 fn extract_punctuation(word: &str) -> (&str, &str) {
-    let prefix_end = word.chars().take_while(|c| !c.is_alphanumeric()).count();
+    // Find byte offset where alphanumeric content starts
+    let prefix_end = word
+        .char_indices()
+        .take_while(|(_, c)| !c.is_alphanumeric())
+        .map(|(i, c)| i + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+
+    // Find byte offset where alphanumeric content ends
     let suffix_start = word
         .char_indices()
         .rev()
         .take_while(|(_, c)| !c.is_alphanumeric())
-        .count();
+        .map(|(i, _)| i)
+        .last()
+        .unwrap_or(word.len());
 
     let prefix = if prefix_end > 0 {
         &word[..prefix_end]
@@ -339,8 +355,8 @@ fn extract_punctuation(word: &str) -> (&str, &str) {
         ""
     };
 
-    let suffix = if suffix_start > 0 {
-        &word[word.len() - suffix_start..]
+    let suffix = if suffix_start < word.len() {
+        &word[suffix_start..]
     } else {
         ""
     };
@@ -727,6 +743,10 @@ mod tests {
         assert_eq!(extract_punctuation("hello"), ("", ""));
         assert_eq!(extract_punctuation("!hello?"), ("!", "?"));
         assert_eq!(extract_punctuation("...hello..."), ("...", "..."));
+        // CJK punctuation — must use byte offsets, not char counts, to avoid panics
+        assert_eq!(extract_punctuation("「你好」"), ("「", "」"));
+        // Emoji punctuation (multi-byte)
+        assert_eq!(extract_punctuation("¡Hola!"), ("¡", "!"));
     }
 
     #[test]
