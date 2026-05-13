@@ -1,10 +1,13 @@
 use crate::audio_toolkit::{is_bluetooth_audio_active, list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
 use crate::helpers::clamshell;
+use crate::portable;
 use crate::settings::{get_settings, AppSettings};
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
 use log::{debug, error, info, warn};
+use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -176,11 +179,14 @@ pub struct AudioRecordingManager {
     /// profiles every time the stream opens/closes, which causes audio
     /// dropouts on the headphones.
     bt_keep_alive: Arc<Mutex<bool>>,
-    /// Stored pronunciation audio + canonical word for deferred (idle) processing.
-    /// When `Some`, the recording has been captured but not yet processed.
-    pub pending_pronunciation: Arc<Mutex<Option<(Vec<f32>, String)>>>,
+    /// Queue of pronunciation recordings awaiting idle-time processing.
+    /// Each entry is `(audio_samples, canonical_word, recording_id, file_path)`.
+    /// New recordings are pushed to the back; the worker pops from the front.
+    pub pending_pronunciation: Arc<Mutex<VecDeque<(Vec<f32>, String, String, String)>>>,
     /// Handle to the background processing thread, if any.
     pub pronunciation_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Directory where pronunciation WAV files are saved.
+    pub pronunciation_recordings_dir: PathBuf,
 }
 
 impl AudioRecordingManager {
@@ -200,6 +206,15 @@ impl AudioRecordingManager {
             Some(app.clone()),
         ));
 
+        // Set up pronunciation recordings directory
+        let app_data_dir = portable::app_data_dir(app)?;
+        let pronunciation_recordings_dir = app_data_dir.join("pronunciation_recordings");
+        std::fs::create_dir_all(&pronunciation_recordings_dir).ok();
+        info!(
+            "Pronunciation recordings directory: {:?}",
+            pronunciation_recordings_dir
+        );
+
         let manager = Self {
             state: Arc::new(Mutex::new(RecordingState::Idle)),
             mode: Arc::new(Mutex::new(mode.clone())),
@@ -212,8 +227,9 @@ impl AudioRecordingManager {
             close_generation: Arc::new(AtomicU64::new(0)),
             usb_watchdog,
             bt_keep_alive: Arc::new(Mutex::new(false)),
-            pending_pronunciation: Arc::new(Mutex::new(None)),
+            pending_pronunciation: Arc::new(Mutex::new(VecDeque::new())),
             pronunciation_thread: Arc::new(Mutex::new(None)),
+            pronunciation_recordings_dir,
         };
 
         // Check for Bluetooth output devices — if detected, keep the mic
@@ -767,12 +783,17 @@ impl AudioRecordingManager {
                     }
                 }
 
-                // Pad if very short
+                // Pad short audio to reduce Whisper hallucinations.
+                // Very short clips (< 3s) padded with silence cause Whisper to
+                // hallucinate repetitive text. A 3-second minimum gives Whisper
+                // enough context to produce a good transcription without
+                // hallucinating. The VAD-based trim_trailing_silence in the
+                // transcription pipeline further cleans up any trailing silence.
                 let s_len = samples.len();
-                // debug!("Got {} samples", s_len);
-                if s_len < WHISPER_SAMPLE_RATE && s_len > 0 {
+                let min_samples = WHISPER_SAMPLE_RATE * 3; // 3 seconds minimum
+                if s_len > 0 && s_len < min_samples {
                     let mut padded = samples;
-                    padded.resize(WHISPER_SAMPLE_RATE * 5 / 4, 0.0);
+                    padded.resize(min_samples, 0.0);
                     Some(padded)
                 } else {
                     Some(samples)
