@@ -537,6 +537,9 @@ impl TranscriptionManager {
 
         // If hybrid mode selected a different model than what's loaded, load it.
         // This handles the case where the user switches between short/long models.
+        // IMPORTANT: We load the model BEFORE taking the engine out of the mutex
+        // to avoid a race where load_model() writes a new engine but the old engine
+        // is put back at the end of transcription, overwriting the new one.
         let current_loaded = self.current_model_id.lock().unwrap().clone();
         if effective_model_id != current_loaded.clone().unwrap_or_default() {
             debug!(
