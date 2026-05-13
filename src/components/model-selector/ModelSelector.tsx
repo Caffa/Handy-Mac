@@ -113,7 +113,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
       },
     );
 
-    // Auto-select model when download completes (fires after extraction too)
+    // Auto-select model when download completes, but only if the user hasn't
+    // deliberately chosen a different model. During onboarding there's no
+    // current model yet, so auto-select is appropriate. If the user is
+    // already using a model they chose, don't override their choice.
     const downloadCompleteUnlisten = listen<string>(
       "model-download-complete",
       (event) => {
@@ -122,12 +125,18 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
           try {
             const isRecording = await commands.isRecording();
             if (!isRecording) {
-              setPendingModelId(modelId);
-              setModelError(null);
-              setShowModelDropdown(false);
-              const success = await selectModel(modelId);
-              if (!success) {
-                setPendingModelId(null);
+              const current = useModelStore.getState().currentModel;
+              // Only auto-switch if no model is currently active (onboarding)
+              // or if the downloaded model IS the current model (re-download).
+              // Don't override a deliberate user choice.
+              if (!current || current === modelId) {
+                setPendingModelId(modelId);
+                setModelError(null);
+                setShowModelDropdown(false);
+                const success = await selectModel(modelId);
+                if (!success) {
+                  setPendingModelId(null);
+                }
               }
             }
           } catch {
