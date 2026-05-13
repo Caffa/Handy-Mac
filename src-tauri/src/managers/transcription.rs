@@ -448,6 +448,12 @@ impl TranscriptionManager {
         current_model.clone()
     }
 
+    /// Returns true if a model is currently being loaded in the background.
+    pub fn is_model_loading(&self) -> bool {
+        let is_loading = self.is_loading.lock().unwrap();
+        *is_loading
+    }
+
     pub fn transcribe(&self, audio: Vec<f32>) -> Result<TranscriptionOutput> {
         #[cfg(debug_assertions)]
         if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
