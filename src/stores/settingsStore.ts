@@ -62,6 +62,11 @@ interface SettingsStore {
   setAudioDevices: (devices: AudioDevice[]) => void;
   setOutputDevices: (devices: AudioDevice[]) => void;
   setCustomSounds: (sounds: { start: boolean; stop: boolean }) => void;
+
+  // Event listener cleanup — prevents listener accumulation if initialize()
+  // were called multiple times (useSettings() guards against this, but
+  // storing the unlisten function is good practice for long-lived stores).
+  _unlistenSettingsEvent?: () => void;
 }
 
 // Note: Default settings are now fetched from Rust via commands.getDefaultSettings()
@@ -604,9 +609,11 @@ export const useSettingsStore = create<SettingsStore>()(
 
       // Re-fetch settings when the backend changes them (e.g. language
       // reset during model switch). The backend is the source of truth.
-      listen("model-state-changed", () => {
+      // Store unlisten function to prevent listener accumulation
+      const unlisten = await listen("model-state-changed", () => {
         get().refreshSettings();
       });
+      set({ _unlistenSettingsEvent: unlisten });
     },
   })),
 );

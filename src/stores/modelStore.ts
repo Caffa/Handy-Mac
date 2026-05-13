@@ -54,6 +54,12 @@ interface ModelsStore {
   setCurrentModel: (modelId: string) => void;
   setError: (error: string | null) => void;
   setLoading: (loading: boolean) => void;
+
+  // Event listener cleanup — prevents listener accumulation if initialize()
+  // were called multiple times or during HMR. Without storing these,
+  // each call to initialize() would register duplicate handlers.
+  _unlistenFns: Array<() => void>;
+  destroy: () => void;
 }
 
 export const useModelStore = create<ModelsStore>()(
@@ -70,6 +76,7 @@ export const useModelStore = create<ModelsStore>()(
     hasAnyModels: false,
     isFirstRun: false,
     initialized: false,
+    _unlistenFns: [],
 
     // Internal setters
     setModels: (models) => set({ models }),
@@ -273,160 +280,193 @@ export const useModelStore = create<ModelsStore>()(
     initialize: async () => {
       if (get().initialized) return;
 
+      // Clean up any previously registered event listeners to prevent
+      // accumulation if initialize() is somehow called more than once.
+      get()._unlistenFns.forEach((fn) => fn());
+
       const { loadModels, loadCurrentModel, checkFirstRun } = get();
 
       // Load initial data
       await Promise.all([loadModels(), loadCurrentModel(), checkFirstRun()]);
 
-      // Set up event listeners
-      listen<DownloadProgress>("model-download-progress", (event) => {
-        const progress = event.payload;
-        set(
-          produce((state) => {
-            state.downloadProgress[progress.model_id] = progress;
-          }),
-        );
+      // Set up event listeners — collect unlisten functions for cleanup
+      const unlistenFns: Array<() => void> = [];
 
-        // Update download stats for speed calculation
-        const now = Date.now();
-        set(
-          produce((state) => {
-            const current = state.downloadStats[progress.model_id];
+      unlistenFns.push(
+        await listen<DownloadProgress>("model-download-progress", (event) => {
+          const progress = event.payload;
+          set(
+            produce((state) => {
+              state.downloadProgress[progress.model_id] = progress;
+            }),
+          );
 
-            if (!current) {
-              state.downloadStats[progress.model_id] = {
-                startTime: now,
-                lastUpdate: now,
-                totalDownloaded: progress.downloaded,
-                speed: 0,
-              };
-            } else {
-              const timeDiff = (now - current.lastUpdate) / 1000;
-              const bytesDiff = progress.downloaded - current.totalDownloaded;
+          // Update download stats for speed calculation
+          const now = Date.now();
+          set(
+            produce((state) => {
+              const current = state.downloadStats[progress.model_id];
 
-              if (timeDiff > 0.5) {
-                const currentSpeed = bytesDiff / (1024 * 1024) / timeDiff;
-                const validCurrentSpeed = Math.max(0, currentSpeed);
-                const smoothedSpeed =
-                  current.speed > 0
-                    ? current.speed * 0.8 + validCurrentSpeed * 0.2
-                    : validCurrentSpeed;
-
+              if (!current) {
                 state.downloadStats[progress.model_id] = {
-                  startTime: current.startTime,
+                  startTime: now,
                   lastUpdate: now,
                   totalDownloaded: progress.downloaded,
-                  speed: Math.max(0, smoothedSpeed),
+                  speed: 0,
                 };
+              } else {
+                const timeDiff = (now - current.lastUpdate) / 1000;
+                const bytesDiff = progress.downloaded - current.totalDownloaded;
+
+                if (timeDiff > 0.5) {
+                  const currentSpeed = bytesDiff / (1024 * 1024) / timeDiff;
+                  const validCurrentSpeed = Math.max(0, currentSpeed);
+                  const smoothedSpeed =
+                    current.speed > 0
+                      ? current.speed * 0.8 + validCurrentSpeed * 0.2
+                      : validCurrentSpeed;
+
+                  state.downloadStats[progress.model_id] = {
+                    startTime: current.startTime,
+                    lastUpdate: now,
+                    totalDownloaded: progress.downloaded,
+                    speed: Math.max(0, smoothedSpeed),
+                  };
+                }
               }
-            }
-          }),
-        );
-      });
+            }),
+          );
+        }),
+      );
 
-      listen<string>("model-download-complete", (event) => {
-        const modelId = event.payload;
-        set(
-          produce((state) => {
-            delete state.downloadingModels[modelId];
-            delete state.verifyingModels[modelId];
-            delete state.downloadProgress[modelId];
-            delete state.downloadStats[modelId];
-          }),
-        );
-        get().loadModels();
-      });
-
-      listen<{ model_id: string; error: string }>(
-        "model-download-failed",
-        (event) => {
-          const { model_id: modelId, error } = event.payload;
+      unlistenFns.push(
+        await listen<string>("model-download-complete", (event) => {
+          const modelId = event.payload;
           set(
             produce((state) => {
               delete state.downloadingModels[modelId];
               delete state.verifyingModels[modelId];
               delete state.downloadProgress[modelId];
               delete state.downloadStats[modelId];
-              state.error = error;
             }),
           );
-          toast.error(error);
-        },
+          get().loadModels();
+        }),
       );
 
-      listen<string>("model-verification-started", (event) => {
-        const modelId = event.payload;
-        set(
-          produce((state) => {
-            state.verifyingModels[modelId] = true;
-          }),
-        );
-      });
+      unlistenFns.push(
+        await listen<{ model_id: string; error: string }>(
+          "model-download-failed",
+          (event) => {
+            const { model_id: modelId, error } = event.payload;
+            set(
+              produce((state) => {
+                delete state.downloadingModels[modelId];
+                delete state.verifyingModels[modelId];
+                delete state.downloadProgress[modelId];
+                delete state.downloadStats[modelId];
+                state.error = error;
+              }),
+            );
+            toast.error(error);
+          },
+        ),
+      );
 
-      listen<string>("model-verification-completed", (event) => {
-        const modelId = event.payload;
-        set(
-          produce((state) => {
-            delete state.verifyingModels[modelId];
-          }),
-        );
-      });
+      unlistenFns.push(
+        await listen<string>("model-verification-started", (event) => {
+          const modelId = event.payload;
+          set(
+            produce((state) => {
+              state.verifyingModels[modelId] = true;
+            }),
+          );
+        }),
+      );
 
-      listen<string>("model-extraction-started", (event) => {
-        const modelId = event.payload;
-        set(
-          produce((state) => {
-            state.extractingModels[modelId] = true;
-          }),
-        );
-      });
+      unlistenFns.push(
+        await listen<string>("model-verification-completed", (event) => {
+          const modelId = event.payload;
+          set(
+            produce((state) => {
+              delete state.verifyingModels[modelId];
+            }),
+          );
+        }),
+      );
 
-      listen<string>("model-extraction-completed", (event) => {
-        const modelId = event.payload;
-        set(
-          produce((state) => {
-            delete state.extractingModels[modelId];
-          }),
-        );
-        get().loadModels();
-      });
+      unlistenFns.push(
+        await listen<string>("model-extraction-started", (event) => {
+          const modelId = event.payload;
+          set(
+            produce((state) => {
+              state.extractingModels[modelId] = true;
+            }),
+          );
+        }),
+      );
 
-      listen<{ model_id: string; error: string }>(
-        "model-extraction-failed",
-        (event) => {
-          const modelId = event.payload.model_id;
+      unlistenFns.push(
+        await listen<string>("model-extraction-completed", (event) => {
+          const modelId = event.payload;
           set(
             produce((state) => {
               delete state.extractingModels[modelId];
-              state.error = `Failed to extract model: ${event.payload.error}`;
             }),
           );
-        },
+          get().loadModels();
+        }),
       );
 
-      listen<string>("model-download-cancelled", (event) => {
-        const modelId = event.payload;
-        set(
-          produce((state) => {
-            delete state.downloadingModels[modelId];
-            delete state.verifyingModels[modelId];
-            delete state.downloadProgress[modelId];
-            delete state.downloadStats[modelId];
-          }),
-        );
-      });
+      unlistenFns.push(
+        await listen<{ model_id: string; error: string }>(
+          "model-extraction-failed",
+          (event) => {
+            const modelId = event.payload.model_id;
+            set(
+              produce((state) => {
+                delete state.extractingModels[modelId];
+                state.error = `Failed to extract model: ${event.payload.error}`;
+              }),
+            );
+          },
+        ),
+      );
 
-      listen<string>("model-deleted", () => {
-        get().loadModels();
-        get().loadCurrentModel();
-      });
+      unlistenFns.push(
+        await listen<string>("model-download-cancelled", (event) => {
+          const modelId = event.payload;
+          set(
+            produce((state) => {
+              delete state.downloadingModels[modelId];
+              delete state.verifyingModels[modelId];
+              delete state.downloadProgress[modelId];
+              delete state.downloadStats[modelId];
+            }),
+          );
+        }),
+      );
 
-      listen("model-state-changed", () => {
-        get().loadModels();
-        get().loadCurrentModel();
-      });
+      unlistenFns.push(
+        await listen<string>("model-deleted", () => {
+          get().loadModels();
+          get().loadCurrentModel();
+        }),
+      );
 
-      set({ initialized: true });
+      unlistenFns.push(
+        await listen("model-state-changed", () => {
+          get().loadModels();
+          get().loadCurrentModel();
+        }),
+      );
+
+      set({ initialized: true, _unlistenFns: unlistenFns });
+    },
+
+    destroy: () => {
+      get()._unlistenFns.forEach((fn) => fn());
+      set({ _unlistenFns: [], initialized: false });
     },
   })),
 );
