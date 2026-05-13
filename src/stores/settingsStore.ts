@@ -609,9 +609,15 @@ export const useSettingsStore = create<SettingsStore>()(
 
       // Re-fetch settings when the backend changes them (e.g. language
       // reset during model switch). The backend is the source of truth.
-      // Store unlisten function to prevent listener accumulation
+      // Store unlisten function to prevent listener accumulation.
+      // Skip refresh if an optimistic update is in progress to avoid
+      // overwriting the user's change with stale backend state.
       const unlisten = await listen("model-state-changed", () => {
-        get().refreshSettings();
+        const { isUpdating } = get();
+        const hasPendingUpdates = Object.values(isUpdating).some(Boolean);
+        if (!hasPendingUpdates) {
+          get().refreshSettings();
+        }
       });
       set({ _unlistenSettingsEvent: unlisten });
     },
