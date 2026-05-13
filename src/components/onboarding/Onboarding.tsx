@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { listen } from "@tauri-apps/api/event";
 import type { ModelInfo } from "@/bindings";
 import type { ModelCardStatus } from "./ModelCard";
 import ModelCard from "./ModelCard";
@@ -16,6 +17,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
   const {
     models,
     downloadModel,
+    cancelDownload,
     selectModel,
     downloadingModels,
     verifyingModels,
@@ -26,6 +28,46 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
 
   const isDownloading = selectedModelId !== null;
+
+  const downloadableModels = models.filter((m: ModelInfo) => !m.is_downloaded);
+  const hasNoModelsToDownload = downloadableModels.length === 0 && !isDownloading;
+
+  // If all models are already downloaded, skip onboarding immediately
+  useEffect(() => {
+    if (hasNoModelsToDownload) {
+      onModelSelected();
+    }
+  }, [hasNoModelsToDownload, onModelSelected]);
+
+  // Listen for download failures to clear the stuck disabled state.
+  // When a download starts, `handleDownloadModel` sets `selectedModelId`.
+  // If the download request succeeds (returns true) but the download later
+  // fails asynchronously (network error, checksum mismatch, disk full),
+  // the `model-download-failed` event fires but `selectedModelId` was never
+  // cleared, leaving all model cards permanently disabled.
+  useEffect(() => {
+    const unlistenFailed = listen<{ model_id: string; error: string }>(
+      "model-download-failed",
+      (event) => {
+        if (event.payload.model_id === selectedModelId) {
+          setSelectedModelId(null);
+        }
+      },
+    );
+    const unlistenCancelled = listen<string>(
+      "model-download-cancelled",
+      (modelId) => {
+        if (modelId.payload === selectedModelId) {
+          setSelectedModelId(null);
+        }
+      },
+    );
+
+    return () => {
+      unlistenFailed.then((fn) => fn());
+      unlistenCancelled.then((fn) => fn());
+    };
+  }, [selectedModelId]);
 
   // Watch for the selected model to finish downloading + verifying + extracting
   useEffect(() => {
@@ -60,6 +102,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
     extractingModels,
     selectModel,
     onModelSelected,
+    t,
   ]);
 
   const handleDownloadModel = async (modelId: string) => {
@@ -69,8 +112,18 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
     // in modelStore — no toast here to avoid duplicates.
     const success = await downloadModel(modelId);
     if (!success) {
+      // Download request itself failed (IPC error), clear selected state.
+      // For async download failures, the model-download-failed listener above
+      // handles clearing selectedModelId.
       setSelectedModelId(null);
     }
+  };
+
+  const handleCancelDownload = async () => {
+    if (!selectedModelId) return;
+    const modelId = selectedModelId;
+    setSelectedModelId(null);
+    await cancelDownload(modelId);
   };
 
   const getModelStatus = (modelId: string): ModelCardStatus => {
@@ -108,9 +161,10 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
                 model={model}
                 variant="featured"
                 status={getModelStatus(model.id)}
-                disabled={isDownloading}
+                disabled={isDownloading && model.id !== selectedModelId}
                 onSelect={handleDownloadModel}
                 onDownload={handleDownloadModel}
+                onCancel={handleCancelDownload}
                 downloadProgress={getModelDownloadProgress(model.id)}
                 downloadSpeed={getModelDownloadSpeed(model.id)}
               />
@@ -128,9 +182,10 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
                 key={model.id}
                 model={model}
                 status={getModelStatus(model.id)}
-                disabled={isDownloading}
+                disabled={isDownloading && model.id !== selectedModelId}
                 onSelect={handleDownloadModel}
                 onDownload={handleDownloadModel}
+                onCancel={handleCancelDownload}
                 downloadProgress={getModelDownloadProgress(model.id)}
                 downloadSpeed={getModelDownloadSpeed(model.id)}
               />
