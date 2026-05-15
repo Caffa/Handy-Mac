@@ -837,11 +837,11 @@ mod tests {
         insert_entry(&conn, 200, "", None);
 
         let entry = HistoryManager::get_latest_completed_entry_with_conn(&conn)
-            .expect("should find completed entry ")
-            .expect("completed entry found ");
+            .expect("should find completed entry")
+            .expect("completed entry found");
 
         assert_eq!(entry.timestamp, 100);
-        assert!(entry.transcription_text.len() > 0);
+        assert_eq!(entry.transcription_text, "completed");
     }
 }
 
