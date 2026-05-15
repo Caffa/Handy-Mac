@@ -178,3 +178,16 @@
 .cancel-button:active {
   transform: scale(0.95);
 }
+
+/* ── Routing overlay theme ── */
+.routing-mode {
+  background: #78350fcc;
+}
+
+.routing-bar {
+  background: #fef3c7;
+}
+
+.routing-text {
+  color: #fbbf24;
+}

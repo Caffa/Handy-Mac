@@ -10,8 +10,11 @@ use crate::session::SessionTracker;
 use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
+use crate::overlay::OverlayMode;
 use crate::utils::{
-    self, show_processing_overlay, show_recording_overlay, show_transcribing_overlay,
+    self, show_processing_overlay, show_processing_overlay_with_mode, show_recording_overlay,
+    show_recording_overlay_with_mode, show_transcribing_overlay,
+    show_transcribing_overlay_with_mode,
 };
 use crate::TranscriptionCoordinator;
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
@@ -29,12 +32,26 @@ struct RecordingErrorEvent {
     detail: Option<String>,
 }
 
+/// Structured result from one boss_router.py handler.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct RouterHandlerData {
+    /// Emoji status: "✅" for success, "❌" for failure.
+    pub status: String,
+    /// Human-readable handler name (e.g. "Daily", "Zettelkasten", "Project Devlog").
+    pub handler: String,
+    /// Internal classification (e.g. "diary_entry", "zettelkasten_entry").
+    pub classification: String,
+    /// Optional file path where content was saved (None for diary entries).
+    pub file_path: Option<String>,
+}
+
 /// Emitted when the router subprocess completes (success or failure).
+/// Detailed handler results are persisted separately via update_routing_result() in the history entry.
 #[derive(Clone, serde::Serialize)]
 pub struct RouterResultEvent {
-    /// Whether the router subprocess succeeded.
+    /// Whether the router subprocess succeeded (at least one handler completed).
     pub success: bool,
-    /// Human-readable summary of handlers (e.g. "✔️ Daily – ✔️ Zettelkasten – My Note").
+    /// Human-readable summary of handlers (e.g. "✅ Daily | ✅ Zettelkasten (my-note)").
     pub summary: Option<String>,
     /// Error message if the router failed.
     pub error: Option<String>,
@@ -862,7 +879,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
         let binding_id = binding_id.to_string();
         change_tray_icon(app, TrayIconState::Recording);
-        show_recording_overlay(app);
+        show_recording_overlay_with_mode(app, OverlayMode::Router);
 
         // Recording start logic — identical to TranscribeAction
         let settings = get_settings(app);
@@ -953,10 +970,12 @@ impl ShortcutAction for TranscribeWithRouterAction {
             .and_then(|t| t.current_session_id());
 
         // ── KEY DIFFERENCE from TranscribeAction ──
-        // Hide the recording overlay IMMEDIATELY and return to idle.
-        // Transcription + routing happens entirely in the background.
-        change_tray_icon(app, TrayIconState::Idle);
-        utils::hide_recording_overlay(app);
+        // Show routing-specific overlay during transcription + routing
+        // instead of hiding immediately. The overlay transitions through
+        // "Routing..." (transcribing) then "Filing..." (processing)
+        // states, then is hidden after the router subprocess completes.
+        change_tray_icon(app, TrayIconState::Transcribing);
+        show_transcribing_overlay_with_mode(app, OverlayMode::Router);
 
         // Unmute before playing audio feedback
         rm.remove_mute();
@@ -1063,11 +1082,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             );
                         }
 
-                        // Save to history with routed=true
-                        let transcription_text = transcription.text.clone();
-                        let model_id_for_history = transcription.model_id.clone();
-                        if wav_saved {
-                            if let Err(err) = hm.save_entry(
+                        // Save to history with routed=true and capture entry ID
+                        let history_entry_id: Option<i64> = if wav_saved {
+                            match hm.save_entry(
                                 file_name,
                                 transcription_text.clone(),
                                 false, // post_process_requested
@@ -1076,9 +1093,20 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 Some(model_id_for_history),
                                 true,   // routed
                             ) {
-                                error!("Failed to save history entry: {}", err);
+                                Ok(entry) => {
+                                    Some(entry.id)
+                                }
+                                Err(err) => {
+                                    error!("Failed to save history entry: {}", err);
+                                    None
+                                }
                             }
-                        }
+                        } else {
+                            None
+                        };
+
+                        // ── Show "Filing…" overlay while routing ──
+                        show_processing_overlay_with_mode(&ah, OverlayMode::Router);
 
                         // ── Send transcription to boss_router ──
                         let settings = get_settings(&ah);
@@ -1099,6 +1127,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             let ah_for_router = ah.clone();
                             let sid_for_router = sid.clone();
                             let transcription_text_for_router = transcription_text.clone();
+                            let hm_for_router = if let Some(id) = history_entry_id {
+                                Some((hm.clone(), id))
+                            } else {
+                                None
+                            };
 
                             // Spawn the router as a subprocess
                             // This is fire-and-forget from UX but we emit a notification on completion.
@@ -1111,13 +1144,42 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 );
 
                                 match result {
-                                    Ok(handler_summary) => {
-                                        let summary_text = handler_summary
-                                            .unwrap_or_else(|| "No handlers".to_string());
+                                    Ok((summary_opt, handler_data)) => {
+                                        let any_success = handler_data.iter().any(|d| d.status == "✅");
+                                        // Build summary text
+                                        let summary_text = match &summary_opt {
+                                            Some(s) => s.clone(),
+                                            None => {
+                                                if handler_data.is_empty() {
+                                                    "No handlers".to_string()
+                                                } else {
+                                                    // Shouldn't happen: summary_opt is always Some when handler_data is non-empty
+                                                    format!("{} handlers, none succeeded", handler_data.len())
+                                                }
+                                            }
+                                        };
+
+                                        // ── DETECTION: Verify at least one handler succeeded ──
+                                        if !any_success && !handler_data.is_empty() {
+                                            warn!(
+                                                "Router subprocess completed but no handlers succeeded (exit code 0): {}",
+                                                summary_text
+                                            );
+                                        }
+
+                                        // Save routing result to history entry
+                                        if let Some((ref hm, entry_id)) = hm_for_router {
+                                            let routing_json = serde_json::to_string(&handler_data)
+                                                .unwrap_or_else(|_| "[]".to_string());
+                                            if let Err(e) = hm.update_routing_result(entry_id, Some(routing_json)) {
+                                                error!("Failed to update routing result in history: {}", e);
+                                            }
+                                        }
+
                                         info!("Router completed: {}", summary_text);
 
                                         let event = RouterResultEvent {
-                                            success: true,
+                                            success: any_success || handler_data.is_empty(),
                                             summary: Some(summary_text.clone()),
                                             error: None,
                                             transcription_text: transcription_text_for_router,
@@ -1131,9 +1193,28 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                             format!("Route: {}", summary_text)
                                         };
                                         send_macos_notification("Handy Router", &notification_text);
+
+                                        // ── Clean up overlay after routing succeeds ──
+                                        utils::hide_recording_overlay(&ah_for_router);
+                                        change_tray_icon(&ah_for_router, TrayIconState::Idle);
                                     }
                                     Err(e) => {
                                         error!("Router subprocess failed: {}", e);
+
+                                        // Save routing failure to history entry
+                                        if let Some((ref hm, entry_id)) = hm_for_router {
+                                            let failure_result = vec![RouterHandlerData {
+                                                status: "❌".to_string(),
+                                                handler: "Router Error".to_string(),
+                                                classification: "error".to_string(),
+                                                file_path: None,
+                                            }];
+                                            let routing_json = serde_json::to_string(&failure_result)
+                                                .unwrap_or_else(|_| "[]".to_string());
+                                            if let Err(save_err) = hm.update_routing_result(entry_id, Some(routing_json)) {
+                                                error!("Failed to update routing error in history: {}", save_err);
+                                            }
+                                        }
 
                                         let event = RouterResultEvent {
                                             success: false,
@@ -1150,6 +1231,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                                 e.clone()
                                             };
                                         send_macos_notification("Handy Router Error", &error_display);
+
+                                        // ── Clean up overlay after routing fails ──
+                                        utils::hide_recording_overlay(&ah_for_router);
+                                        change_tray_icon(&ah_for_router, TrayIconState::Idle);
                                     }
                                 }
 
@@ -1179,7 +1264,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 let _ = ah.run_on_main_thread(move || {
                                     let _ = utils::paste(transcription_text, ah_for_paste.clone());
                                     utils::hide_recording_overlay(&ah_for_paste);
+                                    change_tray_icon(&ah_for_paste, TrayIconState::Idle);
                                 });
+                            } else {
+                                utils::hide_recording_overlay(&ah);
+                                change_tray_icon(&ah, TrayIconState::Idle);
                             }
                         }
                     }
@@ -1204,6 +1293,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 error!("Failed to save failed history entry: {}", save_err);
                             }
                         }
+
+                        // ── Clean up overlay on transcription failure ──
+                        utils::hide_recording_overlay(&ah);
+                        change_tray_icon(&ah, TrayIconState::Idle);
                     }
                 }
             } else {
@@ -1213,6 +1306,14 @@ impl ShortcutAction for TranscribeWithRouterAction {
                 {
                     tracker.fail_session(s, "No audio samples from recording stop");
                 }
+
+                // ── Clean up overlay when no samples ──
+                utils::hide_recording_overlay(&ah);
+                change_tray_icon(&ah, TrayIconState::Idle);
+
+                // ── Clean up overlay on empty samples ──
+                utils::hide_recording_overlay(&ah);
+                change_tray_icon(&ah, TrayIconState::Idle);
             }
         });
 
@@ -1223,13 +1324,14 @@ impl ShortcutAction for TranscribeWithRouterAction {
     }
 }
 
-/// Run boss_router.py as a subprocess and return a summary of what happened.
+/// Run boss_router.py as a subprocess and return the parsed output.
+/// Returns (summary_string, handler_data_vec) on success, or an error String.
 fn run_router_subprocess(
     router_script: &str,
     transcription_text: &str,
     datetime_str: &str,
     env_file: Option<&str>,
-) -> Result<Option<String>, String> {
+) -> Result<(Option<String>, Vec<RouterHandlerData>), String> {
     use std::process::Command;
 
     // Build the command
@@ -1243,7 +1345,8 @@ fn run_router_subprocess(
         .arg(transcription_text)
         .arg("--datetime")
         .arg(datetime_str)
-        .arg("--json");
+        .arg("--json")
+        .arg("--handy");
 
     // Prepend miniforge3 to PATH so the subprocess and any children (e.g.
     // decision_router.py → llm_client.py) find the correct python + deps.
@@ -1301,13 +1404,23 @@ fn run_router_subprocess(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let handler_summary = parse_router_json_output(&stdout);
-    Ok(handler_summary)
+    let (handler_summary, handler_data) = parse_router_json_output(&stdout);
+    Ok((handler_summary, handler_data))
+}
+
+/// Parsed output returned by the boss_router subprocess.
+struct RouterOutput {
+    /// Human-readable summary string (e.g. "✅ Daily | ✅ Zettelkasten (my-note)").
+    summary: String,
+    /// Structured handler results for persistence and verification.
+    handler_data: Vec<RouterHandlerData>,
+    /// True if at least one handler succeeded (status == "✅").
+    any_success: bool,
 }
 
 /// Parse the JSON output from boss_router.py --json.
-/// Returns a human-readable summary of the handlers that ran.
-fn parse_router_json_output(stdout: &str) -> Option<String> {
+/// Returns structured handler data and a human-readable summary.
+fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
     // The JSON is on the last line of output (there may be log lines before it)
     for line in stdout.lines().rev() {
         let line = line.trim();
@@ -1316,27 +1429,44 @@ fn parse_router_json_output(stdout: &str) -> Option<String> {
                 // Extract handler summaries
                 let handlers = json.get("handlers").and_then(|h| h.as_array());
                 if let Some(handlers) = handlers {
-                    let summaries: Vec<String> = handlers
-                        .iter()
-                        .filter_map(|h| {
-                            let handler = h.get("handler").and_then(|v| v.as_str()).unwrap_or("?");
-                            let status = h.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                            let file_path = h.get("file_path").and_then(|v| v.as_str());
-                            if let Some(path) = file_path {
-                                let filename = std::path::Path::new(path)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(path);
-                                Some(format!("{} {} ({})", status, handler, filename))
-                            } else {
-                                Some(format!("{} {}", status, handler))
-                            }
-                        })
-                        .collect();
-                    if summaries.is_empty() {
+                    let mut handler_data: Vec<RouterHandlerData> = Vec::new();
+                    let mut summaries: Vec<String> = Vec::new();
+
+                    for h in handlers {
+                        let status = h.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let handler_name = h.get("handler").and_then(|v| v.as_str()).unwrap_or("?");
+                        let classification = h.get("classification").and_then(|v| v.as_str()).unwrap_or("?");
+                        let file_path = h.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                        handler_data.push(RouterHandlerData {
+                            status: status.to_string(),
+                            handler: handler_name.to_string(),
+                            classification: classification.to_string(),
+                            file_path: file_path.clone(),
+                        });
+
+                        // Build summary line
+                        if let Some(ref path) = file_path {
+                            let filename = std::path::Path::new(path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(path);
+                            summaries.push(format!("{} {} ({})", status, handler_name, filename));
+                        } else {
+                            summaries.push(format!("{} {}", status, handler_name));
+                        }
+                    }
+
+                    if handler_data.is_empty() {
                         return None;
                     }
-                    return Some(summaries.join(" | "));
+
+                    let any_success = handler_data.iter().any(|d| d.status == "✅");
+                    return Some(RouterOutput {
+                        summary: summaries.join(" | "),
+                        handler_data,
+                        any_success,
+                    });
                 }
             }
         }

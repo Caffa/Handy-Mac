@@ -474,7 +474,7 @@ pub fn cancel_pronunciation_recording(app: AppHandle) -> Result<(), String> {
     // Clear any pending pronunciation data
     {
         let mut pending = rm.pending_pronunciation.lock().unwrap();
-        *pending = None;
+        pending.clear();
     }
 
     info!("Pronunciation recording cancelled");
@@ -511,7 +511,7 @@ pub async fn stop_and_schedule_pronunciation(
     // Store the audio + word for deferred processing
     {
         let mut pending = rm.pending_pronunciation.lock().unwrap();
-        *pending = Some((samples, canonical_word.clone()));
+        pending.push_back((samples, canonical_word.clone(), String::new(), String::new()));
     }
 
     // Spawn a background thread that will process after a delay
@@ -559,16 +559,13 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
         // Check if pending data changed (cancellation)
         let rm = app.state::<Arc<AudioRecordingManager>>();
         let pending = rm.pending_pronunciation.lock().unwrap();
-        let (_samples, _word) = match &*pending {
-            Some((s, w)) if w == canonical_word => (s.clone(), w.clone()),
-            _ => {
-                info!(
-                    "Pronunciation data changed or cleared, skipping processing for '{}'",
-                    canonical_word
-                );
-                return;
-            }
-        };
+        if !matches!(pending.front(), Some((_, w, _, _)) if w == canonical_word) {
+            info!(
+                "Pronunciation data changed or cleared, skipping processing for '{}'",
+                canonical_word
+            );
+            return;
+        }
         drop(pending);
 
         #[cfg(target_os = "macos")]
@@ -595,8 +592,8 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     // Now process with all models
     let rm = app.state::<Arc<AudioRecordingManager>>();
     let pending = rm.pending_pronunciation.lock().unwrap();
-    let (samples, word) = match &*pending {
-        Some((s, w)) if w == canonical_word => (s.clone(), w.clone()),
+    let (samples, word) = match pending.front() {
+        Some((s, w, _, _)) if w == canonical_word => (s.clone(), w.clone()),
         _ => {
             info!(
                 "Pronunciation data changed before processing started for '{}'",
@@ -660,7 +657,7 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
             // Clear pending
             let rm = app.state::<Arc<AudioRecordingManager>>();
             let mut pending = rm.pending_pronunciation.lock().unwrap();
-            *pending = None;
+            pending.pop_front();
         }
         Err(e) => {
             warn!(

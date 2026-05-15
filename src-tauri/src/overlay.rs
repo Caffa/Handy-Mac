@@ -328,7 +328,31 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
     }
 }
 
-pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str) {
+/// Overlay action mode — determines which visual theme the frontend uses.
+/// The payload emitted to the frontend is formatted as `"{state}:{action}"`
+/// (e.g. `"recording:transcribe"`, `"transcribing:router"`), allowing the
+/// overlay to vary icon/colours/labels based on the originating action.
+pub enum OverlayMode {
+    Transcribe,
+    TranscribeWithPostProcess,
+    Router,
+}
+
+impl std::fmt::Display for OverlayMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OverlayMode::Transcribe => write!(f, "transcribe"),
+            OverlayMode::TranscribeWithPostProcess => write!(f, "post_process"),
+            OverlayMode::Router => write!(f, "router"),
+        }
+    }
+}
+
+fn format_overlay_payload(state: &str, mode: &OverlayMode) -> String {
+    format!("{}:{}", state, mode)
+}
+
+pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     // Check if overlay should be shown based on position setting
     let settings = settings::get_settings(app_handle);
     if settings.overlay_position == OverlayPosition::None {
@@ -344,23 +368,39 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str) {
         #[cfg(target_os = "windows")]
         force_overlay_topmost(&overlay_window);
 
-        let _ = overlay_window.emit("show-overlay", state);
+        let payload = format_overlay_payload(state, mode);
+        let _ = overlay_window.emit("show-overlay", payload);
     }
 }
 
-/// Shows the recording overlay window with fade-in animation
+/// Shows the recording overlay window with a specific mode.
+pub fn show_recording_overlay_with_mode(app_handle: &AppHandle, mode: OverlayMode) {
+    show_overlay_state(app_handle, "recording", &mode);
+}
+
+/// Shows the transcribing overlay window with a specific mode.
+pub fn show_transcribing_overlay_with_mode(app_handle: &AppHandle, mode: OverlayMode) {
+    show_overlay_state(app_handle, "transcribing", &mode);
+}
+
+/// Shows the processing overlay window with a specific mode.
+pub fn show_processing_overlay_with_mode(app_handle: &AppHandle, mode: OverlayMode) {
+    show_overlay_state(app_handle, "processing", &mode);
+}
+
+/// Shows the recording overlay window with default (transcribe) mode
 pub fn show_recording_overlay(app_handle: &AppHandle) {
-    show_overlay_state(app_handle, "recording");
+    show_overlay_state(app_handle, "recording", &OverlayMode::Transcribe);
 }
 
-/// Shows the transcribing overlay window
+/// Shows the transcribing overlay window with default (transcribe) mode
 pub fn show_transcribing_overlay(app_handle: &AppHandle) {
-    show_overlay_state(app_handle, "transcribing");
+    show_overlay_state(app_handle, "transcribing", &OverlayMode::Transcribe);
 }
 
-/// Shows the processing overlay window
+/// Shows the processing overlay window with default (transcribe) mode
 pub fn show_processing_overlay(app_handle: &AppHandle) {
-    show_overlay_state(app_handle, "processing");
+    show_overlay_state(app_handle, "processing", &OverlayMode::Transcribe);
 }
 
 /// Updates the overlay window position based on current settings

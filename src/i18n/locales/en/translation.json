@@ -690,6 +690,8 @@
     "usbWaitingReconnect": "Waiting for device…",
     "usbRecovered": "Audio recovered",
     "hybridShort": "S",
-    "hybridLong": "L"
+    "hybridLong": "L",
+    "routing": "Routing…",
+    "filing": "Filing…"
   }
 }

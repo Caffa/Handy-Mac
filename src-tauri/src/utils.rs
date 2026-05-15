@@ -51,7 +51,7 @@ pub fn cancel_current_operation(app: &AppHandle) {
 /// Used during dead-stream recovery when the USB watchdog is power-cycling
 /// the hub port so the user sees visual feedback instead of a frozen app.
 pub fn show_usb_cycling_overlay(app: &AppHandle) {
-    show_overlay_state(app, "usb-cycling");
+    show_overlay_state(app, "usb-cycling", &OverlayMode::Transcribe);
 }
 
 /// Check if using the Wayland display server protocol

@@ -2,9 +2,10 @@ import { listen } from "@tauri-apps/api/event";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  MicrophoneIcon,
-  TranscriptionIcon,
   CancelIcon,
+  MicrophoneIcon,
+  RoutingIcon,
+  TranscriptionIcon,
 } from "../components/icons";
 import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
@@ -12,6 +13,7 @@ import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
 type OverlayState = "recording" | "transcribing" | "processing" | "usb-cycling";
+type OverlayAction = "transcribe" | "post_process" | "router";
 
 // If no mic-level event arrives within this many milliseconds,
 // start decaying the bars to zero to avoid a frozen visualizer.
@@ -25,10 +27,30 @@ const LEVEL_TIMEOUT_MS = 500;
 // 15s gives comfortable margin without hanging the UI for too long.
 const USB_CYCLING_SAFETY_TIMEOUT_MS = 15_000;
 
+/// Parse a compound payload of the form "state:action" emitted by the Rust
+/// backend. Legacy payloads (no colon) are treated as state-only with action
+/// defaulting to "transcribe".
+function parseOverlayPayload(payload: string): {
+  state: OverlayState;
+  action: OverlayAction;
+} {
+  const colonIndex = payload.indexOf(":");
+  if (colonIndex === -1) {
+    return { state: payload as OverlayState, action: "transcribe" };
+  }
+  const statePart = payload.slice(0, colonIndex);
+  const actionPart = payload.slice(colonIndex + 1);
+  return {
+    state: statePart as OverlayState,
+    action: actionPart as OverlayAction,
+  };
+}
+
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
   const [state, setState] = useState<OverlayState>("recording");
+  const [action, setAction] = useState<OverlayAction>("transcribe");
   const [levels, setLevels] = useState<number[]>(Array(16).fill(0));
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
   const lastLevelTimeRef = useRef<number>(Date.now());
@@ -46,6 +68,8 @@ const RecordingOverlay: React.FC = () => {
     stage: string;
     message: string;
   } | null>(null);
+
+  const isRouter = action === "router";
 
   // Decay timer: if we haven't received mic-level data for LEVEL_TIMEOUT_MS,
   // smoothly fade the bars toward zero so the overlay doesn't freeze.
@@ -140,8 +164,10 @@ const RecordingOverlay: React.FC = () => {
       const unlistenShow = await listen("show-overlay", async (event) => {
         // Sync language from settings each time overlay is shown
         await syncLanguageFromSettings();
-        const overlayState = event.payload as OverlayState;
-        setState(overlayState);
+        const payload = event.payload as string;
+        const parsed = parseOverlayPayload(payload);
+        setState(parsed.state);
+        setAction(parsed.action);
         setIsVisible(true);
       });
 
@@ -233,11 +259,25 @@ const RecordingOverlay: React.FC = () => {
   }, []);
 
   const getIcon = () => {
+    if (isRouter) {
+      // Paper-plane icon for routing actions (amber #f59e0b)
+      const iconColor = "#f59e0b";
+      if (state === "recording") {
+        return <RoutingIcon color={iconColor} />;
+      }
+      return <RoutingIcon color={iconColor} />;
+    }
     if (state === "recording") {
       return <MicrophoneIcon />;
-    } else {
-      return <TranscriptionIcon />;
     }
+    return <TranscriptionIcon />;
+  };
+
+  const getOverlayClassNames = (): string => {
+    const classes = ["recording-overlay"];
+    if (isVisible) classes.push("fade-in");
+    if (isRouter) classes.push("routing-mode");
+    return classes.join(" ");
   };
 
   const handleCancel = useCallback(() => {
@@ -245,10 +285,7 @@ const RecordingOverlay: React.FC = () => {
   }, []);
 
   return (
-    <div
-      dir={direction}
-      className={`recording-overlay ${isVisible ? "fade-in" : ""}`}
-    >
+    <div dir={direction} className={getOverlayClassNames()}>
       <div className="overlay-left">{getIcon()}</div>
 
       <div className="overlay-middle">
@@ -267,7 +304,7 @@ const RecordingOverlay: React.FC = () => {
               {levels.map((v, i) => (
                 <div
                   key={i}
-                  className="bar"
+                  className={`bar${isRouter ? " routing-bar" : ""}`}
                   style={{
                     height: `${Math.min(20, 4 + Math.pow(v, 0.7) * 16)}px`,
                     transition: "height 80ms linear, opacity 120ms ease-out",
@@ -279,10 +316,14 @@ const RecordingOverlay: React.FC = () => {
           </div>
         )}
         {state === "transcribing" && (
-          <div className="transcribing-text">{t("overlay.transcribing")}</div>
+          <div className={`transcribing-text${isRouter ? " routing-text" : ""}`}>
+            {isRouter ? t("overlay.routing") : t("overlay.transcribing")}
+          </div>
         )}
         {state === "processing" && (
-          <div className="transcribing-text">{t("overlay.processing")}</div>
+          <div className={`transcribing-text${isRouter ? " routing-text" : ""}`}>
+            {isRouter ? t("overlay.filing") : t("overlay.processing")}
+          </div>
         )}
         {state === "usb-cycling" && (
           <div className="usb-cycling-container">

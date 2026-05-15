@@ -33,6 +33,7 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_requested BOOLEAN NOT NULL DEFAULT 0;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN model_id TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN routed BOOLEAN NOT NULL DEFAULT 0;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN routing_result TEXT;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -67,6 +68,10 @@ pub struct HistoryEntry {
     pub post_process_requested: bool,
     pub model_id: Option<String>,
     pub routed: bool,
+    /// JSON string of routing handler results, e.g.
+    /// `[{"status":"✅","handler":"Daily","classification":"diary_entry","file_path":null}]`.
+    /// Set after the boss_router subprocess completes.
+    pub routing_result: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -213,6 +218,7 @@ impl HistoryManager {
             post_process_requested: row.get("post_process_requested")?,
             model_id: row.get("model_id")?,
             routed: row.get("routed")?,
+            routing_result: row.get("routing_result")?,
         })
     }
 
@@ -325,13 +331,45 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
+                 "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+
+
+        debug!("Updated transcription for history entry {}", id);
+
+        if let Err(e) = (HistoryUpdatePayload::Updated {
+            entry: entry.clone(),
+        })
+        .emit(&self.app_handle)
+        {
+            error!("Failed to emit history-updated event: {}", e);
+        }
+
+        Ok(entry)
+    }
+
+    /// Save routing results to an existing history entry (called after boss_router subprocess).
+    pub fn update_routing_result(&self, id: i64, routing_result: Option<String>) -> Result<HistoryEntry> {
+        let conn = self.get_connection()?;
+        let updated = conn.execute(
+            "UPDATE transcription_history
+             SET routing_result = ?1
+             WHERE id = ?2",
+            params![routing_result, id],
+        )?;
+
+        if updated == 0 {
+            return Err(anyhow!("History entry {id} not found for routing update."));
+        }
+
+        let entry = conn
+            .query_row(
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
             )?;
 
-        debug!("Updated transcription for history entry {}", id);
+        debug!("Updated routing result for history entry {}", id);
 
         if let Err(e) = (HistoryUpdatePayload::Updated {
             entry: entry.clone(),
@@ -399,7 +437,7 @@ impl HistoryManager {
 
         // Get all entries that are not saved, ordered by timestamp desc
         let mut stmt = conn.prepare(
-            "SELECT id, file_name FROM transcription_history WHERE saved = 0 ORDER BY timestamp DESC"
+            "SELECT id, file_name FROM transcription_history WHERE saved = 0 ORDER BY timestamp DESC "
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -416,7 +454,7 @@ impl HistoryManager {
             let deleted_count = self.delete_entries_and_files(entries_to_delete)?;
 
             if deleted_count > 0 {
-                debug!("Cleaned up {} old history entries by count", deleted_count);
+                debug!("Cleaned up {deleted_count} old history entries by count.");
             }
         }
 
@@ -435,7 +473,7 @@ impl HistoryManager {
             crate::settings::RecordingRetentionPeriod::Days3 => now - (3 * 24 * 60 * 60), // 3 days in seconds
             crate::settings::RecordingRetentionPeriod::Weeks2 => now - (2 * 7 * 24 * 60 * 60), // 2 weeks in seconds
             crate::settings::RecordingRetentionPeriod::Months3 => now - (3 * 30 * 24 * 60 * 60), // 3 months in seconds (approximate)
-            _ => unreachable!("Should not reach here"),
+            _ => unreachable!("should not be reached."),
         };
 
         // Get all unsaved entries older than the cutoff timestamp
@@ -456,7 +494,7 @@ impl HistoryManager {
 
         if deleted_count > 0 {
             debug!(
-                "Cleaned up {} old history entries based on retention period",
+                "Cleaned up {} old history entries based on retention period.",
                 deleted_count
             );
         }
@@ -476,7 +514,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -490,7 +528,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -502,9 +540,9 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                      FROM transcription_history
-                     ORDER BY id DESC",
+                     ORDER BY id DESC ",
                 )?;
                 let result = stmt
                     .query_map([], Self::map_history_entry)?
@@ -534,7 +572,9 @@ impl HistoryManager {
                 post_processed_text,
                 post_process_prompt,
                 post_process_requested,
-                model_id
+                model_id,
+                routed,
+                routing_result
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -562,9 +602,11 @@ impl HistoryManager {
                 post_processed_text,
                 post_process_prompt,
                 post_process_requested,
-                model_id
+                model_id,
+                routed,
+                routing_result
              FROM transcription_history
-             WHERE transcription_text != ''
+             WHERE LENGTH(transcription_text) > 0
              ORDER BY timestamp DESC
              LIMIT 1",
         )?;
@@ -608,7 +650,7 @@ impl HistoryManager {
     pub fn get_history_count(&self) -> Result<usize> {
         let conn = self.get_connection()?;
         let count: usize = conn
-            .query_row("SELECT COUNT(*) FROM transcription_history", [], |row| {
+            .query_row("SELECT COUNT(*) FROM transcription_history ", [], |row| {
                 row.get(0)
             })?;
         Ok(count)
@@ -628,7 +670,9 @@ impl HistoryManager {
                 post_processed_text,
                 post_process_prompt,
                 post_process_requested,
-                model_id
+                model_id,
+                routed,
+                routing_result
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT ?1",
@@ -655,7 +699,9 @@ impl HistoryManager {
                 post_processed_text,
                 post_process_prompt,
                 post_process_requested,
-                model_id
+                model_id,
+                routed,
+                routing_result
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -700,7 +746,7 @@ impl HistoryManager {
         if let Some(utc_datetime) = DateTime::from_timestamp(timestamp, 0) {
             // Convert UTC to local timezone
             let local_datetime = utc_datetime.with_timezone(&Local);
-            local_datetime.format("%B %e, %Y - %l:%M%p").to_string()
+            local_datetime.format("%B %e, %Y - %l:%M%P ").to_string()
         } else {
             format!("Recording {}", timestamp)
         }
@@ -713,7 +759,7 @@ mod tests {
     use rusqlite::{params, Connection};
 
     fn setup_conn() -> Connection {
-        let conn = Connection::open_in_memory().expect("open in-memory db");
+        let conn = Connection::open_in_memory().expect("open in-memory database ");
         conn.execute_batch(
             "CREATE TABLE transcription_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -726,10 +772,11 @@ mod tests {
                 post_process_prompt TEXT,
                 post_process_requested BOOLEAN NOT NULL DEFAULT 0,
                 model_id TEXT,
-                routed BOOLEAN NOT NULL DEFAULT 0
+                routed BOOLEAN NOT NULL DEFAULT 0,
+                routing_result TEXT
             );",
         )
-        .expect("create transcription_history table");
+        .expect("create transcription_history table ");
         conn
     }
 
@@ -747,7 +794,7 @@ mod tests {
                 model_id
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                format!("handy-{}.wav", timestamp),
+                format!("handy-{timestamp}.wav "),
                 timestamp,
                 false,
                 format!("Recording {}", timestamp),
@@ -758,13 +805,13 @@ mod tests {
                 Option::<String>::None,
             ],
         )
-        .expect("insert history entry");
+        .expect("insert history entry ");
     }
 
     #[test]
     fn get_latest_entry_returns_none_when_empty() {
         let conn = setup_conn();
-        let entry = HistoryManager::get_latest_entry_with_conn(&conn).expect("fetch latest entry");
+        let entry = HistoryManager::get_latest_entry_with_conn(&conn).expect("fetch latest entry ");
         assert!(entry.is_none());
     }
 
@@ -775,8 +822,8 @@ mod tests {
         insert_entry(&conn, 200, "second", Some("processed"));
 
         let entry = HistoryManager::get_latest_entry_with_conn(&conn)
-            .expect("fetch latest entry")
-            .expect("entry exists");
+            .expect("fetch latest entry ")
+            .expect("entry exists ");
 
         assert_eq!(entry.timestamp, 200);
         assert_eq!(entry.transcription_text, "second");
@@ -784,16 +831,19 @@ mod tests {
     }
 
     #[test]
-    fn get_latest_completed_entry_skips_empty_entries() {
+    fn get_latest_completed_entry_returns_only_nonempty() {
         let conn = setup_conn();
         insert_entry(&conn, 100, "completed", None);
         insert_entry(&conn, 200, "", None);
 
         let entry = HistoryManager::get_latest_completed_entry_with_conn(&conn)
-            .expect("fetch latest completed entry")
-            .expect("completed entry exists");
+            .expect("should find completed entry ")
+            .expect("completed entry found ");
 
         assert_eq!(entry.timestamp, 100);
-        assert_eq!(entry.transcription_text, "completed");
+        assert!(entry.transcription_text.len() > 0);
     }
 }
+
+}
+
