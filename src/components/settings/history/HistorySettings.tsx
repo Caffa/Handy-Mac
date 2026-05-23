@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { Check, Copy, FolderOpen, RotateCcw, Star, Trash2, Search } from "lucide-react";
@@ -102,6 +102,15 @@ export const HistorySettings: React.FC = () => {
       loadingRef.current = false;
     }
   }, []);
+
+  // Filter entries by search query
+  const filteredEntries = React.useMemo(() => {
+    if (!searchQuery.trim()) return entries;
+    const query = searchQuery.toLowerCase();
+    return entries.filter((entry) =>
+      entry.transcription_text.toLowerCase().includes(query),
+    );
+  }, [entries, searchQuery]);
 
   // Initial load
   useEffect(() => {
@@ -250,11 +259,17 @@ export const HistorySettings: React.FC = () => {
         {t("settings.history.empty")}
       </div>
     );
+  } else if (filteredEntries.length === 0) {
+    content = (
+      <div className="px-4 py-3 text-center text-text/60">
+        {t("settings.history.noResults")}
+      </div>
+    );
   } else {
     content = (
       <>
         <div className="divide-y divide-mid-gray/20">
-          {entries.map((entry) => (
+          {filteredEntries.map((entry) => (
             <HistoryEntryComponent
               key={entry.id}
               entry={entry}
@@ -266,8 +281,8 @@ export const HistorySettings: React.FC = () => {
             />
           ))}
         </div>
-        {/* Sentinel for infinite scroll */}
-        <div ref={sentinelRef} className="h-1" />
+        {/* Sentinel for infinite scroll - only show when not searching */}
+        {searchQuery.trim() === "" && <div ref={sentinelRef} className="h-1" />}
       </>
     );
   }
