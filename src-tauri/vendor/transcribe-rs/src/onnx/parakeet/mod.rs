@@ -393,6 +393,19 @@ impl ParakeetModel {
         post_gap_confidence: f32,
     ) -> Result<(Vec<i32>, Vec<usize>, usize), TranscribeError> {
         const BLANK_GAP_THRESHOLD: usize = 5;
+        // Output length guard: cap total emitted tokens at 10× the encoder
+        // frame count. Autoregressive transducer decoders can free-run the
+        // language model into trailing silence, producing hundreds of tokens
+        // from a short clip. 10× is extremely generous (real speech is ~1-3×)
+        // but prevents unbounded hallucination.
+        const OUTPUT_LENGTH_MULTIPLIER: usize = 10;
+        let output_length_limit = encodings_len.saturating_mul(OUTPUT_LENGTH_MULTIPLIER);
+        // Bigram repetition penalty: track consecutive bigram counts.
+        // If the same pair of tokens repeats ≥3 times, the decoder is likely
+        // stuck in a loop (e.g. "thank you thank you thank you"). Force blank
+        // for subsequent emissions until the loop breaks.
+        const BIGRAM_REPEAT_LIMIT: usize = 3;
+        let mut bigram_counts: std::collections::HashMap<(i32, i32), usize> = std::collections::HashMap::new();
 
         let mut prev_state = self.create_decoder_state()?;
         let mut tokens = Vec::new();
@@ -403,7 +416,7 @@ impl ParakeetModel {
         let mut emitted_tokens = 0;
         let mut consecutive_blanks = 0usize;
 
-        while t < encodings_len {
+        while t < encodings_len && tokens.len() < output_length_limit {
             let encoder_step = encodings.slice(ndarray::s![t, ..]);
             let encoder_step_dyn = encoder_step.to_owned().into_dyn();
             let (probs, new_state) =
@@ -438,12 +451,33 @@ impl ParakeetModel {
             };
 
             // Suppress token if confidence is too low
-            let token = if best_prob < effective_threshold {
+            let mut token = if best_prob < effective_threshold {
                 suppressed_token_count += 1;
                 self.blank_idx
             } else {
                 best_idx
             };
+
+            // Bigram repetition penalty: if the same bigram (pair of
+            // consecutive tokens) has already been seen ≥BIGRAM_REPEAT_LIMIT
+            // times, force the emitted token to blank. This breaks
+            // hallucination loops like "thank you thank you thank you".
+            if token != self.blank_idx && tokens.len() >= 2 {
+                let prev_token = tokens[tokens.len() - 1];
+                let bigram = (prev_token, token);
+                let count = bigram_counts.entry(bigram).or_insert(0);
+                *count += 1;
+                if *count >= BIGRAM_REPEAT_LIMIT {
+                    log::debug!(
+                        "Bigram repetition limit reached for ({}, {}): {} occurrences, forcing blank",
+                        prev_token, token, count
+                    );
+                    suppressed_token_count += 1;
+                    token = self.blank_idx;
+                    // Reset counts so the decoder can re-emit after a blank gap
+                    bigram_counts.clear();
+                }
+            }
 
             if token != self.blank_idx {
                 prev_state = new_state;
@@ -459,6 +493,13 @@ impl ParakeetModel {
                 t += 1;
                 emitted_tokens = 0;
             }
+        }
+
+        if tokens.len() >= output_length_limit {
+            log::warn!(
+                "Output length guard triggered: capped at {} tokens ({} encoder frames × {})",
+                output_length_limit, encodings_len, OUTPUT_LENGTH_MULTIPLIER
+            );
         }
 
         Ok((tokens, timestamps, suppressed_token_count))

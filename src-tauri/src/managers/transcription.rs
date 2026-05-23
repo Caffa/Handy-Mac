@@ -574,32 +574,23 @@ impl TranscriptionManager {
         }
 
         // Trim trailing silence from audio before transcription.
-        // This is critical for Whisper models which hallucinate on trailing silence
-        // (the 30-second zero-padded window causes text generation from silence).
-        // CTC/non-autoregressive models (Parakeet, SenseVoice) have explicit blank
-        // tokens and don't hallucinate, but trimming doesn't hurt them either.
+        // Critical for Whisper (hallucinates on silence) AND for autoregressive
+        // transducer models (Parakeet TDT) whose decoder free-runs language
+        // model continuations into trailing silence.
         let effective_model_info = self.model_manager.get_model_info(&effective_model_id);
-        let is_whisper_engine = effective_model_info
-            .as_ref()
-            .map(|info| matches!(info.engine_type, EngineType::Whisper))
-            .unwrap_or(false);
 
-        let audio = if is_whisper_engine {
-            match self.app_handle.path().resolve(
-                "resources/models/silero_vad_v4.onnx",
-                tauri::path::BaseDirectory::Resource,
-            ) {
-                Ok(vad_path) => {
-                    let path_str = vad_path.to_str().unwrap_or("");
-                    trim_trailing_silence(&audio, path_str, 0.3)
-                }
-                Err(e) => {
-                    warn!("Could not resolve VAD model path for trimming ({}), skipping", e);
-                    audio
-                }
+        let audio = match self.app_handle.path().resolve(
+            "resources/models/silero_vad_v4.onnx",
+            tauri::path::BaseDirectory::Resource,
+        ) {
+            Ok(vad_path) => {
+                let path_str = vad_path.to_str().unwrap_or("");
+                trim_trailing_silence(&audio, path_str, 0.3)
             }
-        } else {
-            audio
+            Err(e) => {
+                warn!("Could not resolve VAD model path for trimming ({}), skipping", e);
+                audio
+            }
         };
 
         // Re-check empty after possible trim
