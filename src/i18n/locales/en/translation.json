@@ -591,8 +591,14 @@
         "loading": "Loading devices…",
         "refreshDevices": "Refresh device list",
         "deviceNotFound": "Device not currently connected",
+        "cycleOnWakeLabel": "Cycle on Wake",
+        "cycleOnWakeDescription": "Automatically power-cycle the USB device when the computer wakes from sleep. Useful for devices that get stuck after sleep.",
         "testCycle": "Test Power Cycle",
-        "cycling": "Cycling…"
+        "cycling": "Cycling…",
+        "cycleOnWake": {
+          "label": "Cycle on Wake",
+          "description": "Automatically power-cycle the USB port when the computer wakes up from sleep."
+        }
       }
     },
     "about": {

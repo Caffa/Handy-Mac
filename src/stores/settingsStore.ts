@@ -168,8 +168,11 @@ const settingUpdaters: {
     commands.changeUsbWatchdogEnabledSetting(value as boolean),
   usb_watchdog_device_name: (value) =>
     commands.changeUsbWatchdogDeviceNameSetting(value as string),
+  usb_watchdog_cycle_on_wake: (value) =>
+    commands.changeUsbWatchdogCycleOnWakeSetting(value as boolean),
   hybrid_mode_enabled: (value) =>
     commands.changeHybridModeEnabledSetting(value as boolean),
+
   hybrid_threshold_secs: (value) =>
     commands.changeHybridThresholdSecsSetting(value as number),
   hybrid_short_audio_model: (value) =>

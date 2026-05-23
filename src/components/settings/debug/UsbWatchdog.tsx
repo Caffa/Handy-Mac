@@ -16,6 +16,7 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
     const { getSetting, updateSetting, isUpdating } = useSettings();
 
     const enabled = getSetting("usb_watchdog_enabled") ?? false;
+    const cycleOnWake = getSetting("usb_watchdog_cycle_on_wake") ?? false;
     const deviceName = getSetting("usb_watchdog_device_name") ?? "";
     const [devices, setDevices] = useState<UsbDevice[]>([]);
     const [cycling, setCycling] = useState(false);
@@ -103,6 +104,17 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
         />
         {enabled && (
           <div className="pl-4 space-y-3 border-l-2 border-gray-200 dark:border-gray-700 ml-1">
+            <ToggleSwitch
+              checked={cycleOnWake}
+              onChange={(val: boolean) =>
+                updateSetting("usb_watchdog_cycle_on_wake", val)
+              }
+              isUpdating={isUpdating("usb_watchdog_cycle_on_wake")}
+              label={t("settings.debug.usbWatchdog.cycleOnWakeLabel")}
+              description={t("settings.debug.usbWatchdog.cycleOnWakeDescription")}
+              descriptionMode={descriptionMode}
+              grouped={grouped}
+            />
             <div className="flex flex-col space-y-1">
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
                 {t("settings.debug.usbWatchdog.device")}
@@ -145,6 +157,7 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
             </div>
             <button
               onClick={handleCycle}
+
               disabled={cycling || !deviceName}
               className="px-3 py-1.5 text-sm rounded-md bg-yellow-600 hover:bg-yellow-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
