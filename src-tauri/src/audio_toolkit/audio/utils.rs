@@ -53,9 +53,15 @@ impl AudioQualityMetrics {
             -96.0
         };
 
-        // Quick-and-dirty SNR: sort amplitudes, take top 10% as "signal"
-        // and bottom 10% as "noise floor", compute dB difference.
-        let mut amps: Vec<f32> = samples.iter().map(|s| s.abs()).collect();
+        // Faster SNR estimation: sample a subset of the audio to avoid sorting the whole buffer.
+        // Sorting the entire buffer is O(N log N) which is too slow for large buffers.
+        // Sampling every 100th sample gives a good approximation with O(M log M) where M = N/100.
+        let sample_step = 100;
+        let mut amps: Vec<f32> = samples
+            .iter()
+            .step_by(sample_step)
+            .map(|s| s.abs())
+            .collect();
         amps.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
         let n = amps.len();
