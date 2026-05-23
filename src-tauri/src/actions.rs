@@ -1071,6 +1071,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             transcription.model_id,
                         );
 
+                        let transcription_text = transcription.text.trim().to_string();
+                        let model_id_for_history = transcription.model_id.clone();
+
                         // ── Structured session tracking ──
                         if let (Some(ref s), Some(tracker)) =
                             (&sid, ah.try_state::<Arc<SessionTracker>>())
@@ -1420,7 +1423,10 @@ fn run_router_subprocess(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let (handler_summary, handler_data) = parse_router_json_output(&stdout);
+    let (handler_summary, handler_data) = match parse_router_json_output(&stdout) {
+        Some(output) => (Some(output.summary), output.handler_data),
+        None => (None, Vec::new()),
+    };
     Ok((handler_summary, handler_data))
 }
 

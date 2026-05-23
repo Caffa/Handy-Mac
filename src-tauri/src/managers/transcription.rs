@@ -474,9 +474,119 @@ impl TranscriptionManager {
 
         debug!("Audio vector length: {}", audio.len());
 
+        // Check if model is loaded, if not try to load it
+        {
+            // If the model is loading, wait for it to complete (with timeout).
+            // A previous bug caused hangs when the loading thread panicked without
+            // resetting the is_loading flag, blocking transcribe() forever.
+            let mut is_loading = self.is_loading.lock().unwrap();
+            let wait_deadline = std::time::Instant::now() + Duration::from_secs(120);
+            while *is_loading {
+                let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    // Timed out waiting for model to load. Force-reset the flag
+                    // so subsequent calls don't also hang, and return an error.
+                    warn!("Timed out waiting for model to load after 120s — transcription aborted");
+                    *is_loading = false;
+                    self.loading_condvar.notify_all();
+                    return Err(anyhow::anyhow!(
+                        "Timed out waiting for model to load. Please try again."
+                    ));
+                }
+                let result = self
+                    .loading_condvar
+                    .wait_timeout(is_loading, remaining)
+                    .unwrap();
+                is_loading = result.0;
+            }
+
+            let engine_guard = self.lock_engine();
+            if engine_guard.is_none() {
+                return Err(anyhow::anyhow!("Model is not loaded for transcription."));
+            }
+        }
+
+        // Get current settings for configuration
+        let settings = get_settings(&self.app_handle);
+
+        // Determine which model to use (hybrid mode or standard).
+        // Hybrid mode picks a different model based on audio length:
+        // short audio uses the "short audio model", long audio uses the "long audio model".
+        let effective_model_id = if settings.hybrid_mode_enabled {
+            let audio_duration_secs = audio.len() as f64 / 16000.0;
+            if audio_duration_secs < settings.hybrid_threshold_secs {
+                debug!(
+                    "Hybrid mode: audio is {:.1}s (< {}s threshold), using short audio model",
+                    audio_duration_secs, settings.hybrid_threshold_secs
+                );
+                settings
+                    .hybrid_short_audio_model
+                    .clone()
+                    .unwrap_or(settings.selected_model.clone())
+            } else {
+                debug!(
+                    "Hybrid mode: audio is {:.1}s (>= {}s threshold), using long audio model",
+                    audio_duration_secs, settings.hybrid_threshold_secs
+                );
+                settings
+                    .hybrid_long_audio_model
+                    .clone()
+                    .unwrap_or(settings.selected_model.clone())
+            }
+        } else {
+            settings.selected_model.clone()
+        };
+
+        // If hybrid mode selected a different model than what's loaded, load it.
+        // This handles the case where the user switches between short/long models.
+        // IMPORTANT: We load the model BEFORE taking the engine out of the mutex
+        // to avoid a race where load_model() writes a new engine but the old engine
+        // is put back at the end of transcription, overwriting the new one.
+        let current_loaded = self.current_model_id.lock().unwrap().clone();
+        if effective_model_id != current_loaded.clone().unwrap_or_default() {
+            debug!(
+                "Loading effective model '{}' for transcription (currently loaded: {:?})",
+                effective_model_id,
+                current_loaded
+            );
+            // Release any locks before loading
+            drop(current_loaded);
+            if let Err(e) = self.load_model(&effective_model_id) {
+                error!("Failed to load effective model '{}': {}", effective_model_id, e);
+                return Err(anyhow::anyhow!(
+                    "Failed to load model '{}': {}",
+                    effective_model_id,
+                    e
+                ));
+            }
+        } else {
+            drop(current_loaded);
+        }
+
+        // Trim trailing silence from audio before transcription.
+        // Critical for Whisper (hallucinates on silence) AND for autoregressive
+        // transducer models (Parakeet TDT) whose decoder free-runs language
+        // model continuations into trailing silence.
+        let effective_model_info = self.model_manager.get_model_info(&effective_model_id);
+
+        let audio = match self.app_handle.path().resolve(
+            "resources/models/silero_vad_v4.onnx",
+            tauri::path::BaseDirectory::Resource,
+        ) {
+            Ok(vad_path) => {
+                let path_str = vad_path.to_str().unwrap_or("");
+                trim_trailing_silence(&audio, path_str, 0.3)
+            }
+            Err(e) => {
+                warn!("Could not resolve VAD model path for trimming ({}), skipping", e);
+                audio
+            }
+        };
+
+        // Re-check empty after possible trim
         if audio.is_empty() {
-            debug!("Empty audio vector");
-            self.maybe_unload_immediately("empty audio");
+            debug!("Audio became empty after VAD trim");
+            self.maybe_unload_immediately("empty audio after trim");
             return Ok(TranscriptionOutput {
                 text: String::new(),
                 model_id: effective_model_id,
@@ -641,6 +751,7 @@ impl TranscriptionManager {
                                 };
 
                             let params = ParakeetParams {
+                                language: None,
                                 timestamp_granularity: Some(TimestampGranularity::Segment),
                                 confidence_threshold,
                                 post_gap_confidence,

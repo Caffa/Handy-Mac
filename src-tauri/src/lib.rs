@@ -393,6 +393,8 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_hybrid_threshold_secs_setting,
             shortcut::change_hybrid_short_audio_model_setting,
             shortcut::change_hybrid_long_audio_model_setting,
+            shortcut::change_adaptive_parakeet_thresholds_setting,
+            shortcut::change_verification_mode_setting,
             shortcut::handy_keys::start_handy_keys_recording,
             shortcut::handy_keys::stop_handy_keys_recording,
             trigger_update_check,

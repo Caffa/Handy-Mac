@@ -176,6 +176,10 @@ const settingUpdaters: {
     commands.changeHybridShortAudioModelSetting(value as string | null),
   hybrid_long_audio_model: (value) =>
     commands.changeHybridLongAudioModelSetting(value as string | null),
+  adaptive_parakeet_thresholds: (value) =>
+    commands.changeAdaptiveParakeetThresholdsSetting(value as boolean),
+  verification_mode: (value) =>
+    commands.changeVerificationModeSetting(value as boolean),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

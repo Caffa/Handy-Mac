@@ -1220,3 +1220,26 @@ pub fn change_hybrid_long_audio_model_setting(
     settings::write_settings(&app, settings);
     Ok(())
 }
+
+// ── Adaptive Thresholds & Verification Mode ─────────────────────
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_adaptive_parakeet_thresholds_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.adaptive_parakeet_thresholds = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_verification_mode_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.verification_mode = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
