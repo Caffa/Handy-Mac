@@ -139,6 +139,32 @@ impl UsbWatchdog {
         }
     }
 
+    /// Called to report whether the microphone stream is currently alive
+    /// (producing audio data).
+    pub fn on_stream_alive_check(&self, alive: bool) {
+        if alive {
+            self.on_mic_open_succeeded();
+        } else {
+            // Note: We don't increment failures here because the caller
+            // will typically attempt to restart the stream, which will
+            // trigger on_mic_open_failed if it fails to open, or
+            // on_recording_finished if it opens but stays dead.
+            debug!("USB watchdog: stream reported dead during liveness check");
+        }
+    }
+
+    /// Called when a recording finishes. If the sample count is zero, it
+    /// counts as a failure and may trigger a power cycle.
+    pub fn on_recording_finished(&self, sample_count: usize) -> bool {
+        if sample_count > 0 {
+            self.on_mic_open_succeeded();
+            return false;
+        }
+
+        warn!("USB watchdog: recording finished with 0 samples - treating as dead stream");
+        self.on_mic_open_failed()
+    }
+
     /// Attempt a USB hub port power cycle **synchronously** (blocking).
     /// Resolves the device name to hub/port at cycle time, runs uhubctl,
     /// waits for the settle period, then returns `true`.

@@ -173,7 +173,13 @@ const RecordingOverlay: React.FC = () => {
 
       // Listen for hide-overlay event from Rust
       const unlistenHide = await listen("hide-overlay", () => {
-        setIsVisible(false);
+        // Functional update to avoid dependency on 'state'
+        setState((current) => {
+          if (current !== "usb-cycling") {
+            setIsVisible(false);
+          }
+          return current;
+        });
       });
 
       // Listen for mic-level updates
@@ -214,7 +220,7 @@ const RecordingOverlay: React.FC = () => {
           // stream to stabilize and the React state to reset.
           setTimeout(() => {
             setIsVisible(true);
-          }, 300);
+          }, 50);
         },
       );
 
@@ -223,6 +229,7 @@ const RecordingOverlay: React.FC = () => {
         () => {
           setUsbCycleStage(null);
           setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
+          setIsVisible(false);
         },
       );
 

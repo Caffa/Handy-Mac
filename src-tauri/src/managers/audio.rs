@@ -372,7 +372,10 @@ impl AudioRecordingManager {
         // re-enumerated and ready.
         match self.start_microphone_stream_inner() {
             Ok(()) => {
-                self.usb_watchdog.on_mic_open_succeeded();
+                // Note: We don't call on_mic_open_succeeded() here because
+                // the stream might still be "dead" (zombie device).
+                // We reset the failure counter only when we actually
+                // receive audio samples.
                 Ok(())
             }
             Err(e) => {
@@ -387,7 +390,6 @@ impl AudioRecordingManager {
 
                     match self.start_microphone_stream_inner() {
                         Ok(()) => {
-                            self.usb_watchdog.on_mic_open_succeeded();
                             usb_watchdog::emit_stage_event_with_handle(&Some(self.app_handle.clone()), "recovered", "Microphone stream recovered");
                             info!("Mic stream recovered after USB power cycle");
                             Ok(())
@@ -587,7 +589,10 @@ impl AudioRecordingManager {
                     .as_ref()
                     .map_or(false, |r| r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS));
 
+                self.usb_watchdog.on_stream_alive_check(stream_alive);
+
                 if !stream_alive {
+
                     warn!(
                         "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
                         Self::STREAM_LIVENESS_TIMEOUT_MS
@@ -768,6 +773,15 @@ impl AudioRecordingManager {
 
                 *lock_with_log(&self.is_recording, "is_recording") = false;
 
+                // Inform the USB watchdog about the recording result.
+                // If 0 samples were captured, this may trigger an automatic USB cycle.
+                if self.usb_watchdog.on_recording_finished(samples.len()) {
+                    // Watchdog completed a power cycle. Restart the stream if needed.
+                    if let Err(e) = self.restart_microphone_if_needed() {
+                        error!("Failed to restart microphone after dead-stream USB cycle: {}", e);
+                    }
+                }
+
                 // In on-demand mode, decide whether to close the mic stream.
                 // When a Bluetooth output device is active, we keep the stream
                 // alive permanently to prevent the A2DP↔HFP profile switch that
@@ -824,6 +838,7 @@ impl AudioRecordingManager {
             *lock_with_log(&self.is_recording, "is_recording") = false;
 
             // In on-demand mode, decide whether to close the mic stream.
+
             // When a Bluetooth output device is active, we keep the stream
             // alive permanently to prevent the A2DP↔HFP profile switch.
             if matches!(*lock_with_log(&self.mode, "mode"), MicrophoneMode::OnDemand) {
