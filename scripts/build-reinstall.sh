@@ -3,6 +3,9 @@
 # scripts/build-reinstall.sh — Full clean reinstall of Handy via Rapidmg
 #
 # This is the recommended build+deploy workflow for AI agents.
+# It quits Handy, deletes the old app, builds, creates a DMG,
+# opens it with Rapidmg for auto-install, re-signs with a stable DR,
+# and launches the app automatically.
 #
 # NOTE: This script runs in a non-interactive shell by default, so ~/.zshrc
 # won't be loaded. If you get "command not found" errors for bun/cargo,
@@ -11,13 +14,6 @@
 #   2. Or add your PATH exports below:
 #
 # export PATH="$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"
-#
-
-# Uncomment and customize the line below if running without an interactive shell:
-# export PATH="/Users/caffae/.bun/bin:/Users/caffae/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-# It quits Handy, deletes the old app, builds, creates a DMG,
-# opens it with Rapidmg for auto-install, re-signs with a stable DR,
-# and launches the app automatically.
 #
 # Prerequisites:
 #   - Bun (https://bun.sh)
