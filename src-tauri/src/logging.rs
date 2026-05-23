@@ -148,6 +148,14 @@ pub enum AppEvent {
     CancelTriggered {
         recording_was_active: bool,
     },
+
+    // ── Crash diagnostics ─────────────────────────────────────────
+    /// Captured from the global panic hook before the process terminates.
+    AppCrashed {
+        message: String,
+        location: String,
+        thread: String,
+    },
 }
 
 impl AppEvent {
@@ -160,7 +168,8 @@ impl AppEvent {
             | Self::TranscriptionFailed { .. }
             | Self::ModelLoadFailed { .. }
             | Self::PostProcessFailed { .. }
-            | Self::PasteFailed { .. } => log::Level::Error,
+            | Self::PasteFailed { .. }
+            | Self::AppCrashed { .. } => log::Level::Error,
 
             // Warnings
             Self::UsbWatchdogCycle { success: false, .. } => log::Level::Warn,
@@ -301,4 +310,46 @@ pub fn emit(event: AppEvent) {
             }
         }
     }
+}
+
+/// Install a global panic hook that captures panic information and writes
+/// it to both the standard log file and the structured JSONL event log
+/// before the process terminates.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let message = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<unknown panic payload>".to_string());
+
+        let location = panic_info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_string();
+
+        log::error!("PANIC in thread '{}': {} at {}", thread, message, location);
+
+        emit(AppEvent::AppCrashed {
+            message,
+            location,
+            thread,
+        });
+
+        // Force-flush both log files so crash is captured before process dies
+        if let Some(logger) = STRUCTURED_LOGGER.get() {
+            if let Ok(guard) = logger.lock() {
+                if let Some(ref writer) = *guard {
+                    let _ = writer.file.sync_all();
+                }
+            }
+        }
+        log::logger().flush();
+    }));
 }

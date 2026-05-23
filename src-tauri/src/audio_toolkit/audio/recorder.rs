@@ -232,6 +232,16 @@ impl AudioRecorder {
                     let _ = init_tx.send(Ok(()));
                     // Keep the stream alive while we process samples.
                     run_consumer(sample_rate, vad, sample_rx, cmd_rx, level_cb, stop_flag, last_chunk_ms);
+
+                    // Pause the stream before dropping to prevent heap corruption.
+                    // On macOS, cpal::Stream::pause() is asynchronous — CoreAudio's IO
+                    // thread may still be executing the last callback invocation when
+                    // pause() returns. If we drop immediately, internal buffers are
+                    // deallocated while the callback is still in-flight, causing
+                    // nanov2 malloc heap corruption → SIGABRT.
+                    // 100ms is a generous safety margin (typical buffer period is 5–23ms).
+                    let _ = stream.pause();
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                     drop(stream);
                 }
                 Err(error_message) => {
