@@ -593,6 +593,12 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     let paste_method = settings.paste_method;
     let paste_delay_ms = settings.paste_delay_ms;
 
+    // Restore the previously frontmost application before pasting.
+    // On macOS, the overlay's orderFrontRegardless can steal focus
+    // from the user's target app. Without restoring, Cmd+V goes to
+    // Handy instead of the user's text editor/terminal/browser.
+    crate::focus::restore_frontmost_app(&app_handle);
+
     // Append trailing space if setting is enabled
     let text = if settings.append_trailing_space {
         format!("{} ", text)

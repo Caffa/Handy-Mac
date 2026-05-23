@@ -359,6 +359,11 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
         return;
     }
 
+    // Save the currently frontmost application BEFORE showing the overlay.
+    // On macOS, orderFrontRegardless (called by tauri-nspanel's show())
+    // activates the Handy app, stealing focus from the user's target app.
+    crate::focus::save_frontmost_app(app_handle);
+
     update_overlay_position(app_handle);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
