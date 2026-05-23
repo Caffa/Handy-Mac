@@ -1195,8 +1195,16 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         send_macos_notification("Handy Router", &notification_text);
 
                                         // ── Clean up overlay after routing succeeds ──
-                                        utils::hide_recording_overlay(&ah_for_router);
-                                        change_tray_icon(&ah_for_router, TrayIconState::Idle);
+                                        // Only hide the overlay if no other recording is active.
+                                        let is_recording = ah_for_router
+                                            .try_state::<Arc<AudioRecordingManager>>()
+                                            .map_or(false, |rm| rm.is_recording());
+                                        if !is_recording {
+                                            utils::hide_recording_overlay(&ah_for_router);
+                                            change_tray_icon(&ah_for_router, TrayIconState::Idle);
+                                        } else {
+                                            info!("Router finished but recording is active — keeping overlay");
+                                        }
                                     }
                                     Err(e) => {
                                         error!("Router subprocess failed: {}", e);
@@ -1233,8 +1241,16 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         send_macos_notification("Handy Router Error", &error_display);
 
                                         // ── Clean up overlay after routing fails ──
-                                        utils::hide_recording_overlay(&ah_for_router);
-                                        change_tray_icon(&ah_for_router, TrayIconState::Idle);
+                                        // Same guard: don't hide overlay if another recording is active.
+                                        let is_other_active = ah_for_router
+                                            .try_state::<Arc<AudioRecordingManager>>()
+                                            .map_or(false, |rm| rm.is_recording());
+                                        if !is_other_active {
+                                            utils::hide_recording_overlay(&ah_for_router);
+                                            change_tray_icon(&ah_for_router, TrayIconState::Idle);
+                                        } else {
+                                            info!("Router failed but another recording is active — keeping overlay visible");
+                                        }
                                     }
                                 }
 
