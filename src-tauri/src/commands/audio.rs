@@ -399,6 +399,18 @@ pub fn change_usb_watchdog_device_name_setting(app: AppHandle, device_name: Stri
     Ok(())
 }
 
+/// Enable or disable the USB watchdog cycle-on-wake setting.
+/// When enabled, Handy automatically power-cycles the USB audio device
+/// when macOS wakes from sleep, preventing the "mic not listening" state.
+#[tauri::command]
+#[specta::specta]
+pub fn change_usb_watchdog_cycle_on_wake_setting(app: AppHandle, cycle_on_wake: bool) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    settings.usb_watchdog_cycle_on_wake = cycle_on_wake;
+    write_settings(&app, settings);
+    Ok(())
+}
+
 /// Manually trigger a USB power cycle (for testing)
 #[tauri::command]
 #[specta::specta]

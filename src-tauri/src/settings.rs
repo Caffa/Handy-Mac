@@ -461,6 +461,9 @@ pub struct AppSettings {
     pub usb_watchdog_enabled: bool,
     #[serde(default)]
     pub usb_watchdog_device_name: String,
+    /// Automatically power-cycle the USB device when macOS wakes from sleep.
+    #[serde(default)]
+    pub usb_watchdog_cycle_on_wake: bool,
     #[serde(default)]
     pub hybrid_mode_enabled: bool,
     #[serde(default = "default_hybrid_threshold_secs")]
@@ -910,6 +913,7 @@ pub fn get_default_settings() -> AppSettings {
         extra_recording_buffer_ms: 0,
         usb_watchdog_enabled: false,
         usb_watchdog_device_name: String::new(),
+        usb_watchdog_cycle_on_wake: false,
         hybrid_mode_enabled: false,
         hybrid_threshold_secs: default_hybrid_threshold_secs(),
         hybrid_short_audio_model: None,
