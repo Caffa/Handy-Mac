@@ -104,7 +104,7 @@ export const HistorySettings: React.FC = () => {
   }, []);
 
   // Filter entries by search query
-  const filteredEntries = React.useMemo(() => {
+  const filteredEntries = useMemo(() => {
     if (!searchQuery.trim()) return entries;
     const query = searchQuery.toLowerCase();
     return entries.filter((entry) =>
