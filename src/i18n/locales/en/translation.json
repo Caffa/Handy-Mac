@@ -277,6 +277,14 @@
         "label": "Keep Mic Open Between Transcriptions",
         "description": "Keeps the microphone stream open for 30 seconds after recording stops, reducing latency for back-to-back transcriptions. May degrade Bluetooth audio quality while active."
       },
+      "verificationMode": {
+        "label": "Verification Mode",
+        "description": "Enable two-pass transcription. After the first transcription, a second model verifies and corrects uncertain segments for improved accuracy."
+      },
+      "adaptiveThresholds": {
+        "label": "Adaptive Parakeet Thresholds",
+        "description": "Automatically adjust Parakeet's internal thresholds based on audio characteristics for optimal transcription quality."
+      },
       "hybridMode": {
         "label": "Hybrid Mode",
         "description": "Automatically pick the best model based on audio length. Short recordings use a fast, hallucination-resistant model; long recordings use a more accurate model.",
