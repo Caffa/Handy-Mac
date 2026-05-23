@@ -255,6 +255,21 @@ pub struct TranscriptionResult {
     pub text: String,
     /// Individual segments with timing information
     pub segments: Option<Vec<TranscriptionSegment>>,
+    /// Number of tokens suppressed by confidence thresholds during decoding.
+    /// Only populated for Parakeet transcriptions. High counts indicate
+    /// many low-confidence tokens were dropped, which may suggest word-dropping
+    /// or poor audio quality. None for models that don't track this.
+    pub suppressed_token_count: Option<usize>,
+}
+
+impl Default for TranscriptionResult {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            segments: None,
+            suppressed_token_count: None,
+        }
+    }
 }
 
 impl TranscriptionResult {

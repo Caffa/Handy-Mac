@@ -125,6 +125,7 @@ impl MoonshineModel {
         Ok(TranscriptionResult {
             text,
             segments: None,
+            suppressed_token_count: None,
         })
     }
 

@@ -30,6 +30,17 @@ pub struct ParakeetParams {
     pub language: Option<String>,
     /// Timestamp granularity for output segments.
     pub timestamp_granularity: Option<TimestampGranularity>,
+    /// Minimum probability required for a token to be accepted during decoding.
+    /// Tokens with probability below this threshold are suppressed (replaced
+    /// with blank). Lower values = fewer tokens suppressed, which improves
+    /// recall at the cost of potentially more hallucinations. Default: 0.30.
+    /// Set to Some(0.0) to disable suppression entirely.
+    pub confidence_threshold: Option<f32>,
+    /// Higher confidence threshold applied after 5+ consecutive blank tokens
+    /// (i.e., during inter-word silence gaps). Tokens after gaps are more
+    /// likely to be hallucinations, so this stricter threshold helps filter
+    /// them out. Default: 0.45.
+    pub post_gap_confidence: Option<f32>,
 }
 
 const CAPABILITIES: ModelCapabilities = ModelCapabilities {
@@ -80,6 +91,8 @@ struct TimestampedResult {
     text: String,
     timestamps: Vec<f32>,
     tokens: Vec<String>,
+    /// Number of tokens suppressed by confidence thresholds during decoding.
+    suppressed_token_count: usize,
 }
 
 pub struct ParakeetModel {
@@ -135,15 +148,22 @@ impl ParakeetModel {
     ///
     /// Applies leading silence padding (default 250 ms) and adjusts
     /// timestamps, matching the behaviour of [`SpeechModel::transcribe`].
+    ///
+    /// Confidence thresholds for token suppression are taken from
+    /// [`ParakeetParams::confidence_threshold`] and
+    /// [`ParakeetParams::post_gap_confidence`] when set, otherwise using
+    /// defaults (0.30 and 0.45).
     pub fn transcribe_with(
         &mut self,
         samples: &[f32],
         params: &ParakeetParams,
     ) -> Result<TranscriptionResult, TranscribeError> {
         let granularity = params.timestamp_granularity.clone().unwrap_or_default();
+        let confidence_threshold = params.confidence_threshold.unwrap_or(0.30);
+        let post_gap_confidence = params.post_gap_confidence.unwrap_or(0.45);
         let lead_ms = Self::DEFAULT_LEADING_SILENCE_MS;
         let padded = crate::audio::prepend_silence(samples, lead_ms);
-        let mut result = self.infer(&padded, &granularity)?;
+        let mut result = self.infer(&padded, &granularity, confidence_threshold, post_gap_confidence)?;
         result.offset_timestamps(-(lead_ms as f32 / 1000.0));
         Ok(result)
     }
@@ -152,13 +172,17 @@ impl ParakeetModel {
         &mut self,
         samples: &[f32],
         granularity: &TimestampGranularity,
+        confidence_threshold: f32,
+        post_gap_confidence: f32,
     ) -> Result<TranscriptionResult, TranscribeError> {
-        let timestamped_result = self.transcribe_samples_internal(samples.to_vec())?;
+        let timestamped_result = self
+            .transcribe_samples_internal(samples.to_vec(), confidence_threshold, post_gap_confidence)?;
         let segments = convert_timestamps(&timestamped_result, granularity);
 
         Ok(TranscriptionResult {
             text: timestamped_result.text,
             segments: Some(segments),
+            suppressed_token_count: Some(timestamped_result.suppressed_token_count),
         })
     }
 
@@ -309,6 +333,8 @@ impl ParakeetModel {
         &mut self,
         waveforms: &ArrayViewD<f32>,
         waveforms_len: &ArrayViewD<i64>,
+        confidence_threshold: f32,
+        post_gap_confidence: f32,
     ) -> Result<Vec<TimestampedResult>, TranscribeError> {
         let (features, features_lens) = self.preprocess(waveforms, waveforms_len)?;
         let (encoder_out, encoder_out_lens) =
@@ -316,26 +342,66 @@ impl ParakeetModel {
 
         let mut results = Vec::new();
         for (encodings, &encodings_len) in encoder_out.outer_iter().zip(encoder_out_lens.iter()) {
-            let (tokens, timestamps) =
-                self.decode_sequence(&encodings.view(), encodings_len as usize)?;
-            let result = self.decode_tokens(tokens, timestamps);
+            let (tokens, timestamps, suppressed_count) = self.decode_sequence(
+                &encodings.view(),
+                encodings_len as usize,
+                confidence_threshold,
+                post_gap_confidence,
+            )?;
+            let result = self.decode_tokens(tokens, timestamps, suppressed_count);
             results.push(result);
         }
 
         Ok(results)
     }
 
+    /// Decode a sequence using plain argmax (no confidence threshold suppression).
+    /// Convert logits to probabilities via softmax.
+    fn softmax(logits: &[f32]) -> Vec<f32> {
+        // Numerical stability: subtract max logit before exponentiating
+        let max_logit = logits
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = logits.iter().map(|&x| (x - max_logit).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        if sum > 0.0 {
+            exps.iter().map(|&x| x / sum).collect()
+        } else {
+            // Edge case: all probabilities are zero (shouldn't happen)
+            vec![0.0; logits.len()]
+        }
+    }
+
+    /// Decode a sequence with confidence-based token suppression.
+    ///
+    /// `confidence_threshold` is the minimum probability required for a token
+    /// to be accepted. If the best token's probability is below this threshold,
+    /// it is replaced with `blank_idx` and the `suppressed_token_count` is
+    /// incremented.
+    ///
+    /// `post_gap_confidence` is a higher threshold applied after 5+ consecutive
+    /// blank tokens (inter-word silence), since tokens after gaps are more
+    /// likely to be hallucinations.
+    ///
+    /// Returns `(tokens, timestamps, suppressed_token_count)`.
     fn decode_sequence(
         &mut self,
         encodings: &ArrayViewD<f32>,
         encodings_len: usize,
-    ) -> Result<(Vec<i32>, Vec<usize>), TranscribeError> {
+        confidence_threshold: f32,
+        post_gap_confidence: f32,
+    ) -> Result<(Vec<i32>, Vec<usize>, usize), TranscribeError> {
+        const BLANK_GAP_THRESHOLD: usize = 5;
+
         let mut prev_state = self.create_decoder_state()?;
         let mut tokens = Vec::new();
         let mut timestamps = Vec::new();
+        let mut suppressed_token_count = 0usize;
 
         let mut t = 0;
         let mut emitted_tokens = 0;
+        let mut consecutive_blanks = 0usize;
 
         while t < encodings_len {
             let encoder_step = encodings.slice(ndarray::s![t, ..]);
@@ -353,18 +419,40 @@ impl ParakeetModel {
                 vocab_logits_slice
             };
 
-            let token = vocab_logits
+            // Apply softmax to get probabilities for confidence threshold check
+            let probs = Self::softmax(vocab_logits);
+
+            // Find the best token and its probability
+            let (best_idx, best_prob) = probs
                 .iter()
                 .enumerate()
+                .map(|(idx, &p)| (idx as i32, p))
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(idx, _)| idx as i32)
-                .unwrap_or(self.blank_idx);
+                .unwrap_or((self.blank_idx, 0.0));
+
+            // Determine effective threshold based on blank gap state
+            let effective_threshold = if consecutive_blanks >= BLANK_GAP_THRESHOLD {
+                post_gap_confidence
+            } else {
+                confidence_threshold
+            };
+
+            // Suppress token if confidence is too low
+            let token = if best_prob < effective_threshold {
+                suppressed_token_count += 1;
+                self.blank_idx
+            } else {
+                best_idx
+            };
 
             if token != self.blank_idx {
                 prev_state = new_state;
                 tokens.push(token);
                 timestamps.push(t);
                 emitted_tokens += 1;
+                consecutive_blanks = 0;
+            } else {
+                consecutive_blanks += 1;
             }
 
             if token == self.blank_idx || emitted_tokens == MAX_TOKENS_PER_STEP {
@@ -373,10 +461,17 @@ impl ParakeetModel {
             }
         }
 
-        Ok((tokens, timestamps))
+        Ok((tokens, timestamps, suppressed_token_count))
     }
 
-    fn decode_tokens(&self, ids: Vec<i32>, timestamps: Vec<usize>) -> TimestampedResult {
+
+
+    fn decode_tokens(
+        &self,
+        ids: Vec<i32>,
+        timestamps: Vec<usize>,
+        suppressed_token_count: usize,
+    ) -> TimestampedResult {
         let tokens: Vec<String> = ids
             .iter()
             .filter_map(|&id| {
@@ -411,12 +506,15 @@ impl ParakeetModel {
             text,
             timestamps: float_timestamps,
             tokens,
+            suppressed_token_count,
         }
     }
 
     fn transcribe_samples_internal(
         &mut self,
         samples: Vec<f32>,
+        confidence_threshold: f32,
+        post_gap_confidence: f32,
     ) -> Result<TimestampedResult, TranscribeError> {
         let batch_size = 1;
         let samples_len = samples.len();
@@ -424,7 +522,12 @@ impl ParakeetModel {
         let waveforms = Array2::from_shape_vec((batch_size, samples_len), samples)?.into_dyn();
         let waveforms_lens = Array1::from_vec(vec![samples_len as i64]).into_dyn();
 
-        let results = self.recognize_batch(&waveforms.view(), &waveforms_lens.view())?;
+        let results = self.recognize_batch(
+            &waveforms.view(),
+            &waveforms_lens.view(),
+            confidence_threshold,
+            post_gap_confidence,
+        )?;
 
         results.into_iter().next().ok_or_else(|| {
             TranscribeError::Inference("No transcription result returned".to_string())
@@ -446,7 +549,9 @@ impl SpeechModel for ParakeetModel {
         samples: &[f32],
         _options: &TranscribeOptions,
     ) -> Result<TranscriptionResult, TranscribeError> {
-        self.infer(samples, &TimestampGranularity::default())
+        // Default thresholds (0.30 / 0.45) — caller can override via
+        // transcribe_with() and ParakeetParams.
+        self.infer(samples, &TimestampGranularity::default(), 0.30, 0.45)
     }
 }
 

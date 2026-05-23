@@ -238,6 +238,7 @@ impl SenseVoiceModel {
             return Ok(TranscriptionResult {
                 text: String::new(),
                 segments: None,
+                suppressed_token_count: None,
             });
         }
 
@@ -415,7 +416,11 @@ impl SenseVoiceModel {
             None
         };
 
-        TranscriptionResult { text, segments }
+        TranscriptionResult {
+            text,
+            segments,
+            suppressed_token_count: None,
+        }
     }
 }
 

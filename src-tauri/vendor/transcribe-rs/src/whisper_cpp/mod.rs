@@ -287,6 +287,7 @@ impl WhisperEngine {
         Ok(TranscriptionResult {
             text: full_text.trim().to_string(),
             segments: Some(segments),
+            suppressed_token_count: None,
         })
     }
 }

@@ -94,6 +94,7 @@ impl GigaAMModel {
             return Ok(TranscriptionResult {
                 text: String::new(),
                 segments: None,
+                suppressed_token_count: None,
             });
         }
 
@@ -157,6 +158,7 @@ impl GigaAMModel {
         Ok(TranscriptionResult {
             text,
             segments: None,
+            suppressed_token_count: None,
         })
     }
 }

@@ -356,6 +356,7 @@ impl StreamingModel {
         Ok(TranscriptionResult {
             text,
             segments: None,
+            suppressed_token_count: None,
         })
     }
 
@@ -798,6 +799,7 @@ impl SpeechModel for StreamingModel {
         Ok(TranscriptionResult {
             text,
             segments: None,
+            suppressed_token_count: None,
         })
     }
 }

@@ -9,6 +9,7 @@ pub const DEFAULT_MERGE_SEPARATOR: &str = " ";
 /// languages that don't use space separators (Chinese, Japanese, etc.).
 /// Segments are concatenated (timestamps should already be adjusted to
 /// session-relative time by the caller).
+/// `suppressed_token_count` is summed across all chunks.
 pub fn merge_sequential(results: &[TranscriptionResult]) -> TranscriptionResult {
     merge_sequential_with_separator(results, DEFAULT_MERGE_SEPARATOR)
 }
@@ -39,7 +40,26 @@ pub fn merge_sequential_with_separator(
         }
     };
 
-    TranscriptionResult { text, segments }
+    // Sum suppressed_token_count across all chunks.
+    let mut total_suppressed: usize = 0;
+    let mut any_populated = false;
+    for r in results {
+        if let Some(count) = r.suppressed_token_count {
+            total_suppressed += count;
+            any_populated = true;
+        }
+    }
+    let suppressed_token_count = if any_populated {
+        Some(total_suppressed)
+    } else {
+        None
+    };
+
+    TranscriptionResult {
+        text,
+        segments,
+        suppressed_token_count,
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +82,7 @@ mod tests {
                 end: 1.0,
                 text: "hello world".to_string(),
             }]),
+            suppressed_token_count: None,
         }];
         let merged = merge_sequential(&results);
         assert_eq!(merged.text, "hello world");
@@ -74,10 +95,12 @@ mod tests {
             TranscriptionResult {
                 text: "hello".to_string(),
                 segments: None,
+                suppressed_token_count: None,
             },
             TranscriptionResult {
                 text: "world".to_string(),
                 segments: None,
+                suppressed_token_count: None,
             },
         ];
         let merged = merge_sequential(&results);
@@ -91,14 +114,17 @@ mod tests {
             TranscriptionResult {
                 text: "hello".to_string(),
                 segments: None,
+                suppressed_token_count: None,
             },
             TranscriptionResult {
                 text: "  ".to_string(),
                 segments: None,
+                suppressed_token_count: None,
             },
             TranscriptionResult {
                 text: "world".to_string(),
                 segments: None,
+                suppressed_token_count: None,
             },
         ];
         let merged = merge_sequential(&results);
@@ -115,6 +141,7 @@ mod tests {
                     end: 1.0,
                     text: "hello".to_string(),
                 }]),
+                suppressed_token_count: None,
             },
             TranscriptionResult {
                 text: "world".to_string(),
@@ -123,6 +150,7 @@ mod tests {
                     end: 6.0,
                     text: "world".to_string(),
                 }]),
+                suppressed_token_count: None,
             },
         ];
         let merged = merge_sequential(&results);
@@ -138,10 +166,12 @@ mod tests {
             TranscriptionResult {
                 text: "  hello  ".to_string(),
                 segments: None,
+                suppressed_token_count: None,
             },
             TranscriptionResult {
                 text: "  world  ".to_string(),
                 segments: None,
+                suppressed_token_count: None,
             },
         ];
         let merged = merge_sequential(&results);

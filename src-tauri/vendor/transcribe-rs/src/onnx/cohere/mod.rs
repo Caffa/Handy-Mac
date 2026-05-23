@@ -121,6 +121,7 @@ impl CohereModel {
             return Ok(TranscriptionResult {
                 text: String::new(),
                 segments: None,
+                suppressed_token_count: None,
             });
         }
 
@@ -135,6 +136,7 @@ impl CohereModel {
         Ok(TranscriptionResult {
             text,
             segments: None,
+            suppressed_token_count: None,
         })
     }
 

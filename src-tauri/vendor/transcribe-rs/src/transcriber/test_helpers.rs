@@ -32,6 +32,7 @@ impl SpeechModel for MockModel {
                 end: samples.len() as f32 / SAMPLE_RATE,
                 text: format!("chunk_{}", samples.len()),
             }]),
+            suppressed_token_count: None,
         })
     }
 }
@@ -76,6 +77,7 @@ impl SpeechModel for FailOnNthModel {
         Ok(TranscriptionResult {
             text: format!("chunk_{}", self.call_count),
             segments: None,
+            suppressed_token_count: None,
         })
     }
 }

@@ -197,6 +197,7 @@ where
                 return Ok(TranscriptionResult {
                     text: response.text,
                     segments: None,
+                    suppressed_token_count: None,
                 });
             }
             OpenAIModel::Whisper1 => {
@@ -250,6 +251,7 @@ where
                 return Ok(TranscriptionResult {
                     text: response.text,
                     segments,
+                    suppressed_token_count: None,
                 });
             }
         }
