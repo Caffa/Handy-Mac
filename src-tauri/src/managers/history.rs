@@ -331,8 +331,11 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                 "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
-
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+                 FROM transcription_history WHERE id = ?1",
+                params![id],
+                Self::map_history_entry,
+            )?;
 
         debug!("Updated transcription for history entry {}", id);
 
@@ -837,11 +840,11 @@ mod tests {
         insert_entry(&conn, 200, "", None);
 
         let entry = HistoryManager::get_latest_completed_entry_with_conn(&conn)
-            .expect("should find completed entry")
-            .expect("completed entry found");
+            .expect("should find completed entry ")
+            .expect("completed entry found ");
 
         assert_eq!(entry.timestamp, 100);
-        assert_eq!(entry.transcription_text, "completed");
+        assert_eq!(entry.transcription_text, "completed ");
     }
 }
 
