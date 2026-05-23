@@ -3,9 +3,11 @@
 # scripts/build-reinstall.sh — Full clean reinstall of Handy via Rapidmg
 #
 # This is the recommended build+deploy workflow for AI agents.
-# It quits Handy, deletes the old app, builds, creates a DMG,
+# It builds first, THEN quits Handy, deletes the old app, creates a DMG,
 # opens it with Rapidmg for auto-install, re-signs with a stable DR,
 # and launches the app automatically.
+#
+# This ordering ensures the working app remains available if the build fails.
 #
 # NOTE: This script runs in a non-interactive shell by default, so ~/.zshrc
 # won't be loaded. If you get "command not found" errors for bun/cargo,
@@ -71,11 +73,73 @@ echo "  Handy Build + Reinstall"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 
-# ─── Step 1: Quit Handy ───────────────────────────────────────────────────────
+# ─── Step 1: Build ────────────────────────────────────────────────────────────
+# Build FIRST, before quitting the app, so the working app remains available
+# if the build fails.
+if [[ "$DO_SKIP_BUILD" == true ]]; then
+    echo "1/8 ⏩ Skipping build (--skip-build)"
+    if [[ ! -d "$BUNDLE_DIR/$APP_BUNDLE" ]]; then
+        echo "   ❌ No built .app found at $BUNDLE_DIR/$APP_BUNDLE"
+        echo "   Run without --skip-build first."
+        exit 1
+    fi
+else
+    echo "1/8 🔨 Building Handy (production)..."
+    echo "   This takes 3-10 minutes on incremental builds."
+    echo ""
+
+    CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri build 2>&1 || {
+        echo "   ❌ Tauri build failed."
+        echo "   The working app remains installed and operational."
+        echo "   Check the error output above."
+        exit 1
+    }
+
+    if [[ ! -d "$BUNDLE_DIR/$APP_BUNDLE" ]]; then
+        echo "   ❌ Build succeeded but no .app found at $BUNDLE_DIR/$APP_BUNDLE"
+        exit 1
+    fi
+
+    echo "   ✅ Build complete."
+fi
+
+# ─── Step 2: Create DMG ───────────────────────────────────────────────────────
+echo "2/8 📦 Creating DMG..."
+
+# Read version for DMG filename
+VERSION=$(grep '"version"' "$TAURI_DIR/tauri.conf.json" | head -1 | sed 's/.*: "//;s/".*//;s/\s*,//')
+ARCH=$(uname -m)
+DMG_NAME="Handy_${VERSION}_${ARCH}.dmg"
+DMG_PATH="$TAURI_DIR/target/release/bundle/$DMG_NAME"
+
+# Stage the DMG contents
+DMG_STAGING="/tmp/handy-dmg-staging-$$"
+rm -rf "$DMG_STAGING"
+mkdir -p "$DMG_STAGING"
+cp -R "$BUNDLE_DIR/$APP_BUNDLE" "$DMG_STAGING/"
+ln -sf /Applications "$DMG_STAGING/Applications"
+
+# Remove old DMG if exists
+rm -f "$DMG_PATH"
+
+hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" 2>&1
+rm -rf "$DMG_STAGING"
+
+if [[ ! -f "$DMG_PATH" ]]; then
+    echo "   ❌ DMG creation failed."
+    exit 1
+fi
+
+echo "   ✅ DMG created: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
+
+# ─── Step 3: Quit Handy ───────────────────────────────────────────────────────
+# Now that the build succeeded, quit the running app.
+DEST_APP="$INSTALL_DEST/$APP_BUNDLE"
+
 # Binary is named "handy" (lowercase) inside the bundle, but the app process
 # may show as either. Use case-insensitive match to catch both.
 if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
-    echo "1/8 🛑 Quitting $APP_NAME..."
+    echo "3/8 🛑 Quitting $APP_NAME..."
     osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true
 
     # Wait up to 5s for graceful exit
@@ -104,77 +168,22 @@ if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
     # Safety: refuse to proceed if still running
     if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
         echo "   ❌ $APP_NAME is still running. Aborting."
+        echo "   The new build is ready at: $BUNDLE_DIR/$APP_BUNDLE"
+        echo "   The DMG is at: $DMG_PATH"
         exit 1
     fi
 else
-    echo "1/8 ✅ $APP_NAME not running."
+    echo "3/8 ✅ $APP_NAME not running."
 fi
 
-# ─── Step 2: Delete old app ───────────────────────────────────────────────────
-DEST_APP="$INSTALL_DEST/$APP_BUNDLE"
+# ─── Step 4: Delete old app ───────────────────────────────────────────────────
+# Only delete AFTER the build completes and app is quit.
 if [[ -d "$DEST_APP" ]]; then
-    echo "2/8 🗑️  Removing $DEST_APP..."
+    echo "4/8 🗑️  Removing $DEST_APP..."
     rm -rf "$DEST_APP"
 else
-    echo "2/8 ✅ No existing $DEST_APP to remove."
+    echo "4/8 ✅ No existing $DEST_APP to remove."
 fi
-
-# ─── Step 3: Build ─────────────────────────────────────────────────────────────
-if [[ "$DO_SKIP_BUILD" == true ]]; then
-    echo "3/8 ⏩ Skipping build (--skip-build)"
-    if [[ ! -d "$BUNDLE_DIR/$APP_BUNDLE" ]]; then
-        echo "   ❌ No built .app found at $BUNDLE_DIR/$APP_BUNDLE"
-        echo "   Run without --skip-build first."
-        exit 1
-    fi
-else
-    echo "3/8 🔨 Building Handy (production)..."
-    echo "   This takes 3-10 minutes on incremental builds."
-    echo ""
-
-    CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri build 2>&1 || {
-        echo "   ❌ Tauri build failed."
-        echo "   The .app bundle may still exist from a previous build."
-        echo "   Check the error output above."
-        exit 1
-    }
-
-    if [[ ! -d "$BUNDLE_DIR/$APP_BUNDLE" ]]; then
-        echo "   ❌ Build succeeded but no .app found at $BUNDLE_DIR/$APP_BUNDLE"
-        exit 1
-    fi
-
-    echo "   ✅ Build complete."
-fi
-
-# ─── Step 4: Create DMG ───────────────────────────────────────────────────────
-echo "4/8 📦 Creating DMG..."
-
-# Read version for DMG filename
-VERSION=$(grep '"version"' "$TAURI_DIR/tauri.conf.json" | head -1 | sed 's/.*: "//;s/".*//;s/\s*,//')
-ARCH=$(uname -m)
-DMG_NAME="Handy_${VERSION}_${ARCH}.dmg"
-DMG_PATH="$TAURI_DIR/target/release/bundle/$DMG_NAME"
-
-# Stage the DMG contents
-DMG_STAGING="/tmp/handy-dmg-staging-$$"
-rm -rf "$DMG_STAGING"
-mkdir -p "$DMG_STAGING"
-cp -R "$BUNDLE_DIR/$APP_BUNDLE" "$DMG_STAGING/"
-ln -sf /Applications "$DMG_STAGING/Applications"
-
-# Remove old DMG if exists
-rm -f "$DMG_PATH"
-
-hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" 2>&1
-rm -rf "$DMG_STAGING"
-
-if [[ ! -f "$DMG_PATH" ]]; then
-    echo "   ❌ DMG creation failed."
-    exit 1
-fi
-
-echo "   ✅ DMG created: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
 
 # ─── Step 5: Install via Rapidmg ─────────────────────────────────────────────
 echo "5/8 🚀 Opening DMG with Rapidmg for auto-install..."
