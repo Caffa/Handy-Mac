@@ -469,6 +469,10 @@ pub struct AppSettings {
     pub hybrid_short_audio_model: Option<String>,
     #[serde(default)]
     pub hybrid_long_audio_model: Option<String>,
+    #[serde(default = "default_adaptive_parakeet_thresholds")]
+    pub adaptive_parakeet_thresholds: bool,
+    #[serde(default)]
+    pub verification_mode: bool,
 }
 
 fn default_model() -> String {
@@ -697,6 +701,10 @@ fn default_hybrid_threshold_secs() -> f64 {
     30.0
 }
 
+fn default_adaptive_parakeet_thresholds() -> bool {
+    true
+}
+
 fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     for provider in default_post_process_providers() {
@@ -906,6 +914,8 @@ pub fn get_default_settings() -> AppSettings {
         hybrid_threshold_secs: default_hybrid_threshold_secs(),
         hybrid_short_audio_model: None,
         hybrid_long_audio_model: None,
+        adaptive_parakeet_thresholds: default_adaptive_parakeet_thresholds(),
+        verification_mode: false,
     }
 }
 

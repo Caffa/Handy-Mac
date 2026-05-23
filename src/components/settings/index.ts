@@ -32,3 +32,5 @@ export { HistoryLimit } from "./HistoryLimit";
 export { RecordingRetentionPeriodSelector } from "./RecordingRetentionPeriod";
 export { AutostartToggle } from "./AutostartToggle";
 export { UpdateChecksToggle } from "./UpdateChecksToggle";
+export { AdaptiveThresholds } from "./AdaptiveThresholds";
+export { VerificationMode } from "./VerificationMode";

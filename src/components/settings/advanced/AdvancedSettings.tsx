@@ -24,6 +24,7 @@ import { HybridMode } from "../HybridMode";
 import { ToggleSwitch } from "../../ui/ToggleSwitch";
 import { WordCorrectionThreshold } from "../WordCorrectionThreshold";
 import { AdvancedCustomWords } from "../AdvancedCustomWords";
+import { VerificationMode } from "../VerificationMode";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -70,6 +71,17 @@ export const AdvancedSettings: React.FC = () => {
         )}
         <AppendTrailingSpace descriptionMode="tooltip" grouped={true} />
         <HybridMode descriptionMode="tooltip" grouped={true} />
+        <ToggleSwitch
+          checked={getSetting("adaptive_parakeet_thresholds") ?? false}
+          onChange={(checked) => updateSetting("adaptive_parakeet_thresholds", checked)}
+          disabled={isUpdating("adaptive_parakeet_thresholds")}
+          isUpdating={isUpdating("adaptive_parakeet_thresholds")}
+          label={t("settings.advanced.adaptiveThresholds.label")}
+          description={t("settings.advanced.adaptiveThresholds.description")}
+          descriptionMode="tooltip"
+          grouped={true}
+        />
+        <VerificationMode descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.history")}>

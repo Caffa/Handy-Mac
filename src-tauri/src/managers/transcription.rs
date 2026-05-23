@@ -1,3 +1,4 @@
+use crate::audio_toolkit::audio::AudioQualityMetrics;
 use crate::audio_toolkit::{
     apply_advanced_custom_words, apply_custom_words, filter_transcription_output,
     trim_trailing_silence,
@@ -38,6 +39,10 @@ pub struct TranscriptionOutput {
     pub text: String,
     /// The model ID that produced this transcription (e.g. "turbo", "parakeet-tdt-0.6b-v2").
     pub model_id: String,
+    /// Number of tokens suppressed by the decoder's confidence thresholding,
+    /// if the engine supports this (currently only Parakeet). `None` for
+    /// engines that don't track suppression or when no tokens were suppressed.
+    pub suppressed_token_count: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -474,7 +479,8 @@ impl TranscriptionManager {
             self.maybe_unload_immediately("empty audio");
             return Ok(TranscriptionOutput {
                 text: String::new(),
-                model_id: String::new(),
+                model_id: effective_model_id,
+                suppressed_token_count: None,
             });
         }
 
@@ -603,7 +609,7 @@ impl TranscriptionManager {
             return Ok(TranscriptionOutput {
                 text: String::new(),
                 model_id: effective_model_id,
-            });
+                suppressed_token_count: None,
         }
 
         // Validate selected language against the effective model's supported languages.
@@ -739,9 +745,33 @@ impl TranscriptionManager {
                                 .map_err(|e| anyhow::anyhow!("Whisper transcription failed: {}", e))
                         }
                         LoadedEngine::Parakeet(parakeet_engine) => {
+                            let (confidence_threshold, post_gap_confidence) =
+                                if settings.adaptive_parakeet_thresholds {
+                                    // Adaptive: adjust thresholds based on audio quality
+                                    let quality = AudioQualityMetrics::compute(&audio);
+                                    if quality.is_quiet() {
+                                        // Very quiet audio — be more permissive to
+                                        // avoid dropping real speech.
+                                        (Some(0.20f32), Some(0.35f32))
+                                    } else if quality.is_clean() {
+                                        // Clean, loud audio — raise thresholds to
+                                        // reduce false positives.
+                                        (Some(0.40f32), Some(0.55f32))
+                                    } else {
+                                        // Normal audio — use the new decoder defaults.
+                                        (None, None)
+                                    }
+                                } else {
+                                    // Legacy mode: use old higher thresholds that
+                                    // aggressively suppress low-confidence tokens
+                                    // (the pre-fix behaviour).
+                                    (Some(0.50f32), Some(0.70f32))
+                                };
+
                             let params = ParakeetParams {
                                 timestamp_granularity: Some(TimestampGranularity::Segment),
-                                ..Default::default()
+                                confidence_threshold,
+                                post_gap_confidence,
                             };
                             parakeet_engine
                                 .transcribe_with(&audio, &params)
@@ -879,6 +909,9 @@ impl TranscriptionManager {
             !settings.custom_words.is_empty()
         };
 
+        // Save suppressed token count before result.text is consumed below
+        let suppressed_token_count = result.suppressed_token_count;
+
         let corrected_result = if has_words && !is_whisper {
             if settings.use_advanced_custom_words {
                 apply_advanced_custom_words(
@@ -916,7 +949,38 @@ impl TranscriptionManager {
             translation_note
         );
 
-        let final_result = filtered_result;
+        let final_result = if settings.verification_mode {
+            // In verification mode, annotate the transcript with suppressed
+            // token count and audio quality info so the user can inspect
+            // how the threshold logic is behaving.
+            let mut meta_lines: Vec<String> = Vec::new();
+
+            if let Some(count) = suppressed_token_count {
+                if count > 0 {
+                    meta_lines.push(format!(
+                        "Verification: suppressed {} low-confidence tokens",
+                        count
+                    ));
+                }
+            }
+
+            let quality = AudioQualityMetrics::compute(&audio);
+            meta_lines.push(format!(
+                "Audio: peak={:.0} dBFS, SNR={:.0} dB, dur={:.1}s",
+                quality.peak_dbfs,
+                quality.estimated_snr_db,
+                quality.duration_secs,
+            ));
+
+            if meta_lines.is_empty() {
+                filtered_result
+            } else {
+                let meta = meta_lines.join(", ");
+                format!("{}\n[{}]", filtered_result.trim(), meta)
+            }
+        } else {
+            filtered_result
+        };
 
         if final_result.is_empty() {
             info!("Transcription result is empty");
@@ -929,6 +993,7 @@ impl TranscriptionManager {
         Ok(TranscriptionOutput {
             text: final_result,
             model_id: effective_model_id,
+            suppressed_token_count: suppressed_token_count,
         })
     }
 

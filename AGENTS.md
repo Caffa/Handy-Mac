@@ -220,3 +220,42 @@ See the [Troubleshooting](README.md#troubleshooting) section in README.md.
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [PR template](.github/PULL_REQUEST_TEMPLATE.md) when submitting pull requests. For translations, see [CONTRIBUTING_TRANSLATIONS.md](CONTRIBUTING_TRANSLATIONS.md).
 
 **Note:** Feature freeze is active — bug fixes are top priority. New features require community support via [Discussions](https://github.com/cjpais/Handy/discussions).
+
+## Agent Workflow Lessons
+
+### Session summary tracking
+
+The agent maintains a living structured summary (Goal/Progress/Key Decisions/Next Steps/Critical Context/Relevant Files) in its system prompt or a scratch block. This anchors long sessions and avoids reconstructing from conversation history.
+
+**Structure:**
+
+```
+## Goal — single-sentence mission statement (what we're trying to accomplish)
+## Progress — Done / In Progress / Blocked (bullet list)
+## Key Decisions — architectural choices with rationale
+## Next Steps — ordered action items
+## Critical Context — persistent gotchas, dependencies, data sources
+## Relevant Files — file paths with brief notes
+```
+
+**When to update:** Every significant change (new file edited, error encountered/fixed, decision made, commit created, blocker hit).
+
+**When the user asks "what did we do so far?":** Read the summary directly and report it back. This is more reliable than reconstructing from conversation history.
+
+**At session end:** Compile a clean recap of what was accomplished, setbacks encountered, and what's still pending. Keep it scannable — the user may resume weeks later.
+
+**Resuming a session:** Start by checking `git log --oneline -3`, `git status`, and `cargo check` to rebuild context, then refer to any notes in AGENTS.md.
+
+### Fixing Rust struct constructors across many files
+
+When adding a new field to a widely-used struct (e.g. adding `suppressed_token_count: Option<usize>` to `TranscriptionResult`), every `StructName { ... }` constructor in the codebase needs updating.
+
+**Don't:** Write a Python/script that brace-matches `StructName {` to find the closing `}`. Nested structs, inconsistent indentation, and closure braces WILL create double commas, orphan fields, and corrupted syntax.
+
+**Do:**
+1. Get the clean original: `git show HEAD:path/to/file > /tmp/clean.rs`
+2. Apply the transformation to the known-clean original (not the working tree copy which may have accumulated damage from prior failed attempts)
+3. Overwrite: `cp /tmp/clean.rs path/to/file`
+4. Verify: `git diff HEAD -- file` shows only `+` lines, zero `-` lines
+
+This guarantees you start from a syntactically valid baseline every time.
