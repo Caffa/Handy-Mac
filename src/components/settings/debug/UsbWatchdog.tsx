@@ -144,8 +144,9 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
                   className="px-2 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
                   title={t("settings.debug.usbWatchdog.refreshDevices")}
                 >
-                  ↻
+                  <span aria-hidden="true">↻</span>
                 </button>
+
               </div>
               {deviceName && (
                 <p className="text-xs text-gray-500 dark:text-gray-400">
