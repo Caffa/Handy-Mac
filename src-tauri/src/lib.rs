@@ -5,6 +5,7 @@ mod audio_feedback;
 pub mod audio_toolkit;
 pub mod cli;
 mod clipboard;
+mod focus;
 mod commands;
 mod helpers;
 mod input;
@@ -18,6 +19,7 @@ mod session;
 mod settings;
 mod shortcut;
 mod signal_handle;
+mod sleep_wake;
 mod transcription_coordinator;
 mod tray;
 mod tray_i18n;
@@ -150,6 +152,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Initialise the structured JSONL event logger
     logging::init(app_handle);
+    // Install the global panic hook so crashes are captured in both
+    // handy.log and handy-events.jsonl before the process terminates.
+    logging::install_panic_hook();
 
     // Initialize the managers
     let recording_manager = Arc::new(
@@ -173,6 +178,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(Arc::new(session::SessionTracker::new()));
+    app_handle.manage(focus::SavedFrontmostApp::new());
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -437,6 +443,7 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::list_usb_devices,
             commands::audio::change_usb_watchdog_enabled_setting,
             commands::audio::change_usb_watchdog_device_name_setting,
+            commands::audio::change_usb_watchdog_cycle_on_wake_setting,
             commands::audio::trigger_usb_power_cycle,
             commands::audio::start_pronunciation_recording,
             commands::audio::cancel_pronunciation_recording,
@@ -605,6 +612,8 @@ pub fn run(cli_args: CliArgs) {
                 std::thread::spawn(|| {
                     crate::usb_watchdog::ensure_uhubctl_installed();
                 });
+                // Start sleep/wake listener to auto-cycle USB on wake from sleep.
+                sleep_wake::start_sleep_wake_listener(app_handle.clone());
             }
 
             // Hide tray icon if --no-tray was passed
