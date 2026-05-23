@@ -546,13 +546,15 @@ impl TranscriptionManager {
         if effective_model_id != current_loaded.clone().unwrap_or_default() {
             debug!(
                 "Loading effective model '{}' for transcription (currently loaded: {:?})",
-                effective_model_id,
-                current_loaded
+                effective_model_id, current_loaded
             );
             // Release any locks before loading
             drop(current_loaded);
             if let Err(e) = self.load_model(&effective_model_id) {
-                error!("Failed to load effective model '{}': {}", effective_model_id, e);
+                error!(
+                    "Failed to load effective model '{}': {}",
+                    effective_model_id, e
+                );
                 return Err(anyhow::anyhow!(
                     "Failed to load model '{}': {}",
                     effective_model_id,
@@ -578,7 +580,10 @@ impl TranscriptionManager {
                 trim_trailing_silence(&audio, path_str, 0.3)
             }
             Err(e) => {
-                warn!("Could not resolve VAD model path for trimming ({}), skipping", e);
+                warn!(
+                    "Could not resolve VAD model path for trimming ({}), skipping",
+                    e
+                );
                 audio
             }
         };
@@ -938,13 +943,14 @@ impl TranscriptionManager {
             let quality = AudioQualityMetrics::compute(&audio);
             info!(
                 "Verification mode - Audio: peak={:.0} dBFS, SNR={:.0} dB, dur={:.1}s",
-                quality.peak_dbfs,
-                quality.estimated_snr_db,
-                quality.duration_secs,
+                quality.peak_dbfs, quality.estimated_snr_db, quality.duration_secs,
             );
             if let Some(count) = suppressed_token_count {
                 if count > 0 {
-                    info!("Verification mode - Suppressed {} low-confidence tokens", count);
+                    info!(
+                        "Verification mode - Suppressed {} low-confidence tokens",
+                        count
+                    );
                 }
             }
         }
@@ -1027,9 +1033,7 @@ impl TranscriptionManager {
                         };
                         sense_voice_engine
                             .transcribe_with(&audio, &params)
-                            .map_err(|e| {
-                                anyhow::anyhow!("SenseVoice benchmark failed: {}", e)
-                            })
+                            .map_err(|e| anyhow::anyhow!("SenseVoice benchmark failed: {}", e))
                     }
                     LoadedEngine::GigaAM(gigaam_engine) => gigaam_engine
                         .transcribe(&audio, &TranscribeOptions::default())

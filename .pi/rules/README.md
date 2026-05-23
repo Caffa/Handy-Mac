@@ -4,11 +4,11 @@ These are project-specific rules for developing the Handy speech-to-text applica
 
 ## Rule Files
 
-| Priority | File | When to Read |
-|----------|------|--------------|
-| **HIGH** | `handy-dev.md` | Any code change — backend (Rust) or frontend (TS/React) |
-| **HIGH** | `build-deploy.md` | Building, bundling, or installing the app locally |
-| **MEDIUM** | `commit.md` | Before committing changes |
+| Priority   | File              | When to Read                                            |
+| ---------- | ----------------- | ------------------------------------------------------- |
+| **HIGH**   | `handy-dev.md`    | Any code change — backend (Rust) or frontend (TS/React) |
+| **HIGH**   | `build-deploy.md` | Building, bundling, or installing the app locally       |
+| **MEDIUM** | `commit.md`       | Before committing changes                               |
 
 ## Quick Reference
 

@@ -1,7 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ChevronDown, Globe, Gauge, Loader2, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  Globe,
+  Gauge,
+  Loader2,
+  Trash2,
+} from "lucide-react";
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
 import { useModelStore } from "@/stores/modelStore";
@@ -55,7 +62,10 @@ export const ModelsSettings: React.FC = () => {
   const hybridShortModel = getSetting("hybrid_short_audio_model") ?? null;
   const hybridLongModel = getSetting("hybrid_long_audio_model") ?? null;
 
-  const handleHybridRoleChange = (modelId: string, role: "short" | "long" | null) => {
+  const handleHybridRoleChange = (
+    modelId: string,
+    role: "short" | "long" | null,
+  ) => {
     if (role === "short") {
       updateSetting("hybrid_short_audio_model", modelId);
     } else if (role === "long") {
@@ -399,7 +409,9 @@ export const ModelsSettings: React.FC = () => {
           </div>
         )}
         {/* Show measured score indicator if any model has been benchmarked */}
-        {models.some((m: ModelInfo) => m.dynamic_score && !m.dynamic_score.failed) && (
+        {models.some(
+          (m: ModelInfo) => m.dynamic_score && !m.dynamic_score.failed,
+        ) && (
           <p className="text-xs text-text/40 italic">
             {t("settings.models.benchmark.tooltip")}
           </p>

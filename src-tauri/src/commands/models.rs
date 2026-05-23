@@ -1,4 +1,6 @@
-use crate::managers::model::{BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager};
+use crate::managers::model::{
+    BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager,
+};
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
 use log::{info, warn};
@@ -227,14 +229,18 @@ pub async fn cancel_download(
 /// Check whether benchmarking is available (requires downloaded models and history audio clips).
 #[tauri::command]
 #[specta::specta]
-pub async fn can_benchmark_models(
-    app_handle: AppHandle,
-) -> Result<bool, String> {
+pub async fn can_benchmark_models(app_handle: AppHandle) -> Result<bool, String> {
     let model_manager = app_handle.state::<Arc<ModelManager>>();
     let history_manager = app_handle.state::<Arc<crate::managers::history::HistoryManager>>();
 
-    let has_downloaded = model_manager.get_available_models().iter().any(|m| m.is_downloaded);
-    let has_clips = history_manager.get_history_count().map_err(|e| e.to_string())? >= 20;
+    let has_downloaded = model_manager
+        .get_available_models()
+        .iter()
+        .any(|m| m.is_downloaded);
+    let has_clips = history_manager
+        .get_history_count()
+        .map_err(|e| e.to_string())?
+        >= 20;
 
     Ok(has_downloaded && has_clips)
 }
@@ -242,9 +248,7 @@ pub async fn can_benchmark_models(
 /// Count the number of history audio clips available for benchmarking.
 #[tauri::command]
 #[specta::specta]
-pub async fn get_benchmark_clip_count(
-    app_handle: AppHandle,
-) -> Result<usize, String> {
+pub async fn get_benchmark_clip_count(app_handle: AppHandle) -> Result<usize, String> {
     let history_manager = app_handle.state::<Arc<crate::managers::history::HistoryManager>>();
     history_manager
         .get_history_count()
@@ -258,9 +262,7 @@ pub async fn get_benchmark_clip_count(
 /// Emits `benchmark-progress` events as each model is tested.
 #[tauri::command]
 #[specta::specta]
-pub async fn benchmark_models(
-    app_handle: AppHandle,
-) -> Result<BenchmarkResult, String> {
+pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, String> {
     use crate::managers::transcription::TranscriptionManager;
 
     let model_manager = app_handle.state::<Arc<ModelManager>>();
@@ -328,7 +330,10 @@ pub async fn benchmark_models(
         .map_err(|e| e.to_string())?;
 
     if entries.is_empty() {
-        return Err("No audio clips in history for benchmarking. Record at least 20 clips first.".to_string());
+        return Err(
+            "No audio clips in history for benchmarking. Record at least 20 clips first."
+                .to_string(),
+        );
     }
 
     // Load audio samples from history
@@ -378,7 +383,10 @@ pub async fn benchmark_models(
 
         // Load the model
         if let Err(e) = transcription_manager.load_model(&model.id) {
-            warn!("Skipping model {} in benchmark: failed to load: {}", model.id, e);
+            warn!(
+                "Skipping model {} in benchmark: failed to load: {}",
+                model.id, e
+            );
             failed_models.push(BenchmarkModelFailure {
                 model_id: model.id.clone(),
                 model_name: model.name.clone(),

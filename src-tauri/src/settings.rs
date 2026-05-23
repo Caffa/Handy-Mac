@@ -841,7 +841,8 @@ pub fn get_default_settings() -> AppSettings {
         ShortcutBinding {
             id: "transcribe_with_router".to_string(),
             name: "Transcribe with Router".to_string(),
-            description: "Records speech, transcribes, and routes to your notes via boss_router.".to_string(),
+            description: "Records speech, transcribes, and routes to your notes via boss_router."
+                .to_string(),
             default_binding: default_router_shortcut.to_string(),
             current_binding: default_router_shortcut.to_string(),
         },
@@ -904,8 +905,12 @@ pub fn get_default_settings() -> AppSettings {
         paste_delay_ms: default_paste_delay_ms(),
         typing_tool: default_typing_tool(),
         external_script_path: None,
-        router_script_path: Some("/Users/caffae/Local-Projects-2026/Router-Actuator/boss_router.py".to_string()),
-        router_env_file: Some("/Users/caffae/Local-Projects-2026/Voice-Memo-to-Router/.env".to_string()),
+        router_script_path: Some(
+            "/Users/caffae/Local-Projects-2026/Router-Actuator/boss_router.py".to_string(),
+        ),
+        router_env_file: Some(
+            "/Users/caffae/Local-Projects-2026/Voice-Memo-to-Router/.env".to_string(),
+        ),
         custom_filler_words: None,
         whisper_accelerator: WhisperAcceleratorSetting::default(),
         ort_accelerator: OrtAcceleratorSetting::default(),
@@ -972,12 +977,15 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                 // Migrate new settings fields: if they're None, fill in defaults.
                 // This handles the case where the settings JSON was created before
                 // the field existed, so it deserializes as None.
-                if settings.router_script_path.is_none() && default_settings.router_script_path.is_some() {
+                if settings.router_script_path.is_none()
+                    && default_settings.router_script_path.is_some()
+                {
                     debug!("Migrating router_script_path from default");
                     settings.router_script_path = default_settings.router_script_path.clone();
                     updated = true;
                 }
-                if settings.router_env_file.is_none() && default_settings.router_env_file.is_some() {
+                if settings.router_env_file.is_none() && default_settings.router_env_file.is_some()
+                {
                     debug!("Migrating router_env_file from default");
                     settings.router_env_file = default_settings.router_env_file.clone();
                     updated = true;

@@ -186,14 +186,14 @@ Handy supports command-line parameters on all platforms for integration with scr
 
 **Implementation:** `cli.rs` (definitions), `main.rs` (parsing), `lib.rs` (applying), `signal_handle.rs` (shared logic)
 
-| Flag                     | Description                                                    |
-| ------------------------ | -------------------------------------------------------------- |
-| `--toggle-transcription` | Toggle recording on/off on a running instance                  |
-| `--toggle-post-process`  | Toggle recording with post-processing on/off                   |
-| `--cancel`               | Cancel the current operation on a running instance             |
-| `--start-hidden`         | Launch without showing the main window (tray icon visible)     |
-| `--no-tray`              | Launch without system tray (closing window quits the app)      |
-| `--debug`                | Enable debug mode with verbose (Trace) logging                 |
+| Flag                     | Description                                                |
+| ------------------------ | ---------------------------------------------------------- |
+| `--toggle-transcription` | Toggle recording on/off on a running instance              |
+| `--toggle-post-process`  | Toggle recording with post-processing on/off               |
+| `--cancel`               | Cancel the current operation on a running instance         |
+| `--start-hidden`         | Launch without showing the main window (tray icon visible) |
+| `--no-tray`              | Launch without system tray (closing window quits the app)  |
+| `--debug`                | Enable debug mode with verbose (Trace) logging             |
 
 **Key design decisions:**
 
@@ -253,6 +253,7 @@ When adding a new field to a widely-used struct (e.g. adding `suppressed_token_c
 **Don't:** Write a Python/script that brace-matches `StructName {` to find the closing `}`. Nested structs, inconsistent indentation, and closure braces WILL create double commas, orphan fields, and corrupted syntax.
 
 **Do:**
+
 1. Get the clean original: `git show HEAD:path/to/file > /tmp/clean.rs`
 2. Apply the transformation to the known-clean original (not the working tree copy which may have accumulated damage from prior failed attempts)
 3. Overwrite: `cp /tmp/clean.rs path/to/file`

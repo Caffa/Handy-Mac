@@ -3,6 +3,7 @@
 ## Project Overview
 
 Handy is a cross-platform desktop speech-to-text app built with Tauri 2.x.
+
 - **Backend**: Rust (`src-tauri/src/`)
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4 (`src/`)
 - **Package Manager**: Bun (always use `bun`, never `npm`)
@@ -10,7 +11,9 @@ Handy is a cross-platform desktop speech-to-text app built with Tauri 2.x.
 ## Architecture Patterns
 
 ### Manager Pattern
+
 Core business logic lives in `src-tauri/src/managers/`:
+
 - `audio.rs` — Audio recording and device management
 - `model.rs` — Whisper model downloading and management
 - `transcription.rs` — Speech-to-text pipeline
@@ -19,16 +22,19 @@ Core business logic lives in `src-tauri/src/managers/`:
 Add new top-level domain logic as a manager, initialized in `lib.rs` and exposed via Tauri state.
 
 ### Command-Event Architecture
+
 - **Frontend → Backend**: Tauri commands (defined in `src-tauri/src/commands/`)
 - **Backend → Frontend**: Events emitted with `app_handle.emit()`
 - Specta generates TypeScript bindings in `src/bindings.ts` — **do not edit manually**
 
 ### Pipeline Processing
+
 Audio → VAD → Whisper/Parakeet → Text output → Clipboard/Paste
 
 ## Code Navigation
 
 For this TypeScript/JavaScript codebase, prefer the SCIP tooling for code navigation:
+
 - Use `scip_find_definition` to locate symbol definitions
 - Use `scip_find_references` to find all usages
 - Use `scip_search_symbols` for partial name queries
@@ -40,24 +46,28 @@ Avoid ad-hoc `grep` or manual file scanning when these tools are available.
 ## Backend (Rust) Rules
 
 ### Style
+
 - Run `cargo fmt` and `cargo clippy` before committing
 - Handle errors explicitly; avoid `unwrap()` in production paths
 - Use `anyhow::Result` for command handlers
 - Use descriptive names and doc comments for public APIs
 
 ### Adding Commands
+
 1. Define handler in `src-tauri/src/commands/<module>.rs`
 2. Register in `src-tauri/src/commands/mod.rs`
 3. Add to specta builder in `lib.rs` (`collect_commands![...]`)
 4. Regenerate bindings: the frontend `src/bindings.ts` is auto-generated
 
 ### Audio & Transcription
+
 - `audio_toolkit/audio/` — device enumeration, recording, resampling
 - `audio_toolkit/vad/` — Silero VAD integration
 - Respect the audio pipeline: always run VAD before sending to Whisper
 - Test with `--debug` flag to see verbose audio logs
 
 ### Settings
+
 - Settings persist via `tauri-plugin-store` (NOT regular files)
 - Default settings in `src-tauri/src/settings.rs`
 - Frontend reads/writes settings through `src/stores/settingsStore.ts`
@@ -65,12 +75,14 @@ Avoid ad-hoc `grep` or manual file scanning when these tools are available.
 ## Frontend (TypeScript/React) Rules
 
 ### Style
+
 - Strict TypeScript — no `any` types
 - Functional components with hooks
 - Tailwind CSS v4 for styling
 - Path alias `@/` maps to `./src/`
 
 ### Internationalization (i18n)
+
 - **All user-facing strings must use i18next translations**
 - ESLint enforces `i18next/no-literal-string` in JSX
 - Source language: English (`src/i18n/locales/en/translation.json`)
@@ -79,11 +91,13 @@ Avoid ad-hoc `grep` or manual file scanning when these tools are available.
   2. Use: `const { t } = useTranslation(); t('key.path')`
 
 ### State Management
+
 - Zustand stores in `src/stores/`
 - `settingsStore.ts` — reactive settings synced with Rust
 - `modelStore.ts` — model download / load state
 
 ### Events
+
 - Backend emits events (e.g., `history-update`, `model-state`)
 - Listen with `useTauriEvent()` pattern or manual `listen()`
 - Event payloads are typed from auto-generated bindings
@@ -97,19 +111,25 @@ Avoid ad-hoc `grep` or manual file scanning when these tools are available.
 ## Adding Dependencies
 
 ### Frontend
+
 ```bash
 bun add <package>
 ```
+
 This triggers `postinstall` which runs `scripts/check-nix-deps.ts` to regenerate `.nix/bun.nix`.
 
 ### Backend
+
 ```bash
 cd src-tauri && cargo add <crate>
 ```
+
 Also update `flake.nix` if the crate needs system dependencies.
 
 ### Dev-Only Nix Dependencies
+
 If you add a crate that needs Nix packages:
+
 1. Add the dependency in `Cargo.toml`
 2. Add the corresponding Nix package to `flake.nix` `buildInputs`
 

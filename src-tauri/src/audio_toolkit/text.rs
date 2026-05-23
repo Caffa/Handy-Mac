@@ -450,54 +450,42 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
     // 4. Short words that are productive prefixes of longer words (add→adding, etc.)
     const COMMON_WORDS: &[&str] = &[
         // --- 1-letter function words ---
-        "a", "i",
-        // --- 2-letter function words ---
-        "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
-        "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we", "am",
+        "a", "i", // --- 2-letter function words ---
+        "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it", "me", "my", "no",
+        "of", "on", "or", "so", "to", "up", "us", "we", "am",
         // --- 2-letter common words (also productive prefixes) ---
         // These are real English words that are prefixes of longer words and must
         // NOT be treated as CTC artifacts. Without these, removing MAX_FRAGMENT_EXTENSION
         // would cause regressions (e.g., "re really" → "really" removing "re").
-        "re", "ex", "un", "im", "de", "bi", "oh", "ah", "ha", "ad", "lo", "mo",
-        "ma", "pa", "id", "ed", "al", "bo", "fa", "sa", "sh", "ta", "ob", "op",
-        "aw", "en", "er", "es", "hi", "ho", "ok", "uh", "um", "ya", "ye", "yo",
-        // --- 3-letter function words ---
-        "and", "any", "are", "but", "can", "did", "for", "get", "had", "has",
-        "her", "him", "his", "how", "its", "let", "may", "not", "now", "one",
-        "our", "out", "own", "she", "the", "too", "use", "was", "way", "who",
-        "why", "yes", "yet", "you",
+        "re", "ex", "un", "im", "de", "bi", "oh", "ah", "ha", "ad", "lo", "mo", "ma", "pa", "id",
+        "ed", "al", "bo", "fa", "sa", "sh", "ta", "ob", "op", "aw", "en", "er", "es", "hi", "ho",
+        "ok", "uh", "um", "ya", "ye", "yo", // --- 3-letter function words ---
+        "and", "any", "are", "but", "can", "did", "for", "get", "had", "has", "her", "him", "his",
+        "how", "its", "let", "may", "not", "now", "one", "our", "out", "own", "she", "the", "too",
+        "use", "was", "way", "who", "why", "yes", "yet", "you",
         // --- 3-letter common words (also productive prefixes) ---
-        "add", "age", "ago", "aid", "air", "all", "arm", "art", "ask", "bad",
-        "bag", "ban", "bat", "bed", "big", "bit", "bow", "box", "boy", "bug",
-        "buy", "cab", "cap", "car", "cat", "cut", "day", "die", "dig", "dim",
-        "dip", "doc", "dog", "dot", "dry", "ear", "eat", "egg", "end", "era",
-        "eve", "eye", "fan", "far", "fat", "few", "fig", "fin", "fix", "fly",
-        "fog", "fun", "gap", "gas", "gin", "got", "gun", "gut",
-        "ham", "hat", "hid", "hip", "hit", "hog", "hop", "hot", "hug",
-        "ice", "ill", "imp", "ink", "inn", "ins", "ion", "ire",
-        "jam", "jar", "jet", "job", "jog", "joy", "key", "kid", "kit",
-        "lab", "lap", "law", "lay", "led", "leg", "lie", "lip", "lit",
-        "log", "lot", "low", "mad", "man", "map", "mat", "met", "mid", "mix",
-        "mob", "mod", "mop", "mud", "nap", "net", "new", "nod", "nor",
-        "nut", "oak", "odd", "off", "oil", "old", "opt", "ore",
-        "pad", "pan", "pat", "pay", "pen", "pet", "pie", "pig", "pin", "pit",
-        "pod", "pop", "pot", "pro", "pub", "put",
-        "rag", "ram", "ran", "rat", "raw", "ray", "ref", "rep", "rib", "rid",
-        "rig", "rim", "rip", "rob", "rod", "rot", "row", "rub", "rug", "run",
-        "rut", "sad", "sat", "saw", "say", "sea", "see", "set", "sew", "shy",
-        "sin", "sir", "sit", "six", "ski", "sky", "sob", "son", "sow", "spa",
-        "spy", "sub", "sum", "sun",
-        "tab", "tag", "tan", "tap", "tax", "tea", "ten", "tie", "tin", "tip",
-        "toe", "ton", "top", "tow", "toy", "try", "tub",
-        "van", "vat", "vet", "via", "vim", "vow",
-        "war", "wax", "web", "wed", "wet", "win", "wit", "wok",
-        "won", "woo", "wow",
-        "zip", "zoo",
+        "add", "age", "ago", "aid", "air", "all", "arm", "art", "ask", "bad", "bag", "ban", "bat",
+        "bed", "big", "bit", "bow", "box", "boy", "bug", "buy", "cab", "cap", "car", "cat", "cut",
+        "day", "die", "dig", "dim", "dip", "doc", "dog", "dot", "dry", "ear", "eat", "egg", "end",
+        "era", "eve", "eye", "fan", "far", "fat", "few", "fig", "fin", "fix", "fly", "fog", "fun",
+        "gap", "gas", "gin", "got", "gun", "gut", "ham", "hat", "hid", "hip", "hit", "hog", "hop",
+        "hot", "hug", "ice", "ill", "imp", "ink", "inn", "ins", "ion", "ire", "jam", "jar", "jet",
+        "job", "jog", "joy", "key", "kid", "kit", "lab", "lap", "law", "lay", "led", "leg", "lie",
+        "lip", "lit", "log", "lot", "low", "mad", "man", "map", "mat", "met", "mid", "mix", "mob",
+        "mod", "mop", "mud", "nap", "net", "new", "nod", "nor", "nut", "oak", "odd", "off", "oil",
+        "old", "opt", "ore", "pad", "pan", "pat", "pay", "pen", "pet", "pie", "pig", "pin", "pit",
+        "pod", "pop", "pot", "pro", "pub", "put", "rag", "ram", "ran", "rat", "raw", "ray", "ref",
+        "rep", "rib", "rid", "rig", "rim", "rip", "rob", "rod", "rot", "row", "rub", "rug", "run",
+        "rut", "sad", "sat", "saw", "say", "sea", "see", "set", "sew", "shy", "sin", "sir", "sit",
+        "six", "ski", "sky", "sob", "son", "sow", "spa", "spy", "sub", "sum", "sun", "tab", "tag",
+        "tan", "tap", "tax", "tea", "ten", "tie", "tin", "tip", "toe", "ton", "top", "tow", "toy",
+        "try", "tub", "van", "vat", "vet", "via", "vim", "vow", "war", "wax", "web", "wed", "wet",
+        "win", "wit", "wok", "won", "woo", "wow", "zip", "zoo",
         // --- 2-letter abbreviations ---
-        "st",   // St (Saint/Street) → Street, St.
+        "st", // St (Saint/Street) → Street, St.
         // --- Abbreviations / prefixes commonly used in transcription ---
-        "bar", "con", "dis", "pre", "per", "app", "co", "mac", "bus",
-        "int", "sys", "sec", "tel", "org", "dev",
+        "bar", "con", "dis", "pre", "per", "app", "co", "mac", "bus", "int", "sys", "sec", "tel",
+        "org", "dev",
     ];
 
     // Maximum length of a word that can be considered a fragment artifact.
@@ -528,17 +516,11 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
     while i < words.len() {
         // Look ahead: if the current word is a prefix of the next word,
         // it might be a fragment that should be removed.
-        let current_alpha: String = words[i]
-            .chars()
-            .filter(|c| c.is_alphabetic())
-            .collect();
+        let current_alpha: String = words[i].chars().filter(|c| c.is_alphabetic()).collect();
         let current_lower = current_alpha.to_lowercase();
 
         if i + 1 < words.len() && !current_alpha.is_empty() {
-            let next_alpha: String = words[i + 1]
-                .chars()
-                .filter(|c| c.is_alphabetic())
-                .collect();
+            let next_alpha: String = words[i + 1].chars().filter(|c| c.is_alphabetic()).collect();
             let next_lower = next_alpha.to_lowercase();
 
             // Only consider prefix match when next word is strictly longer
@@ -588,7 +570,9 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
                         // - In a staircase, COMMON_WORDS protection is relaxed because two
                         //   consecutive prefixes pointing to the same target is CTC noise
                         if !result.is_empty() {
-                            let prev_alpha: String = result.last().unwrap()
+                            let prev_alpha: String = result
+                                .last()
+                                .unwrap()
                                 .chars()
                                 .filter(|c: &char| c.is_alphabetic())
                                 .collect();
@@ -598,7 +582,8 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
                             if !prev_alpha.is_empty()
                                 && prev_alpha.len() >= 2  // Not a single-letter ("a", "I")
                                 && prev_alpha.len() <= MAX_FRAGMENT_LEN + 1  // Short enough
-                                && next_lower.starts_with(&prev_lower)  // Also prefixes target
+                                && next_lower.starts_with(&prev_lower)
+                            // Also prefixes target
                             {
                                 // Remove the previous word — it's part of the staircase
                                 result.pop();
@@ -1209,7 +1194,10 @@ mod tests {
     #[test]
     fn bench_fragment_sta_started() {
         // "sta" is a 3-char prefix of "start", extension = 2
-        assert_eq!(dedup_word_fragments("I sta started running"), "I started running");
+        assert_eq!(
+            dedup_word_fragments("I sta started running"),
+            "I started running"
+        );
     }
 
     #[test]
@@ -1226,7 +1214,10 @@ mod tests {
 
     #[test]
     fn bench_preserves_can_cancel() {
-        assert_eq!(dedup_word_fragments("I can cancel this"), "I can cancel this");
+        assert_eq!(
+            dedup_word_fragments("I can cancel this"),
+            "I can cancel this"
+        );
     }
 
     #[test]
@@ -1323,7 +1314,10 @@ mod tests {
 
     #[test]
     fn bench_preserves_four_char_word() {
-        assert_eq!(dedup_word_fragments("I read reading books"), "I read reading books");
+        assert_eq!(
+            dedup_word_fragments("I read reading books"),
+            "I read reading books"
+        );
     }
 
     #[test]
@@ -1369,7 +1363,10 @@ mod tests {
 
     #[test]
     fn bench_two_fragments_in_sentence() {
-        assert_eq!(dedup_word_fragments("I wan wanted to thi this"), "I wanted to this");
+        assert_eq!(
+            dedup_word_fragments("I wan wanted to thi this"),
+            "I wanted to this"
+        );
     }
 
     #[test]
@@ -1404,7 +1401,10 @@ mod tests {
 
     #[test]
     fn bench_preserves_in_inside() {
-        assert_eq!(dedup_word_fragments("in inside the house"), "in inside the house");
+        assert_eq!(
+            dedup_word_fragments("in inside the house"),
+            "in inside the house"
+        );
     }
 
     #[test]
@@ -1424,7 +1424,10 @@ mod tests {
 
     #[test]
     fn bench_preserves_no_nothing() {
-        assert_eq!(dedup_word_fragments("no nothing happened"), "no nothing happened");
+        assert_eq!(
+            dedup_word_fragments("no nothing happened"),
+            "no nothing happened"
+        );
     }
 
     #[test]
@@ -1434,7 +1437,10 @@ mod tests {
 
     #[test]
     fn bench_preserves_my_myself() {
-        assert_eq!(dedup_word_fragments("I did it my myself"), "I did it my myself");
+        assert_eq!(
+            dedup_word_fragments("I did it my myself"),
+            "I did it my myself"
+        );
     }
 
     #[test]
@@ -1449,7 +1455,10 @@ mod tests {
 
     #[test]
     fn bench_preserves_do_doing() {
-        assert_eq!(dedup_word_fragments("I do doing things"), "I do doing things");
+        assert_eq!(
+            dedup_word_fragments("I do doing things"),
+            "I do doing things"
+        );
     }
 
     // --- REMOVES NON-COMMON SHORT FRAGMENTS ---
@@ -1497,10 +1506,7 @@ mod tests {
 
     #[test]
     fn bench_real_world_preserves_legitimate_repetition() {
-        assert_eq!(
-            dedup_word_fragments("I had had enough"),
-            "I had had enough"
-        );
+        assert_eq!(dedup_word_fragments("I had had enough"), "I had had enough");
     }
 
     #[test]
@@ -1544,10 +1550,7 @@ mod tests {
     #[test]
     fn bench_suffix_overlap_go_going() {
         // "go" is a common word so preserved regardless
-        assert_eq!(
-            dedup_word_fragments("I was go going"),
-            "I was go going"
-        );
+        assert_eq!(dedup_word_fragments("I was go going"), "I was go going");
     }
 
     // --- EDGE CASES ---
@@ -1594,7 +1597,10 @@ mod tests {
     #[test]
     fn adv_common_word_ear() {
         // "ear" is a common word — should not be removed before "early"
-        assert_eq!(dedup_word_fragments("ear early morning"), "ear early morning");
+        assert_eq!(
+            dedup_word_fragments("ear early morning"),
+            "ear early morning"
+        );
     }
 
     #[test]
@@ -1606,7 +1612,10 @@ mod tests {
     #[test]
     fn adv_common_word_end() {
         // "end" is a common word — should not be removed before "ending"
-        assert_eq!(dedup_word_fragments("end ending credits"), "end ending credits");
+        assert_eq!(
+            dedup_word_fragments("end ending credits"),
+            "end ending credits"
+        );
     }
 
     #[test]
@@ -1618,13 +1627,19 @@ mod tests {
     #[test]
     fn adv_common_word_sat() {
         // "sat" is a common word — should not be removed before "saturday"
-        assert_eq!(dedup_word_fragments("sat saturday night"), "sat saturday night");
+        assert_eq!(
+            dedup_word_fragments("sat saturday night"),
+            "sat saturday night"
+        );
     }
 
     #[test]
     fn adv_common_word_ran() {
         // "ran" is a common word — should not be removed before "random"
-        assert_eq!(dedup_word_fragments("ran random numbers"), "ran random numbers");
+        assert_eq!(
+            dedup_word_fragments("ran random numbers"),
+            "ran random numbers"
+        );
     }
 
     #[test]
@@ -1636,7 +1651,10 @@ mod tests {
     #[test]
     fn adv_common_word_bed() {
         // "bed" is a common word — should not be removed before "bedroom"
-        assert_eq!(dedup_word_fragments("bed bedroom light"), "bed bedroom light");
+        assert_eq!(
+            dedup_word_fragments("bed bedroom light"),
+            "bed bedroom light"
+        );
     }
 
     #[test]
@@ -1681,10 +1699,7 @@ mod tests {
     #[test]
     fn adv_preserves_legitimate_repetition() {
         // Someone actually saying the same word twice is NOT a fragment
-        assert_eq!(
-            dedup_word_fragments("I had had enough"),
-            "I had had enough"
-        );
+        assert_eq!(dedup_word_fragments("I had had enough"), "I had had enough");
     }
 
     #[test]
@@ -1717,7 +1732,10 @@ mod tests {
         // Golden false-positive case in different contexts
         assert_eq!(dedup_word_fragments("my mac machine"), "my mac machine");
         assert_eq!(dedup_word_fragments("the mac machine"), "the mac machine");
-        assert_eq!(dedup_word_fragments("mac machine works"), "mac machine works");
+        assert_eq!(
+            dedup_word_fragments("mac machine works"),
+            "mac machine works"
+        );
     }
 
     // --- DEDUPEIO-STYLE COMPARISON TESTS ---
@@ -1732,7 +1750,7 @@ mod tests {
         // This is correct for CTC artifacts — we don't want to merge similar words.
         assert_eq!(
             dedup_word_fragments("cat category"),
-            "cat category"  // "cat" is in COMMON_WORDS, preserved
+            "cat category" // "cat" is in COMMON_WORDS, preserved
         );
     }
 
@@ -1742,7 +1760,7 @@ mod tests {
         // exact prefix match. Similar but not matching words are preserved.
         assert_eq!(
             dedup_word_fragments("the them there"),
-            "the them there"  // "the" is common, all preserved
+            "the them there" // "the" is common, all preserved
         );
     }
 
@@ -1752,7 +1770,7 @@ mod tests {
         // only operates within a single transcription chunk boundary.
         assert_eq!(
             dedup_word_fragments("it wa was good"),
-            "it was good"  // Fragment removed, but other words preserved
+            "it was good" // Fragment removed, but other words preserved
         );
     }
 
@@ -1782,19 +1800,28 @@ mod tests {
     #[test]
     fn regression_im_before_impossible() {
         // "im" is a common prefix — must be preserved
-        assert_eq!(dedup_word_fragments("im impossible task"), "im impossible task");
+        assert_eq!(
+            dedup_word_fragments("im impossible task"),
+            "im impossible task"
+        );
     }
 
     #[test]
     fn regression_de_before_definitely() {
         // "de" is a common prefix — must be preserved
-        assert_eq!(dedup_word_fragments("de definitely yes"), "de definitely yes");
+        assert_eq!(
+            dedup_word_fragments("de definitely yes"),
+            "de definitely yes"
+        );
     }
 
     #[test]
     fn regression_bi_before_bisexual() {
         // "bi" is a common prefix (binary, bisexual) — must be preserved
-        assert_eq!(dedup_word_fragments("bi bisexual community"), "bi bisexual community");
+        assert_eq!(
+            dedup_word_fragments("bi bisexual community"),
+            "bi bisexual community"
+        );
     }
 
     #[test]
@@ -1824,7 +1851,10 @@ mod tests {
     #[test]
     fn regression_sta_before_started() {
         // Another original failure case — must still pass
-        assert_eq!(dedup_word_fragments("I sta started running"), "I started running");
+        assert_eq!(
+            dedup_word_fragments("I sta started running"),
+            "I started running"
+        );
     }
 
     #[test]
@@ -1857,7 +1887,9 @@ mod tests {
         // The user-reported bug: "can c candles" → "candles"
         // Both "can" and "c" are prefixes of "candles"
         assert_eq!(
-            dedup_word_fragments("Well, perhaps not going without can c candles because that was insanity."),
+            dedup_word_fragments(
+                "Well, perhaps not going without can c candles because that was insanity."
+            ),
             "Well, perhaps not going without candles because that was insanity."
         );
     }
@@ -1907,26 +1939,39 @@ mod tests {
     fn staircase_not_triggered_for_can_cancel() {
         // "can" before "cancel" — no staircase (no intermediate fragment)
         // "can" is in COMMON_WORDS → kept
-        assert_eq!(dedup_word_fragments("I can cancel this"), "I can cancel this");
+        assert_eq!(
+            dedup_word_fragments("I can cancel this"),
+            "I can cancel this"
+        );
     }
 
     #[test]
     fn staircase_not_triggered_for_in_inside() {
         // No staircase here — just common word "in" before "inside"
-        assert_eq!(dedup_word_fragments("in inside the house"), "in inside the house");
+        assert_eq!(
+            dedup_word_fragments("in inside the house"),
+            "in inside the house"
+        );
     }
 
     #[test]
     fn staircase_preserves_single_letter_before() {
         // "a c candles" → "a" is single-letter, protected → "a candles"
-        assert_eq!(dedup_word_fragments("I need a c candles"), "I need a candles");
+        assert_eq!(
+            dedup_word_fragments("I need a c candles"),
+            "I need a candles"
+        );
     }
 
     #[test]
     fn full_pipeline_can_c_candles() {
         // Full pipeline test: filter_transcription_output with the reported bug
         assert_eq!(
-            filter_transcription_output("Well, perhaps not going without can c candles because that was insanity.", "en", &None),
+            filter_transcription_output(
+                "Well, perhaps not going without can c candles because that was insanity.",
+                "en",
+                &None
+            ),
             "Well, perhaps not going without candles because that was insanity."
         );
     }
@@ -1943,7 +1988,10 @@ mod tests {
     #[test]
     fn staircase_partial() {
         // Only a single-char fragment, no staircase
-        assert_eq!(dedup_word_fragments("the c candles are bright"), "the candles are bright");
+        assert_eq!(
+            dedup_word_fragments("the c candles are bright"),
+            "the candles are bright"
+        );
     }
 
     #[test]
@@ -1958,7 +2006,10 @@ mod tests {
     #[test]
     fn single_char_preserves_non_prefix() {
         // Single char "x" before "ray" — not a prefix, kept
-        assert_eq!(dedup_word_fragments("the x ray machine"), "the x ray machine");
+        assert_eq!(
+            dedup_word_fragments("the x ray machine"),
+            "the x ray machine"
+        );
     }
 
     #[test]
@@ -1974,8 +2025,14 @@ mod tests {
         use crate::settings::CustomWord;
         let text = "hello world";
         let words = vec![
-            CustomWord { word: "Hello".to_string(), pronunciations: vec![] },
-            CustomWord { word: "World".to_string(), pronunciations: vec![] },
+            CustomWord {
+                word: "Hello".to_string(),
+                pronunciations: vec![],
+            },
+            CustomWord {
+                word: "World".to_string(),
+                pronunciations: vec![],
+            },
         ];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert_eq!(result, "Hello World");
@@ -1985,12 +2042,10 @@ mod tests {
     fn test_advanced_custom_words_with_pronunciation() {
         use crate::settings::CustomWord;
         let text = "il cui nome è Charge B, che permette";
-        let words = vec![
-            CustomWord {
-                word: "ChargeBee".to_string(),
-                pronunciations: vec!["charge b".to_string(), "charge bee".to_string()],
-            },
-        ];
+        let words = vec![CustomWord {
+            word: "ChargeBee".to_string(),
+            pronunciations: vec!["charge b".to_string(), "charge bee".to_string()],
+        }];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert!(result.contains("ChargeBee"), "got: {}", result);
         assert!(!result.contains("Charge B"), "got: {}", result);
@@ -2002,12 +2057,10 @@ mod tests {
         // When a pronunciation matches, the transcript should be replaced with the canonical word
         // Use comma to prevent 3-gram from swallowing the next word
         let text = "I use charge bee, for payments";
-        let words = vec![
-            CustomWord {
-                word: "ChargeBee".to_string(),
-                pronunciations: vec!["charge b".to_string(), "charge bee".to_string()],
-            },
-        ];
+        let words = vec![CustomWord {
+            word: "ChargeBee".to_string(),
+            pronunciations: vec!["charge b".to_string(), "charge bee".to_string()],
+        }];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert!(result.contains("ChargeBee"), "got: {}", result);
     }
@@ -2016,12 +2069,10 @@ mod tests {
     fn test_advanced_custom_words_kubernetes() {
         use crate::settings::CustomWord;
         let text = "deploy on koober netty cluster";
-        let words = vec![
-            CustomWord {
-                word: "Kubernetes".to_string(),
-                pronunciations: vec!["koober netty".to_string(), "koober nay".to_string()],
-            },
-        ];
+        let words = vec![CustomWord {
+            word: "Kubernetes".to_string(),
+            pronunciations: vec!["koober netty".to_string(), "koober nay".to_string()],
+        }];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert!(result.contains("Kubernetes"), "got: {}", result);
     }
@@ -2041,8 +2092,14 @@ mod tests {
         // Words without pronunciations should work like simple custom words
         let text = "helo wrold";
         let words = vec![
-            CustomWord { word: "hello".to_string(), pronunciations: vec![] },
-            CustomWord { word: "world".to_string(), pronunciations: vec![] },
+            CustomWord {
+                word: "hello".to_string(),
+                pronunciations: vec![],
+            },
+            CustomWord {
+                word: "world".to_string(),
+                pronunciations: vec![],
+            },
         ];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert_eq!(result, "hello world");
@@ -2052,12 +2109,10 @@ mod tests {
     fn test_advanced_custom_words_preserves_case() {
         use crate::settings::CustomWord;
         let text = "CHARGE B is great";
-        let words = vec![
-            CustomWord {
-                word: "ChargeBee".to_string(),
-                pronunciations: vec!["charge b".to_string()],
-            },
-        ];
+        let words = vec![CustomWord {
+            word: "ChargeBee".to_string(),
+            pronunciations: vec!["charge b".to_string()],
+        }];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert!(result.contains("CHARGEBEE"), "got: {}", result);
     }
@@ -2066,12 +2121,10 @@ mod tests {
     fn test_advanced_custom_words_chatgpt() {
         use crate::settings::CustomWord;
         let text = "use Chat G P T for this";
-        let words = vec![
-            CustomWord {
-                word: "ChatGPT".to_string(),
-                pronunciations: vec!["chat g p t".to_string(), "chat gpt".to_string()],
-            },
-        ];
+        let words = vec![CustomWord {
+            word: "ChatGPT".to_string(),
+            pronunciations: vec!["chat g p t".to_string(), "chat gpt".to_string()],
+        }];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert!(result.contains("ChatGPT"), "got: {}", result);
     }

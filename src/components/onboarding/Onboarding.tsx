@@ -30,7 +30,8 @@ const Onboarding: React.FC<OnboardingProps> = ({ onModelSelected }) => {
   const isDownloading = selectedModelId !== null;
 
   const downloadableModels = models.filter((m: ModelInfo) => !m.is_downloaded);
-  const hasNoModelsToDownload = downloadableModels.length === 0 && !isDownloading;
+  const hasNoModelsToDownload =
+    downloadableModels.length === 0 && !isDownloading;
 
   // If all models are already downloaded, skip onboarding immediately
   useEffect(() => {

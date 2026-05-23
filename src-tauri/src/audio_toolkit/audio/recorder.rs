@@ -231,7 +231,15 @@ impl AudioRecorder {
                 Ok((stream, sample_rate)) => {
                     let _ = init_tx.send(Ok(()));
                     // Keep the stream alive while we process samples.
-                    run_consumer(sample_rate, vad, sample_rx, cmd_rx, level_cb, stop_flag, last_chunk_ms);
+                    run_consumer(
+                        sample_rate,
+                        vad,
+                        sample_rx,
+                        cmd_rx,
+                        level_cb,
+                        stop_flag,
+                        last_chunk_ms,
+                    );
 
                     // Pause the stream before dropping to prevent heap corruption.
                     // On macOS, cpal::Stream::pause() is asynchronous — CoreAudio's IO
@@ -636,31 +644,31 @@ fn run_consumer(
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
-    } else {
-        match sample_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(c) => c,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // No audio data in 100ms — the stream may be dead (e.g.
-                // after macOS sleep/wake where the CoreAudio input unit
-                // is suspended and never resumes).  Check for pending
-                // commands so that Cmd::Shutdown can be processed even
-                // when no audio is flowing; without this, close() hangs
-                // forever trying to join the worker thread.
-                //
-                // During normal streaming, data arrives every ~10–50ms
-                // (depending on buffer size), so this branch is rarely
-                // exercised.
-                while let Ok(cmd) = cmd_rx.try_recv() {
-                    if let Cmd::Shutdown = cmd {
-                        stop_flag.store(true, Ordering::Relaxed);
-                        return;
+        } else {
+            match sample_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(c) => c,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // No audio data in 100ms — the stream may be dead (e.g.
+                    // after macOS sleep/wake where the CoreAudio input unit
+                    // is suspended and never resumes).  Check for pending
+                    // commands so that Cmd::Shutdown can be processed even
+                    // when no audio is flowing; without this, close() hangs
+                    // forever trying to join the worker thread.
+                    //
+                    // During normal streaming, data arrives every ~10–50ms
+                    // (depending on buffer size), so this branch is rarely
+                    // exercised.
+                    while let Ok(cmd) = cmd_rx.try_recv() {
+                        if let Cmd::Shutdown = cmd {
+                            stop_flag.store(true, Ordering::Relaxed);
+                            return;
+                        }
                     }
+                    continue;
                 }
-                continue;
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    };
+        };
 
         let raw = match chunk {
             AudioChunk::Samples(s) => s,

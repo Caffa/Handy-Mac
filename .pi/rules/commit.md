@@ -10,30 +10,30 @@ Follow **Conventional Commits**:
 
 ### Types
 
-| Type | Use for |
-|------|---------|
-| `feat` | New user-facing functionality |
-| `fix` | Bug fixes (top priority during feature freeze) |
-| `refactor` | Code restructuring with no behavior change |
-| `perf` | Performance improvements |
-| `test` | Adding or updating tests |
-| `docs` | Documentation updates |
-| `chore` | Build, deps, tooling |
+| Type       | Use for                                        |
+| ---------- | ---------------------------------------------- |
+| `feat`     | New user-facing functionality                  |
+| `fix`      | Bug fixes (top priority during feature freeze) |
+| `refactor` | Code restructuring with no behavior change     |
+| `perf`     | Performance improvements                       |
+| `test`     | Adding or updating tests                       |
+| `docs`     | Documentation updates                          |
+| `chore`    | Build, deps, tooling                           |
 
 ### Scopes
 
-| Scope | Affected area |
-|-------|-------------|
-| `frontend` | React/TS components, hooks, stores |
-| `rust` | All Rust backend code |
-| `audio` | Audio recording, VAD, playback |
-| `transcription` | Whisper/ONNX inference pipeline |
-| `settings` | Settings UI or persistence |
-| `overlay` | Recording overlay window |
-| `bindings` | Tauri command bindings (`src/bindings.ts`) |
-| `i18n` | Translations or i18n setup |
-| `ci` | GitHub Actions workflows |
-| `deps` | Dependency updates |
+| Scope           | Affected area                              |
+| --------------- | ------------------------------------------ |
+| `frontend`      | React/TS components, hooks, stores         |
+| `rust`          | All Rust backend code                      |
+| `audio`         | Audio recording, VAD, playback             |
+| `transcription` | Whisper/ONNX inference pipeline            |
+| `settings`      | Settings UI or persistence                 |
+| `overlay`       | Recording overlay window                   |
+| `bindings`      | Tauri command bindings (`src/bindings.ts`) |
+| `i18n`          | Translations or i18n setup                 |
+| `ci`            | GitHub Actions workflows                   |
+| `deps`          | Dependency updates                         |
 
 ### Examples
 
@@ -64,5 +64,5 @@ See `build-deploy.md` for full details.
 - Summary must be imperative: `add`, `fix`, `refactor` — not `added`, `fixes`, `refactored`
 - No trailing period in summary
 - Keep subject line under 72 characters
-- Body is optional; use it for complex changes to explain *why* (not *what*)
+- Body is optional; use it for complex changes to explain _why_ (not _what_)
 - Run `bun run lint:fix` and `bun run format` **before** committing

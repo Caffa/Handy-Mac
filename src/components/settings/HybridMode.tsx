@@ -41,7 +41,9 @@ export const HybridMode: React.FC<HybridModeProps> = React.memo(
               max={60}
               step={1}
               label={t("settings.advanced.hybridMode.thresholdLabel")}
-              description={t("settings.advanced.hybridMode.thresholdDescription")}
+              description={t(
+                "settings.advanced.hybridMode.thresholdDescription",
+              )}
               descriptionMode={descriptionMode}
               grouped={grouped}
               formatValue={(v) =>

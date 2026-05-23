@@ -1,4 +1,6 @@
-use crate::audio_toolkit::{is_bluetooth_audio_active, list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
+use crate::audio_toolkit::{
+    is_bluetooth_audio_active, list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad,
+};
 use crate::helpers::clamshell;
 use crate::portable;
 use crate::settings::{get_settings, AppSettings};
@@ -20,7 +22,10 @@ fn lock_with_log<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
         Ok(guard) => guard,
         Err(poisoned) => {
             error!("Mutex '{}' was poisoned: {:?}", name, poisoned);
-            warn!("Recovering from poisoned mutex '{}' - data may be inconsistent", name);
+            warn!(
+                "Recovering from poisoned mutex '{}' - data may be inconsistent",
+                name
+            );
             poisoned.into_inner()
         }
     }
@@ -258,7 +263,10 @@ impl AudioRecordingManager {
         };
 
         let device_name = if use_clamshell_mic {
-            settings.clamshell_microphone.as_ref().expect("clamshell microphone should exist when use_clamshell_mic is true")
+            settings
+                .clamshell_microphone
+                .as_ref()
+                .expect("clamshell microphone should exist when use_clamshell_mic is true")
         } else {
             settings.selected_microphone.as_ref()?
         };
@@ -301,9 +309,7 @@ impl AudioRecordingManager {
             let state = lock_with_log(&rm.state, "state");
             // Never close the stream if BT keep-alive is active
             if *lock_with_log(&bt_keep_alive, "bt_keep_alive") {
-                debug!(
-                    "Skipping lazy close: BT keep-alive is active"
-                );
+                debug!("Skipping lazy close: BT keep-alive is active");
                 return;
             }
             if rm.close_generation.load(Ordering::SeqCst) == gen
@@ -390,7 +396,11 @@ impl AudioRecordingManager {
 
                     match self.start_microphone_stream_inner() {
                         Ok(()) => {
-                            usb_watchdog::emit_stage_event_with_handle(&Some(self.app_handle.clone()), "recovered", "Microphone stream recovered");
+                            usb_watchdog::emit_stage_event_with_handle(
+                                &Some(self.app_handle.clone()),
+                                "recovered",
+                                "Microphone stream recovered",
+                            );
                             info!("Mic stream recovered after USB power cycle");
                             Ok(())
                         }
@@ -587,12 +597,13 @@ impl AudioRecordingManager {
                 // Stream is open, but check if it's actually producing data
                 let stream_alive = lock_with_log(&self.recorder, "recorder")
                     .as_ref()
-                    .map_or(false, |r| r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS));
+                    .map_or(false, |r| {
+                        r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
+                    });
 
                 self.usb_watchdog.on_stream_alive_check(stream_alive);
 
                 if !stream_alive {
-
                     warn!(
                         "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
                         Self::STREAM_LIVENESS_TIMEOUT_MS
@@ -613,7 +624,10 @@ impl AudioRecordingManager {
             // the USB watchdog triggers a power cycle).
             if is_always_on {
                 utils::show_usb_cycling_overlay(&self.app_handle);
-                crate::tray::change_tray_icon(&self.app_handle, crate::tray::TrayIconState::Recording);
+                crate::tray::change_tray_icon(
+                    &self.app_handle,
+                    crate::tray::TrayIconState::Recording,
+                );
             }
 
             // Cancel any pending lazy close
@@ -631,7 +645,10 @@ impl AudioRecordingManager {
                 // Clean up UI state on failure
                 if is_always_on {
                     utils::hide_recording_overlay(&self.app_handle);
-                    crate::tray::change_tray_icon(&self.app_handle, crate::tray::TrayIconState::Idle);
+                    crate::tray::change_tray_icon(
+                        &self.app_handle,
+                        crate::tray::TrayIconState::Idle,
+                    );
                 }
                 return Err(msg);
             }
@@ -778,7 +795,10 @@ impl AudioRecordingManager {
                 if self.usb_watchdog.on_recording_finished(samples.len()) {
                     // Watchdog completed a power cycle. Restart the stream if needed.
                     if let Err(e) = self.restart_microphone_if_needed() {
-                        error!("Failed to restart microphone after dead-stream USB cycle: {}", e);
+                        error!(
+                            "Failed to restart microphone after dead-stream USB cycle: {}",
+                            e
+                        );
                     }
                 }
 

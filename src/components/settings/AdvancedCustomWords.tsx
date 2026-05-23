@@ -25,8 +25,8 @@ interface ModelProgress {
   completed: boolean;
 }
 
-export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.memo(
-  ({ descriptionMode = "tooltip", grouped = false }) => {
+export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> =
+  React.memo(({ descriptionMode = "tooltip", grouped = false }) => {
     const { t } = useTranslation();
     const { getSetting, updateSetting, isUpdating } = useSettings();
     const advancedWords = getSetting("advanced_custom_words") || [];
@@ -36,9 +36,14 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
     const [newPronunciation, setNewPronunciation] = useState("");
 
     // Pronunciation recording state
-    const [recordingState, setRecordingState] = useState<RecordingState>("idle");
-    const [recordingWordIndex, setRecordingWordIndex] = useState<number | null>(null);
-    const [modelProgress, setModelProgress] = useState<ModelProgress | null>(null);
+    const [recordingState, setRecordingState] =
+      useState<RecordingState>("idle");
+    const [recordingWordIndex, setRecordingWordIndex] = useState<number | null>(
+      null,
+    );
+    const [modelProgress, setModelProgress] = useState<ModelProgress | null>(
+      null,
+    );
     const mountedRef = useRef(true);
     const recordingStateRef = useRef<RecordingState>("idle");
 
@@ -53,7 +58,16 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
       const setup = async () => {
         const unlisten = await listen(
           "pronunciation-model-progress",
-          (event: { payload: { current: number; total: number; modelId: string; modelName: string; completed?: boolean; started?: boolean } }) => {
+          (event: {
+            payload: {
+              current: number;
+              total: number;
+              modelId: string;
+              modelName: string;
+              completed?: boolean;
+              started?: boolean;
+            };
+          }) => {
             if (cancelled) return;
             const payload = event.payload;
             if (payload.completed) {
@@ -80,7 +94,9 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
         return unlisten;
       };
       let unlistenFn: (() => void) | undefined;
-      setup().then((fn) => { unlistenFn = fn; });
+      setup().then((fn) => {
+        unlistenFn = fn;
+      });
       return () => {
         cancelled = true;
         if (unlistenFn) unlistenFn();
@@ -93,15 +109,35 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
       const setup = async () => {
         const unlisten = await listen(
           "pronunciation-processing-done",
-          (event: { payload: { success: boolean; message: string; count: number; pronunciations?: string[]; word?: string } }) => {
+          (event: {
+            payload: {
+              success: boolean;
+              message: string;
+              count: number;
+              pronunciations?: string[];
+              word?: string;
+            };
+          }) => {
             if (cancelled) return;
             const payload = event.payload;
-            if (payload.success && payload.count > 0 && payload.pronunciations && payload.word) {
-              const currentWords = (getSetting("advanced_custom_words") || []) as CustomWord[];
-              const wordIndex = currentWords.findIndex((w: CustomWord) => w.word === payload.word);
+            if (
+              payload.success &&
+              payload.count > 0 &&
+              payload.pronunciations &&
+              payload.word
+            ) {
+              const currentWords = (getSetting("advanced_custom_words") ||
+                []) as CustomWord[];
+              const wordIndex = currentWords.findIndex(
+                (w: CustomWord) => w.word === payload.word,
+              );
               if (wordIndex >= 0) {
                 const word = currentWords[wordIndex];
-                const existing = new Set((word.pronunciations ?? []).map((p: string) => p.toLowerCase()));
+                const existing = new Set(
+                  (word.pronunciations ?? []).map((p: string) =>
+                    p.toLowerCase(),
+                  ),
+                );
                 const uniqueNew = (payload.pronunciations as string[]).filter(
                   (p: string) => !existing.has(p.toLowerCase()),
                 );
@@ -109,7 +145,10 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                   const updated = [...currentWords];
                   updated[wordIndex] = {
                     ...word,
-                    pronunciations: [...(word.pronunciations ?? []), ...uniqueNew],
+                    pronunciations: [
+                      ...(word.pronunciations ?? []),
+                      ...uniqueNew,
+                    ],
                   };
                   updateSetting("advanced_custom_words", updated);
                   toast.success(
@@ -141,7 +180,9 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
         return unlisten;
       };
       let unlistenFn: (() => void) | undefined;
-      setup().then((fn) => { unlistenFn = fn; });
+      setup().then((fn) => {
+        unlistenFn = fn;
+      });
       return () => {
         cancelled = true;
         if (unlistenFn) unlistenFn();
@@ -183,7 +224,9 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
     };
 
     const handleRemoveWord = (index: number) => {
-      const updated = advancedWords.filter((_: CustomWord, i: number) => i !== index);
+      const updated = advancedWords.filter(
+        (_: CustomWord, i: number) => i !== index,
+      );
       updateSetting("advanced_custom_words", updated);
       if (expandedIndex === index) {
         setExpandedIndex(null);
@@ -192,7 +235,10 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
       }
     };
 
-    const handleAddPronunciation = (wordIndex: number, pronunciation?: string) => {
+    const handleAddPronunciation = (
+      wordIndex: number,
+      pronunciation?: string,
+    ) => {
       const trimmed = (pronunciation ?? newPronunciation).trim();
       if (!trimmed) return;
 
@@ -216,14 +262,19 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
       setNewPronunciation("");
     };
 
-    const handleRemovePronunciation = (wordIndex: number, pronIndex: number) => {
+    const handleRemovePronunciation = (
+      wordIndex: number,
+      pronIndex: number,
+    ) => {
       const updated = [...advancedWords];
       const word = updated[wordIndex];
       if (!word) return;
       const pronunciations = word.pronunciations ?? [];
       updated[wordIndex] = {
         ...word,
-        pronunciations: pronunciations.filter((_: string, i: number) => i !== pronIndex),
+        pronunciations: pronunciations.filter(
+          (_: string, i: number) => i !== pronIndex,
+        ),
       };
       updateSetting("advanced_custom_words", updated);
     };
@@ -251,12 +302,15 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
         setRecordingState("transcribing");
 
         try {
-          const currentWords = (getSetting("advanced_custom_words") || []) as CustomWord[];
+          const currentWords = (getSetting("advanced_custom_words") ||
+            []) as CustomWord[];
           const word = currentWords[wordIndex];
           if (!word) {
-            toast.error(t("settings.debug.advancedCustomWords.recordingError", {
-              error: "Word no longer exists",
-            }));
+            toast.error(
+              t("settings.debug.advancedCustomWords.recordingError", {
+                error: "Word no longer exists",
+              }),
+            );
             return;
           }
 
@@ -271,7 +325,8 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
           } else {
             toast.error(
               t("settings.debug.advancedCustomWords.recordingError", {
-                error: result.status === "error" ? result.error : "Unknown error",
+                error:
+                  result.status === "error" ? result.error : "Unknown error",
               }),
             );
             if (mountedRef.current) {
@@ -305,7 +360,8 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
           } else {
             toast.error(
               t("settings.debug.advancedCustomWords.recordingStartError", {
-                error: result.status === "error" ? result.error : "Unknown error",
+                error:
+                  result.status === "error" ? result.error : "Unknown error",
               }),
             );
           }
@@ -349,7 +405,11 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
             />
             <Button
               onClick={handleAddWord}
-              disabled={!newWord.trim() || newWord.trim().length > 100 || isUpdatingWords}
+              disabled={
+                !newWord.trim() ||
+                newWord.trim().length > 100 ||
+                isUpdatingWords
+              }
               variant="primary"
               size="md"
             >
@@ -368,7 +428,9 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                 {/* Word header row */}
                 <div
                   className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-mid-gray/5 rounded-t-lg"
-                  onClick={() => setExpandedIndex(expandedIndex === index ? null : index)}
+                  onClick={() =>
+                    setExpandedIndex(expandedIndex === index ? null : index)
+                  }
                 >
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <svg
@@ -393,8 +455,13 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                       <span className="text-xs text-text-secondary">
                         ({(cw.pronunciations ?? []).length}{" "}
                         {(cw.pronunciations ?? []).length === 1
-                          ? t("settings.debug.advancedCustomWords.pronunciation")
-                          : t("settings.debug.advancedCustomWords.pronunciations")})
+                          ? t(
+                              "settings.debug.advancedCustomWords.pronunciation",
+                            )
+                          : t(
+                              "settings.debug.advancedCustomWords.pronunciations",
+                            )}
+                        )
                       </span>
                     )}
                   </div>
@@ -405,9 +472,16 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                     }}
                     disabled={isUpdatingWords}
                     className="text-text-secondary hover:text-red-500 transition-colors p-1 flex-shrink-0"
-                    aria-label={t("settings.advanced.customWords.remove", { word: cw.word })}
+                    aria-label={t("settings.advanced.customWords.remove", {
+                      word: cw.word,
+                    })}
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
@@ -418,39 +492,53 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                   </button>
                 </div>
 
-                 {/* Expanded pronunciation section */}
+                {/* Expanded pronunciation section */}
                 {expandedIndex === index && (
                   <div className="px-3 pb-3 pt-1 border-t border-mid-gray/10">
                     <div className="text-xs text-text-secondary mb-2">
-                      {t("settings.debug.advancedCustomWords.pronunciationHint")}
+                      {t(
+                        "settings.debug.advancedCustomWords.pronunciationHint",
+                      )}
                     </div>
 
                     {/* Existing pronunciations */}
                     {(cw.pronunciations ?? []).length > 0 && (
                       <div className="flex flex-wrap gap-1 mb-2">
-                        {(cw.pronunciations ?? []).map((pron: string, pronIndex: number) => (
-                          <Button
-                            key={pronIndex}
-                            onClick={() => handleRemovePronunciation(index, pronIndex)}
-                            disabled={isUpdatingWords}
-                            variant="secondary"
-                            size="sm"
-                            className="inline-flex items-center gap-1"
-                            aria-label={t("settings.debug.advancedCustomWords.removePronunciation", {
-                              pronunciation: pron,
-                            })}
-                          >
-                            <span>{pron}</span>
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M6 18L18 6M6 6l12 12"
-                              />
-                            </svg>
-                          </Button>
-                        ))}
+                        {(cw.pronunciations ?? []).map(
+                          (pron: string, pronIndex: number) => (
+                            <Button
+                              key={pronIndex}
+                              onClick={() =>
+                                handleRemovePronunciation(index, pronIndex)
+                              }
+                              disabled={isUpdatingWords}
+                              variant="secondary"
+                              size="sm"
+                              className="inline-flex items-center gap-1"
+                              aria-label={t(
+                                "settings.debug.advancedCustomWords.removePronunciation",
+                                {
+                                  pronunciation: pron,
+                                },
+                              )}
+                            >
+                              <span>{pron}</span>
+                              <svg
+                                className="w-3 h-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M6 18L18 6M6 6l12 12"
+                                />
+                              </svg>
+                            </Button>
+                          ),
+                        )}
                       </div>
                     )}
 
@@ -462,7 +550,9 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                         value={newPronunciation}
                         onChange={(e) => setNewPronunciation(e.target.value)}
                         onKeyDown={handleKeyPressPronunciation}
-                        placeholder={t("settings.debug.advancedCustomWords.pronunciationPlaceholder")}
+                        placeholder={t(
+                          "settings.debug.advancedCustomWords.pronunciationPlaceholder",
+                        )}
                         variant="compact"
                         disabled={isUpdatingWords}
                       />
@@ -472,20 +562,27 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                         variant="secondary"
                         size="sm"
                       >
-                        {t("settings.debug.advancedCustomWords.addPronunciation")}
+                        {t(
+                          "settings.debug.advancedCustomWords.addPronunciation",
+                        )}
                       </Button>
                     </div>
 
                     {/* Record pronunciation */}
                     <div className="mt-2 flex items-center gap-2">
-                      {recordingState === "idle" || recordingWordIndex !== index ? (
+                      {recordingState === "idle" ||
+                      recordingWordIndex !== index ? (
                         <Button
                           onClick={() => handleStartRecording(index)}
-                          disabled={recordingState !== "idle" || isUpdatingWords}
+                          disabled={
+                            recordingState !== "idle" || isUpdatingWords
+                          }
                           variant="secondary"
                           size="sm"
                           className="inline-flex items-center gap-1.5"
-                          title={t("settings.debug.advancedCustomWords.recordTooltip")}
+                          title={t(
+                            "settings.debug.advancedCustomWords.recordTooltip",
+                          )}
                         >
                           {/* Microphone icon */}
                           <svg
@@ -501,7 +598,11 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                               d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
                             />
                           </svg>
-                          <span>{t("settings.debug.advancedCustomWords.recordPronunciation")}</span>
+                          <span>
+                            {t(
+                              "settings.debug.advancedCustomWords.recordPronunciation",
+                            )}
+                          </span>
                         </Button>
                       ) : recordingState === "recording" ? (
                         <Button
@@ -514,20 +615,42 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
                             <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
                           </span>
-                          <span>{t("settings.debug.advancedCustomWords.stopRecording")}</span>
+                          <span>
+                            {t(
+                              "settings.debug.advancedCustomWords.stopRecording",
+                            )}
+                          </span>
                         </Button>
                       ) : modelProgress ? (
                         <div className="flex items-center gap-2 text-sm text-text-secondary">
-                          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          <svg
+                            className="w-4 h-4 animate-spin"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                          >
+                            <circle
+                              className="opacity-25"
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeWidth="4"
+                            />
+                            <path
+                              className="opacity-75"
+                              fill="currentColor"
+                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                            />
                           </svg>
                           <span>
-                            {t("settings.debug.advancedCustomWords.multiModelProgress", {
-                              current: modelProgress.current,
-                              total: modelProgress.total,
-                              modelName: modelProgress.modelName,
-                            })}
+                            {t(
+                              "settings.debug.advancedCustomWords.multiModelProgress",
+                              {
+                                current: modelProgress.current,
+                                total: modelProgress.total,
+                                modelName: modelProgress.modelName,
+                              },
+                            )}
                           </span>
                         </div>
                       ) : (
@@ -537,11 +660,30 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
                           size="sm"
                           className="inline-flex items-center gap-1.5"
                         >
-                          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          <svg
+                            className="w-4 h-4 animate-spin"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                          >
+                            <circle
+                              className="opacity-25"
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeWidth="4"
+                            />
+                            <path
+                              className="opacity-75"
+                              fill="currentColor"
+                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                            />
                           </svg>
-                          <span>{t("settings.debug.advancedCustomWords.transcribing")}</span>
+                          <span>
+                            {t(
+                              "settings.debug.advancedCustomWords.transcribing",
+                            )}
+                          </span>
                         </Button>
                       )}
                     </div>
@@ -553,5 +695,4 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> = React.mem
         )}
       </div>
     );
-  },
-);
+  });

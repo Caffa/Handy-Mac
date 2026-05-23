@@ -199,6 +199,7 @@ models/your-model/
 ```
 
 The naming convention for quantized variants is `model.{quantization}.onnx`:
+
 - `model.onnx` — FP32 (default)
 - `model.fp16.onnx` — FP16
 - `model.int8.onnx` — INT8
@@ -241,9 +242,9 @@ The naming convention for quantized variants is `model.{quantization}.onnx`:
 
 ## Existing Models as Reference
 
-| Model | Complexity | Good reference for |
-|---|---|---|
-| `gigaam` | Simple | Single-session CTC model, minimal features |
-| `sense_voice` | Medium | ONNX metadata parsing, FBANK+LFR+CMVN pipeline, SymbolTable |
-| `parakeet` | Complex | Multi-session (encoder/decoder/preprocessor), RNN-T decode, timestamps |
-| `moonshine` | Complex | Multi-file split, autoregressive decoding, streaming variant |
+| Model         | Complexity | Good reference for                                                     |
+| ------------- | ---------- | ---------------------------------------------------------------------- |
+| `gigaam`      | Simple     | Single-session CTC model, minimal features                             |
+| `sense_voice` | Medium     | ONNX metadata parsing, FBANK+LFR+CMVN pipeline, SymbolTable            |
+| `parakeet`    | Complex    | Multi-session (encoder/decoder/preprocessor), RNN-T decode, timestamps |
+| `moonshine`   | Complex    | Multi-file split, autoregressive decoding, streaming variant           |

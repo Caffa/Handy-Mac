@@ -36,9 +36,7 @@ enum Command {
 enum Stage {
     Idle,
     Recording(String), // binding_id
-    Processing {
-        since: Instant,
-    },
+    Processing { since: Instant },
 }
 
 /// Serialises all transcription lifecycle events through a single thread
@@ -82,21 +80,25 @@ impl TranscriptionCoordinator {
                     };
 
                     let cmd = match timeout {
-                        Some(dur) => match rx.recv_timeout(dur) {
-                            Ok(c) => c,
-                            Err(mpsc::RecvTimeoutError::Timeout) => Command::ProcessingTimeout,
-                            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                info!("Transcription coordinator channel disconnected, shutting down");
-                                break;
+                        Some(dur) => {
+                            match rx.recv_timeout(dur) {
+                                Ok(c) => c,
+                                Err(mpsc::RecvTimeoutError::Timeout) => Command::ProcessingTimeout,
+                                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    info!("Transcription coordinator channel disconnected, shutting down");
+                                    break;
+                                }
                             }
-                        },
-                        None => match rx.recv() {
-                            Ok(c) => c,
-                            Err(_) => {
-                                info!("Transcription coordinator channel disconnected, shutting down");
-                                break;
+                        }
+                        None => {
+                            match rx.recv() {
+                                Ok(c) => c,
+                                Err(_) => {
+                                    info!("Transcription coordinator channel disconnected, shutting down");
+                                    break;
+                                }
                             }
-                        },
+                        }
                     };
 
                     match cmd {
@@ -130,11 +132,17 @@ impl TranscriptionCoordinator {
                             } else if is_pressed {
                                 match &stage {
                                     Stage::Idle => {
-                                        info!("Coordinator: starting recording for '{}'", binding_id);
+                                        info!(
+                                            "Coordinator: starting recording for '{}'",
+                                            binding_id
+                                        );
                                         start(&app, &mut stage, &binding_id, &hotkey_string);
                                     }
                                     Stage::Recording(id) if id == &binding_id => {
-                                        info!("Coordinator: stopping recording for '{}'", binding_id);
+                                        info!(
+                                            "Coordinator: stopping recording for '{}'",
+                                            binding_id
+                                        );
                                         stop(&app, &mut stage, &binding_id, &hotkey_string);
                                     }
                                     _ => {
@@ -146,10 +154,11 @@ impl TranscriptionCoordinator {
                         Command::Cancel {
                             recording_was_active,
                         } => {
-                            info!("Coordinator: cancel received, recording_was_active={}", recording_was_active);
-                            if recording_was_active
-                                || matches!(stage, Stage::Recording(_))
-                            {
+                            info!(
+                                "Coordinator: cancel received, recording_was_active={}",
+                                recording_was_active
+                            );
+                            if recording_was_active || matches!(stage, Stage::Recording(_)) {
                                 stage = Stage::Idle;
                                 info!("Coordinator: cancelled, reset to Idle");
                             } else if matches!(stage, Stage::Processing { .. }) {

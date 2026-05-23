@@ -1,23 +1,34 @@
 .recording-overlay {
-  height: 36px;
+  height: 54px;
   width: 172px;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   padding: 6px;
   background: #000000cc;
-  border-radius: 18px;
+  border-radius: 27px;
   opacity: 0;
-  transition: opacity 300ms ease-out, height 200ms ease-out;
+  transition:
+    opacity 300ms ease-out,
+    height 200ms ease-out;
   box-sizing: border-box;
   /* Center the pill vertically within the taller transparent window */
   margin: auto 0;
+  margin-top: 4px;
 }
 
 /* Expand overlay pill when hybrid indicator is shown */
 .recording-overlay:has(.hybrid-indicator) {
-  height: 52px;
-  border-radius: 26px;
+  height: 54px;
+  border-radius: 27px;
+  margin-top: 0;
+}
+
+/* Expand overlay pill when hybrid indicator is shown */
+.recording-overlay:has(.hybrid-indicator) {
+  height: 70px;
+  border-radius: 35px;
+  margin-top: 0;
 }
 
 .overlay-left {
@@ -45,13 +56,13 @@
   justify-content: center;
   gap: 3px;
   padding-bottom: 0px;
-  height: 24px;
+  height: 36px;
   overflow: hidden;
 }
 
 /* Give bars more room when hybrid indicator is present */
 .recording-overlay:has(.hybrid-indicator) .bars-container {
-  height: 30px;
+  height: 45px;
 }
 
 .bars-wrapper {
@@ -88,10 +99,10 @@
 .bar {
   width: 6px;
   background: #ffe5ee;
-  max-height: 20px;
+  max-height: 30px;
   border-radius: 2px;
   transition: height 80ms linear;
-  min-height: 4px;
+  min-height: 6px;
 }
 
 .recording-overlay.fade-in {
@@ -133,7 +144,9 @@
   height: 4px;
   border-radius: 50%;
   background: rgba(255, 217, 102, 0.25);
-  transition: background 300ms ease, box-shadow 300ms ease;
+  transition:
+    background 300ms ease,
+    box-shadow 300ms ease;
 }
 
 .usb-cycling-dot.dot-active {
@@ -156,8 +169,8 @@
 }
 
 .cancel-button {
-  width: 24px;
-  height: 24px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   background: transparent;
   display: flex;

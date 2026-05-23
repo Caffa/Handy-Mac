@@ -288,8 +288,7 @@ pub fn emit(event: AppEvent) {
             // Merge the event JSON into the envelope.
             // We produce a single JSON line by combining the envelope fields
             // with the event fields. This keeps the line self-contained.
-            let mut envelope: serde_json::Value =
-                serde_json::from_str(&line).unwrap_or_default();
+            let mut envelope: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
             let event_val: serde_json::Value =
                 serde_json::from_str(&event_json).unwrap_or_default();
 

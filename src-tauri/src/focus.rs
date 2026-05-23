@@ -109,9 +109,8 @@ pub fn restore_frontmost_app(app: &AppHandle) -> bool {
         // All ObjC API calls MUST happen inside an autorelease pool to prevent
         // autoreleased temporary objects from corrupting the malloc heap on
         // background (tokio worker) threads.
-        let activated = objc2::rc::autoreleasepool(|_| {
-            activate_app_by_pid(info.pid, &info.bundle_id)
-        });
+        let activated =
+            objc2::rc::autoreleasepool(|_| activate_app_by_pid(info.pid, &info.bundle_id));
         if activated {
             // Small delay to let the target app's run loop process the
             // activation before we send keystrokes. 50ms is generous —
@@ -154,7 +153,9 @@ fn activate_app_by_pid(pid: i32, bundle_id: &str) -> bool {
     let running_apps = workspace.runningApplications();
 
     // Find the app by PID.
-    let found = running_apps.iter().find(|app| app.processIdentifier() == pid);
+    let found = running_apps
+        .iter()
+        .find(|app| app.processIdentifier() == pid);
 
     let Some(app) = found else {
         warn!(
@@ -182,10 +183,7 @@ fn activate_app_by_pid(pid: i32, bundle_id: &str) -> bool {
     let result = app.activateWithOptions(options);
 
     if result {
-        info!(
-            "Successfully activated app {} (pid={})",
-            bundle_id, pid
-        );
+        info!("Successfully activated app {} (pid={})", bundle_id, pid);
     } else {
         warn!("Failed to activate app {} (pid={})", bundle_id, pid);
     }

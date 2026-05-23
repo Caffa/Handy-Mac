@@ -119,7 +119,10 @@ const ModelCard: React.FC<ModelCardProps> = ({
     onDelete?.(model.id);
   };
 
-  const handleHybridRoleClick = (e: React.MouseEvent, role: "short" | "long") => {
+  const handleHybridRoleClick = (
+    e: React.MouseEvent,
+    role: "short" | "long",
+  ) => {
     e.stopPropagation();
     if (!onHybridRoleChange) return;
     // Toggle: if already this role, unset; otherwise set
@@ -186,48 +189,50 @@ const ModelCard: React.FC<ModelCardProps> = ({
           </p>
         </div>
         {(model.accuracy_score > 0 || model.speed_score > 0) && (
-           <div className="hidden sm:flex items-center ms-4">
-             <div className="space-y-1">
-               <div className="flex items-center gap-2">
-                 <p className="text-xs text-text/60 w-24 text-end">
-                   {t("onboarding.modelCard.accuracy")}
-                 </p>
-                 <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
-                   <div
-                     className="h-full bg-logo-primary rounded-full"
-                     style={{ width: `${model.accuracy_score * 100}%` }}
-                   />
-                 </div>
-               </div>
-               <div className="flex items-center gap-2">
-                 <p className="text-xs text-text/60 w-24 text-end">
-                   {t("onboarding.modelCard.speed")}
-                 </p>
-                 {model.dynamic_score?.failed ? (
-                   <span className="text-xs text-red-400 flex items-center gap-0.5">
-                     <AlertTriangle className="w-3 h-3" />
-                     {t("settings.models.benchmark.failedBadge")}
-                   </span>
-                 ) : (
-                   <>
-                     <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
-                       <div
-                         className={`h-full rounded-full ${model.dynamic_score ? "bg-green-500" : "bg-logo-primary"}`}
-                         style={{ width: `${(model.dynamic_score?.speed_score ?? model.speed_score) * 100}%` }}
-                       />
-                     </div>
-                     {model.dynamic_score && (
-                       <span className="text-[10px] text-text/40 tabular-nums">
-                         {t("settings.models.benchmark.avgTime", {
-                           ms: Math.round(model.dynamic_score.avg_ms),
-                         })}
-                       </span>
-                     )}
-                   </>
-                 )}
-               </div>
-             </div>
-           </div>
+          <div className="hidden sm:flex items-center ms-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-text/60 w-24 text-end">
+                  {t("onboarding.modelCard.accuracy")}
+                </p>
+                <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-logo-primary rounded-full"
+                    style={{ width: `${model.accuracy_score * 100}%` }}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-text/60 w-24 text-end">
+                  {t("onboarding.modelCard.speed")}
+                </p>
+                {model.dynamic_score?.failed ? (
+                  <span className="text-xs text-red-400 flex items-center gap-0.5">
+                    <AlertTriangle className="w-3 h-3" />
+                    {t("settings.models.benchmark.failedBadge")}
+                  </span>
+                ) : (
+                  <>
+                    <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${model.dynamic_score ? "bg-green-500" : "bg-logo-primary"}`}
+                        style={{
+                          width: `${(model.dynamic_score?.speed_score ?? model.speed_score) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    {model.dynamic_score && (
+                      <span className="text-[10px] text-text/40 tabular-nums">
+                        {t("settings.models.benchmark.avgTime", {
+                          ms: Math.round(model.dynamic_score.avg_ms),
+                        })}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
@@ -257,32 +262,34 @@ const ModelCard: React.FC<ModelCardProps> = ({
             <span>{t("modelSelector.capabilities.translate")}</span>
           </div>
         )}
-        {hybridModeEnabled && (status === "available" || status === "active") && onHybridRoleChange && (
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={(e) => handleHybridRoleClick(e, "short")}
-              className={`px-2 py-0.5 text-[10px] font-semibold rounded-full transition-colors ${
-                hybridRole === "short"
-                  ? "bg-green-500/20 text-green-400 ring-1 ring-green-500/30"
-                  : "bg-mid-gray/10 text-text/40 hover:bg-mid-gray/20 hover:text-text/60"
-              }`}
-            >
-              {t("settings.advanced.hybridMode.shortBadge")}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => handleHybridRoleClick(e, "long")}
-              className={`px-2 py-0.5 text-[10px] font-semibold rounded-full transition-colors ${
-                hybridRole === "long"
-                  ? "bg-logo-primary/20 text-logo-primary ring-1 ring-logo-primary/30"
-                  : "bg-mid-gray/10 text-text/40 hover:bg-mid-gray/20 hover:text-text/60"
-              }`}
-            >
-              {t("settings.advanced.hybridMode.longBadge")}
-            </button>
-          </div>
-        )}
+        {hybridModeEnabled &&
+          (status === "available" || status === "active") &&
+          onHybridRoleChange && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={(e) => handleHybridRoleClick(e, "short")}
+                className={`px-2 py-0.5 text-[10px] font-semibold rounded-full transition-colors ${
+                  hybridRole === "short"
+                    ? "bg-green-500/20 text-green-400 ring-1 ring-green-500/30"
+                    : "bg-mid-gray/10 text-text/40 hover:bg-mid-gray/20 hover:text-text/60"
+                }`}
+              >
+                {t("settings.advanced.hybridMode.shortBadge")}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => handleHybridRoleClick(e, "long")}
+                className={`px-2 py-0.5 text-[10px] font-semibold rounded-full transition-colors ${
+                  hybridRole === "long"
+                    ? "bg-logo-primary/20 text-logo-primary ring-1 ring-logo-primary/30"
+                    : "bg-mid-gray/10 text-text/40 hover:bg-mid-gray/20 hover:text-text/60"
+                }`}
+              >
+                {t("settings.advanced.hybridMode.longBadge")}
+              </button>
+            </div>
+          )}
         {status === "downloadable" && (
           <span className="flex items-center gap-1.5 ms-auto text-xs text-text/50">
             <Download className="w-3.5 h-3.5" />

@@ -160,9 +160,7 @@ impl SessionTracker {
             }
 
             let recording_ms = session.phase_started_at.elapsed().as_millis() as u64;
-            session
-                .phases
-                .insert("recording".to_string(), recording_ms);
+            session.phases.insert("recording".to_string(), recording_ms);
             session.phase = SessionPhase::Transcribing;
             session.phase_started_at = Instant::now();
             session.model_id = Some(model_id.to_string());

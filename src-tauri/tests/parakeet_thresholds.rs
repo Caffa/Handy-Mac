@@ -12,7 +12,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use handy_app_lib::audio_toolkit::audio::{compute_audio_quality, read_wav_samples, AudioQualityMetrics};
+use handy_app_lib::audio_toolkit::audio::{
+    compute_audio_quality, read_wav_samples, AudioQualityMetrics,
+};
 
 struct RecordingAnalysis {
     file_name: String,
@@ -35,12 +37,11 @@ fn db_transcriptions(db_path: &PathBuf) -> BTreeMap<String, String> {
         Ok(c) => c,
         Err(_) => return BTreeMap::new(),
     };
-    let mut stmt = match conn.prepare(
-        "SELECT file_name, transcription_text FROM transcription_history",
-    ) {
-        Ok(s) => s,
-        Err(_) => return BTreeMap::new(),
-    };
+    let mut stmt =
+        match conn.prepare("SELECT file_name, transcription_text FROM transcription_history") {
+            Ok(s) => s,
+            Err(_) => return BTreeMap::new(),
+        };
     let rows = stmt.query_map([], |row| {
         let file_name: String = row.get(0)?;
         let text: String = row.get(1)?;
@@ -125,9 +126,13 @@ fn analyze_parakeet_thresholds() {
         }
 
         let rms_bucket = metrics.rms_dbfs.floor() as i32 / 5 * 5;
-        *rms_buckets.entry(format!("{:+} to {:+} dBFS", rms_bucket, rms_bucket + 5)).or_insert(0) += 1;
+        *rms_buckets
+            .entry(format!("{:+} to {:+} dBFS", rms_bucket, rms_bucket + 5))
+            .or_insert(0) += 1;
         let snr_bucket = metrics.estimated_snr_db.floor() as i32 / 5 * 5;
-        *snr_buckets.entry(format!("{:+} to {:+} dB", snr_bucket, snr_bucket + 5)).or_insert(0) += 1;
+        *snr_buckets
+            .entry(format!("{:+} to {:+} dB", snr_bucket, snr_bucket + 5))
+            .or_insert(0) += 1;
 
         let transcription = transcriptions.get(&file_name).cloned();
 
@@ -143,15 +148,24 @@ fn analyze_parakeet_thresholds() {
     println!("  Parakeet Threshold Analysis Report");
     println!("========================================\n");
     println!("Total recordings analyzed: {}", total);
-    println!("Quiet recordings (may_be_too_quiet): {} ({:.1}%)", quiet_count,
-        if total > 0 { quiet_count as f64 / total as f64 * 100.0 } else { 0.0 });
+    println!(
+        "Quiet recordings (may_be_too_quiet): {} ({:.1}%)",
+        quiet_count,
+        if total > 0 {
+            quiet_count as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
 
     println!("\n--- Peak dBFS Distribution ---");
     // Also show peak distribution for calibration
     let mut peak_buckets: BTreeMap<String, usize> = BTreeMap::new();
     for a in &analyses {
         let peak_bucket = a.metrics.peak_dbfs.floor() as i32 / 5 * 5;
-        *peak_buckets.entry(format!("{:+} to {:+} dBFS", peak_bucket, peak_bucket + 5)).or_insert(0) += 1;
+        *peak_buckets
+            .entry(format!("{:+} to {:+} dBFS", peak_bucket, peak_bucket + 5))
+            .or_insert(0) += 1;
     }
     for (bucket, count) in &peak_buckets {
         let bar: String = "█".repeat((*count).min(80) as usize);
@@ -170,33 +184,55 @@ fn analyze_parakeet_thresholds() {
         println!("  {:>20}  {:>3}  {}", bucket, count, bar);
     }
 
-    analyses.sort_by(|a, b| a.metrics.peak_dbfs.partial_cmp(&b.metrics.peak_dbfs).unwrap_or(std::cmp::Ordering::Equal));
+    analyses.sort_by(|a, b| {
+        a.metrics
+            .peak_dbfs
+            .partial_cmp(&b.metrics.peak_dbfs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let top10: Vec<&RecordingAnalysis> = analyses.iter().take(10).collect();
 
     println!("\n--- Top 10 Quietest Recordings (by peak) ---");
     for (i, a) in top10.iter().enumerate() {
         println!("\n  {}. {}", i + 1, a.file_name);
-        println!("     RMS:       {:.1} dBFS  (linear: {:.6})", a.metrics.rms_dbfs, a.metrics.rms);
-        println!("     Peak:      {:.1} dBFS  (linear: {:.6})", a.metrics.peak_dbfs, a.metrics.peak);
+        println!(
+            "     RMS:       {:.1} dBFS  (linear: {:.6})",
+            a.metrics.rms_dbfs, a.metrics.rms
+        );
+        println!(
+            "     Peak:      {:.1} dBFS  (linear: {:.6})",
+            a.metrics.peak_dbfs, a.metrics.peak
+        );
         println!("     Duration:  {:.1}s", a.metrics.duration_secs);
         println!("     SNR:       {:.1} dB", a.metrics.estimated_snr_db);
         println!("     Too quiet: {}", a.metrics.may_be_too_quiet);
         if let Some(ref text) = a.transcription {
-            let preview = if text.len() > 120 { format!("{}...", &text[..117]) } else { text.clone() };
+            let preview = if text.len() > 120 {
+                format!("{}...", &text[..117])
+            } else {
+                text.clone()
+            };
             println!("     Transcript: \"{}\"", preview);
         } else {
             println!("     Transcript: (no matching DB entry)");
         }
 
         if a.metrics.may_be_too_quiet {
-            println!("     Adaptive:  {} (SNR={:.1} dB)", adaptive_threshold_note(a.metrics.estimated_snr_db), a.metrics.estimated_snr_db);
+            println!(
+                "     Adaptive:  {} (SNR={:.1} dB)",
+                adaptive_threshold_note(a.metrics.estimated_snr_db),
+                a.metrics.estimated_snr_db
+            );
         }
     }
 
     if quiet_count > 0 {
         println!("\n--- Summary of Quiet Recordings with Adaptive Thresholds ---");
-        let quiet_analyses: Vec<&RecordingAnalysis> = analyses.iter().filter(|a| a.metrics.may_be_too_quiet).collect();
+        let quiet_analyses: Vec<&RecordingAnalysis> = analyses
+            .iter()
+            .filter(|a| a.metrics.may_be_too_quiet)
+            .collect();
         for a in &quiet_analyses {
             let snr = a.metrics.estimated_snr_db;
             let threshold_note = adaptive_threshold_note(snr);
@@ -292,9 +328,11 @@ fn compute_audio_quality_synthetic_thresholds() {
     // the noise nearly drowns out the speech. Peak is above -25 dBFS.
     let low_snr_samples: Vec<f32> = (0..num_samples)
         .map(|i| {
-            let noise = 0.2 * (2.0 * std::f32::consts::PI * 120.0 * i as f32 / sample_rate as f32).sin();
+            let noise =
+                0.2 * (2.0 * std::f32::consts::PI * 120.0 * i as f32 / sample_rate as f32).sin();
             if i < speech_samples {
-                (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sample_rate as f32).sin() * 0.25 + noise
+                (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sample_rate as f32).sin() * 0.25
+                    + noise
             } else {
                 noise
             }
@@ -348,24 +386,55 @@ fn compute_audio_quality_synthetic_thresholds() {
 
     // Loud, medium, and borderline audio should NOT be flagged as too quiet
     // (peak above -25 dBFS, good SNR)
-    assert!(!loud.may_be_too_quiet, "Loud audio should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)", loud.peak_dbfs, loud.estimated_snr_db);
-    assert!(!medium.may_be_too_quiet, "Medium audio should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)", medium.peak_dbfs, medium.estimated_snr_db);
-    assert!(!borderline.may_be_too_quiet, "Borderline audio (peak≈-22 dBFS) should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)", borderline.peak_dbfs, borderline.estimated_snr_db);
+    assert!(
+        !loud.may_be_too_quiet,
+        "Loud audio should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)",
+        loud.peak_dbfs, loud.estimated_snr_db
+    );
+    assert!(
+        !medium.may_be_too_quiet,
+        "Medium audio should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)",
+        medium.peak_dbfs, medium.estimated_snr_db
+    );
+    assert!(
+        !borderline.may_be_too_quiet,
+        "Borderline audio (peak≈-22 dBFS) should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)",
+        borderline.peak_dbfs, borderline.estimated_snr_db
+    );
 
     // Quiet and very quiet audio SHOULD be flagged (peak < -25 dBFS)
-    assert!(quiet.may_be_too_quiet, "Quiet audio SHOULD be flagged (peak={:.1} dBFS)", quiet.peak_dbfs);
-    assert!(very_quiet.may_be_too_quiet, "Very quiet audio SHOULD be flagged (peak={:.1} dBFS)", very_quiet.peak_dbfs);
+    assert!(
+        quiet.may_be_too_quiet,
+        "Quiet audio SHOULD be flagged (peak={:.1} dBFS)",
+        quiet.peak_dbfs
+    );
+    assert!(
+        very_quiet.may_be_too_quiet,
+        "Very quiet audio SHOULD be flagged (peak={:.1} dBFS)",
+        very_quiet.peak_dbfs
+    );
     assert!(silence.may_be_too_quiet, "Silence SHOULD be flagged");
 
     // Quiet audio should have peak below -25 dBFS threshold
-    assert!(quiet.peak_dbfs < -25.0, "Quiet peak should be below -25 dBFS (got {:.1})", quiet.peak_dbfs);
-    assert!(very_quiet.peak_dbfs < -30.0, "Very quiet peak should be below -30 dBFS (got {:.1})", very_quiet.peak_dbfs);
+    assert!(
+        quiet.peak_dbfs < -25.0,
+        "Quiet peak should be below -25 dBFS (got {:.1})",
+        quiet.peak_dbfs
+    );
+    assert!(
+        very_quiet.peak_dbfs < -30.0,
+        "Very quiet peak should be below -30 dBFS (got {:.1})",
+        very_quiet.peak_dbfs
+    );
 
     // Low SNR: if SNR < 12 dB, should be flagged even with adequate peak;
     // if SNR >= 12 dB, should NOT be flagged (peak is well above -25 dBFS)
     if low_snr.estimated_snr_db < 12.0 {
-        assert!(low_snr.may_be_too_quiet,
-            "Low SNR audio should be flagged when SNR < 12 dB (snr={:.1} dB)", low_snr.estimated_snr_db);
+        assert!(
+            low_snr.may_be_too_quiet,
+            "Low SNR audio should be flagged when SNR < 12 dB (snr={:.1} dB)",
+            low_snr.estimated_snr_db
+        );
     } else {
         // If synthetic construction doesn't achieve low SNR, that's fine —
         // the SNR < 12 detection path is validated on real recordings instead.
@@ -373,17 +442,43 @@ fn compute_audio_quality_synthetic_thresholds() {
     }
 
     // Silence should have extremely low values
-    assert!(silence.rms_dbfs < -90.0, "Silence RMS should be extremely low (got {:.1})", silence.rms_dbfs);
-    assert!(silence.peak_dbfs < -90.0, "Silence peak should be extremely low (got {:.1})", silence.peak_dbfs);
+    assert!(
+        silence.rms_dbfs < -90.0,
+        "Silence RMS should be extremely low (got {:.1})",
+        silence.rms_dbfs
+    );
+    assert!(
+        silence.peak_dbfs < -90.0,
+        "Silence peak should be extremely low (got {:.1})",
+        silence.peak_dbfs
+    );
 
     // Ordinal ordering: louder signals should have higher peak
-    assert!(loud.peak > medium.peak, "Loud peak ({:.3}) should exceed medium peak ({:.3})", loud.peak, medium.peak);
-    assert!(medium.peak > borderline.peak, "Medium peak ({:.3}) should exceed borderline peak ({:.3})", medium.peak, borderline.peak);
-    assert!(borderline.peak > quiet.peak, "Borderline peak ({:.3}) should exceed quiet peak ({:.3})", borderline.peak, quiet.peak);
+    assert!(
+        loud.peak > medium.peak,
+        "Loud peak ({:.3}) should exceed medium peak ({:.3})",
+        loud.peak,
+        medium.peak
+    );
+    assert!(
+        medium.peak > borderline.peak,
+        "Medium peak ({:.3}) should exceed borderline peak ({:.3})",
+        medium.peak,
+        borderline.peak
+    );
+    assert!(
+        borderline.peak > quiet.peak,
+        "Borderline peak ({:.3}) should exceed quiet peak ({:.3})",
+        borderline.peak,
+        quiet.peak
+    );
 
     // Short quiet recording (< 1s): flagged by peak < -25 regardless of duration
-    assert!(short_quiet.may_be_too_quiet,
-        "Short quiet recording should be flagged due to peak < -25 dBFS (peak={:.1} dBFS)", short_quiet.peak_dbfs);
+    assert!(
+        short_quiet.may_be_too_quiet,
+        "Short quiet recording should be flagged due to peak < -25 dBFS (peak={:.1} dBFS)",
+        short_quiet.peak_dbfs
+    );
 }
 
 #[test]
@@ -405,14 +500,30 @@ fn compute_audio_quality_mixed_signal() {
 
     let metrics = compute_audio_quality(&mixed);
 
-    assert!(metrics.duration_secs > 1.0, "Duration should exceed 1 second");
-    assert!(metrics.estimated_snr_db > 0.0, "SNR should be positive for speech+noise signal");
+    assert!(
+        metrics.duration_secs > 1.0,
+        "Duration should exceed 1 second"
+    );
+    assert!(
+        metrics.estimated_snr_db > 0.0,
+        "SNR should be positive for speech+noise signal"
+    );
     // Mixed signal with amplitude 0.3 → peak ≈ -10.5 dBFS, well above -25 threshold
-    assert!(!metrics.may_be_too_quiet, "Mixed signal (peak={:.1} dBFS) should NOT be flagged as too quiet", metrics.peak_dbfs);
+    assert!(
+        !metrics.may_be_too_quiet,
+        "Mixed signal (peak={:.1} dBFS) should NOT be flagged as too quiet",
+        metrics.peak_dbfs
+    );
 
     println!("\n=== Mixed Signal Metrics ===");
-    println!("  RMS:       {:.3} ({:.1} dBFS)", metrics.rms, metrics.rms_dbfs);
-    println!("  Peak:      {:.3} ({:.1} dBFS)", metrics.peak, metrics.peak_dbfs);
+    println!(
+        "  RMS:       {:.3} ({:.1} dBFS)",
+        metrics.rms, metrics.rms_dbfs
+    );
+    println!(
+        "  Peak:      {:.3} ({:.1} dBFS)",
+        metrics.peak, metrics.peak_dbfs
+    );
     println!("  Duration:  {:.1}s", metrics.duration_secs);
     println!("  SNR:       {:.1} dB", metrics.estimated_snr_db);
     println!("  Too quiet: {}", metrics.may_be_too_quiet);

@@ -41,10 +41,7 @@ impl AudioQualityMetrics {
         }
 
         // Peak amplitude (largest absolute value)
-        let peak_amplitude = samples
-            .iter()
-            .map(|s| s.abs())
-            .fold(0.0f32, f32::max);
+        let peak_amplitude = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
 
         // Peak dBFS (relative to full scale, 0 dBFS = max)
         let peak_dbfs = if peak_amplitude > 1e-10 {
@@ -68,16 +65,10 @@ impl AudioQualityMetrics {
         let signal_end = (n * 90 / 100).max(1); // top 10%
         let noise_end = (n * 10 / 100).max(1); // bottom 10%
 
-        let signal_rms: f32 = amps[n - signal_end..]
-            .iter()
-            .map(|&a| a * a)
-            .sum::<f32>()
-            / signal_end as f32;
-        let noise_rms: f32 = amps[..noise_end]
-            .iter()
-            .map(|&a| a * a)
-            .sum::<f32>()
-            / noise_end as f32;
+        let signal_rms: f32 =
+            amps[n - signal_end..].iter().map(|&a| a * a).sum::<f32>() / signal_end as f32;
+        let noise_rms: f32 =
+            amps[..noise_end].iter().map(|&a| a * a).sum::<f32>() / noise_end as f32;
 
         let estimated_snr_db = if noise_rms > 1e-15 && signal_rms > noise_rms {
             10.0 * (signal_rms / noise_rms).log10()

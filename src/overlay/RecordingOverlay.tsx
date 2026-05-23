@@ -270,14 +270,14 @@ const RecordingOverlay: React.FC = () => {
       // Paper-plane icon for routing actions (amber #f59e0b)
       const iconColor = "#f59e0b";
       if (state === "recording") {
-        return <RoutingIcon color={iconColor} />;
+        return <RoutingIcon color={iconColor} width={30} height={30} />;
       }
-      return <RoutingIcon color={iconColor} />;
+      return <RoutingIcon color={iconColor} width={30} height={30} />;
     }
     if (state === "recording") {
-      return <MicrophoneIcon />;
+      return <MicrophoneIcon width={30} height={30} />;
     }
-    return <TranscriptionIcon />;
+    return <TranscriptionIcon width={30} height={30} />;
   };
 
   const getOverlayClassNames = (): string => {
@@ -313,7 +313,7 @@ const RecordingOverlay: React.FC = () => {
                   key={i}
                   className={`bar${isRouter ? " routing-bar" : ""}`}
                   style={{
-                    height: `${Math.min(20, 4 + Math.pow(v, 0.7) * 16)}px`,
+                    height: `${Math.min(30, 6 + Math.pow(v, 0.7) * 24)}px`,
                     transition: "height 80ms linear, opacity 120ms ease-out",
                     opacity: Math.max(0.2, v * 1.7),
                   }}
@@ -323,12 +323,16 @@ const RecordingOverlay: React.FC = () => {
           </div>
         )}
         {state === "transcribing" && (
-          <div className={`transcribing-text${isRouter ? " routing-text" : ""}`}>
+          <div
+            className={`transcribing-text${isRouter ? " routing-text" : ""}`}
+          >
             {isRouter ? t("overlay.routing") : t("overlay.transcribing")}
           </div>
         )}
         {state === "processing" && (
-          <div className={`transcribing-text${isRouter ? " routing-text" : ""}`}>
+          <div
+            className={`transcribing-text${isRouter ? " routing-text" : ""}`}
+          >
             {isRouter ? t("overlay.filing") : t("overlay.processing")}
           </div>
         )}
@@ -345,8 +349,12 @@ const RecordingOverlay: React.FC = () => {
                   <div
                     key={s}
                     className={`usb-cycling-dot ${
-                      ["resolving", "cycling", "waiting", "recovered"].indexOf(usbCycleStage.stage) >=
-                      ["resolving", "cycling", "waiting", "recovered"].indexOf(s)
+                      ["resolving", "cycling", "waiting", "recovered"].indexOf(
+                        usbCycleStage.stage,
+                      ) >=
+                      ["resolving", "cycling", "waiting", "recovered"].indexOf(
+                        s,
+                      )
                         ? "dot-active"
                         : ""
                     } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
@@ -361,7 +369,7 @@ const RecordingOverlay: React.FC = () => {
       <div className="overlay-right">
         {state === "recording" && (
           <div className="cancel-button" onClick={handleCancel}>
-            <CancelIcon />
+            <CancelIcon width={30} height={30} />
           </div>
         )}
       </div>

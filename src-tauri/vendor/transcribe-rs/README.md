@@ -22,31 +22,31 @@ transcribe-rs = { version = "0.3", features = ["onnx"] }
 
 No features are enabled by default. Pick the engines you need:
 
-| Feature | Engines |
-|---------|---------|
-| `onnx` | Parakeet, Canary, Cohere, Moonshine, SenseVoice, GigaAM (via ONNX Runtime) |
-| `whisper-cpp` | Whisper (local, GGML via whisper.cpp with Metal/Vulkan/CUDA) |
-| `whisperfile` | Whisperfile (local server wrapper) |
-| `openai` | OpenAI API (remote, async) |
-| `all` | Everything above |
+| Feature       | Engines                                                                    |
+| ------------- | -------------------------------------------------------------------------- |
+| `onnx`        | Parakeet, Canary, Cohere, Moonshine, SenseVoice, GigaAM (via ONNX Runtime) |
+| `whisper-cpp` | Whisper (local, GGML via whisper.cpp with Metal/Vulkan/CUDA)               |
+| `whisperfile` | Whisperfile (local server wrapper)                                         |
+| `openai`      | OpenAI API (remote, async)                                                 |
+| `all`         | Everything above                                                           |
 
 GPU accelerator features for whisper.cpp:
 
-| Feature | Backend |
-|---------|---------|
-| `whisper-metal` | Apple Metal (macOS) |
-| `whisper-vulkan` | Vulkan (Windows/Linux) |
-| `whisper-cuda` | NVIDIA CUDA (requires CUDA Toolkit 12.0+) |
+| Feature          | Backend                                   |
+| ---------------- | ----------------------------------------- |
+| `whisper-metal`  | Apple Metal (macOS)                       |
+| `whisper-vulkan` | Vulkan (Windows/Linux)                    |
+| `whisper-cuda`   | NVIDIA CUDA (requires CUDA Toolkit 12.0+) |
 
 GPU accelerator features for ORT engines:
 
-| Feature | Backend |
-|---------|---------|
-| `ort-cuda` | NVIDIA CUDA |
-| `ort-rocm` | AMD ROCm |
+| Feature        | Backend                      |
+| -------------- | ---------------------------- |
+| `ort-cuda`     | NVIDIA CUDA                  |
+| `ort-rocm`     | AMD ROCm                     |
 | `ort-directml` | Microsoft DirectML (Windows) |
-| `ort-coreml` | Apple CoreML (macOS/iOS) |
-| `ort-webgpu` | WebGPU via Dawn |
+| `ort-coreml`   | Apple CoreML (macOS/iOS)     |
+| `ort-webgpu`   | WebGPU via Dawn              |
 
 ## Quick Start
 
@@ -139,6 +139,7 @@ let result = model.transcribe_with(
 Model variant (Flash vs V2) is auto-detected from vocabulary size. Flash models support en/de/es/fr; V2 supports 25 languages.
 
 **Features:**
+
 - **PnC** (punctuation and capitalization) — enabled by default. When on, the model adds proper punctuation and capitalization. Set `use_pnc: false` for raw output.
 - **ITN** (inverse text normalization) — enabled by default. Converts spoken numbers to written form (e.g. "one hundred twenty three" becomes "123"). Set `use_itn: false` to disable. Only supported on V2 models; silently ignored on Flash.
 - **Translation** — set `target_language` to translate between supported languages.
@@ -313,23 +314,24 @@ All audio input must be **16 kHz, mono, 16-bit PCM WAV**.
 
 ### Model Downloads
 
-| Engine | Download |
-|--------|----------|
-| Parakeet (int8) | [blob.handy.computer](https://blob.handy.computer/parakeet-v3-int8.tar.gz) / [HuggingFace](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/tree/main) |
-| Canary 180M Flash | [HuggingFace](https://huggingface.co/istupakov/canary-180m-flash-onnx) |
-| Canary 1B Flash | [HuggingFace](https://huggingface.co/istupakov/canary-1b-flash-onnx) |
-| Canary 1B v2 | [HuggingFace](https://huggingface.co/istupakov/canary-1b-v2-onnx) |
-| Cohere (int4) | [HuggingFace](https://huggingface.co/cstr/cohere-transcribe-onnx-int4) |
-| Cohere (int8) | [HuggingFace](https://huggingface.co/tristanripke/cohere-transcribe-onnx-int8) |
-| SenseVoice (int8) | [blob.handy.computer](https://blob.handy.computer/sense-voice-int8.tar.gz) / [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) |
-| Moonshine | [blob.handy.computer (base)](https://blob.handy.computer/moonshine-base.tar.gz), [blob.handy.computer (tiny streaming en)](https://blob.handy.computer/moonshine-tiny-streaming-en.tar.gz), [blob.handy.computer (small streaming en)](https://blob.handy.computer/moonshine-small-streaming-en.tar.gz), [blob.handy.computer (medium streaming en)](https://blob.handy.computer/moonshine-medium-streaming-en.tar.gz) |
-| GigaAM | [HuggingFace](https://huggingface.co/istupakov/gigaam-v3-onnx/tree/main) |
-| Whisper (GGML) | [HuggingFace](https://huggingface.co/ggerganov/whisper.cpp/tree/main) |
-| Whisperfile binary | [GitHub](https://github.com/mozilla-ai/llamafile/releases/download/0.9.3/whisperfile-0.9.3) |
+| Engine             | Download                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Parakeet (int8)    | [blob.handy.computer](https://blob.handy.computer/parakeet-v3-int8.tar.gz) / [HuggingFace](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/tree/main)                                                                                                                                                                                                                                                       |
+| Canary 180M Flash  | [HuggingFace](https://huggingface.co/istupakov/canary-180m-flash-onnx)                                                                                                                                                                                                                                                                                                                                                 |
+| Canary 1B Flash    | [HuggingFace](https://huggingface.co/istupakov/canary-1b-flash-onnx)                                                                                                                                                                                                                                                                                                                                                   |
+| Canary 1B v2       | [HuggingFace](https://huggingface.co/istupakov/canary-1b-v2-onnx)                                                                                                                                                                                                                                                                                                                                                      |
+| Cohere (int4)      | [HuggingFace](https://huggingface.co/cstr/cohere-transcribe-onnx-int4)                                                                                                                                                                                                                                                                                                                                                 |
+| Cohere (int8)      | [HuggingFace](https://huggingface.co/tristanripke/cohere-transcribe-onnx-int8)                                                                                                                                                                                                                                                                                                                                         |
+| SenseVoice (int8)  | [blob.handy.computer](https://blob.handy.computer/sense-voice-int8.tar.gz) / [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)                                                                                                                                                                                                                                                              |
+| Moonshine          | [blob.handy.computer (base)](https://blob.handy.computer/moonshine-base.tar.gz), [blob.handy.computer (tiny streaming en)](https://blob.handy.computer/moonshine-tiny-streaming-en.tar.gz), [blob.handy.computer (small streaming en)](https://blob.handy.computer/moonshine-small-streaming-en.tar.gz), [blob.handy.computer (medium streaming en)](https://blob.handy.computer/moonshine-medium-streaming-en.tar.gz) |
+| GigaAM             | [HuggingFace](https://huggingface.co/istupakov/gigaam-v3-onnx/tree/main)                                                                                                                                                                                                                                                                                                                                               |
+| Whisper (GGML)     | [HuggingFace](https://huggingface.co/ggerganov/whisper.cpp/tree/main)                                                                                                                                                                                                                                                                                                                                                  |
+| Whisperfile binary | [GitHub](https://github.com/mozilla-ai/llamafile/releases/download/0.9.3/whisperfile-0.9.3)                                                                                                                                                                                                                                                                                                                            |
 
 ### Directory Layouts
 
 **Parakeet** (directory):
+
 ```
 models/parakeet-tdt-0.6b-v3-int8/
 ├── encoder-model.int8.onnx
@@ -339,6 +341,7 @@ models/parakeet-tdt-0.6b-v3-int8/
 ```
 
 **Canary** (directory):
+
 ```
 models/canary-1b-v2/
 ├── encoder-model.int8.onnx
@@ -348,6 +351,7 @@ models/canary-1b-v2/
 ```
 
 **Cohere** (directory):
+
 ```
 models/cohere-int4/
 ├── cohere-encoder.int4.onnx
@@ -358,6 +362,7 @@ models/cohere-int4/
 ```
 
 **SenseVoice** (directory):
+
 ```
 models/sense-voice/
 ├── model.int8.onnx
@@ -365,6 +370,7 @@ models/sense-voice/
 ```
 
 **Moonshine** (directory):
+
 ```
 models/moonshine-base/
 ├── encoder_model.onnx
@@ -373,6 +379,7 @@ models/moonshine-base/
 ```
 
 **Moonshine Streaming** (directory):
+
 ```
 models/moonshine-streaming/moonshine-tiny-streaming-en/
 ├── encoder.onnx
@@ -382,6 +389,7 @@ models/moonshine-streaming/moonshine-tiny-streaming-en/
 ```
 
 **GigaAM** (directory):
+
 ```
 models/giga-am-v3/
 ├── model.onnx          (or model.int8.onnx)
@@ -392,17 +400,17 @@ models/giga-am-v3/
 
 ### Moonshine Variants
 
-| Variant | Language |
-|---------|----------|
-| Tiny | English |
-| TinyAr | Arabic |
-| TinyZh | Chinese |
-| TinyJa | Japanese |
-| TinyKo | Korean |
-| TinyUk | Ukrainian |
-| TinyVi | Vietnamese |
-| Base | English |
-| BaseEs | Spanish |
+| Variant | Language   |
+| ------- | ---------- |
+| Tiny    | English    |
+| TinyAr  | Arabic     |
+| TinyZh  | Chinese    |
+| TinyJa  | Japanese   |
+| TinyKo  | Korean     |
+| TinyUk  | Ukrainian  |
+| TinyVi  | Vietnamese |
+| Base    | English    |
+| BaseEs  | Spanish    |
 
 ## Examples and Tests
 
@@ -444,12 +452,12 @@ cargo test-all     # cargo test --all-features
 
 Parakeet int8 benchmarks:
 
-| Platform | Speed |
-|----------|-------|
-| MBP M4 Max | ~30x real-time |
-| Zen 3 (5700X) | ~20x real-time |
-| Skylake (i5-6500) | ~5x real-time |
-| Jetson Nano CPU | ~5x real-time |
+| Platform          | Speed          |
+| ----------------- | -------------- |
+| MBP M4 Max        | ~30x real-time |
+| Zen 3 (5700X)     | ~20x real-time |
+| Skylake (i5-6500) | ~5x real-time  |
+| Jetson Nano CPU   | ~5x real-time  |
 
 ## Acknowledgments
 

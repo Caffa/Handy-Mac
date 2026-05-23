@@ -991,7 +991,7 @@ impl ModelManager {
                     supported_languages: vec![],
                     supports_language_selection: true,
                     is_custom: true,
-                dynamic_score: None,
+                    dynamic_score: None,
                 },
             );
         }
@@ -1567,8 +1567,14 @@ impl ModelManager {
 
         // Recalculate relative speed scores across all models
         if !all_scores.is_empty() {
-            let min_ms = all_scores.iter().map(|r| r.avg_ms).fold(f64::INFINITY, f64::min);
-            let max_ms = all_scores.iter().map(|r| r.avg_ms).fold(f64::NEG_INFINITY, f64::max);
+            let min_ms = all_scores
+                .iter()
+                .map(|r| r.avg_ms)
+                .fold(f64::INFINITY, f64::min);
+            let max_ms = all_scores
+                .iter()
+                .map(|r| r.avg_ms)
+                .fold(f64::NEG_INFINITY, f64::max);
             let range = max_ms - min_ms;
 
             for score_ref in &all_scores {

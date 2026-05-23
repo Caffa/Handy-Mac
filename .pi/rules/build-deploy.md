@@ -44,6 +44,7 @@ echo "handy" | bunx tauri signer generate -w ~/.tauri/handy-fork.key
 ```
 
 The script:
+
 1. Patches `tauri.conf.json` → endpoints point to `http://localhost:4321/latest.json`
 2. Signs the build with your fork key
 3. Generates `latest.json` with signature + version
@@ -146,10 +147,10 @@ chmod +x .git/hooks/post-commit
 
 ## Local Deploy Target
 
-| Destination | Used by | Pros | Cons |
-|-------------|---------|------|------|
-| `/Applications` | Option B (Rapidmg) | System-wide, standard | Rapidmg handles permissions |
-| `~/Applications` | Option C (standalone script default) | No sudo needed | Not visible to other users |
+| Destination      | Used by                              | Pros                  | Cons                        |
+| ---------------- | ------------------------------------ | --------------------- | --------------------------- |
+| `/Applications`  | Option B (Rapidmg)                   | System-wide, standard | Rapidmg handles permissions |
+| `~/Applications` | Option C (standalone script default) | No sudo needed        | Not visible to other users  |
 
 **Option B always installs to `/Applications`** (Rapidmg default).
 **Option C defaults to `~/Applications`** — override via `INSTALL_DEST=/Applications`.
@@ -170,11 +171,11 @@ bun run tauri build
 
 ## CI vs Local
 
-| Context | Where to build |
-|---------|---------------|
+| Context   | Where to build                                                         |
+| --------- | ---------------------------------------------------------------------- |
 | Local dev | `bun run tauri build` (slow) or `bun run tauri dev` (fast, hot reload) |
-| CI/CD | Use `.github/workflows/build.yml` (already configured) |
-| PRs | `bun run lint`, `bun run format:check`, `cargo clippy` |
+| CI/CD     | Use `.github/workflows/build.yml` (already configured)                 |
+| PRs       | `bun run lint`, `bun run format:check`, `cargo clippy`                 |
 
 ## Safety Notes
 
@@ -199,6 +200,7 @@ app as a completely different program, **resetting all granted permissions**.
 
 The upstream Handy app avoids this because it uses a proper Apple Developer ID
 certificate, which produces a stable DR like:
+
 ```
 identifier "com.pais.handy" and anchor apple generic and certificate leaf[...]
 ```

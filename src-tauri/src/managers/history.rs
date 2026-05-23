@@ -352,7 +352,11 @@ impl HistoryManager {
     }
 
     /// Save routing results to an existing history entry (called after boss_router subprocess).
-    pub fn update_routing_result(&self, id: i64, routing_result: Option<String>) -> Result<HistoryEntry> {
+    pub fn update_routing_result(
+        &self,
+        id: i64,
+        routing_result: Option<String>,
+    ) -> Result<HistoryEntry> {
         let conn = self.get_connection()?;
         let updated = conn.execute(
             "UPDATE transcription_history
@@ -653,8 +657,8 @@ impl HistoryManager {
     /// Get the total number of history entries (for benchmark eligibility check).
     pub fn get_history_count(&self) -> Result<usize> {
         let conn = self.get_connection()?;
-        let count: usize = conn
-            .query_row("SELECT COUNT(*) FROM transcription_history ", [], |row| {
+        let count: usize =
+            conn.query_row("SELECT COUNT(*) FROM transcription_history ", [], |row| {
                 row.get(0)
             })?;
         Ok(count)
@@ -848,4 +852,3 @@ mod tests {
         assert_eq!(entry.transcription_text, "completed ");
     }
 }
-

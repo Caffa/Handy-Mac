@@ -1,7 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { Check, Copy, FolderOpen, RotateCcw, Star, Trash2, Search } from "lucide-react";
+import {
+  Check,
+  Copy,
+  FolderOpen,
+  RotateCcw,
+  Star,
+  Trash2,
+  Search,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {

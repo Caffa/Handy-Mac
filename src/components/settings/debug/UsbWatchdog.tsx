@@ -38,9 +38,12 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
         unlistenStart = await listen<string>("usb-power-cycle-started", () => {
           setCycling(true);
         });
-        unlistenFinished = await listen<string>("usb-power-cycle-finished", () => {
-          setCycling(false);
-        });
+        unlistenFinished = await listen<string>(
+          "usb-power-cycle-finished",
+          () => {
+            setCycling(false);
+          },
+        );
         unlistenFailed = await listen<string>("usb-power-cycle-failed", () => {
           setCycling(false);
         });
@@ -95,7 +98,9 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
       <div className="space-y-3">
         <ToggleSwitch
           checked={enabled}
-          onChange={(val: boolean) => updateSetting("usb_watchdog_enabled", val)}
+          onChange={(val: boolean) =>
+            updateSetting("usb_watchdog_enabled", val)
+          }
           isUpdating={isUpdating("usb_watchdog_enabled")}
           label={t("settings.debug.usbWatchdog.label")}
           description={t("settings.debug.usbWatchdog.description")}
@@ -111,7 +116,9 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
               }
               isUpdating={isUpdating("usb_watchdog_cycle_on_wake")}
               label={t("settings.debug.usbWatchdog.cycleOnWakeLabel")}
-              description={t("settings.debug.usbWatchdog.cycleOnWakeDescription")}
+              description={t(
+                "settings.debug.usbWatchdog.cycleOnWakeDescription",
+              )}
               descriptionMode={descriptionMode}
               grouped={grouped}
             />
@@ -133,7 +140,10 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
                       : t("settings.debug.usbWatchdog.selectDevice")}
                   </option>
                   {devices.map((device) => (
-                    <option key={`${device.hub}-${device.port}`} value={device.name}>
+                    <option
+                      key={`${device.hub}-${device.port}`}
+                      value={device.name}
+                    >
                       {device.name}
                     </option>
                   ))}
@@ -146,7 +156,6 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
                 >
                   <span aria-hidden="true">↻</span>
                 </button>
-
               </div>
               {deviceName && (
                 <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -158,7 +167,6 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
             </div>
             <button
               onClick={handleCycle}
-
               disabled={cycling || !deviceName}
               className="px-3 py-1.5 text-sm rounded-md bg-yellow-600 hover:bg-yellow-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >

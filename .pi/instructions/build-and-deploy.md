@@ -25,6 +25,7 @@ The `--launch` flag opens the app after install completes.
 ## Known issue: Rapidmg race condition
 
 Rapidmg writes files asynchronously. The old script only checked the main binary size, which could stabilize before Frameworks/resources were done copying — causing the re-sign to be overwritten. The fix uses:
+
 1. DMG volume ejection detection (strongest signal Rapidmg is done)
 2. Full bundle stability (file count + total size, not just binary size)
 3. Re-sign verification loop (up to 5 retries with 2s backoff)

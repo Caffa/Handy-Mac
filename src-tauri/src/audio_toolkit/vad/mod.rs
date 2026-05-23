@@ -39,11 +39,7 @@ pub use smoothed::SmoothedVad;
 ///
 /// Returns the trimmed samples. If VAD creation fails or no speech is detected,
 /// returns the original audio unchanged (safe fallback).
-pub fn trim_trailing_silence(
-    audio: &[f32],
-    vad_path: &str,
-    threshold: f32,
-) -> Vec<f32> {
+pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> Vec<f32> {
     use crate::audio_toolkit::constants;
 
     const FRAME_MS: u32 = 30;

@@ -222,7 +222,9 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64)> {
             // Use pill height for positioning so the visible content sits at
             // the same screen position regardless of the taller transparent window.
             let window_extra = OVERLAY_WINDOW_HEIGHT - OVERLAY_PILL_HEIGHT;
-            monitor_y + monitor_height - OVERLAY_PILL_HEIGHT - OVERLAY_BOTTOM_OFFSET
+            monitor_y + monitor_height
+                - OVERLAY_PILL_HEIGHT
+                - OVERLAY_BOTTOM_OFFSET
                 - window_extra / 2.0
         }
     };

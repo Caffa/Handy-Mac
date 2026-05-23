@@ -21,10 +21,7 @@ pub mod macos_idle {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
-        fn CGEventSourceSecondsSinceLastEventType(
-            state: u32,
-            event_type: u32,
-        ) -> f64;
+        fn CGEventSourceSecondsSinceLastEventType(state: u32, event_type: u32) -> f64;
     }
 
     // Constants from CGEventSource.h
@@ -386,7 +383,10 @@ pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Res
 /// Update the USB watchdog target device name
 #[tauri::command]
 #[specta::specta]
-pub fn change_usb_watchdog_device_name_setting(app: AppHandle, device_name: String) -> Result<(), String> {
+pub fn change_usb_watchdog_device_name_setting(
+    app: AppHandle,
+    device_name: String,
+) -> Result<(), String> {
     let mut settings = get_settings(&app);
     let enabled = settings.usb_watchdog_enabled;
     settings.usb_watchdog_device_name = device_name.clone();
@@ -404,7 +404,10 @@ pub fn change_usb_watchdog_device_name_setting(app: AppHandle, device_name: Stri
 /// when macOS wakes from sleep, preventing the "mic not listening" state.
 #[tauri::command]
 #[specta::specta]
-pub fn change_usb_watchdog_cycle_on_wake_setting(app: AppHandle, cycle_on_wake: bool) -> Result<(), String> {
+pub fn change_usb_watchdog_cycle_on_wake_setting(
+    app: AppHandle,
+    cycle_on_wake: bool,
+) -> Result<(), String> {
     let mut settings = get_settings(&app);
     settings.usb_watchdog_cycle_on_wake = cycle_on_wake;
     write_settings(&app, settings);
@@ -523,7 +526,12 @@ pub async fn stop_and_schedule_pronunciation(
     // Store the audio + word for deferred processing
     {
         let mut pending = rm.pending_pronunciation.lock().unwrap();
-        pending.push_back((samples, canonical_word.clone(), String::new(), String::new()));
+        pending.push_back((
+            samples,
+            canonical_word.clone(),
+            String::new(),
+            String::new(),
+        ));
     }
 
     // Spawn a background thread that will process after a delay
@@ -828,7 +836,9 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
         .collect();
 
     if downloaded_models.is_empty() {
-        return Err("No models are downloaded. Please download at least one model first.".to_string());
+        return Err(
+            "No models are downloaded. Please download at least one model first.".to_string(),
+        );
     }
 
     // Remember the currently selected model so we can restore it
@@ -901,7 +911,10 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
 
                 // Deduplicate: skip if we've already seen this exact transcription
                 let transcription_lower = transcription_text.to_lowercase();
-                if seen_transcriptions.iter().any(|s| s.to_lowercase() == transcription_lower) {
+                if seen_transcriptions
+                    .iter()
+                    .any(|s| s.to_lowercase() == transcription_lower)
+                {
                     info!(
                         "Model {} ({}) produced duplicate transcription '{}', skipping",
                         model_id, model_name, transcription_text

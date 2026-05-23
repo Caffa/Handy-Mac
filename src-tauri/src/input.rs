@@ -37,7 +37,10 @@ pub fn get_cursor_position(app_handle: &AppHandle) -> Option<(i32, i32)> {
             }
         },
         Err(e) => {
-            error!("Enigo mutex poisoned while getting cursor position: {:?}", e);
+            error!(
+                "Enigo mutex poisoned while getting cursor position: {:?}",
+                e
+            );
             None
         }
     }

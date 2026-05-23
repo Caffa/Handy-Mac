@@ -30,7 +30,8 @@ export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
   const { getSetting, updateSetting, isUpdating } = useSettings();
   const experimentalEnabled = getSetting("experimental_enabled") || false;
-  const useAdvancedCustomWords = getSetting("use_advanced_custom_words") || false;
+  const useAdvancedCustomWords =
+    getSetting("use_advanced_custom_words") || false;
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
@@ -53,11 +54,15 @@ export const AdvancedSettings: React.FC = () => {
       <SettingsGroup title={t("settings.advanced.groups.transcription")}>
         <ToggleSwitch
           checked={useAdvancedCustomWords}
-          onChange={(checked) => updateSetting("use_advanced_custom_words", checked)}
+          onChange={(checked) =>
+            updateSetting("use_advanced_custom_words", checked)
+          }
           disabled={isUpdating("use_advanced_custom_words")}
           isUpdating={isUpdating("use_advanced_custom_words")}
           label={t("settings.debug.advancedCustomWords.toggleLabel")}
-          description={t("settings.debug.advancedCustomWords.toggleDescription")}
+          description={t(
+            "settings.debug.advancedCustomWords.toggleDescription",
+          )}
           descriptionMode="tooltip"
           grouped={true}
         />
@@ -73,7 +78,9 @@ export const AdvancedSettings: React.FC = () => {
         <HybridMode descriptionMode="tooltip" grouped={true} />
         <ToggleSwitch
           checked={getSetting("adaptive_parakeet_thresholds") ?? false}
-          onChange={(checked) => updateSetting("adaptive_parakeet_thresholds", checked)}
+          onChange={(checked) =>
+            updateSetting("adaptive_parakeet_thresholds", checked)
+          }
           disabled={isUpdating("adaptive_parakeet_thresholds")}
           isUpdating={isUpdating("adaptive_parakeet_thresholds")}
           label={t("settings.advanced.adaptiveThresholds.label")}

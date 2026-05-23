@@ -76,7 +76,9 @@ pub struct LogEntry {
 // ── Helpers ───────────────────────────────────────────────────────
 
 fn jsonl_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    crate::portable::app_log_dir(app).ok().map(|dir| dir.join("handy-events.jsonl"))
+    crate::portable::app_log_dir(app)
+        .ok()
+        .map(|dir| dir.join("handy-events.jsonl"))
 }
 
 fn read_jsonl_tail(path: &std::path::Path, max_lines: usize) -> Vec<String> {
@@ -85,10 +87,7 @@ fn read_jsonl_tail(path: &std::path::Path, max_lines: usize) -> Vec<String> {
         Err(_) => return Vec::new(),
     };
     let reader = std::io::BufReader::new(file);
-    let lines: Vec<String> = reader
-        .lines()
-        .filter_map(|l| l.ok())
-        .collect();
+    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
     let start = lines.len().saturating_sub(max_lines);
     lines[start..].to_vec()
 }
@@ -101,7 +100,9 @@ fn extract_event_type(val: &serde_json::Value) -> String {
 }
 
 fn extract_session_id(val: &serde_json::Value) -> Option<String> {
-    val.get("sid").and_then(|v| v.as_str()).map(|s| s.to_string())
+    val.get("sid")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn parse_timestamp_ms(val: &serde_json::Value) -> u64 {
@@ -189,10 +190,7 @@ pub fn generate_health_report(app: &tauri::AppHandle) -> HealthReport {
                     .get("model_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let duration_ms = val
-                    .get("duration_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                let duration_ms = val.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                 let entry = model_load_times_map
                     .entry(model_id.to_string())
                     .or_insert((0, 0));
@@ -270,10 +268,7 @@ fn percentile(sorted: &[u64], p: u8) -> u64 {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_log_entries(
-    app: tauri::AppHandle,
-    filter: LogFilter,
-) -> Result<Vec<LogEntry>, String> {
+pub fn get_log_entries(app: tauri::AppHandle, filter: LogFilter) -> Result<Vec<LogEntry>, String> {
     let path = jsonl_path(&app).ok_or_else(|| "log directory not available".to_string())?;
     let lines = read_jsonl_tail(&path, 5000);
     let limit = filter.limit.unwrap_or(100) as usize;

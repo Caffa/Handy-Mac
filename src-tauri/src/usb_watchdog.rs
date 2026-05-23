@@ -135,7 +135,10 @@ impl UsbWatchdog {
     pub fn on_mic_open_succeeded(&self) {
         let prev = self.consecutive_failures.swap(0, Ordering::SeqCst);
         if prev > 0 {
-            debug!("USB watchdog: mic opened successfully, reset failures (was {})", prev);
+            debug!(
+                "USB watchdog: mic opened successfully, reset failures (was {})",
+                prev
+            );
         }
     }
 
@@ -207,7 +210,10 @@ impl UsbWatchdog {
         let device = match resolve_device(&device_name) {
             Some(d) => d,
             None => {
-                warn!("USB watchdog: device '{}' not found in USB tree, cannot cycle", device_name);
+                warn!(
+                    "USB watchdog: device '{}' not found in USB tree, cannot cycle",
+                    device_name
+                );
                 self.cycling.store(false, Ordering::SeqCst);
                 self.emit_cycle_event("usb-power-cycle-failed", "device not found in USB tree");
                 return false;
@@ -256,7 +262,11 @@ impl UsbWatchdog {
                             // Small extra delay for the audio subsystem to recognise it
                             std::thread::sleep(Duration::from_millis(300));
                             // Stage4: Device recovered.
-                            emit_stage_event_with_handle(&app_handle, "recovered", "Device recovered!");
+                            emit_stage_event_with_handle(
+                                &app_handle,
+                                "recovered",
+                                "Device recovered!",
+                            );
                             cycle_succeeded = true;
                             break;
                         }
@@ -330,9 +340,15 @@ impl UsbWatchdog {
         let device = match resolve_device(&device_name) {
             Some(d) => d,
             None => {
-                warn!("USB watchdog: device '{}' not found for forced cycle", device_name);
+                warn!(
+                    "USB watchdog: device '{}' not found for forced cycle",
+                    device_name
+                );
                 self.cycling.store(false, Ordering::SeqCst);
-                self.emit_cycle_event("usb-power-cycle-failed", "device not found for forced cycle");
+                self.emit_cycle_event(
+                    "usb-power-cycle-failed",
+                    "device not found for forced cycle",
+                );
                 return false;
             }
         };
@@ -370,7 +386,11 @@ impl UsbWatchdog {
                             start.elapsed()
                         );
                         // Stage 3: Waiting for device to reconnect
-                        emit_stage_event_with_handle(&app_handle, "waiting", "Waiting for device...");
+                        emit_stage_event_with_handle(
+                            &app_handle,
+                            "waiting",
+                            "Waiting for device...",
+                        );
                         // Poll for the device to re-appear instead of sleeping blindly
                         let settle_start = Instant::now();
                         let settle_max = Duration::from_secs(POWER_CYCLE_SETTLE_SECS);
@@ -384,7 +404,11 @@ impl UsbWatchdog {
                                 );
                                 std::thread::sleep(Duration::from_millis(300));
                                 // Stage 4: Device recovered
-                                emit_stage_event_with_handle(&app_handle, "recovered", "Device recovered!");
+                                emit_stage_event_with_handle(
+                                    &app_handle,
+                                    "recovered",
+                                    "Device recovered!",
+                                );
                                 cycle_succeeded = true;
                                 break;
                             }
@@ -410,7 +434,9 @@ impl UsbWatchdog {
             }));
 
             if let Err(panic) = result {
-                error!("USB watchdog: force_power_cycle thread panicked — recovering without crashing");
+                error!(
+                    "USB watchdog: force_power_cycle thread panicked — recovering without crashing"
+                );
                 emit_cycle_event_with_handle(
                     &app_handle,
                     "usb-power-cycle-failed",
@@ -427,11 +453,7 @@ impl UsbWatchdog {
 
             // Only emit "finished" if the cycle actually succeeded.
             if cycle_succeeded {
-                emit_cycle_event_with_handle(
-                    &app_handle,
-                    "usb-power-cycle-finished",
-                    &name,
-                );
+                emit_cycle_event_with_handle(&app_handle, "usb-power-cycle-finished", &name);
 
                 // After a successful forced power cycle, restart the microphone
                 // stream if it should be active (always-on mode or BT keep-alive).
@@ -478,7 +500,11 @@ fn emit_cycle_event_with_handle(
     }
 }
 
-pub fn emit_stage_event_with_handle(app_handle: &Option<tauri::AppHandle>, stage: &str, message: &str) {
+pub fn emit_stage_event_with_handle(
+    app_handle: &Option<tauri::AppHandle>,
+    stage: &str,
+    message: &str,
+) {
     if let Some(ah) = app_handle {
         use tauri::Emitter;
         use tauri::Manager;
@@ -518,7 +544,10 @@ fn list_usb_devices_inner() -> Vec<UsbDevice> {
     };
 
     let output = match std::process::Command::new(&bin)
-        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        .env(
+            "PATH",
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        )
         .output()
     {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -599,10 +628,7 @@ fn extract_device_description(rest: &str) -> Option<String> {
 // uhubctl binary resolution & execution
 // ---------------------------------------------------------------------------
 
-const UHUBCTL_PATHS: &[&str] = &[
-    "/usr/local/bin/uhubctl",
-    "/opt/homebrew/bin/uhubctl",
-];
+const UHUBCTL_PATHS: &[&str] = &["/usr/local/bin/uhubctl", "/opt/homebrew/bin/uhubctl"];
 
 /// Resolve the uhubctl binary path
 fn uhubctl_bin() -> Option<std::path::PathBuf> {
@@ -649,7 +675,10 @@ fn run_uhubctl_cycle(hub_id: &str, port: &str) -> Result<(), String> {
 
     let mut child = std::process::Command::new(&bin)
         .args(["-l", hub_id, "-p", port, "-a", "cycle", "-d", "3"])
-        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        .env(
+            "PATH",
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -668,7 +697,10 @@ fn run_uhubctl_cycle(hub_id: &str, port: &str) -> Result<(), String> {
                     let _ = child.wait();
                     return Ok(());
                 }
-                let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "killed by signal".to_string());
+                let code = status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "killed by signal".to_string());
                 return Err(format!("uhubctl exited with {}", code));
             }
             Ok(None) => {
@@ -705,9 +737,7 @@ pub fn ensure_uhubctl_installed() -> bool {
 
     info!("uhubctl not found, attempting to install via Homebrew…");
 
-    let brew_check = std::process::Command::new("which")
-        .arg("brew")
-        .output();
+    let brew_check = std::process::Command::new("which").arg("brew").output();
 
     match brew_check {
         Ok(output) if output.status.success() => {
@@ -715,7 +745,10 @@ pub fn ensure_uhubctl_installed() -> bool {
 
             match std::process::Command::new("brew")
                 .args(["install", "uhubctl"])
-                .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+                .env(
+                    "PATH",
+                    "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                )
                 .output()
             {
                 Ok(output) => {

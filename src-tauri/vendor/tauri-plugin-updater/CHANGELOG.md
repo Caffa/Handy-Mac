@@ -20,6 +20,7 @@
 - [`87afa23c`](https://github.com/tauri-apps/plugins-workspace/commit/87afa23cad077c09bc1eb743800ae3396b531146) ([#2726](https://github.com/tauri-apps/plugins-workspace/pull/2726)) Add allowDowngrades parameter to check command
 
   Added a new optional `allowDowngrades` parameter to the JavaScript check command that allows the updater to consider versions that are lower than the current version as valid updates. When enabled, the version comparator will accept any version that is different from the current version, effectively allowing downgrades.
+
 - [`73ff15de`](https://github.com/tauri-apps/plugins-workspace/commit/73ff15de5d07d476693e40e8e5d138c16da5211e) ([#2757](https://github.com/tauri-apps/plugins-workspace/pull/2757)) Fix headers option in `Update.download` and `Update.downloadAndInstall` doesn't work with `Record<string, string> | Headers` types
 
 ## \[2.7.1]
@@ -112,7 +113,7 @@
 
 ## \[2.0.0-beta.8]
 
-- [`99d6ac0f`](https://github.com/tauri-apps/plugins-workspace/commit/99d6ac0f9506a6a4a1aa59c728157190a7441af6) ([#1606](https://github.com/tauri-apps/plugins-workspace/pull/1606) by [@FabianLars](https://github.com/tauri-apps/plugins-workspace/../../FabianLars)) The JS packages now specify the *minimum* `@tauri-apps/api` version instead of a single exact version.
+- [`99d6ac0f`](https://github.com/tauri-apps/plugins-workspace/commit/99d6ac0f9506a6a4a1aa59c728157190a7441af6) ([#1606](https://github.com/tauri-apps/plugins-workspace/pull/1606) by [@FabianLars](https://github.com/tauri-apps/plugins-workspace/../../FabianLars)) The JS packages now specify the _minimum_ `@tauri-apps/api` version instead of a single exact version.
 - [`6de87966`](https://github.com/tauri-apps/plugins-workspace/commit/6de87966ecc00ad9d91c25be452f1f46bd2b7e1f) ([#1597](https://github.com/tauri-apps/plugins-workspace/pull/1597) by [@Legend-Master](https://github.com/tauri-apps/plugins-workspace/../../Legend-Master)) Update to tauri beta.25.
 
 ## \[2.0.0-beta.11]

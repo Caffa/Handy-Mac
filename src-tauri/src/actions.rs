@@ -6,11 +6,11 @@ use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
+use crate::overlay::OverlayMode;
 use crate::session::SessionTracker;
 use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
-use crate::overlay::OverlayMode;
 use crate::utils::{
     self, show_processing_overlay, show_processing_overlay_with_mode, show_recording_overlay,
     show_recording_overlay_with_mode, show_transcribing_overlay,
@@ -680,9 +680,12 @@ impl ShortcutAction for TranscribeAction {
                             if post_process {
                                 show_processing_overlay(&ah);
                             }
-                            let processed =
-                                process_transcription_output(&ah, &transcription.text, post_process)
-                                    .await;
+                            let processed = process_transcription_output(
+                                &ah,
+                                &transcription.text,
+                                post_process,
+                            )
+                            .await;
 
                             // Save to history if WAV was saved
                             if wav_saved {
@@ -706,7 +709,10 @@ impl ShortcutAction for TranscribeAction {
                                 let ah_clone = ah.clone();
                                 let paste_time = Instant::now();
                                 let final_text = processed.final_text;
-                                info!("Submitting paste to main thread, text length={}", final_text.len());
+                                info!(
+                                    "Submitting paste to main thread, text length={}",
+                                    final_text.len()
+                                );
                                 let result = ah.run_on_main_thread(move || {
                                     info!("Paste function starting on main thread...");
                                     match utils::paste(final_text, ah_clone.clone()) {
@@ -732,7 +738,10 @@ impl ShortcutAction for TranscribeAction {
                                             if let (Some(ref s), Some(tracker)) =
                                                 (&sid, ah_clone.try_state::<Arc<SessionTracker>>())
                                             {
-                                                tracker.fail_session(s, &format!("Paste failed: {}", e));
+                                                tracker.fail_session(
+                                                    s,
+                                                    &format!("Paste failed: {}", e),
+                                                );
                                             }
 
                                             let _ = ah_clone.emit("paste-error", ());
@@ -741,9 +750,11 @@ impl ShortcutAction for TranscribeAction {
                                     utils::hide_recording_overlay(&ah_clone);
                                     change_tray_icon(&ah_clone, TrayIconState::Idle);
                                 });
-                                
+
                                 match result {
-                                    Ok(()) => info!("Main thread paste task submitted successfully"),
+                                    Ok(()) => {
+                                        info!("Main thread paste task submitted successfully")
+                                    }
                                     Err(e) => {
                                         error!("Failed to run paste on main thread: {:?}", e);
                                         utils::hide_recording_overlay(&ah);
@@ -782,8 +793,7 @@ impl ShortcutAction for TranscribeAction {
             } else {
                 debug!("No samples retrieved from recording stop");
                 // ── Structured event: no samples ──
-                if let (Some(ref s), Some(tracker)) =
-                    (&sid, ah.try_state::<Arc<SessionTracker>>())
+                if let (Some(ref s), Some(tracker)) = (&sid, ah.try_state::<Arc<SessionTracker>>())
                 {
                     tracker.fail_session(s, "No audio samples from recording stop");
                 }
@@ -847,7 +857,10 @@ struct TranscribeWithRouterAction;
 impl ShortcutAction for TranscribeWithRouterAction {
     fn start(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
         let start_time = Instant::now();
-        debug!("TranscribeWithRouterAction::start called for binding: {}", binding_id);
+        debug!(
+            "TranscribeWithRouterAction::start called for binding: {}",
+            binding_id
+        );
 
         // ── Structured session tracking ──
         let settings = get_settings(app);
@@ -958,7 +971,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
         shortcut::unregister_cancel_shortcut(app);
 
         let stop_time = Instant::now();
-        debug!("TranscribeWithRouterAction::stop called for binding: {}", binding_id);
+        debug!(
+            "TranscribeWithRouterAction::stop called for binding: {}",
+            binding_id
+        );
 
         let ah = app.clone();
         let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
@@ -989,10 +1005,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
             let stop_recording_time = Instant::now();
             if let Some(samples) = rm.stop_recording(&binding_id) {
-                debug!(
-                    "Recording stopped, sample count: {}",
-                    samples.len()
-                );
+                debug!("Recording stopped, sample count: {}", samples.len());
 
                 if samples.is_empty() {
                     debug!("Recording produced no audio samples; skipping");
@@ -1027,8 +1040,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         "unknown".to_string()
                     });
 
-                if let (Some(ref s), Some(tracker)) =
-                    (&sid, ah.try_state::<Arc<SessionTracker>>())
+                if let (Some(ref s), Some(tracker)) = (&sid, ah.try_state::<Arc<SessionTracker>>())
                 {
                     tracker.advance_to_transcribing(
                         s,
@@ -1091,14 +1103,12 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 file_name,
                                 transcription_text.clone(),
                                 false, // post_process_requested
-                                None,   // post_processed_text
-                                None,   // post_process_prompt
+                                None,  // post_processed_text
+                                None,  // post_process_prompt
                                 Some(model_id_for_history),
-                                true,   // routed
+                                true, // routed
                             ) {
-                                Ok(entry) => {
-                                    Some(entry.id)
-                                }
+                                Ok(entry) => Some(entry.id),
                                 Err(err) => {
                                     error!("Failed to save history entry: {}", err);
                                     None
@@ -1148,7 +1158,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                                 match result {
                                     Ok((summary_opt, handler_data)) => {
-                                        let any_success = handler_data.iter().any(|d| d.status == "✅");
+                                        let any_success =
+                                            handler_data.iter().any(|d| d.status == "✅");
                                         // Build summary text
                                         let summary_text = match &summary_opt {
                                             Some(s) => s.clone(),
@@ -1157,7 +1168,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                                     "No handlers".to_string()
                                                 } else {
                                                     // Shouldn't happen: summary_opt is always Some when handler_data is non-empty
-                                                    format!("{} handlers, none succeeded", handler_data.len())
+                                                    format!(
+                                                        "{} handlers, none succeeded",
+                                                        handler_data.len()
+                                                    )
                                                 }
                                             }
                                         };
@@ -1174,7 +1188,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         if let Some((ref hm, entry_id)) = hm_for_router {
                                             let routing_json = serde_json::to_string(&handler_data)
                                                 .unwrap_or_else(|_| "[]".to_string());
-                                            if let Err(e) = hm.update_routing_result(entry_id, Some(routing_json)) {
+                                            if let Err(e) = hm
+                                                .update_routing_result(entry_id, Some(routing_json))
+                                            {
                                                 error!("Failed to update routing result in history: {}", e);
                                             }
                                         }
@@ -1220,10 +1236,16 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                                 classification: "error".to_string(),
                                                 file_path: None,
                                             }];
-                                            let routing_json = serde_json::to_string(&failure_result)
-                                                .unwrap_or_else(|_| "[]".to_string());
-                                            if let Err(save_err) = hm.update_routing_result(entry_id, Some(routing_json)) {
-                                                error!("Failed to update routing error in history: {}", save_err);
+                                            let routing_json =
+                                                serde_json::to_string(&failure_result)
+                                                    .unwrap_or_else(|_| "[]".to_string());
+                                            if let Err(save_err) = hm
+                                                .update_routing_result(entry_id, Some(routing_json))
+                                            {
+                                                error!(
+                                                    "Failed to update routing error in history: {}",
+                                                    save_err
+                                                );
                                             }
                                         }
 
@@ -1237,11 +1259,14 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                                         // Send macOS notification for router failure
                                         let error_display = if e.len() > 150 {
-                                                format!("{}...", &e[..150])
-                                            } else {
-                                                e.clone()
-                                            };
-                                        send_macos_notification("Handy Router Error", &error_display);
+                                            format!("{}...", &e[..150])
+                                        } else {
+                                            e.clone()
+                                        };
+                                        send_macos_notification(
+                                            "Handy Router Error",
+                                            &error_display,
+                                        );
 
                                         // ── Clean up overlay after routing fails ──
                                         // Same guard: don't hide overlay if another recording is active.
@@ -1258,9 +1283,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 }
 
                                 // ── Finish session after routing ──
-                                if let (Some(ref s), Some(tracker)) =
-                                    (&sid_for_router, ah_for_router.try_state::<Arc<SessionTracker>>())
-                                {
+                                if let (Some(ref s), Some(tracker)) = (
+                                    &sid_for_router,
+                                    ah_for_router.try_state::<Arc<SessionTracker>>(),
+                                ) {
                                     tracker.finish_session(s, 0);
                                 }
                             });
@@ -1275,7 +1301,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 transcription_text: transcription_text.clone(),
                             };
                             let _ = ah.emit("router-result", &event);
-                            send_macos_notification("Handy Router", "No router path configured. Check Settings.");
+                            send_macos_notification(
+                                "Handy Router",
+                                "No router path configured. Check Settings.",
+                            );
 
                             // Fall back to paste if no router configured
                             if !transcription_text.is_empty() {
@@ -1320,8 +1349,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                 }
             } else {
                 debug!("No samples retrieved from recording stop");
-                if let (Some(ref s), Some(tracker)) =
-                    (&sid, ah.try_state::<Arc<SessionTracker>>())
+                if let (Some(ref s), Some(tracker)) = (&sid, ah.try_state::<Arc<SessionTracker>>())
                 {
                     tracker.fail_session(s, "No audio samples from recording stop");
                 }
@@ -1371,7 +1399,10 @@ fn run_router_subprocess(
     // decision_router.py → llm_client.py) find the correct python + deps.
     // GUI-launched apps get a minimal PATH from macOS that excludes conda.
     let current_path = std::env::var("PATH").unwrap_or_default();
-    cmd.env("PATH", format!("/Users/caffae/miniforge3/bin:{}", current_path));
+    cmd.env(
+        "PATH",
+        format!("/Users/caffae/miniforge3/bin:{}", current_path),
+    );
 
     // Load environment variables from .env file if provided
     if let Some(env_path) = env_file {
@@ -1386,7 +1417,11 @@ fn run_router_subprocess(
                     }
                     if let Some((key, value)) = line.split_once('=') {
                         let key = key.trim();
-                        let value = value.trim().strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(value.trim());
+                        let value = value
+                            .trim()
+                            .strip_prefix('"')
+                            .and_then(|v| v.strip_suffix('"'))
+                            .unwrap_or(value.trim());
                         cmd.env(key, value);
                     }
                 }
@@ -1457,8 +1492,14 @@ fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
                     for h in handlers {
                         let status = h.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                         let handler_name = h.get("handler").and_then(|v| v.as_str()).unwrap_or("?");
-                        let classification = h.get("classification").and_then(|v| v.as_str()).unwrap_or("?");
-                        let file_path = h.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let classification = h
+                            .get("classification")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        let file_path = h
+                            .get("file_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
 
                         handler_data.push(RouterHandlerData {
                             status: status.to_string(),
@@ -1500,7 +1541,10 @@ fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
 /// Used for router success/failure feedback since the overlay is already hidden.
 fn send_macos_notification(title: &str, message: &str) {
     // Escape special characters for AppleScript
-    let escaped_message = message.replace('\\', "\\\\").replace('"', "\\\\\"").replace('\n', " ");
+    let escaped_message = message
+        .replace('\\', "\\\\")
+        .replace('"', "\\\\\"")
+        .replace('\n', " ");
     let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\\\"");
     let script = format!(
         "display notification \"{}\" with title \"{}\"",
