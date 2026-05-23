@@ -932,38 +932,24 @@ impl TranscriptionManager {
             translation_note
         );
 
-        let final_result = if settings.verification_mode {
-            // In verification mode, annotate the transcript with suppressed
-            // token count and audio quality info so the user can inspect
-            // how the threshold logic is behaving.
-            let mut meta_lines: Vec<String> = Vec::new();
-
-            if let Some(count) = suppressed_token_count {
-                if count > 0 {
-                    meta_lines.push(format!(
-                        "Verification: suppressed {} low-confidence tokens",
-                        count
-                    ));
-                }
-            }
-
+        // In verification mode, log audio quality metrics for debugging
+        // but NEVER append to the transcription text
+        if settings.verification_mode {
             let quality = AudioQualityMetrics::compute(&audio);
-            meta_lines.push(format!(
-                "Audio: peak={:.0} dBFS, SNR={:.0} dB, dur={:.1}s",
+            info!(
+                "Verification mode - Audio: peak={:.0} dBFS, SNR={:.0} dB, dur={:.1}s",
                 quality.peak_dbfs,
                 quality.estimated_snr_db,
                 quality.duration_secs,
-            ));
-
-            if meta_lines.is_empty() {
-                filtered_result
-            } else {
-                let meta = meta_lines.join(", ");
-                format!("{}\n[{}]", filtered_result.trim(), meta)
+            );
+            if let Some(count) = suppressed_token_count {
+                if count > 0 {
+                    info!("Verification mode - Suppressed {} low-confidence tokens", count);
+                }
             }
-        } else {
-            filtered_result
-        };
+        }
+
+        let final_result = filtered_result;
 
         if final_result.is_empty() {
             info!("Transcription result is empty");
