@@ -270,14 +270,14 @@ const RecordingOverlay: React.FC = () => {
       // Paper-plane icon for routing actions (amber #f59e0b)
       const iconColor = "#f59e0b";
       if (state === "recording") {
-        return <RoutingIcon color={iconColor} width={30} height={30} />;
+        return <RoutingIcon color={iconColor} width={22} height={22} />;
       }
-      return <RoutingIcon color={iconColor} width={30} height={30} />;
+      return <RoutingIcon color={iconColor} width={22} height={22} />;
     }
     if (state === "recording") {
-      return <MicrophoneIcon width={30} height={30} />;
+      return <MicrophoneIcon width={22} height={22} />;
     }
-    return <TranscriptionIcon width={30} height={30} />;
+    return <TranscriptionIcon width={22} height={22} />;
   };
 
   const getOverlayClassNames = (): string => {
@@ -313,7 +313,7 @@ const RecordingOverlay: React.FC = () => {
                   key={i}
                   className={`bar${isRouter ? " routing-bar" : ""}`}
                   style={{
-                    height: `${Math.min(30, 6 + Math.pow(v, 0.7) * 24)}px`,
+                    height: `${Math.min(25, 5 + Math.pow(v, 0.7) * 22)}px`,
                     transition: "height 80ms linear, opacity 120ms ease-out",
                     opacity: Math.max(0.2, v * 1.7),
                   }}
@@ -369,7 +369,7 @@ const RecordingOverlay: React.FC = () => {
       <div className="overlay-right">
         {state === "recording" && (
           <div className="cancel-button" onClick={handleCancel}>
-            <CancelIcon width={30} height={30} />
+            <CancelIcon width={25} height={25} />
           </div>
         )}
       </div>

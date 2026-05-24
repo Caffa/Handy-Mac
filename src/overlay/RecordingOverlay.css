@@ -1,12 +1,12 @@
 .recording-overlay {
-  height: 54px;
+  height: 45px;
   width: 172px;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   padding: 6px;
   background: #000000cc;
-  border-radius: 27px;
+  border-radius: 22.5px;
   opacity: 0;
   transition:
     opacity 300ms ease-out,
@@ -19,15 +19,8 @@
 
 /* Expand overlay pill when hybrid indicator is shown */
 .recording-overlay:has(.hybrid-indicator) {
-  height: 54px;
-  border-radius: 27px;
-  margin-top: 0;
-}
-
-/* Expand overlay pill when hybrid indicator is shown */
-.recording-overlay:has(.hybrid-indicator) {
-  height: 70px;
-  border-radius: 35px;
+  height: 45px;
+  border-radius: 32.5px;
   margin-top: 0;
 }
 
@@ -56,13 +49,13 @@
   justify-content: center;
   gap: 3px;
   padding-bottom: 0px;
-  height: 36px;
+  height: 30px;
   overflow: hidden;
 }
 
 /* Give bars more room when hybrid indicator is present */
 .recording-overlay:has(.hybrid-indicator) .bars-container {
-  height: 45px;
+  height: 37.5px;
 }
 
 .bars-wrapper {
@@ -99,10 +92,10 @@
 .bar {
   width: 6px;
   background: #ffe5ee;
-  max-height: 30px;
+  max-height: 25px;
   border-radius: 2px;
   transition: height 80ms linear;
-  min-height: 6px;
+  min-height: 5px;
 }
 
 .recording-overlay.fade-in {
@@ -169,8 +162,8 @@
 }
 
 .cancel-button {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: transparent;
   display: flex;
