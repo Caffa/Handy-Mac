@@ -10,6 +10,9 @@
 //!
 //! Ported from the Hammerspoon Rode watchdog script at:
 //!   ~/.hammerspoon/init.lua
+//!
+//! Robustness fix: Names are normalized (alphanumeric only) before comparison
+//! to handle encoding issues (e.g. RØDE vs R?DE).
 
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
@@ -22,7 +25,7 @@ use tauri::Manager;
 /// How long to poll for the device to re-appear after cycling power.
 /// The RØDE VideoMic NTG typically comes back in 2-3s over USB.
 /// We poll every 250ms and bail out early once the device is seen.
-const POWER_CYCLE_SETTLE_SECS: u64 = 4;
+const POWER_CYCLE_SETTLE_SECS: u64 = 5;
 
 /// How often to poll for the device to re-appear (in ms)
 const POWER_CYCLE_POLL_INTERVAL_MS: u64 = 250;
@@ -98,13 +101,6 @@ impl UsbWatchdog {
 
     /// Called when the mic stream fails to open. Returns `true` if a
     /// power cycle was completed (caller should retry).
-    ///
-    /// This method **blocks** until the power cycle and settle period
-    /// complete, so that the caller can immediately retry the mic open
-    /// with the device re-enumerated.
-    ///
-    /// The overlay should be showing "USB cycling…" state before this
-    /// is called so the user sees feedback during the long wait.
     pub fn on_mic_open_failed(&self) -> bool {
         if !self.enabled.load(Ordering::SeqCst) {
             debug!("USB watchdog disabled, skipping auto-cycle");
@@ -142,16 +138,11 @@ impl UsbWatchdog {
         }
     }
 
-    /// Called to report whether the microphone stream is currently alive
-    /// (producing audio data).
+    /// Called to report whether the microphone stream is currently alive.
     pub fn on_stream_alive_check(&self, alive: bool) {
         if alive {
             self.on_mic_open_succeeded();
         } else {
-            // Note: We don't increment failures here because the caller
-            // will typically attempt to restart the stream, which will
-            // trigger on_mic_open_failed if it fails to open, or
-            // on_recording_finished if it opens but stays dead.
             debug!("USB watchdog: stream reported dead during liveness check");
         }
     }
@@ -169,15 +160,6 @@ impl UsbWatchdog {
     }
 
     /// Attempt a USB hub port power cycle **synchronously** (blocking).
-    /// Resolves the device name to hub/port at cycle time, runs uhubctl,
-    /// waits for the settle period, then returns `true`.
-    ///
-    /// The caller (typically the mic-open retry path) can immediately
-    /// attempt to reopen the audio device after this returns.
-    ///
-    /// Wrapped in `catch_unwind` to prevent a uhubctl crash from taking
-    /// down the entire app (the RØDE VideoMic NTG is known to have
-    /// flaky USB connections).
     fn power_cycle_blocking(&self) -> bool {
         // Check cooldown
         let now_epoch = epoch_secs();
@@ -200,13 +182,9 @@ impl UsbWatchdog {
             return false;
         }
 
-        // Emit event so the frontend can show "USB cycling" state
         self.emit_cycle_event("usb-power-cycle-started", &device_name);
-
-        // Stage 1: Resolve the device name to a hub/port location.
         self.emit_stage_event("resolving", "Locating USB device...");
 
-        // Resolve device name → hub/port at cycle time
         let device = match resolve_device(&device_name) {
             Some(d) => d,
             None => {
@@ -228,11 +206,8 @@ impl UsbWatchdog {
             device_name, device.hub, device.port
         );
 
-        // Stage 2: Power cycling the USB port via uhubctl.
         self.emit_stage_event("cycling", "Power cycling port...");
 
-        // Run uhubctl inside catch_unwind to prevent panics from crashing the app.
-        // USB device issues can cause unexpected behavior in child processes.
         let app_handle = self.app_handle.clone();
         let mut cycle_succeeded = false;
 
@@ -245,10 +220,7 @@ impl UsbWatchdog {
                         device_name,
                         start.elapsed()
                     );
-                    // Stage3: Waiting for the device to reconnect after power cycle.
                     emit_stage_event_with_handle(&app_handle, "waiting", "Waiting for device...");
-                    // Poll for the device to re-appear instead of sleeping the full settle time.
-                    // USB devices typically come back in 2-3 seconds; polling saves time.
                     let settle_start = Instant::now();
                     let settle_max = Duration::from_secs(POWER_CYCLE_SETTLE_SECS);
                     let poll_interval = Duration::from_millis(POWER_CYCLE_POLL_INTERVAL_MS);
@@ -259,9 +231,7 @@ impl UsbWatchdog {
                                 device_name,
                                 settle_start.elapsed()
                             );
-                            // Small extra delay for the audio subsystem to recognise it
                             std::thread::sleep(Duration::from_millis(300));
-                            // Stage4: Device recovered.
                             emit_stage_event_with_handle(
                                 &app_handle,
                                 "recovered",
@@ -272,10 +242,9 @@ impl UsbWatchdog {
                         }
                         if settle_start.elapsed() >= settle_max {
                             warn!(
-                                "USB watchdog: device '{}' did not re-appear within {}s, proceeding anyway",
+                                "USB watchdog: device '{}' did not re-appear within {}s",
                                 device_name, POWER_CYCLE_SETTLE_SECS
                             );
-                            // Device did NOT re-appear — cycle failed
                             break;
                         }
                         std::thread::sleep(poll_interval);
@@ -288,29 +257,17 @@ impl UsbWatchdog {
                         "usb-power-cycle-failed",
                         &format!("uhubctl failed: {}", e),
                     );
-                    // uhubctl failed — cycle failed
                 }
             }
         }));
 
-        if let Err(panic) = result {
-            error!("USB watchdog: power_cycle_blocking panicked — recovering without crashing");
+        if let Err(_) = result {
+            error!("USB watchdog: power_cycle_blocking panicked");
             self.emit_cycle_event("usb-power-cycle-failed", "power cycle panicked");
-            // Log the panic info for debugging
-            if let Some(s) = panic.downcast_ref::<&str>() {
-                error!("USB watchdog panic: {}", s);
-            } else if let Some(s) = panic.downcast_ref::<String>() {
-                error!("USB watchdog panic: {}", s);
-            }
-            // Panic occurred — cycle failed
         }
 
         self.cycling.store(false, Ordering::SeqCst);
 
-        // Only emit "finished" if the cycle actually succeeded.
-        // If it failed, "usb-power-cycle-failed" was already emitted above
-        // (or a panic was handled), and we should return false so the caller
-        // knows the retry will likely fail.
         if cycle_succeeded {
             self.emit_cycle_event("usb-power-cycle-finished", &device_name);
             true
@@ -318,6 +275,7 @@ impl UsbWatchdog {
             false
         }
     }
+
     pub fn force_power_cycle(&self) -> bool {
         if self.cycling.swap(true, Ordering::SeqCst) {
             debug!("USB watchdog: cycle already in progress");
@@ -331,10 +289,7 @@ impl UsbWatchdog {
             return false;
         }
 
-        // Emit start event
         self.emit_cycle_event("usb-power-cycle-started", &device_name);
-
-        // Stage 1: Resolve the device name
         self.emit_stage_event("resolving", "Locating USB device...");
 
         let device = match resolve_device(&device_name) {
@@ -361,11 +316,8 @@ impl UsbWatchdog {
             device_name, device.hub, device.port
         );
 
-        // Stage 2: Power cycling the port
         self.emit_stage_event("cycling", "Power cycling port...");
 
-        // Spawn the uhubctl cycle — the cycling flag will be cleared
-        // only after the cycle + settle completes.
         let hub = device.hub.clone();
         let port = device.port.clone();
         let name = device_name.clone();
@@ -375,7 +327,6 @@ impl UsbWatchdog {
         std::thread::spawn(move || {
             let mut cycle_succeeded = false;
 
-            // Wrap in catch_unwind to prevent panics from crashing the app
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let start = Instant::now();
                 match run_uhubctl_cycle(&hub, &port) {
@@ -385,13 +336,11 @@ impl UsbWatchdog {
                             name,
                             start.elapsed()
                         );
-                        // Stage 3: Waiting for device to reconnect
                         emit_stage_event_with_handle(
                             &app_handle,
                             "waiting",
                             "Waiting for device...",
                         );
-                        // Poll for the device to re-appear instead of sleeping blindly
                         let settle_start = Instant::now();
                         let settle_max = Duration::from_secs(POWER_CYCLE_SETTLE_SECS);
                         let poll_interval = Duration::from_millis(POWER_CYCLE_POLL_INTERVAL_MS);
@@ -403,7 +352,6 @@ impl UsbWatchdog {
                                     settle_start.elapsed()
                                 );
                                 std::thread::sleep(Duration::from_millis(300));
-                                // Stage 4: Device recovered
                                 emit_stage_event_with_handle(
                                     &app_handle,
                                     "recovered",
@@ -414,7 +362,7 @@ impl UsbWatchdog {
                             }
                             if settle_start.elapsed() >= settle_max {
                                 warn!(
-                                    "USB watchdog: device '{}' did not re-appear within {}s after forced cycle",
+                                    "USB watchdog: device '{}' did not re-appear within {}s",
                                     name, POWER_CYCLE_SETTLE_SECS
                                 );
                                 break;
@@ -433,31 +381,20 @@ impl UsbWatchdog {
                 }
             }));
 
-            if let Err(panic) = result {
-                error!(
-                    "USB watchdog: force_power_cycle thread panicked — recovering without crashing"
-                );
+            if let Err(_) = result {
+                error!("USB watchdog: force_power_cycle thread panicked");
                 emit_cycle_event_with_handle(
                     &app_handle,
                     "usb-power-cycle-failed",
                     "forced power cycle panicked",
                 );
-                if let Some(s) = panic.downcast_ref::<&str>() {
-                    error!("USB watchdog panic: {}", s);
-                } else if let Some(s) = panic.downcast_ref::<String>() {
-                    error!("USB watchdog panic: {}", s);
-                }
             }
 
             cycling.store(false, Ordering::SeqCst);
 
-            // Only emit "finished" if the cycle actually succeeded.
             if cycle_succeeded {
                 emit_cycle_event_with_handle(&app_handle, "usb-power-cycle-finished", &name);
 
-                // After a successful forced power cycle, restart the microphone
-                // stream if it should be active (always-on mode or BT keep-alive).
-                // This fixes the "mic not listening, volume bars not moving" issue.
                 if let Some(ah) = &app_handle {
                     if let Some(rm) = ah.try_state::<Arc<AudioRecordingManager>>() {
                         if let Err(e) = rm.restart_microphone_if_needed() {
@@ -470,19 +407,16 @@ impl UsbWatchdog {
 
         true
     }
+
     fn emit_stage_event(&self, stage: &str, message: &str) {
         emit_stage_event_with_handle(&self.app_handle, stage, message);
     }
 
-    /// Emit a Tauri event to the frontend about the power-cycle state.
     fn emit_cycle_event(&self, event_name: &str, message: &str) {
         emit_cycle_event_with_handle(&self.app_handle, event_name, message);
     }
 }
 
-/// Emit a Tauri event about USB power-cycle progress.
-/// Emits to both the app handle (all windows) and directly to the
-/// recording overlay window to ensure the overlay always receives the event.
 fn emit_cycle_event_with_handle(
     app_handle: &Option<tauri::AppHandle>,
     event_name: &str,
@@ -490,10 +424,7 @@ fn emit_cycle_event_with_handle(
 ) {
     if let Some(ah) = app_handle {
         use tauri::Emitter;
-        use tauri::Manager;
         let _ = ah.emit(event_name, message.to_string());
-        // Also emit directly to the recording overlay window — the overlay
-        // webview may not reliably receive events via ah.emit() alone.
         if let Some(overlay) = ah.get_webview_window("recording_overlay") {
             let _ = overlay.emit(event_name, message.to_string());
         }
@@ -507,32 +438,49 @@ pub fn emit_stage_event_with_handle(
 ) {
     if let Some(ah) = app_handle {
         use tauri::Emitter;
-        use tauri::Manager;
         let payload = UsbCycleStage {
             stage: stage.to_string(),
             message: message.to_string(),
         };
         let _ = ah.emit("usb-power-cycle-stage", payload.clone());
-        // Also emit directly to the recording overlay window.
         if let Some(overlay) = ah.get_webview_window("recording_overlay") {
             let _ = overlay.emit("usb-power-cycle-stage", payload);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Device listing & resolution
-// ---------------------------------------------------------------------------
-
 /// Resolve a device name substring to a UsbDevice by running `uhubctl`.
-/// Matches the first device whose description contains `name` (case-sensitive).
 fn resolve_device(name: &str) -> Option<UsbDevice> {
     let devices = list_usb_devices_inner();
-    devices.into_iter().find(|d| d.name.contains(name))
+
+    // Helper to normalize strings for comparison (case-insensitive, alphanumeric only)
+    let to_fuzzy = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    let fuzzy_target = to_fuzzy(name);
+    if fuzzy_target.is_empty() {
+        return None;
+    }
+
+    let found = devices.into_iter().find(|d| {
+        let fuzzy_device = to_fuzzy(&d.name);
+        !fuzzy_device.is_empty()
+            && (fuzzy_device.contains(&fuzzy_target) || fuzzy_target.contains(&fuzzy_device))
+    });
+
+    if let Some(ref d) = found {
+        debug!("USB watchdog: resolved '{}' fuzzy matching to '{}' (hub {} port {})", name, d.name, d.hub, d.port);
+    }
+
+    found
 }
 
-/// List all USB devices connected to hubs visible to uhubctl.
-/// Called from the Tauri command layer to populate the UI.
 pub fn list_usb_devices() -> Vec<UsbDevice> {
     list_usb_devices_inner()
 }
@@ -544,10 +492,7 @@ fn list_usb_devices_inner() -> Vec<UsbDevice> {
     };
 
     let output = match std::process::Command::new(&bin)
-        .env(
-            "PATH",
-            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        )
+        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
         .output()
     {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -557,41 +502,24 @@ fn list_usb_devices_inner() -> Vec<UsbDevice> {
     parse_uhubctl_output(&output)
 }
 
-/// Parse the output of `uhubctl` (no arguments) into a list of devices.
-///
-/// Example input:
-/// ```text
-/// Current status for hub 8-3 [2109:2812 VIA Labs, Inc. USB2.0 Hub, USB 2.10, 4 ports, ppps]
-///   Port 1: 0103 power enable connect [19f7:001a RØDE Microphones RØDE VideoMic NTG 762210B9]
-///   Port 2: 0103 power enable connect [3297:1969 ZSA Technology Labs Moonlander Mark I default/latest]
-/// ```
 fn parse_uhubctl_output(output: &str) -> Vec<UsbDevice> {
     let mut devices = Vec::new();
     let mut current_hub: Option<String> = None;
 
     for line in output.lines() {
         let trimmed = line.trim();
-
-        // Detect hub header: "Current status for hub 8-3 [2109:2812 ...]"
         if let Some(rest) = trimmed.strip_prefix("Current status for hub ") {
-            // Extract hub ID (the first space-delimited token)
             if let Some(hub_id) = rest.split_whitespace().next() {
                 current_hub = Some(hub_id.to_string());
             }
             continue;
         }
-
-        // Detect port line with a connected device:
-        // "Port 2: 0103 power enable connect [19f7:001a RØDE Microphones RØDE VideoMic NTG 762210B9]"
         if let Some(rest) = trimmed.strip_prefix("Port ") {
-            // Extract port number
             if let Some(colon_pos) = rest.find(':') {
                 let port_str = rest[..colon_pos].trim();
-                // Check if device is connected (contains "connect")
                 if !rest.contains("connect") {
                     continue;
                 }
-                // Extract device description from brackets [vid:pid name ...]
                 if let Some(desc) = extract_device_description(rest) {
                     if let Some(ref hub) = current_hub {
                         devices.push(UsbDevice {
@@ -604,41 +532,26 @@ fn parse_uhubctl_output(output: &str) -> Vec<UsbDevice> {
             }
         }
     }
-
     devices
 }
 
-/// Extract the device description from a port line after the colon.
-/// Input: "2: 0103 power enable connect [19f7:001a RØDE Microphones RØDE VideoMic NTG 762210B9]"
-/// Returns: "RØDE Microphones RØDE VideoMic NTG 762210B9"
 fn extract_device_description(rest: &str) -> Option<String> {
-    // Find the content between [ and ]
     let start = rest.find('[')?;
     let end = rest.rfind(']')?;
     let bracket_content = &rest[start + 1..end];
-
-    // The format is "vid:pid description"
-    // Skip the vid:pid part (first space-delimited token)
     let mut parts = bracket_content.splitn(2, ' ');
     parts.next(); // skip vid:pid
     parts.next().map(|s| s.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// uhubctl binary resolution & execution
-// ---------------------------------------------------------------------------
-
 const UHUBCTL_PATHS: &[&str] = &["/usr/local/bin/uhubctl", "/opt/homebrew/bin/uhubctl"];
 
-/// Resolve the uhubctl binary path
 fn uhubctl_bin() -> Option<std::path::PathBuf> {
-    // Check standard paths first
     for path in UHUBCTL_PATHS {
         if std::path::Path::new(path).exists() {
             return Some(std::path::PathBuf::from(*path));
         }
     }
-    // Fall back to PATH lookup
     which_uhubctl()
 }
 
@@ -659,26 +572,13 @@ fn which_uhubctl() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-/// Maximum time to wait for `uhubctl` to complete before giving up.
-/// Prevents the app from hanging indefinitely if uhubctl itself gets stuck.
-/// A power cycle typically completes in 1-3s; with `-d 3` the delay is at most
-/// 3s. 5s is generous enough to handle slow USB hubs without leaving the
-/// user stuck on "USB cycling…" for an unreasonable time.
 const UHUBCTL_TIMEOUT_SECS: u64 = 5;
 
-/// Run `uhubctl -l <hub> -p <port> -a cycle -d 3` with a timeout.
-///
-/// If uhubctl doesn't finish within `UHUBCTL_TIMEOUT_SECS`, the child
-/// process is killed to prevent the app from hanging indefinitely.
 fn run_uhubctl_cycle(hub_id: &str, port: &str) -> Result<(), String> {
     let bin = uhubctl_bin().ok_or_else(|| "uhubctl not found on system".to_string())?;
-
     let mut child = std::process::Command::new(&bin)
         .args(["-l", hub_id, "-p", port, "-a", "cycle", "-d", "3"])
-        .env(
-            "PATH",
-            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        )
+        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -687,102 +587,63 @@ fn run_uhubctl_cycle(hub_id: &str, port: &str) -> Result<(), String> {
 
     let timeout = Duration::from_secs(UHUBCTL_TIMEOUT_SECS);
     let start = Instant::now();
-
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 if status.success() {
-                    debug!("uhubctl completed successfully");
-                    // Reap the child to collect stdout/stderr
                     let _ = child.wait();
                     return Ok(());
                 }
-                let code = status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "killed by signal".to_string());
+                let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "killed by signal".to_string());
                 return Err(format!("uhubctl exited with {}", code));
             }
             Ok(None) => {
-                // Still running — check timeout
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!(
-                        "uhubctl timed out after {}s — killed",
-                        UHUBCTL_TIMEOUT_SECS
-                    ));
+                    return Err(format!("uhubctl timed out after {}s", UHUBCTL_TIMEOUT_SECS));
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Err(e) => {
-                return Err(format!("uhubctl wait error: {}", e));
-            }
+            Err(e) => return Err(format!("uhubctl wait error: {}", e)),
         }
     }
 }
 
-/// Check if uhubctl is available on the system
 pub fn is_uhubctl_available() -> bool {
     uhubctl_bin().is_some()
 }
 
-/// Attempt to install uhubctl via Homebrew on macOS.
-/// Returns true if uhubctl is available after the attempt.
 pub fn ensure_uhubctl_installed() -> bool {
     if is_uhubctl_available() {
         info!("uhubctl found — USB watchdog ready");
         return true;
     }
-
     info!("uhubctl not found, attempting to install via Homebrew…");
-
     let brew_check = std::process::Command::new("which").arg("brew").output();
-
     match brew_check {
         Ok(output) if output.status.success() => {
-            info!("Homebrew found, installing uhubctl…");
-
             match std::process::Command::new("brew")
                 .args(["install", "uhubctl"])
-                .env(
-                    "PATH",
-                    "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                )
+                .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
                 .output()
             {
                 Ok(output) => {
                     if output.status.success() {
                         info!("uhubctl installed successfully via Homebrew");
-                        if is_uhubctl_available() {
-                            info!("uhubctl confirmed available — USB watchdog ready");
-                            true
-                        } else {
-                            warn!("uhubctl installed but not found at expected paths");
-                            is_uhubctl_available()
-                        }
+                        is_uhubctl_available()
                     } else {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        warn!("brew install uhubctl failed: {}", stderr.trim());
+                        warn!("brew install uhubctl failed");
                         false
                     }
                 }
-                Err(e) => {
-                    warn!("Failed to run brew install uhubctl: {}", e);
-                    false
-                }
+                Err(_) => false,
             }
         }
-        _ => {
-            info!("Homebrew not found — USB watchdog requires uhubctl. Install with: brew install uhubctl");
-            false
-        }
+        _ => false,
     }
 }
 
 fn epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
