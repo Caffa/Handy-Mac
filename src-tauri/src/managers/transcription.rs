@@ -739,14 +739,14 @@ impl TranscriptionManager {
                                     if quality.is_quiet() {
                                         // Very quiet audio — be more permissive to
                                         // avoid dropping real speech.
-                                        (Some(0.20f32), Some(0.35f32))
+                                        (Some(0.10f32), Some(0.20f32))
                                     } else if quality.is_clean() {
                                         // Clean, loud audio — raise thresholds to
                                         // reduce false positives.
-                                        (Some(0.40f32), Some(0.55f32))
+                                        (Some(0.30f32), Some(0.40f32))
                                     } else {
                                         // Normal audio — use the new decoder defaults.
-                                        (None, None)
+                                        (Some(0.20f32), Some(0.30f32))
                                     }
                                 } else {
                                     // Legacy mode: use old higher thresholds that
