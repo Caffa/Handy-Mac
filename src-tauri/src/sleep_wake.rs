@@ -101,10 +101,11 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         // Some hubs take a moment to re-enumerate.
         std::thread::sleep(std::time::Duration::from_secs(5));
 
-        let watchdog = ah.try_state::<Arc<crate::usb_watchdog::UsbWatchdog>>();
+        let recording_manager = ah.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>();
 
-        match watchdog {
-            Some(wd) => {
+        match recording_manager {
+            Some(rm) => {
+                let wd = &rm.usb_watchdog;
                 info!("Starting post-wake USB power cycle sequence");
                 // force_power_cycle already handles restart_microphone_if_needed
                 if !wd.force_power_cycle() {
@@ -112,7 +113,7 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
                 }
             }
             None => {
-                error!("USB watchdog state not found on wake!");
+                error!("Audio recording manager state not found on wake!");
             }
         }
     });

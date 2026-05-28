@@ -918,7 +918,7 @@ pub fn get_default_settings() -> AppSettings {
         extra_recording_buffer_ms: 0,
         usb_watchdog_enabled: false,
         usb_watchdog_device_name: String::new(),
-        usb_watchdog_cycle_on_wake: false,
+        usb_watchdog_cycle_on_wake: true,
         hybrid_mode_enabled: false,
         hybrid_threshold_secs: default_hybrid_threshold_secs(),
         hybrid_short_audio_model: None,
@@ -991,6 +991,13 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                     updated = true;
                 }
 
+                // Migrate usb_watchdog_cycle_on_wake
+                if settings.usb_watchdog_enabled && !settings.usb_watchdog_cycle_on_wake {
+                    debug!("Migrating usb_watchdog_cycle_on_wake to true for enabled watchdog");
+                    settings.usb_watchdog_cycle_on_wake = true;
+                    updated = true;
+                }
+
                 if updated {
                     debug!("Settings updated with new bindings");
                     store.set("settings", serde_json::to_value(&settings).unwrap());
@@ -1049,6 +1056,14 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
     if settings.router_env_file.is_none() && default_settings.router_env_file.is_some() {
         debug!("Migrating router_env_file from default");
         settings.router_env_file = default_settings.router_env_file.clone();
+        needs_save = true;
+    }
+
+    // Migrate usb_watchdog_cycle_on_wake: if usb_watchdog_enabled is true,
+    // we want this to default to true for existing users as well.
+    if settings.usb_watchdog_enabled && !settings.usb_watchdog_cycle_on_wake {
+        debug!("Migrating usb_watchdog_cycle_on_wake to true for enabled watchdog");
+        settings.usb_watchdog_cycle_on_wake = true;
         needs_save = true;
     }
 
