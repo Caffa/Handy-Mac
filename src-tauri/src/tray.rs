@@ -4,12 +4,17 @@ use crate::managers::transcription::TranscriptionManager;
 use crate::settings;
 use crate::tray_i18n::get_tray_translations;
 use log::{error, info, warn};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Manager, Theme};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+
+/// Global lock to prevent concurrent tray icon operations that cause RefCell panics.
+/// The tray-icon crate uses RefCell internally, which panics on double-borrow.
+/// This mutex serializes all tray operations to prevent the race condition.
+static TRAY_LOCK: once_cell::sync::Lazy<Mutex<()>> = once_cell::sync::Lazy::new(|| Mutex::new(()));
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrayIconState {
@@ -63,22 +68,34 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
 }
 
 pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
+    // Acquire the global tray lock to prevent concurrent RefCell borrows
+    // This prevents the "RefCell already borrowed" panic from tray-icon
+    let _guard = match TRAY_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("TRAY_LOCK mutex poisoned, recovering");
+            poisoned.into_inner()
+        }
+    };
+
     let tray = app.state::<TrayIcon>();
     let theme = get_current_theme(app);
 
     let icon_path = get_icon_path(theme, icon.clone());
 
-    let _ = tray.set_icon(Some(
+    if let Err(e) = tray.set_icon(Some(
         Image::from_path(
             app.path()
                 .resolve(icon_path, tauri::path::BaseDirectory::Resource)
                 .expect("failed to resolve"),
         )
         .expect("failed to set icon"),
-    ));
+    )) {
+        error!("Failed to set tray icon: {}", e);
+    }
 
-    // Update menu based on state
-    update_tray_menu(app, &icon, None);
+    // Update menu based on state (internal version that doesn't re-acquire lock)
+    update_tray_menu_internal(app, &icon, None);
 }
 
 pub fn tray_tooltip() -> String {
@@ -93,7 +110,9 @@ fn version_label() -> String {
     }
 }
 
-pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
+/// Internal implementation that updates the tray menu without acquiring the lock.
+/// Called from within lock-holding functions like change_tray_icon.
+fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
     let settings = settings::get_settings(app);
 
     let locale = locale.unwrap_or(&settings.app_language);
@@ -223,6 +242,21 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
     let _ = tray.set_tooltip(Some(version_label));
 }
 
+/// Public function to update tray menu. Acquires the global TRAY_LOCK to prevent
+/// concurrent RefCell borrows that would cause panics.
+pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
+    // Acquire the global tray lock to prevent concurrent RefCell borrows
+    let _guard = match TRAY_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("TRAY_LOCK mutex poisoned in update_tray_menu, recovering");
+            poisoned.into_inner()
+        }
+    };
+
+    update_tray_menu_internal(app, state, locale);
+}
+
 fn last_transcript_text(entry: &HistoryEntry) -> &str {
     entry
         .post_processed_text
@@ -231,6 +265,15 @@ fn last_transcript_text(entry: &HistoryEntry) -> &str {
 }
 
 pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
+    // Acquire the global tray lock to prevent concurrent RefCell borrows
+    let _guard = match TRAY_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("TRAY_LOCK mutex poisoned, recovering");
+            poisoned.into_inner()
+        }
+    };
+
     let tray = app.state::<TrayIcon>();
     if let Err(e) = tray.set_visible(visible) {
         error!("Failed to set tray visibility: {}", e);
