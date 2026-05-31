@@ -1,7 +1,9 @@
 use natural::phonetics::soundex;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::collections::HashMap;
 use strsim::levenshtein;
+use varcon::{Category, VARCON};
 
 use crate::settings::CustomWord;
 
@@ -696,17 +698,58 @@ pub fn filter_transcription_output(
     filtered.trim().to_string()
 }
 
-/// Converts US English spelling to British English.
+/// Lookup table for US English to British English spelling conversions.
+/// Built lazily from the varcon database on first use.
+static US_TO_BRITISH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+    
+    // Build a lookup from the varcon database
+    // Each Cluster has entries, each Entry has variants with different spellings.
+    // We need to find pairs: one variant with American category, another with BritishIse.
+    for cluster in VARCON.iter() {
+        for entry in cluster.entries.iter() {
+            // Find American and British variants
+            let mut american_word: Option<&'static str> = None;
+            let mut british_word: Option<&'static str> = None;
+            
+            for variant in entry.variants.iter() {
+                for type_info in variant.types.iter() {
+                    if type_info.category & Category::American == Category::American {
+                        american_word = Some(variant.word);
+                    }
+                    if type_info.category & Category::BritishIse == Category::BritishIse {
+                        british_word = Some(variant.word);
+                    }
+                }
+            }
+            
+            // If we have different spellings for American and British, add to map
+            // Note: american_word and british_word come from DIFFERENT variants
+            if let (Some(us), Some(uk)) = (american_word, british_word) {
+                if us != uk {
+                    map.insert(us, uk);
+                }
+            }
+        }
+    }
+    
+    // Add gray/grey which might not be in the database
+    // These are common conversions that users expect
+    map.insert("gray", "grey");
+    map.insert("grays", "greys");
+    map.insert("grayed", "greyed");
+    map.insert("graying", "greying");
+    map.insert("grayer", "greyer");
+    map.insert("grayest", "greyest");
+    
+    map
+});
+
+/// Converts US English spelling to British English using the varcon database.
 ///
-/// Handles common spelling differences:
-/// - -or → -our (color → colour, flavor → flavour)
-/// - -ize → -ise (organize → organise, realize → realise)
-/// - -yze → -yse (analyze → analyse, paralyze → paralyse)
-/// - -er → -re (center → centre, meter → metre)
-/// - -og → -ogue (dialog → dialogue, catalog → catalogue)
-/// - -nse → -nce (defense → defence, offense → offence)
-/// - Double consonants (traveled → travelled)
-/// - And various other common conversions
+/// The varcon database contains thousands of spelling variants based on
+/// the VARCON project which covers American, British, Canadian, and Australian
+/// English spelling differences.
 ///
 /// # Arguments
 /// * `text` - The input text with US English spelling
@@ -714,468 +757,7 @@ pub fn filter_transcription_output(
 /// # Returns
 /// Text with British English spelling applied
 pub fn convert_us_to_british(text: &str) -> String {
-    // Common US→British spelling conversions.
-    // Ordered so that more specific patterns come before more general ones.
-    // Each tuple is (US spelling, British spelling).
-    const CONVERSIONS: &[(&str, &str)] = &[
-        // -or → -our (must come before general -or)
-        ("behavior", "behaviour"),
-        ("behaviors", "behaviours"),
-        ("color", "colour"),
-        ("colors", "colours"),
-        ("flavor", "flavour"),
-        ("flavors", "flavours"),
-        ("humor", "humour"),
-        ("humors", "humours"),
-        ("labor", "labour"),
-        ("labors", "labours"),
-        ("neighbor", "neighbour"),
-        ("neighbors", "neighbours"),
-        ("rumor", "rumour"),
-        ("rumors", "rumours"),
-        ("savor", "savour"),
-        ("savors", "savours"),
-        ("vapor", "vapour"),
-        ("vapors", "vapours"),
-        ("valor", "valour"),
-        ("valors", "valours"),
-        ("vigor", "vigour"),
-        ("vigors", "vigours"),
-        ("honor", "honour"),
-        ("honors", "honours"),
-        ("favor", "favour"),
-        ("favors", "favours"),
-        ("tumor", "tumour"),
-        ("tumors", "tumours"),
-        ("splendor", "splendour"),
-        ("clamor", "clamour"),
-        ("clamors", "clamours"),
-        ("demeanor", "demeanour"),
-        ("endeavor", "endeavour"),
-        ("endeavors", "endeavours"),
-        ("parlor", "parlour"),
-        ("parlors", "parlours"),
-        ("ardor", "ardour"),
-        ("rancor", "rancour"),
-        ("clamor", "clamour"),
-        ("glamor", "glamour"), // Note: glamour in both
-        ("temor", "temour"),
-        ("tremor", "tremour"),
-        ("squalor", "squalour"),
-        ("tenor", "tenour"),
-        ("harbor", "harbour"),
-        ("harbors", "harbours"),
-        ("armo", "armou"),
-        ("armors", "armours"),
-        ("enamor", "enamour"),
-        ("enamored", "enamoured"),
-        ("armored", "armoured"),
-        ("coloring", "colouring"),
-        ("neighborhood", "neighbourhood"),
-        ("neighborhoods", "neighbourhoods"),
-        ("favorit", "favourit"),
-        ("favorite", "favourite"),
-        ("favorites", "favourites"),
-        // -yze → -yse (analytical words)
-        ("analyze", "analyse"),
-        ("analyzes", "analyses"),
-        ("analyzed", "analysed"),
-        ("analyzing", "analysing"),
-        ("analysis", "analysis"), // same spelling
-        ("paralyze", "paralyse"),
-        ("paralyzes", "paralyses"),
-        ("paralyzed", "paralysed"),
-        ("paralyzing", "paralysing"),
-        ("catalyze", "catalyse"),
-        ("catalyzes", "catalyses"),
-        ("catalyzed", "catalysed"),
-        ("catalyzing", "catalysing"),
-        // -ize → -ise
-        ("organize", "organise"),
-        ("organizes", "organises"),
-        ("organized", "organised"),
-        ("organizing", "organising"),
-        ("organization", "organisation"),
-        ("organizations", "organisations"),
-        ("realize", "realise"),
-        ("realizes", "realises"),
-        ("realized", "realised"),
-        ("realizing", "realising"),
-        ("realization", "realisation"),
-        ("recognize", "recognise"),
-        ("recognizes", "recognises"),
-        ("recognized", "recognised"),
-        ("recognizing", "recognising"),
-        ("recognition", "recognition"), // same
-        ("modernize", "modernise"),
-        ("modernizes", "modernises"),
-        ("modernized", "modernised"),
-        ("modernizing", "modernising"),
-        ("modernization", "modernisation"),
-        ("optimize", "optimise"),
-        ("optimizes", "optimises"),
-        ("optimized", "optimised"),
-        ("optimizing", "optimising"),
-        ("optimization", "optimisation"),
-        ("authorize", "authorise"),
-        ("authorizes", "authorises"),
-        ("authorized", "authorised"),
-        ("authorizing", "authorising"),
-        ("authorization", "authorisation"),
-        ("customize", "customise"),
-        ("customizes", "customises"),
-        ("customized", "customised"),
-        ("customizing", "customising"),
-        ("customization", "customisation"),
-        ("prioritize", "prioritise"),
-        ("prioritizes", "prioritises"),
-        ("prioritized", "prioritised"),
-        ("prioritizing", "prioritising"),
-        ("prioritization", "prioritisation"),
-        ("memorize", "memorise"),
-        ("memorizes", "memorises"),
-        ("memorized", "memorised"),
-        ("memorizing", "memorising"),
-        ("memorization", "memorisation"),
-        ("emphasize", "emphasise"),
-        ("emphasizes", "emphasises"),
-        ("emphasized", "emphasised"),
-        ("emphasizing", "emphasising"),
-        ("emphasization", "emphasisation"),
-        ("sympathize", "sympathise"),
-        ("sympathizes", "sympathises"),
-        ("sympathized", "sympathised"),
-        ("sympathizing", "sympathising"),
-        ("sympathizer", "sympathiser"),
-        ("criticize", "criticise"),
-        ("criticizes", "criticises"),
-        ("criticized", "criticised"),
-        ("criticizing", "criticising"),
-        ("criticization", "criticisation"),
-        ("apologize", "apologise"),
-        ("apologizes", "apologises"),
-        ("apologized", "apologised"),
-        ("apologizing", "apologising"),
-        ("apology", "apology"), // same
-        ("standardize", "standardise"),
-        ("standardizes", "standardises"),
-        ("standardized", "standardised"),
-        ("standardizing", "standardising"),
-        ("standardization", "standardisation"),
-        ("visualize", "visualise"),
-        ("visualizes", "visualises"),
-        ("visualized", "visualised"),
-        ("visualizing", "visualising"),
-        ("visualization", "visualisation"),
-        ("finalize", "finalise"),
-        ("finalizes", "finalises"),
-        ("finalized", "finalised"),
-        ("finalizing", "finalising"),
-        ("finalization", "finalisation"),
-        ("maximize", "maximise"),
-        ("maximizes", "maximises"),
-        ("maximized", "maximised"),
-        ("maximizing", "maximising"),
-        ("maximization", "maximisation"),
-        ("minimize", "minimise"),
-        ("minimizes", "minimises"),
-        ("minimized", "minimised"),
-        ("minimizing", "minimising"),
-        ("minimization", "minimisation"),
-        ("specialize", "specialise"),
-        ("specializes", "specialises"),
-        ("specialized", "specialised"),
-        ("specializing", "specialising"),
-        ("specialization", "specialisation"),
-        ("specialist", "specialist"), // same
-        ("generalize", "generalise"),
-        ("generalizes", "generalises"),
-        ("generalized", "generalised"),
-        ("generalizing", "generalising"),
-        ("generalization", "generalisation"),
-        ("stabilize", "stabilise"),
-        ("stabilizes", "stabilises"),
-        ("stabilized", "stabilised"),
-        ("stabilizing", "stabilising"),
-        ("stabilization", "stabilisation"),
-        ("characterize", "characterise"),
-        ("characterizes", "characterises"),
-        ("characterized", "characterised"),
-        ("characterizing", "characterising"),
-        ("characterization", "characterisation"),
-        ("utilize", "utilise"),
-        ("utilizes", "utilises"),
-        ("utilized", "utilised"),
-        ("utilizing", "utilising"),
-        ("utilization", "utilisation"),
-        ("harmonize", "harmonise"),
-        ("harmonizes", "harmonises"),
-        ("harmonized", "harmonised"),
-        ("harmonizing", "harmonising"),
-        ("harmonization", "harmonisation"),
-        ("synchronize", "synchronise"),
-        ("synchronizes", "synchronises"),
-        ("synchronized", "synchronised"),
-        ("synchronizing", "synchronising"),
-        ("synchronization", "synchronisation"),
-        ("digitalize", "digitalise"),
-        ("digitalizes", "digitalises"),
-        ("digitalized", "digitalised"),
-        ("digitalizing", "digitalising"),
-        ("digitalization", "digitalisation"),
-        ("penalize", "penalise"),
-        ("penalizes", "penalises"),
-        ("penalized", "penalised"),
-        ("penalizing", "penalising"),
-        ("penalization", "penalisation"),
-        ("rationalize", "rationalise"),
-        ("rationalizes", "rationalises"),
-        ("rationalized", "rationalised"),
-        ("rationalizing", "rationalising"),
-        ("rationalization", "rationalisation"),
-        ("publicize", "publicise"),
-        ("publicizes", "publicises"),
-        ("publicized", "publicised"),
-        ("publicizing", "publicising"),
-        ("popularize", "popularise"),
-        ("popularizes", "popularises"),
-        ("popularized", "popularised"),
-        ("popularizing", "popularising"),
-        ("popularization", "popularisation"),
-        ("privatize", "privatise"),
-        ("privatizes", "privatises"),
-        ("privatized", "privatised"),
-        ("privatizing", "privatising"),
-        ("privatization", "privatisation"),
-        ("mobilize", "mobilise"),
-        ("mobilizes", "mobilises"),
-        ("mobilized", "mobilised"),
-        ("mobilizing", "mobilising"),
-        ("mobilization", "mobilisation"),
-        ("centralize", "centralise"),
-        ("centralizes", "centralises"),
-        ("centralized", "centralised"),
-        ("centralizing", "centralising"),
-        ("centralization", "centralisation"),
-        ("socialize", "socialise"),
-        ("socializes", "socialises"),
-        ("socialized", "socialised"),
-        ("socializing", "socialising"),
-        ("socialization", "socialisation"),
-        ("industrialize", "industrialise"),
-        ("industrializes", "industrialises"),
-        ("industrialized", "industrialised"),
-        ("industrializing", "industrialising"),
-        ("industrialization", "industrialisation"),
-        ("nationalize", "nationalise"),
-        ("nationalizes", "nationalises"),
-        ("nationalized", "nationalised"),
-        ("nationalizing", "nationalising"),
-        ("nationalization", "nationalisation"),
-        ("internationalize", "internationalise"),
-        ("internationalizes", "internationalises"),
-        ("internationalized", "internationalised"),
-        ("internationalizing", "internationalising"),
-        ("internationalization", "internationalisation"),
-        ("hypothesize", "hypothesise"),
-        ("hypothesizes", "hypothesises"),
-        ("hypothesized", "hypothesised"),
-        ("hypothesizing", "hypothesising"),
-        ("hypothesis", "hypothesis"), // same
-        ("theorize", "theorise"),
-        ("theorizes", "theorises"),
-        ("theorized", "theorised"),
-        ("theorizing", "theorising"),
-        ("theorem", "theorem"), // same
-        // -er → -re (must come before general -er conversions)
-        ("center", "centre"),
-        ("centers", "centres"),
-        ("centered", "centred"),
-        ("centering", "centring"),
-        ("meter", "metre"),
-        ("meters", "metres"),
-        ("centimeter", "centimetre"),
-        ("centimeters", "centimetres"),
-        ("millimeter", "millimetre"),
-        ("millimeters", "millimetres"),
-        ("kilometer", "kilometre"),
-        ("kilometers", "kilometres"),
-        ("theater", "theatre"),
-        ("theaters", "theatres"),
-        ("liter", "litre"),
-        ("liters", "litres"),
-        ("milliliter", "millilitre"),
-        ("milliliters", "millilitres"),
-        ("fiber", "fibre"),
-        ("fibers", "fibres"),
-        ("fiberglass", "fibreglass"),
-        ("sabre", "sabre"), // same spelling
-        ("saber", "sabre"),
-        ("sabers", "sabres"),
-        ("specter", "spectre"),
-        ("specters", "spectres"),
-        ("lounger", "lougere"),
-        ("meager", "meagre"),
-        ("meagerly", "meagerly"),
-        ("diameter", "diameter"), // same
-        ("parameter", "parameter"), // same
-        // -ense → -ence
-        ("defense", "defence"),
-        ("defenses", "defences"),
-        ("defensive", "defensive"), // same
-        ("offense", "offence"),
-        ("offenses", "offences"),
-        ("offensive", "offensive"), // same
-        ("pretense", "pretence"),
-        ("pretenses", "pretences"),
-        ("license", "licence"),  // noun form in UK
-        ("licenses", "licences"),
-        ("licensed", "licenced"), // verb form
-        ("licensing", "licencing"),
-        // -og → -ogue
-        ("dialog", "dialogue"),
-        ("dialogs", "dialogues"),
-        ("dialogue", "dialogue"), // already British
-        ("catalog", "catalogue"),
-        ("catalogs", "catalogues"),
-        ("catalogue", "catalogue"), // already British
-        ("monolog", "monologue"),
-        ("monologs", "monologues"),
-        ("monologue", "monologue"), // same
-        ("prolog", "prologue"),
-        ("prologs", "prologues"),
-        ("prologue", "prologue"), // same
-        ("epilog", "epilogue"),
-        ("epilogs", "epilogues"),
-        ("epilogue", "epilogue"), // same
-        ("analog", "analogue"),
-        ("analogs", "analogues"),
-        ("analogue", "analogue"), // already British
-        ("travelog", "travelogue"),
-        ("travelogs", "travelogues"),
-        ("homolog", "homologue"),
-        ("homologs", "homologues"),
-        // Double consonant forms
-        ("traveled", "travelled"),
-        ("traveler", "traveller"),
-        ("travelers", "travellers"),
-        ("traveling", "travelling"),
-        ("canceled", "cancelled"),
-        ("canceler", "canceller"),
-        ("cancelers", "cancellers"),
-        ("canceling", "cancelling"),
-        ("cancellation", "cancellation"), // same
-        ("labeled", "labelled"),
-        ("labeler", "labeller"),
-        ("labelers", "labellers"),
-        ("labeling", "labelling"),
-        ("jeweler", "jeweller"),
-        ("jewelers", "jewellers"),
-        ("jewelry", "jewellery"),
-        ("enroll", "enrol"), // UK single l in enrol
-        ("enrolls", "enrols"),
-        ("enrolled", "enrolled"), // actually same
-        ("enrollment", "enrolment"),
-        ("enrollments", "enrolments"),
-        ("instill", "instil"),
-        ("instills", "instils"),
-        ("instilled", "instilled"), // same
-        ("instilling", "instilling"), // same
-        ("instilment", "instilment"),
-        ("fulfill", "fulfil"),
-        ("fulfills", "fulfils"),
-        ("fulfilled", "fulfilled"), // same
-        ("fulfilling", "fulfilling"), // same
-        ("fulfilment", "fulfilment"),
-        ("fulfilments", "fulfilments"),
-        ("skillful", "skilful"),
-        ("skillfully", "skilfully"),
-        ("unskillful", "unskilful"),
-        ("wilful", "wilful"),
-        ("wilfully", "wilfully"),
-        // Various word-specific conversions
-        ("axe", "axe"), // same (American "ax" is rare)
-        ("gray", "grey"),
-        ("grayer", "greyer"),
-        ("grayest", "greyest"),
-        ("airplane", "aeroplane"),
-        ("airplanes", "aeroplanes"),
-        ("aluminum", "aluminium"),
-        ("tire", "tyre"),  // the wheel part
-        ("tires", "tyres"),
-        ("cookie", "biscuit"), // context-dependent, but common mapping
-        ("cookies", "biscuits"),
-        ("diaper", "nappy"),
-        ("diapers", "nappies"),
-        ("elevator", "lift"),
-        ("elevators", "lifts"),
-        ("fall", "autumn"), // season - context dependent
-        ("faucet", "tap"),
-        ("faucets", "taps"),
-        ("flashlight", "torch"),
-        ("flashlights", "torches"),
-        ("gasoline", "petrol"),
-        ("gas", "petrol"), // context-dependent
-        ("jelly", "jam"), // context-dependent
-        ("jello", "jelly"),
-        ("kerosene", "paraffin"),
-        ("liquor store", "off-licence"),
-        ("liquor stores", "off-licences"),
-        ("mailman", "postman"),
-        ("mailmen", "postmen"),
-        ("math", "maths"),
-        ("pacifier", "dummy"),
-        ("pacifiers", "dummies"),
-        ("parking lot", "car park"),
-        ("parking lots", "car parks"),
-        ("playground", "playground"), // same
-        ("principal", "principal"), // same (school)
-        ("headmaster", "headteacher"),
-        ("rent", "rent"), // same
-        ("schedule", "schedule"), // same (pronunciation differs)
-        ("sidewalk", "pavement"),
-        ("sidewalks", "pavements"),
-        ("sneakers", "trainers"),
-        ("soccer", "football"),
-        ("stingy", "mean"), // context-dependent
-        ("stroller", "pushchair"),
-        ("strollers", "pushchairs"),
-        ("subway", "underground"),
-        ("subways", "undergrounds"),
-        ("sweater", "jumper"),
-        ("sweaters", "jumpers"),
-        ("truck", "lorry"),
-        ("trucks", "lorries"),
-        ("vacation", "holiday"),
-        ("vacations", "holidays"),
-        ("vest", "waistcoat"),
-        ("vests", "waistcoats"),
-        ("wrench", "spanner"),
-        ("wrenches", "spanners"),
-        ("zipper", "zip"),
-        ("zippers", "zips"),
-        ("program", "programme"), // computer program is same
-        ("programs", "programmes"),
-        ("plow", "plough"),
-        ("plows", "ploughs"),
-        ("mustache", "moustache"),
-        ("mustaches", "moustaches"),
-        ("pajamas", "pyjamas"),
-        ("check", "cheque"), // financial context
-        ("checks", "cheques"),
-        ("draft", "draught"), // UK spelling, but context-dependent
-        ("drafts", "draughts"),
-        ("story", "storey"), // floor of building
-        ("stories", "storeys"),
-        ("story", "story"), // narrative - same
-        ("stories", "stories"), // narratives - same
-    ];
-
-    let result = text.to_string();
-
-    // Process each word in the text
-    // We need to be careful with word boundaries and case preservation
-    let words: Vec<&str> = result.split_whitespace().collect();
+    let words: Vec<&str> = text.split_whitespace().collect();
     let mut converted_words: Vec<String> = Vec::new();
 
     for word in words {
@@ -1183,53 +765,81 @@ pub fn convert_us_to_british(text: &str) -> String {
         let (prefix, core, suffix) = extract_word_parts(word);
 
         let core_lower = core.to_lowercase();
-
-        // Find a matching conversion
-        let mut converted = None;
-        for (us, british) in CONVERSIONS {
-            if core_lower == *us {
-                // Preserve case pattern
-                converted = Some(preserve_case_pattern(core, british));
-                break;
-            }
-        }
-
-        // If no exact match, try matching with common suffixes stripped for comparison
-        // This handles plural/singular conversions
-        if converted.is_none() {
-            // Try stripping 's' or 'es' and matching base form
-            let base = if core_lower.ends_with("es") {
-                &core_lower[..core_lower.len() - 2]
-            } else if core_lower.ends_with("s") {
-                &core_lower[..core_lower.len() - 1]
+        
+        // Look up the word in our conversion map
+        let converted = US_TO_BRITISH.get(core_lower.as_str());
+        
+        let result_word = if let Some(&british) = converted {
+            // Preserve case pattern
+            preserve_case_pattern(core, british)
+        } else if core_lower.ends_with("es") {
+            // Try singular form for plurals ending in -es
+            let base = &core_lower[..core_lower.len() - 2];
+            if let Some(&british_base) = US_TO_BRITISH.get(base) {
+                // Some words add -es in plural
+                let british_form = if british_base.ends_with('e') || british_base.ends_with('s') {
+                    format!("{}es", british_base)
+                } else {
+                    format!("{}es", british_base)
+                };
+                preserve_case_pattern(core, &british_form)
             } else {
-                &core_lower
-            };
-
-            for (us, british) in CONVERSIONS {
-                if base == *us {
-                    // Reconstruct with appropriate suffix
-                    let british_base = british;
-                    let british_form = if core_lower.ends_with("es") {
-                        // british_base already handles -es forms in the table
-                        // for regular plurals, add -s to British base
-                        format!("{}es", british_base.strip_suffix('e').unwrap_or(british_base))
-                    } else if core_lower.ends_with("s") && !british_base.ends_with("s") {
-                        format!("{}s", british_base)
-                    } else {
-                        british_base.to_string()
-                    };
-                    converted = Some(preserve_case_pattern(core, &british_form));
-                    break;
-                }
+                core.to_string()
             }
-        }
-
-        if let Some(converted_core) = converted {
-            converted_words.push(format!("{}{}{}", prefix, converted_core, suffix));
+        } else if core_lower.ends_with("s") && core_lower.len() > 1 {
+            // Try singular form for plurals ending in -s
+            let base = &core_lower[..core_lower.len() - 1];
+            if let Some(&british_base) = US_TO_BRITISH.get(base) {
+                let british_form = if british_base.ends_with('s') {
+                    british_base.to_string()
+                } else {
+                    format!("{}s", british_base)
+                };
+                preserve_case_pattern(core, &british_form)
+            } else {
+                core.to_string()
+            }
+        } else if core_lower.ends_with("ed") {
+            // Try base form for past tense
+            let base = &core_lower[..core_lower.len() - 2];
+            if let Some(&british_base) = US_TO_BRITISH.get(base) {
+                let british_form = format!("{}ed", british_base);
+                preserve_case_pattern(core, &british_form)
+            } else if core_lower.ends_with("ied") {
+                // Try -y form for -ied (e.g., organized -> organised)
+                let base = format!("{}y", &core_lower[..core_lower.len() - 3]);
+                if let Some(&british_base) = US_TO_BRITISH.get(base.as_str()) {
+                    let british_form = format!("{}ied", british_base.strip_suffix('e').unwrap_or(british_base));
+                    preserve_case_pattern(core, &british_form)
+                } else {
+                    core.to_string()
+                }
+            } else {
+                core.to_string()
+            }
+        } else if core_lower.ends_with("ing") {
+            // Try base form for -ing
+            let base = &core_lower[..core_lower.len() - 3];
+            if let Some(&british_base) = US_TO_BRITISH.get(base) {
+                let british_form = format!("{}ing", british_base);
+                preserve_case_pattern(core, &british_form)
+            } else if core_lower.ends_with("ying") {
+                // Try -y form for -ying (e.g., organizing -> organising)
+                let base = format!("{}y", &core_lower[..core_lower.len() - 4]);
+                if let Some(&british_base) = US_TO_BRITISH.get(base.as_str()) {
+                    let british_form = format!("{}ying", british_base.strip_suffix('e').unwrap_or(british_base));
+                    preserve_case_pattern(core, &british_form)
+                } else {
+                    core.to_string()
+                }
+            } else {
+                core.to_string()
+            }
         } else {
-            converted_words.push(word.to_string());
-        }
+            core.to_string()
+        };
+
+        converted_words.push(format!("{}{}{}", prefix, result_word, suffix));
     }
 
     converted_words.join(" ")
@@ -1243,20 +853,20 @@ fn extract_word_parts(word: &str) -> (String, &str, String) {
     let start = chars.iter().position(|c| c.is_alphanumeric()).unwrap_or(0);
 
     // Find end of core word (last alphanumeric)
-    let end = chars.iter().rposition(|c| c.is_alphanumeric()).unwrap_or(word.len() - 1);
+    let end = chars.iter().rposition(|c| c.is_alphanumeric()).unwrap_or(0);
+
+    // Handle edge case: no alphanumeric characters
+    if start > end || chars.iter().all(|c| !c.is_alphanumeric()) {
+        return (word.to_string(), "", String::new());
+    }
 
     // Convert to byte indices
-    let start_byte = chars[..start]
-        .iter()
-        .map(|c| c.len_utf8())
-        .sum::<usize>();
-    let end_byte = end + 1 + chars[start..=end]
-        .iter()
-        .map(|c| c.len_utf8())
-        .sum::<usize>();
+    let start_byte: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
+    let core_len: usize = chars[start..=end].iter().map(|c| c.len_utf8()).sum();
+    let end_byte = start_byte + core_len;
 
     let prefix: String = chars[..start].iter().collect();
-    let core = &word[start_byte..end_byte.min(word.len())];
+    let core = &word[start_byte..end_byte];
     let suffix: String = chars[end + 1..].iter().collect();
 
     (prefix, core, suffix)

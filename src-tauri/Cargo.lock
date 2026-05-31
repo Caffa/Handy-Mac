@@ -2470,6 +2470,7 @@ dependencies = [
  "tokio",
  "transcribe-rs",
  "vad-rs",
+ "varcon",
  "windows 0.61.3",
  "winreg 0.55.0",
 ]
@@ -7260,6 +7261,24 @@ name = "value-bag"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ba6f5989077681266825251a52748b8c1d8a4ad098cc37e440103d0ea717fc0"
+
+[[package]]
+name = "varcon"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f37fde208c60042f25237b33fc847dabbb3caa66cc7b4767c5473f7edafed74f"
+dependencies = [
+ "varcon-core",
+]
+
+[[package]]
+name = "varcon-core"
+version = "5.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c4301365be5e73845c51d7f0e1d618cb4458deb27695843bed19299cd636f2a"
+dependencies = [
+ "enumflags2",
+]
 
 [[package]]
 name = "vcpkg"
