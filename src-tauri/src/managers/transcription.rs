@@ -1,7 +1,7 @@
 use crate::audio_toolkit::audio::AudioQualityMetrics;
 use crate::audio_toolkit::{
-    apply_advanced_custom_words, apply_custom_words, filter_transcription_output,
-    trim_trailing_silence,
+    apply_advanced_custom_words, apply_custom_words, convert_us_to_british,
+    filter_transcription_output, trim_trailing_silence,
 };
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
@@ -925,6 +925,13 @@ impl TranscriptionManager {
             &settings.custom_filler_words,
         );
 
+        // Apply US to British English spelling conversion if enabled
+        let british_result = if settings.convert_us_to_british {
+            convert_us_to_british(&filtered_result)
+        } else {
+            filtered_result
+        };
+
         let et = std::time::Instant::now();
         let translation_note = if settings.translate_to_english {
             " (translated)"
@@ -955,7 +962,7 @@ impl TranscriptionManager {
             }
         }
 
-        let final_result = filtered_result;
+        let final_result = british_result;
 
         if final_result.is_empty() {
             info!("Transcription result is empty");

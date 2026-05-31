@@ -25,6 +25,7 @@ import { ToggleSwitch } from "../../ui/ToggleSwitch";
 import { WordCorrectionThreshold } from "../WordCorrectionThreshold";
 import { AdvancedCustomWords } from "../AdvancedCustomWords";
 import { VerificationMode } from "../VerificationMode";
+import { ConvertUsToBritish } from "../ConvertUsToBritish";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -75,6 +76,7 @@ export const AdvancedSettings: React.FC = () => {
           <AdvancedCustomWords descriptionMode="tooltip" grouped />
         )}
         <AppendTrailingSpace descriptionMode="tooltip" grouped={true} />
+        <ConvertUsToBritish descriptionMode="tooltip" grouped={true} />
         <HybridMode descriptionMode="tooltip" grouped={true} />
         <ToggleSwitch
           checked={getSetting("adaptive_parakeet_thresholds") ?? false}

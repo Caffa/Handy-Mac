@@ -476,6 +476,10 @@ pub struct AppSettings {
     pub adaptive_parakeet_thresholds: bool,
     #[serde(default)]
     pub verification_mode: bool,
+    /// Convert US English spelling to British English after transcription.
+    /// Applies common spelling conversions like: color → colour, analyze → analyse, etc.
+    #[serde(default)]
+    pub convert_us_to_british: bool,
 }
 
 fn default_model() -> String {
@@ -925,6 +929,7 @@ pub fn get_default_settings() -> AppSettings {
         hybrid_long_audio_model: None,
         adaptive_parakeet_thresholds: default_adaptive_parakeet_thresholds(),
         verification_mode: false,
+        convert_us_to_british: false,
     }
 }
 

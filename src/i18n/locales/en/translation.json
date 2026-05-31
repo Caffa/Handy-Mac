@@ -380,6 +380,10 @@
         "description": "Automatically translate speech from other languages to English during transcription.",
         "descriptionUnsupported": "Translation is not supported by the {{model}} model."
       },
+      "convertUsToBritish": {
+        "label": "Convert to British English",
+        "description": "Convert US English spelling to British English (e.g., color → colour, analyze → analyse, center → centre)."
+      },
       "modelUnload": {
         "title": "Unload Model",
         "description": "Automatically free GPU/CPU memory when the model hasn't been used for the specified time",

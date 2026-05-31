@@ -9,6 +9,8 @@ pub use audio::{
     is_no_input_device_error, list_input_devices, list_output_devices, read_wav_samples,
     save_wav_file, verify_wav_file, AudioRecorder, CpalDeviceInfo,
 };
-pub use text::{apply_advanced_custom_words, apply_custom_words, filter_transcription_output};
+pub use text::{
+    apply_advanced_custom_words, apply_custom_words, convert_us_to_british, filter_transcription_output,
+};
 pub use utils::get_cpal_host;
 pub use vad::{trim_trailing_silence, SileroVad, VoiceActivityDetector};

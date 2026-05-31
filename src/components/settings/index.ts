@@ -34,3 +34,4 @@ export { AutostartToggle } from "./AutostartToggle";
 export { UpdateChecksToggle } from "./UpdateChecksToggle";
 export { AdaptiveThresholds } from "./AdaptiveThresholds";
 export { VerificationMode } from "./VerificationMode";
+export { ConvertUsToBritish } from "./ConvertUsToBritish";
