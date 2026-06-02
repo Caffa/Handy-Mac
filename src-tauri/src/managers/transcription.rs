@@ -577,7 +577,9 @@ impl TranscriptionManager {
         ) {
             Ok(vad_path) => {
                 let path_str = vad_path.to_str().unwrap_or("");
-                trim_trailing_silence(&audio, path_str, 0.3)
+                // Use 0.5 threshold to match Python implementation.
+                // Lower values (0.3) were too aggressive and trimmed soft trailing words.
+                trim_trailing_silence(&audio, path_str, 0.5)
             }
             Err(e) => {
                 warn!(
@@ -732,34 +734,16 @@ impl TranscriptionManager {
                                 .map_err(|e| anyhow::anyhow!("Whisper transcription failed: {}", e))
                         }
                         LoadedEngine::Parakeet(parakeet_engine) => {
-                            let (confidence_threshold, post_gap_confidence) =
-                                if settings.adaptive_parakeet_thresholds {
-                                    // Adaptive: adjust thresholds based on audio quality
-                                    let quality = AudioQualityMetrics::compute(&audio);
-                                    if quality.is_quiet() {
-                                        // Very quiet audio — be more permissive to
-                                        // avoid dropping real speech.
-                                        (Some(0.10f32), Some(0.20f32))
-                                    } else if quality.is_clean() {
-                                        // Clean, loud audio — raise thresholds to
-                                        // reduce false positives.
-                                        (Some(0.30f32), Some(0.40f32))
-                                    } else {
-                                        // Normal audio — use the new decoder defaults.
-                                        (Some(0.20f32), Some(0.30f32))
-                                    }
-                                } else {
-                                    // Legacy mode: use old higher thresholds that
-                                    // aggressively suppress low-confidence tokens
-                                    // (the pre-fix behaviour).
-                                    (Some(0.50f32), Some(0.70f32))
-                                };
-
+                            // Use library defaults by not specifying thresholds.
+                            // transcribe-rs defaults are (0.30, 0.45) which are
+                            // tuned for the Parakeet TDT decoder.
+                            // Adaptive thresholds based on audio quality caused
+                            // regressions for fast speech in quiet environments.
                             let params = ParakeetParams {
                                 language: None,
                                 timestamp_granularity: Some(TimestampGranularity::Segment),
-                                confidence_threshold,
-                                post_gap_confidence,
+                                confidence_threshold: None,  // Use library default (0.30)
+                                post_gap_confidence: None,  // Use library default (0.45)
                             };
                             parakeet_engine
                                 .transcribe_with(&audio, &params)
