@@ -203,7 +203,8 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> =
 
     const handleAddWord = () => {
       const trimmedWord = newWord.trim();
-      const sanitizedWord = trimmedWord.replace(/[<>"'&]/g, "");
+      // Remove punctuation and special characters from the word
+      const sanitizedWord = trimmedWord.replace(/[<>"'&.,!?;:'"()\[\]{}@#$%^&*+=|\\/_~`]/g, "");
       if (!sanitizedWord || sanitizedWord.length > 100) return;
 
       if (advancedWords.some((w: CustomWord) => w.word === sanitizedWord)) {
@@ -242,21 +243,25 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> =
       const trimmed = (pronunciation ?? newPronunciation).trim();
       if (!trimmed) return;
 
+      // Remove punctuation from the pronunciation for cleaner matching
+      const sanitizedPronunciation = trimmed.replace(/[<>"'&.,!?;:'"()\[\]{}@#$%^&*+=|\\/_~`]/g, "");
+      if (!sanitizedPronunciation) return;
+
       const updated = [...advancedWords];
       const word = updated[wordIndex];
       if (!word) return;
       const pronunciations = word.pronunciations ?? [];
-      if (pronunciations.includes(trimmed)) {
+      if (pronunciations.includes(sanitizedPronunciation)) {
         toast.error(
           t("settings.debug.advancedCustomWords.duplicatePronunciation", {
-            pronunciation: trimmed,
+            pronunciation: sanitizedPronunciation,
           }),
         );
         return;
       }
       updated[wordIndex] = {
         ...word,
-        pronunciations: [...pronunciations, trimmed],
+        pronunciations: [...pronunciations, sanitizedPronunciation],
       };
       updateSetting("advanced_custom_words", updated);
       setNewPronunciation("");
