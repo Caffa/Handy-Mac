@@ -10,7 +10,7 @@ interface RoutingIconProps {
 const RoutingIcon: React.FC<RoutingIconProps> = ({
   width = 20,
   height = 20,
-  color = "#f59e0b",
+  color = "#3b82f6",
   className = "",
 }) => {
   return (

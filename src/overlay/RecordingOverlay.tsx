@@ -280,8 +280,8 @@ const RecordingOverlay: React.FC = () => {
 
   const getIcon = () => {
     if (isRouter) {
-      // Paper-plane icon for routing actions (amber #f59e0b)
-      const iconColor = "#f59e0b";
+      // Paper-plane icon for routing actions (blue #3b82f6)
+      const iconColor = "#3b82f6";
       if (state === "recording") {
         return <RoutingIcon color={iconColor} width={22} height={22} />;
       }

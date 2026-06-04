@@ -34,8 +34,8 @@ tauri_panel! {
 const OVERLAY_WIDTH: f64 = 172.0;
 /// Native window height — must accommodate the tallest overlay state
 /// (hybrid mode indicator + bars) plus transcription preview for routing mode.
-/// Pill is 45px, margin-top 4px, and preview text needs ~24px below.
-const OVERLAY_WINDOW_HEIGHT: f64 = 80.0;
+/// Pill is 45px, margin-top 4px, and preview text can display ~3 lines.
+const OVERLAY_WINDOW_HEIGHT: f64 = 100.0;
 /// Visible pill height used for position calculations.
 const OVERLAY_PILL_HEIGHT: f64 = 36.0;
 
