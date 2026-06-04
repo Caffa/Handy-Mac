@@ -32,6 +32,11 @@ tauri_panel! {
 }
 
 const OVERLAY_WIDTH: f64 = 172.0;
+/// Native window width for transcription preview — needs to accommodate
+/// the preview text which is ~3x wider than the visualizer pill (516px).
+const OVERLAY_WINDOW_WIDTH: f64 = 540.0;
+/// Visible pill width (centered within the wider window).
+const OVERLAY_PILL_WIDTH: f64 = 172.0;
 /// Native window height — must accommodate the tallest overlay state
 /// (hybrid mode indicator + bars) plus transcription preview for routing mode.
 /// Pill is 45px, margin-top 4px, and preview text can display ~3 lines.
@@ -215,7 +220,8 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64)> {
 
     let settings = settings::get_settings(app_handle);
 
-    let x = monitor_x + (monitor_width - OVERLAY_WIDTH) / 2.0;
+    // Center the window which is wider than the pill
+    let x = monitor_x + (monitor_width - OVERLAY_WINDOW_WIDTH) / 2.0;
     let y = match settings.overlay_position {
         OverlayPosition::Top => monitor_y + OVERLAY_TOP_OFFSET,
         OverlayPosition::Bottom | OverlayPosition::None => {
@@ -255,7 +261,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
     )
     .title("Recording")
     .resizable(false)
-    .inner_size(OVERLAY_WIDTH, OVERLAY_WINDOW_HEIGHT)
+    .inner_size(OVERLAY_WINDOW_WIDTH, OVERLAY_WINDOW_HEIGHT)
     .shadow(false)
     .maximizable(false)
     .minimizable(false)
@@ -305,7 +311,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
             .position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
             .level(PanelLevel::Status)
             .size(tauri::Size::Logical(tauri::LogicalSize {
-                width: OVERLAY_WIDTH,
+                width: OVERLAY_WINDOW_WIDTH,
                 height: OVERLAY_WINDOW_HEIGHT,
             }))
             .has_shadow(false)
