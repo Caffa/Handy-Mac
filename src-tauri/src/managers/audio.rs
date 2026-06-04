@@ -10,7 +10,7 @@ use crate::utils;
 use log::{debug, error, info, warn};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -192,6 +192,10 @@ pub struct AudioRecordingManager {
     pub pronunciation_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
     /// Directory where pronunciation WAV files are saved.
     pub pronunciation_recordings_dir: PathBuf,
+    /// Background liveness monitor thread handle
+    liveness_monitor: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Flag to signal liveness monitor to stop
+    liveness_stop: Arc<AtomicBool>,
 }
 
 impl AudioRecordingManager {
@@ -230,11 +234,13 @@ impl AudioRecordingManager {
             is_recording: Arc::new(Mutex::new(false)),
             did_mute: Arc::new(Mutex::new(false)),
             close_generation: Arc::new(AtomicU64::new(0)),
-            usb_watchdog,
+            usb_watchdog: usb_watchdog.clone(),
             bt_keep_alive: Arc::new(Mutex::new(false)),
             pending_pronunciation: Arc::new(Mutex::new(VecDeque::new())),
             pronunciation_thread: Arc::new(Mutex::new(None)),
             pronunciation_recordings_dir,
+            liveness_monitor: Arc::new(Mutex::new(None)),
+            liveness_stop: Arc::new(AtomicBool::new(false)),
         };
 
         // Check for Bluetooth output devices — if detected, keep the mic
@@ -249,7 +255,116 @@ impl AudioRecordingManager {
             manager.start_microphone_stream()?;
         }
 
+        // Start background liveness monitor to detect zombie streams after sleep/wake
+        manager.start_liveness_monitor();
+
         Ok(manager)
+    }
+
+    /* ---------- liveness monitoring ---------------------------------------- */
+
+    /// Start a background thread that periodically checks if the always-on
+    /// microphone stream is alive and restarts it if it becomes a zombie
+    /// (open but not producing audio, e.g. after macOS sleep/wake).
+    fn start_liveness_monitor(&self) {
+        let is_open = self.is_open.clone();
+        let recorder = self.recorder.clone();
+        let mode = self.mode.clone();
+        let app_handle = self.app_handle.clone();
+        let stop_flag = self.liveness_stop.clone();
+        let usb_watchdog = self.usb_watchdog.clone();
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                // Check every 3 seconds
+                std::thread::sleep(Duration::from_secs(3));
+
+                if stop_flag.load(Ordering::Relaxed) {
+                    debug!("Liveness monitor stopping");
+                    break;
+                }
+
+                // Only monitor in always-on mode
+                let is_always_on = {
+                    let guard = lock_with_log(&mode, "mode");
+                    matches!(*guard, MicrophoneMode::AlwaysOn)
+                };
+
+                if !is_always_on {
+                    continue;
+                }
+
+                // Check if stream is open
+                let stream_open = *lock_with_log(&is_open, "is_open");
+                if !stream_open {
+                    continue;
+                }
+
+                // Check if stream is alive (has received audio recently)
+                let stream_alive = {
+                    let recorder_guard = lock_with_log(&recorder, "recorder");
+                    recorder_guard.as_ref().map_or(false, |r| {
+                        r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
+                    })
+                };
+
+                if !stream_alive {
+                    warn!(
+                        "Liveness monitor: always-on stream appears dead (no audio for {}ms) — restarting",
+                        Self::STREAM_LIVENESS_TIMEOUT_MS
+                    );
+
+                    // Notify USB watchdog about the dead stream
+                    usb_watchdog.on_stream_alive_check(false);
+
+                    // Restart the stream via the app handle
+                    if let Some(rm) = app_handle.try_state::<Arc<AudioRecordingManager>>() {
+                        // Stop the current stream
+                        {
+                            let open = lock_with_log(&rm.is_open, "is_open");
+                            if *open {
+                                drop(open);
+                                rm.stop_microphone_stream();
+                            }
+                        }
+
+                        // Show USB-cycling overlay so user knows recovery is happening
+                        utils::show_usb_cycling_overlay(&app_handle);
+                        crate::tray::change_tray_icon(
+                            &app_handle,
+                            crate::tray::TrayIconState::Recording,
+                        );
+
+                        // Try to restart
+                        if let Err(e) = rm.start_microphone_stream() {
+                            error!("Liveness monitor failed to restart stream: {}", e);
+                            utils::hide_recording_overlay(&app_handle);
+                            crate::tray::change_tray_icon(
+                                &app_handle,
+                                crate::tray::TrayIconState::Idle,
+                            );
+                        } else {
+                            crate::tray::change_tray_icon(
+                                &app_handle,
+                                crate::tray::TrayIconState::Idle,
+                            );
+                            info!("Liveness monitor: stream restarted successfully");
+                        }
+                    }
+                }
+            }
+        });
+
+        *lock_with_log(&self.liveness_monitor, "liveness_monitor") = Some(handle);
+        debug!("Liveness monitor started");
+    }
+
+    /// Stop the background liveness monitor thread
+    fn stop_liveness_monitor(&self) {
+        self.liveness_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = lock_with_log(&self.liveness_monitor, "liveness_monitor").take() {
+            let _ = handle.join();
+        }
     }
 
     /* ---------- helper methods --------------------------------------------- */
