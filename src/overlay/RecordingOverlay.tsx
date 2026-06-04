@@ -69,6 +69,9 @@ const RecordingOverlay: React.FC = () => {
     message: string;
   } | null>(null);
 
+  // Transcription preview for routing mode
+  const [transcriptionPreview, setTranscriptionPreview] = useState<string>("");
+
   const isRouter = action === "router";
 
   // Decay timer: if we haven't received mic-level data for LEVEL_TIMEOUT_MS,
@@ -177,6 +180,7 @@ const RecordingOverlay: React.FC = () => {
         setState((current) => {
           if (current !== "usb-cycling") {
             setIsVisible(false);
+            setTranscriptionPreview(""); // Clear preview when hiding
           }
           return current;
         });
@@ -250,6 +254,14 @@ const RecordingOverlay: React.FC = () => {
         setIsVisible(true);
       });
 
+      // Listen for transcription preview (for routing mode)
+      const unlistenTranscriptionPreview = await listen<string>(
+        "transcription-preview",
+        (event) => {
+          setTranscriptionPreview(event.payload);
+        },
+      );
+
       // Cleanup function
       return () => {
         unlistenShow();
@@ -259,6 +271,7 @@ const RecordingOverlay: React.FC = () => {
         unlistenUsbCycleFinished();
         unlistenUsbCycleFailed();
         unlistenUsbCycleStage();
+        unlistenTranscriptionPreview();
       };
     };
 
@@ -292,88 +305,97 @@ const RecordingOverlay: React.FC = () => {
   }, []);
 
   return (
-    <div dir={direction} className={getOverlayClassNames()}>
-      <div className="overlay-left">{getIcon()}</div>
+    <>
+      <div dir={direction} className={getOverlayClassNames()}>
+        <div className="overlay-left">{getIcon()}</div>
 
-      <div className="overlay-middle">
-        {state === "recording" && (
-          <div className="bars-wrapper">
-            {hybridEnabled && (
-              <div
-                className={`hybrid-indicator ${recordingElapsedSecs >= hybridThresholdSecs ? "hybrid-long" : "hybrid-short"}`}
-              >
-                {recordingElapsedSecs >= hybridThresholdSecs
-                  ? t("overlay.hybridLong")
-                  : t("overlay.hybridShort")}
-              </div>
-            )}
-            <div className="bars-container">
-              {levels.map((v, i) => (
+        <div className="overlay-middle">
+          {state === "recording" && (
+            <div className="bars-wrapper">
+              {hybridEnabled && (
                 <div
-                  key={i}
-                  className={`bar${isRouter ? " routing-bar" : ""}`}
-                  style={{
-                    height: `${Math.min(25, 5 + Math.pow(v, 0.7) * 22)}px`,
-                    transition: "height 80ms linear, opacity 120ms ease-out",
-                    opacity: Math.max(0.2, v * 1.7),
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-        {state === "transcribing" && (
-          <div
-            className={`transcribing-text${isRouter ? " routing-text" : ""}`}
-          >
-            {isRouter ? t("overlay.routing") : t("overlay.transcribing")}
-          </div>
-        )}
-        {state === "processing" && (
-          <div
-            className={`transcribing-text${isRouter ? " routing-text" : ""}`}
-          >
-            {isRouter ? t("overlay.filing") : t("overlay.processing")}
-          </div>
-        )}
-        {state === "usb-cycling" && (
-          <div className="usb-cycling-container">
-            <div className="usb-cycling-stage">
-              {usbCycleStage
-                ? usbCycleStage.message
-                : t("overlay.usbCycling", "USB cycling…")}
-            </div>
-            {usbCycleStage && (
-              <div className="usb-cycling-progress">
-                {["resolving", "cycling", "waiting", "recovered"].map((s) => (
+                  className={`hybrid-indicator ${recordingElapsedSecs >= hybridThresholdSecs ? "hybrid-long" : "hybrid-short"}`}
+                >
+                  {recordingElapsedSecs >= hybridThresholdSecs
+                    ? t("overlay.hybridLong")
+                    : t("overlay.hybridShort")}
+                </div>
+              )}
+              <div className="bars-container">
+                {levels.map((v, i) => (
                   <div
-                    key={s}
-                    className={`usb-cycling-dot ${
-                      ["resolving", "cycling", "waiting", "recovered"].indexOf(
-                        usbCycleStage.stage,
-                      ) >=
-                      ["resolving", "cycling", "waiting", "recovered"].indexOf(
-                        s,
-                      )
-                        ? "dot-active"
-                        : ""
-                    } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
+                    key={i}
+                    className={`bar${isRouter ? " routing-bar" : ""}`}
+                    style={{
+                      height: `${Math.min(25, 5 + Math.pow(v, 0.7) * 22)}px`,
+                      transition: "height 80ms linear, opacity 120ms ease-out",
+                      opacity: Math.max(0.2, v * 1.7),
+                    }}
                   />
                 ))}
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+          {state === "transcribing" && (
+            <div
+              className={`transcribing-text${isRouter ? " routing-text" : ""}`}
+            >
+              {isRouter ? t("overlay.routing") : t("overlay.transcribing")}
+            </div>
+          )}
+          {state === "processing" && (
+            <div
+              className={`transcribing-text${isRouter ? " routing-text" : ""}`}
+            >
+              {isRouter ? t("overlay.filing") : t("overlay.processing")}
+            </div>
+          )}
+          {state === "usb-cycling" && (
+            <div className="usb-cycling-container">
+              <div className="usb-cycling-stage">
+                {usbCycleStage
+                  ? usbCycleStage.message
+                  : t("overlay.usbCycling", "USB cycling…")}
+              </div>
+              {usbCycleStage && (
+                <div className="usb-cycling-progress">
+                  {["resolving", "cycling", "waiting", "recovered"].map((s) => (
+                    <div
+                      key={s}
+                      className={`usb-cycling-dot ${
+                        ["resolving", "cycling", "waiting", "recovered"].indexOf(
+                          usbCycleStage.stage,
+                        ) >=
+                        ["resolving", "cycling", "waiting", "recovered"].indexOf(
+                          s,
+                        )
+                          ? "dot-active"
+                          : ""
+                      } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="overlay-right">
+          {state === "recording" && (
+            <div className="cancel-button" onClick={handleCancel}>
+              <CancelIcon width={25} height={25} />
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="overlay-right">
-        {state === "recording" && (
-          <div className="cancel-button" onClick={handleCancel}>
-            <CancelIcon width={25} height={25} />
-          </div>
-        )}
-      </div>
-    </div>
+      {/* Transcription preview for routing mode */}
+      {isRouter && transcriptionPreview && (
+        <div dir={direction} className="transcription-preview">
+          {transcriptionPreview}
+        </div>
+      )}
+    </>
   );
 };
 

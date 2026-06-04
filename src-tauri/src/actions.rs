@@ -1118,6 +1118,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             None
                         };
 
+                        // ── Emit transcription preview for routing overlay ──
+                        if let Some(overlay_window) = ah.get_webview_window("recording_overlay") {
+                            let _ = overlay_window.emit("transcription-preview", &transcription_text);
+                        }
+
                         // ── Show "Filing…" overlay while routing ──
                         show_processing_overlay_with_mode(&ah, OverlayMode::Router);
 

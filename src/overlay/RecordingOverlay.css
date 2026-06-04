@@ -197,3 +197,28 @@
 .routing-text {
   color: #fbbf24;
 }
+
+/* ── Transcription preview for routing mode ── */
+.transcription-preview {
+  position: fixed;
+  top: 56px; /* Below the overlay pill */
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #000000;
+  text-shadow:
+    -1px -1px 0 #ffffff,
+    1px -1px 0 #ffffff,
+    -1px 1px 0 #ffffff,
+    1px 1px 0 #ffffff,
+    0 0 2px #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  pointer-events: none;
+  z-index: 9999;
+}
