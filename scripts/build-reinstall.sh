@@ -144,7 +144,7 @@ if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
     RECORDING_EXIT=$?
     
     if [[ $RECORDING_EXIT -eq 0 ]]; then
-        echo "3/8 ⏸️  $APP_NAME is currently recording. Waiting for it to finish..."
+        echo "3/9 ⏸️  $APP_NAME is currently recording. Waiting for it to finish..."
         
         # Wait loop: check every 10 seconds until recording stops
         RECORDING_CHECK_COUNT=0
@@ -156,10 +156,10 @@ if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
         
         echo "   ✅ Recording finished. Proceeding with reinstall."
     else
-        echo "3/8 ✅ $APP_NAME is not recording."
+        echo "3/9 ✅ $APP_NAME is not recording."
     fi
 else
-    echo "3/8 ✅ $APP_NAME is not running."
+    echo "3/9 ✅ $APP_NAME is not running."
 fi
 
 # ─── Step 4: Quit Handy ───────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ fi
 # Binary is named "handy" (lowercase) inside the bundle, but the app process
 # may show as either. Use case-insensitive match to catch both.
 if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
-    echo "4/8 🛑 Quitting $APP_NAME..."
+    echo "4/9 🛑 Quitting $APP_NAME..."
     osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true
 
     # Wait up to 5s for graceful exit
@@ -201,16 +201,16 @@ if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
         exit 1
     fi
 else
-    echo "4/8 ✅ $APP_NAME not running."
+    echo "4/9 ✅ $APP_NAME not running."
 fi
 
 # ─── Step 5: Delete old app ───────────────────────────────────────────────────
 # Only delete AFTER the build completes and app is quit.
 if [[ -d "$DEST_APP" ]]; then
-    echo "4/8 🗑️  Removing $DEST_APP..."
+    echo "5/9 🗑️  Removing $DEST_APP..."
     rm -rf "$DEST_APP"
 else
-    echo "4/8 ✅ No existing $DEST_APP to remove."
+    echo "5/9 ✅ No existing $DEST_APP to remove."
 fi
 
 # ─── Step 6: Install via Rapidmg ─────────────────────────────────────────────
@@ -304,14 +304,14 @@ if [[ -d "$DEST_APP" ]]; then
     done
 fi
 
-# ─── Step 6: Re-sign with stable DR ──────────────────────────────────────────
+# ─── Step 7: Re-sign with stable DR ──────────────────────────────────────────
 # Re-sign in a verification loop. Even with the three-phase wait above,
 # there can be edge cases where a write completes after our stability
 # check (e.g. APFS CoW filesystem timing, or Rapidmg finalizing metadata).
 # The loop catches this: sign, verify the DR is correct on disk, and
 # retry if the signature was overwritten.
 if [[ -d "$DEST_APP" ]]; then
-    echo "6/8 🔐 Re-signing with stable designated requirement..."
+    echo "7/9 🔐 Re-signing with stable designated requirement..."
     echo "   DR: identifier \"$BUNDLE_ID\""
 
     MAX_SIGN_ATTEMPTS=5
@@ -361,13 +361,13 @@ if [[ -d "$DEST_APP" ]]; then
         echo "   Run manually: scripts/resign-stable-dr.sh"
     fi
 else
-    echo "6/8 ⏭️  Skipping re-sign (app not yet installed)."
+    echo "7/9 ⏭️  Skipping re-sign (app not yet installed)."
 fi
 
-# ─── Step 7: Reset icon cache ─────────────────────────
+# ─── Step 8: Reset icon cache ─────────────────────────
 # Clear macOS icon cache so the new app icon shows up correctly.
 # This fixes the "missing cover image" issue where Finder caches old icons.
-echo "7/8 🧹 Resetting icon cache..."
+echo "8/9 🧹 Resetting icon cache..."
 if [[ -d "$DEST_APP" ]]; then
     # Wait for Rapidmg to fully finish writing all files (including icon.icns)
     echo "   Waiting for Rapidmg to fully finish..."
@@ -396,10 +396,10 @@ if [[ -d "$DEST_APP" ]]; then
     echo "   ✅ Icon cache cleared, Finder/Dock restarted."
     echo "   (Icon will rebuild automatically in a few seconds)"
 else
-    echo "   ⏭️  Skipping cache reset (app not installed)."
+    echo "8/9 ⏭️  Skipping cache reset (app not installed)."
 fi
 
-# ─── Step 8: Reload launchd agent ───────────────────────────────────
+# ─── Step 9: Reload launchd agent ───────────────────────────────────
 # If a Handy launch agent exists, reload it so launchd picks up the new
 # binary path. Without this, launchd caches the old binary path and the
 # "RunAtLoad" or "launchctl kickstart" will try to run the stale copy
@@ -409,7 +409,7 @@ PLIST_PATH="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
 LAUNCHD_ID="gui/$(id -u)/${LAUNCHD_LABEL}"
 
 if [[ -f "$PLIST_PATH" ]]; then
-    echo "8/8 🔄 Reloading launchd agent..."
+    echo "9/9 🔄 Reloading launchd agent..."
     # Unload the old job (ignore errors if not loaded)
     launchctl bootout "$LAUNCHD_ID" 2>/dev/null || true
     # Reload from the plist
@@ -421,7 +421,7 @@ if [[ -f "$PLIST_PATH" ]]; then
         echo "   ✅ Launch agent restarted via kickstart."
     fi
 else
-    echo "8/8 ⏭️  No launch agent plist found at $PLIST_PATH — skipping."
+    echo "9/9 ⏭️  No launch agent plist found at $PLIST_PATH — skipping."
 fi
 
 # ─── Launch Handy ─────────────────────────────────────────────────
