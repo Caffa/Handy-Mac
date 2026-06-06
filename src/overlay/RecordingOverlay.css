@@ -284,4 +284,6 @@
   text-align: center;
   pointer-events: none;
   z-index: 9999;
+  /* Auto-height based on content - no fixed height */
+  display: block;
 }
