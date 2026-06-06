@@ -132,14 +132,42 @@ fi
 
 echo "   ✅ DMG created: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
 
-# ─── Step 3: Quit Handy ───────────────────────────────────────────────────────
-# Now that the build succeeded, quit the running app.
+# ─── Step 3: Wait for recording to finish ────────────────────────────────────
+# Before quitting, check if Handy is currently recording and wait if needed.
+# Uses --is-recording CLI flag for reliable detection.
 DEST_APP="$INSTALL_DEST/$APP_BUNDLE"
 
+if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
+    # Check if Handy is recording using the CLI flag
+    # Exit codes: 0 = recording, 1 = not recording, 2 = error
+    "$DEST_APP/Contents/MacOS/handy" --is-recording 2>/dev/null
+    RECORDING_EXIT=$?
+    
+    if [[ $RECORDING_EXIT -eq 0 ]]; then
+        echo "3/8 ⏸️  $APP_NAME is currently recording. Waiting for it to finish..."
+        
+        # Wait loop: check every 10 seconds until recording stops
+        RECORDING_CHECK_COUNT=0
+        while "$DEST_APP/Contents/MacOS/handy" --is-recording 2>/dev/null; do
+            RECORDING_CHECK_COUNT=$((RECORDING_CHECK_COUNT + 1))
+            echo "   Recording in progress... waiting (attempt $RECORDING_CHECK_COUNT)"
+            sleep 10
+        done
+        
+        echo "   ✅ Recording finished. Proceeding with reinstall."
+    else
+        echo "3/8 ✅ $APP_NAME is not recording."
+    fi
+else
+    echo "3/8 ✅ $APP_NAME is not running."
+fi
+
+# ─── Step 4: Quit Handy ───────────────────────────────────────────────────────
+# Now that the build succeeded and recording (if any) finished, quit the app.
 # Binary is named "handy" (lowercase) inside the bundle, but the app process
 # may show as either. Use case-insensitive match to catch both.
 if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
-    echo "3/8 🛑 Quitting $APP_NAME..."
+    echo "4/8 🛑 Quitting $APP_NAME..."
     osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true
 
     # Wait up to 5s for graceful exit
@@ -173,10 +201,10 @@ if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
         exit 1
     fi
 else
-    echo "3/8 ✅ $APP_NAME not running."
+    echo "4/8 ✅ $APP_NAME not running."
 fi
 
-# ─── Step 4: Delete old app ───────────────────────────────────────────────────
+# ─── Step 5: Delete old app ───────────────────────────────────────────────────
 # Only delete AFTER the build completes and app is quit.
 if [[ -d "$DEST_APP" ]]; then
     echo "4/8 🗑️  Removing $DEST_APP..."
@@ -185,8 +213,8 @@ else
     echo "4/8 ✅ No existing $DEST_APP to remove."
 fi
 
-# ─── Step 5: Install via Rapidmg ─────────────────────────────────────────────
-echo "5/8 🚀 Opening DMG with Rapidmg for auto-install..."
+# ─── Step 6: Install via Rapidmg ─────────────────────────────────────────────
+echo "6/8 🚀 Opening DMG with Rapidmg for auto-install..."
 
 RAPIDMG_APP="/Applications/Rapidmg.app"
 if [[ ! -d "$RAPIDMG_APP" ]]; then

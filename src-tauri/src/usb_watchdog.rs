@@ -547,17 +547,20 @@ fn extract_device_description(rest: &str) -> Option<String> {
 const UHUBCTL_PATHS: &[&str] = &["/usr/local/bin/uhubctl", "/opt/homebrew/bin/uhubctl"];
 
 fn uhubctl_bin() -> Option<std::path::PathBuf> {
+    // First check common Homebrew paths
     for path in UHUBCTL_PATHS {
         if std::path::Path::new(path).exists() {
             return Some(std::path::PathBuf::from(*path));
         }
     }
+    // Fall back to `which uhubctl` which finds it wherever it's installed
     which_uhubctl()
 }
 
 fn which_uhubctl() -> Option<std::path::PathBuf> {
     std::process::Command::new("which")
         .arg("uhubctl")
+        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
         .output()
         .ok()
         .and_then(|o| {

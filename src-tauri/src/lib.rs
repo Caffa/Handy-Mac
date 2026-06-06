@@ -528,6 +528,16 @@ pub fn run(cli_args: CliArgs) {
                 signal_handle::send_transcription_input(app, "transcribe_with_post_process", "CLI");
             } else if args.iter().any(|a| a == "--cancel") {
                 crate::utils::cancel_current_operation(app);
+            } else if args.iter().any(|a| a == "--is-recording") {
+                // Query recording state and print to stdout
+                if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
+                    let is_recording = audio_manager.is_recording();
+                    println!("{}", if is_recording { "recording" } else { "not-recording" });
+                    std::process::exit(if is_recording { 0 } else { 1 });
+                } else {
+                    eprintln!("error: AudioRecordingManager not initialized");
+                    std::process::exit(2);
+                }
             } else {
                 show_main_window(app);
             }

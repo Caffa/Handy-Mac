@@ -37,12 +37,11 @@ const OVERLAY_WIDTH: f64 = 172.0;
 const OVERLAY_WINDOW_WIDTH: f64 = 540.0;
 /// Visible pill width (centered within the wider window).
 const OVERLAY_PILL_WIDTH: f64 = 172.0;
-/// Native window height — must accommodate the tallest overlay state
-/// (hybrid mode indicator + bars) plus transcription preview for routing mode.
-/// Pill is 45px, margin-top 4px, gap to preview ~15px, and preview text can display ~3-4 lines
-/// with feathered glass styling (padding: 16px 24px, line-height: 1.5, 20px font).
-/// Calculation: 60px (top margin to preview) + 32px (padding) + ~90-120px (3-4 lines of text).
-const OVERLAY_WINDOW_HEIGHT: f64 = 200.0;
+/// Native window height — generous height to accommodate variable-length
+/// transcription text (multi-line paragraphs) without clipping. The window
+/// background is transparent, so extra height doesn't affect rendering.
+/// The feathered glass preview box will auto-height based on content.
+const OVERLAY_WINDOW_HEIGHT: f64 = 1000.0;
 /// Visible pill height used for position calculations.
 const OVERLAY_PILL_HEIGHT: f64 = 36.0;
 

@@ -80,31 +80,52 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
     let cycle_on_wake = settings.usb_watchdog_enabled && settings.usb_watchdog_cycle_on_wake;
 
     if !cycle_on_wake {
-        debug!("USB watchdog cycle-on-wake is disabled, skipping recovery");
+        // Log clearly why recovery is skipped
+        if !settings.usb_watchdog_enabled {
+            info!("Wake recovery skipped: USB watchdog is disabled (usb_watchdog_enabled=false)");
+        } else {
+            info!("Wake recovery skipped: cycle-on-wake is disabled (usb_watchdog_cycle_on_wake=false)");
+        }
         return;
     }
 
     let device_name = settings.usb_watchdog_device_name.clone();
     if device_name.is_empty() {
-        warn!("Wake recovery: USB watchdog device name not configured, skipping");
+        warn!("Wake recovery skipped: USB watchdog device name not configured (empty setting)");
         return;
     }
 
     info!(
-        "Triggering post-wake USB power cycle for device '{}'",
+        "Triggering post-wake recovery for device '{}' (will check stream health then cycle USB if needed)",
         device_name
     );
 
     let ah = app_handle.clone();
     std::thread::spawn(move || {
-        // Wait 5 seconds for macOS USB tree to stabilize after wake.
-        // Some hubs take a moment to re-enumerate.
-        std::thread::sleep(std::time::Duration::from_secs(5));
+        // Reduced from 5s to 2s - macOS USB re-enumeration is fast on most systems.
+        // If the device isn't ready in 2s, the watchdog power cycle will handle it.
+        std::thread::sleep(std::time::Duration::from_secs(2));
 
         let recording_manager = ah.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>();
 
         match recording_manager {
             Some(rm) => {
+                // Check stream health using the public method
+                let (is_open, is_alive) = rm.check_stream_health();
+                
+                if !is_open {
+                    info!("Wake recovery: stream not open, will open on next recording");
+                    // Stream not open (OnDemand mode or closed), skip cycle
+                    // The stream will be opened fresh on next recording attempt
+                    return;
+                }
+
+                if is_alive {
+                    info!("Wake recovery: stream is alive, no USB cycle needed");
+                    return;
+                }
+
+                warn!("Wake recovery: stream is dead (zombie), triggering USB power cycle");
                 let wd = &rm.usb_watchdog;
                 info!("Starting post-wake USB power cycle sequence");
                 // force_power_cycle already handles restart_microphone_if_needed

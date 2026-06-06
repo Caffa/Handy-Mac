@@ -709,9 +709,11 @@
     "usbCyclingPort": "Power cycling port…",
     "usbWaitingReconnect": "Waiting for device…",
     "usbRecovered": "Audio recovered",
+    "usbCyclingTime": "{{seconds}}s / ~10s",
     "hybridShort": "S",
     "hybridLong": "L",
     "routing": "Routing…",
-    "filing": "Filing…"
+    "filing": "Filing…",
+    "micDead": "Microphone not responding"
   }
 }

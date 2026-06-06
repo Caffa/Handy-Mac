@@ -113,12 +113,14 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  padding: 4px 0;
 }
 
 .usb-cycling-stage {
   color: #ffd966;
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: 600;
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   animation: transcribing-pulse 1.5s infinite ease-in-out;
@@ -128,26 +130,79 @@
 .usb-cycling-progress {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .usb-cycling-dot {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: rgba(255, 217, 102, 0.25);
   transition:
     background 300ms ease,
-    box-shadow 300ms ease;
+    box-shadow 300ms ease,
+    transform 200ms ease;
 }
 
 .usb-cycling-dot.dot-active {
   background: rgba(255, 217, 102, 0.6);
+  transform: scale(1.1);
 }
 
 .usb-cycling-dot.dot-current {
   background: #ffd966;
-  box-shadow: 0 0 4px rgba(255, 217, 102, 0.5);
+  box-shadow: 0 0 8px rgba(255, 217, 102, 0.8);
+  transform: scale(1.2);
+}
+
+.usb-cycling-time {
+  color: rgba(255, 217, 102, 0.8);
+  font-size: 10px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin-top: 2px;
+}
+
+/* ── Enlarged "mic dead" overlay for recovery states ── */
+.recording-overlay.mic-dead-overlay {
+  height: auto;
+  min-height: 80px;
+  width: 320px;
+  padding: 16px 20px;
+  background: #b91010cc;
+  border-radius: 40px;
+  animation: mic-dead-pulse 1s infinite ease-in-out;
+}
+
+.recording-overlay.mic-dead-overlay .overlay-left,
+.recording-overlay.mic-dead-overlay .overlay-middle {
+  align-items: center;
+}
+
+.mic-dead-warning {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-shadow: 0 0 10px rgba(255, 0, 0, 0.8);
+  animation: transcribing-pulse 0.5s infinite ease-in-out;
+}
+
+.mic-dead-warning::before {
+  content: "⚠️ ";
+}
+
+@keyframes mic-dead-pulse {
+  0%,
+  100% {
+    background: rgba(185, 16, 16, 0.8);
+    transform: scale(1);
+  }
+  50% {
+    background: rgba(220, 30, 30, 0.9);
+    transform: scale(1.02);
+  }
 }
 
 @keyframes transcribing-pulse {

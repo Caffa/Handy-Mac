@@ -1012,4 +1012,23 @@ impl AudioRecordingManager {
             Ok(())
         }
     }
+
+    /// Check if the microphone stream is currently open and alive.
+    /// Returns (is_open, is_alive).
+    /// This is useful for diagnostics and recovery checks.
+    pub fn check_stream_health(&self) -> (bool, bool) {
+        let is_open = *lock_with_log(&self.is_open, "is_open");
+        if !is_open {
+            return (false, false);
+        }
+        
+        let stream_alive = {
+            let recorder_guard = lock_with_log(&self.recorder, "recorder");
+            recorder_guard.as_ref().map_or(false, |r| {
+                r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
+            })
+        };
+        
+        (true, stream_alive)
+    }
 }

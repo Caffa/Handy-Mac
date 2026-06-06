@@ -26,4 +26,9 @@ pub struct CliArgs {
     /// Enable debug mode with verbose logging
     #[arg(long)]
     pub debug: bool,
+
+    /// Check if Handy is currently recording (sent to running instance)
+    /// Returns exit code 0 if recording, 1 if not recording, 2 if not running
+    #[arg(long)]
+    pub is_recording: bool,
 }

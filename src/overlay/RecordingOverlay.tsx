@@ -69,6 +69,15 @@ const RecordingOverlay: React.FC = () => {
     message: string;
   } | null>(null);
 
+  // USB cycling elapsed time for progress display
+  const [usbCyclingStartTime, setUsbCyclingStartTime] = useState<number | null>(null);
+  const [usbCyclingElapsed, setUsbCyclingElapsed] = useState(0);
+  const usbCyclingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // "Mic dead" detection: if no audio received for >1 second, show warning
+  const [micDeadWarning, setMicDeadWarning] = useState(false);
+  const micDeadTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // Transcription preview for routing mode
   const [transcriptionPreview, setTranscriptionPreview] = useState<string>("");
 
@@ -96,6 +105,35 @@ const RecordingOverlay: React.FC = () => {
       }
     };
   }, []);
+
+  // "Mic dead" detection: warn if recording but no audio for >1s
+  // This catches zombie streams after wake-from-sleep before user tries to record
+  useEffect(() => {
+    if (state !== "recording" || !isVisible) {
+      setMicDeadWarning(false);
+      if (micDeadTimerRef.current) {
+        clearInterval(micDeadTimerRef.current);
+        micDeadTimerRef.current = null;
+      }
+      return;
+    }
+
+    micDeadTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - lastLevelTimeRef.current;
+      // If >1 second without audio while recording, show "mic dead" warning
+      if (elapsed > 1000) {
+        setMicDeadWarning(true);
+      } else {
+        setMicDeadWarning(false);
+      }
+    }, 200);
+
+    return () => {
+      if (micDeadTimerRef.current) {
+        clearInterval(micDeadTimerRef.current);
+      }
+    };
+  }, [state, isVisible]);
 
   // Fetch hybrid mode settings when overlay becomes visible
   useEffect(() => {
@@ -136,6 +174,32 @@ const RecordingOverlay: React.FC = () => {
 
     return () => clearTimeout(timer);
   }, [state]);
+
+  // Track USB cycling elapsed time
+  useEffect(() => {
+    if (state === "usb-cycling" && isVisible) {
+      setUsbCyclingStartTime(Date.now());
+      usbCyclingTimerRef.current = setInterval(() => {
+        if (usbCyclingStartTime) {
+          setUsbCyclingElapsed(
+            Math.floor((Date.now() - usbCyclingStartTime) / 1000),
+          );
+        }
+      }, 100);
+    } else {
+      if (usbCyclingTimerRef.current) {
+        clearInterval(usbCyclingTimerRef.current);
+        usbCyclingTimerRef.current = null;
+      }
+      setUsbCyclingStartTime(null);
+      setUsbCyclingElapsed(0);
+    }
+    return () => {
+      if (usbCyclingTimerRef.current) {
+        clearInterval(usbCyclingTimerRef.current);
+      }
+    };
+  }, [state, isVisible]);
 
   // Track recording elapsed time for hybrid mode indicator
   useEffect(() => {
@@ -208,6 +272,7 @@ const RecordingOverlay: React.FC = () => {
           // Only transition if we are currently recording (overlay is visible)
           // This shows the user that the USB device is being power-cycled.
           setState("usb-cycling");
+          setMicDeadWarning(false); // Clear warning during recovery
         },
       );
 
@@ -215,6 +280,7 @@ const RecordingOverlay: React.FC = () => {
         "usb-power-cycle-finished",
         () => {
           setUsbCycleStage(null);
+          setMicDeadWarning(false);
           // Close and reopen the overlay to reinitialize the transcription
           // visualizer. This fixes the "mic not listening, volume bars
           // not moving" issue after USB cycling.
@@ -232,6 +298,7 @@ const RecordingOverlay: React.FC = () => {
         "usb-power-cycle-failed",
         () => {
           setUsbCycleStage(null);
+          setMicDeadWarning(false);
           setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
           setIsVisible(false);
         },
@@ -252,6 +319,7 @@ const RecordingOverlay: React.FC = () => {
           return prev;
         });
         setIsVisible(true);
+        setMicDeadWarning(false); // Clear warning during recovery
       });
 
       // Listen for transcription preview (for routing mode)
@@ -297,6 +365,8 @@ const RecordingOverlay: React.FC = () => {
     const classes = ["recording-overlay"];
     if (isVisible) classes.push("fade-in");
     if (isRouter) classes.push("routing-mode");
+    // Add enlarged overlay for "mic dead" state
+    if (micDeadWarning && state === "recording") classes.push("mic-dead-overlay");
     return classes.join(" ");
   };
 
@@ -310,7 +380,15 @@ const RecordingOverlay: React.FC = () => {
         <div className="overlay-left">{getIcon()}</div>
 
         <div className="overlay-middle">
-          {state === "recording" && (
+          {/* Mic dead warning - show when recording but no audio for >1s */}
+          {micDeadWarning && state === "recording" && (
+            <div className="mic-dead-warning">
+              {t("overlay.micDead")}
+            </div>
+          )}
+          
+          {/* Normal recording state */}
+          {state === "recording" && !micDeadWarning && (
             <div className="bars-wrapper">
               {hybridEnabled && (
                 <div
@@ -358,23 +436,31 @@ const RecordingOverlay: React.FC = () => {
                   : t("overlay.usbCycling", "USB cycling…")}
               </div>
               {usbCycleStage && (
-                <div className="usb-cycling-progress">
-                  {["resolving", "cycling", "waiting", "recovered"].map((s) => (
-                    <div
-                      key={s}
-                      className={`usb-cycling-dot ${
-                        ["resolving", "cycling", "waiting", "recovered"].indexOf(
-                          usbCycleStage.stage,
-                        ) >=
-                        ["resolving", "cycling", "waiting", "recovered"].indexOf(
-                          s,
-                        )
-                          ? "dot-active"
-                          : ""
-                      } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
-                    />
-                  ))}
-                </div>
+                <>
+                  <div className="usb-cycling-progress">
+                    {["resolving", "cycling", "waiting", "recovered"].map((s) => (
+                      <div
+                        key={s}
+                        className={`usb-cycling-dot ${
+                          ["resolving", "cycling", "waiting", "recovered"].indexOf(
+                            usbCycleStage.stage,
+                          ) >=
+                          ["resolving", "cycling", "waiting", "recovered"].indexOf(
+                            s,
+                          )
+                            ? "dot-active"
+                            : ""
+                        } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
+                      />
+                    ))}
+                  </div>
+                  {/* Show elapsed time during USB cycling */}
+                  {usbCyclingElapsed > 0 && (
+                    <div className="usb-cycling-time">
+                      {t("overlay.usbCyclingTime", { seconds: usbCyclingElapsed })}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}

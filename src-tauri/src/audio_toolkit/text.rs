@@ -733,7 +733,49 @@ static US_TO_BRITISH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
         }
     }
     
-    // Add gray/grey which might not be in the database
+    // Remove semantic ambiguities where both words exist in British English
+    // with different meanings. Automatic conversion is incorrect because
+    // context determines which word to use:
+    
+    // check/cheque: check (verify/examine) vs cheque (payment order)
+    map.remove("check");
+    map.remove("checks");
+    map.remove("checked");
+    map.remove("checking");
+    
+    // program/programme: program (computer software) vs programme (TV show/schedule)
+    // Both are valid in British English with different meanings
+    map.remove("program");
+    map.remove("programs");
+    map.remove("programmed");
+    map.remove("programming");
+    
+    // tire/tyre: tire (to become weary) vs tyre (wheel covering)
+    // Both are valid in British English
+    map.remove("tire");
+    map.remove("tires");
+    map.remove("tired");
+    map.remove("tiring");
+    
+    // catalog/catalogue: catalog (computing/database) vs catalogue (traditional)
+    // Both are valid in British English (catalog common in tech contexts)
+    map.remove("catalog");
+    map.remove("catalogs");
+    map.remove("cataloged");
+    map.remove("cataloging");
+    
+    // dialog/dialogue: dialog (UI element) vs dialogue (conversation)
+    // Both are valid in British English (dialog is computing term)
+    map.remove("dialog");
+    map.remove("dialogs");
+    
+    // install/instal: incorrect conversion - "install" is spelled the same in both variants
+    // varcon incorrectly treats "install" as American and "instal" as British
+    // "install" is the correct spelling in both American and British English
+    map.remove("install");
+    map.remove("installs");
+    map.remove("installed");
+    map.remove("installing");// Add gray/grey which might not be in the database
     // These are common conversions that users expect
     map.insert("gray", "grey");
     map.insert("grays", "greys");
@@ -2338,10 +2380,17 @@ mod tests {
     }
 
     #[test]
-    fn test_us_to_british_dialog() {
-        assert_eq!(convert_us_to_british("dialog"), "dialogue");
-        assert_eq!(convert_us_to_british("dialogs"), "dialogues");
-        assert_eq!(convert_us_to_british("The dialog was great"), "The dialogue was great");
+    fn test_us_to_british_dialog_not_converted() {
+        // dialog/dialogue are DIFFERENT WORDS in British English:
+        // - dialog: UI element in computing (valid in British English)
+        // - dialogue: conversation
+        // Both exist with different meanings, so NO auto-conversion
+        assert_eq!(convert_us_to_british("dialog"), "dialog");
+        assert_eq!(convert_us_to_british("dialogs"), "dialogs");
+        assert_eq!(convert_us_to_british("Click the dialog box"), "Click the dialog box");
+        // But "dialogue" (already British) should remain unchanged
+        assert_eq!(convert_us_to_british("dialogue"), "dialogue");
+        assert_eq!(convert_us_to_british("dialogues"), "dialogues");
     }
 
     #[test]
@@ -2383,10 +2432,65 @@ mod tests {
             convert_us_to_british("The color of the center was analyzed"),
             "The colour of the centre was analysed"
         );
+        // Note: "dialog" is NOT converted because it's a valid British computing term (UI element)
         assert_eq!(
             convert_us_to_british("I organized the dialog and traveled around"),
-            "I organised the dialogue and travelled around"
+            "I organised the dialog and travelled around"
         );
+    }
+
+    #[test]
+    fn test_us_to_british_semantic_ambiguities_preserved() {
+        // Words where BOTH American and British forms exist with different meanings
+        // should NOT be auto-converted as context determines which word to use.
+        
+        // check/cheque: check (verify) vs cheque (payment)
+        assert_eq!(convert_us_to_british("check"), "check");
+        assert_eq!(convert_us_to_british("checks"), "checks");
+        assert_eq!(convert_us_to_british("checked"), "checked");
+        assert_eq!(convert_us_to_british("checking"), "checking");
+        assert_eq!(convert_us_to_british("I need to check my email"), "I need to check my email");
+        
+        // program/programme: program (computer software) vs programme (TV show/schedule)
+        assert_eq!(convert_us_to_british("program"), "program");
+        assert_eq!(convert_us_to_british("programs"), "programs");
+        assert_eq!(convert_us_to_british("programmed"), "programmed");
+        assert_eq!(convert_us_to_british("programming"), "programming");
+        assert_eq!(convert_us_to_british("I installed the program"), "I installed the program");
+        
+        // tire/tyre: tire (to become weary) vs tyre (wheel)
+        assert_eq!(convert_us_to_british("tire"), "tire");
+        assert_eq!(convert_us_to_british("tires"), "tires");
+        assert_eq!(convert_us_to_british("tired"), "tired");
+        assert_eq!(convert_us_to_british("tiring"), "tiring");
+        assert_eq!(convert_us_to_british("I began to tire"), "I began to tire");
+        
+        // catalog/catalogue: catalog (database) vs catalogue (traditional)
+        assert_eq!(convert_us_to_british("catalog"), "catalog");
+        assert_eq!(convert_us_to_british("catalogs"), "catalogs");
+        assert_eq!(convert_us_to_british("cataloged"), "cataloged");
+        assert_eq!(convert_us_to_british("cataloging"), "cataloging");
+        
+        // dialog/dialogue: dialog (UI element) vs dialogue (conversation)
+        assert_eq!(convert_us_to_british("dialog"), "dialog");
+        assert_eq!(convert_us_to_british("dialogs"), "dialogs");
+        assert_eq!(convert_us_to_british("Click the dialog box"), "Click the dialog box");
+    }
+
+    #[test]
+    fn test_us_to_british_check_not_converted() {
+        // "check" and "cheque" are DIFFERENT words in British English:
+        // - check (verb/noun): to verify, examine, a pattern, a bill
+        // - cheque (noun): specifically a written payment order
+        // They should NOT be auto-converted as context determines which to use.
+        assert_eq!(convert_us_to_british("check"), "check");
+        assert_eq!(convert_us_to_british("I need to check my email"), "I need to check my email");
+        assert_eq!(convert_us_to_british("checks"), "checks");
+        assert_eq!(convert_us_to_british("checked"), "checked");
+        assert_eq!(convert_us_to_british("checking"), "checking");
+        // But "cheque" (already British) should remain unchanged
+        assert_eq!(convert_us_to_british("cheque"), "cheque");
+        assert_eq!(convert_us_to_british("cheques"), "cheques");
     }
 
     #[test]
