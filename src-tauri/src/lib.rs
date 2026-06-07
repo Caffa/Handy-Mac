@@ -621,6 +621,14 @@ pub fn run(cli_args: CliArgs) {
         ))
         .manage(cli_args.clone())
         .setup(move |app| {
+            // Query-only flags (sent to running instance, or no instance running)
+            // If we reach this point, single-instance plugin didn't forward to another instance,
+            // which means no other instance was running. For query flags, exit immediately.
+            if cli_args.is_active_use || cli_args.is_recording {
+                eprintln!("error: Handy is not running");
+                std::process::exit(2);
+            }
+
             specta_builder.mount_events(app);
 
             // Create main window programmatically so we can set data_directory

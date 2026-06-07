@@ -31,4 +31,10 @@ pub struct CliArgs {
     /// Returns exit code 0 if recording, 1 if not recording, 2 if not running
     #[arg(long)]
     pub is_recording: bool,
+
+    /// Check if Handy is in active use: recording, transcribing, or processing (sent to running instance)
+    /// Returns exit code 0 if active use, 1 if idle, 2 if not running
+    /// Always-on mode (mic stream open but NOT recording) does NOT count as active use
+    #[arg(long)]
+    pub is_active_use: bool,
 }

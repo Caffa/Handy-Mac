@@ -391,7 +391,7 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     // activates the Handy app, stealing focus from the user's target app.
     crate::focus::save_frontmost_app(app_handle);
 
-    update_overlay_position(app_handle);
+    update_overlay_position(app_handle, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         let _ = overlay_window.show();
@@ -435,8 +435,10 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "processing", &OverlayMode::Transcribe);
 }
 
-/// Updates the overlay window position and size based on current settings
-pub fn update_overlay_position(app_handle: &AppHandle) {
+/// Updates the overlay window position and size based on current settings and mode.
+/// Router mode uses a taller window to accommodate the transcription preview,
+/// while regular transcription uses minimal height to avoid blocking click-through.
+pub fn update_overlay_position(app_handle: &AppHandle, mode: &OverlayMode) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
         {
@@ -446,10 +448,19 @@ pub fn update_overlay_position(app_handle: &AppHandle) {
         if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
             let _ = overlay_window
                 .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-            // Also resize window to match screen height (for different monitors)
+            
+            // Use minimal height for regular transcription to allow click-through.
+            // Router mode needs the full height for the transcription preview.
+            let actual_height = match mode {
+                OverlayMode::Router => window_height,
+                OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
+                    OVERLAY_WINDOW_MIN_HEIGHT
+                }
+            };
+            
             let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
                 width: OVERLAY_WINDOW_WIDTH,
-                height: window_height,
+                height: actual_height,
             }));
         }
     }
