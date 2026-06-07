@@ -469,7 +469,11 @@ const RecordingOverlay: React.FC = () => {
         <div className="overlay-right">
           {state === "recording" && (
             <div className="cancel-button" onClick={handleCancel}>
-              <CancelIcon width={25} height={25} />
+              <CancelIcon
+                width={25}
+                height={25}
+                color={isRouter ? "#3b82f6" : undefined}
+              />
             </div>
           )}
         </div>
