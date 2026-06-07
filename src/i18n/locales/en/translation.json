@@ -714,6 +714,14 @@
     "hybridLong": "L",
     "routing": "Routing…",
     "filing": "Filing…",
-    "micDead": "Microphone not responding"
+    "micDead": "Microphone not responding",
+    "confirming": "Sending in",
+    "editing": "Edit text:",
+    "send": "Send",
+    "cancel": "Cancel",
+    "clickToEdit": "Click to edit",
+    "editPlaceholder": "Edit your text...",
+    "routerError": "Routing failed",
+    "routerSuccess": "Routed successfully"
   }
 }

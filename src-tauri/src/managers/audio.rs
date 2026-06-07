@@ -958,6 +958,16 @@ impl AudioRecordingManager {
         )
     }
 
+    /// Check if the microphone stream is open (always-on mode or BT keep-alive)
+    pub fn is_stream_open(&self) -> bool {
+        *lock_with_log(&self.is_open, "is_open")
+    }
+
+    /// Check if always-on microphone mode is enabled
+    pub fn is_always_on(&self) -> bool {
+        matches!(*lock_with_log(&self.mode, "mode"), MicrophoneMode::AlwaysOn)
+    }
+
     /// Cancel any ongoing recording without returning audio samples
     pub fn cancel_recording(&self) {
         let mut state = lock_with_log(&self.state, "state");

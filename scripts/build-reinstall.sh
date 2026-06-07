@@ -135,32 +135,41 @@ echo "   ✅ DMG created: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
 # ─── Step 3: Wait for recording to finish ────────────────────────────────────
 # Before quitting, check if Handy is currently recording and wait if needed.
 # Uses --is-recording CLI flag for reliable detection.
+#
+# IMPORTANT: We only wait for ACTIVE RECORDING SESSIONS (user-triggered 
+# transcriptions). Always-on mode (mic stream open) does NOT need to wait
+# because it's just keeping the microphone warm, not capturing audio for
+# transcription.
 DEST_APP="$INSTALL_DEST/$APP_BUNDLE"
 
 if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
     # Check if Handy is recording using the CLI flag
-    # Exit codes: 0 = recording, 1 = not recording, 2 = error/unknown flag
+    # Exit codes: 0 = recording (active session), 1 = not recording, 2 = error/unknown flag
     # Use || to capture exit code without triggering set -e exit
     RECORDING_EXIT=0
-    "$DEST_APP/Contents/MacOS/handy" --is-recording 2>/dev/null || RECORDING_EXIT=$?
+    "$DEST_APP/Contents/MacOS/handy" --is-recording 2>&1 || RECORDING_EXIT=$?
     
     if [[ $RECORDING_EXIT -eq 0 ]]; then
-        echo "3/9 ⏸️  $APP_NAME is currently recording. Waiting for it to finish..."
+        echo "3/9 ⏸️  $APP_NAME has an active recording session. Waiting for it to finish..."
+        echo "   (Always-on mode does not block - only active transcriptions do)"
         
-        # Wait loop: check every 10 seconds until recording stops
+        # Wait loop: check every 5 seconds until recording stops
+        # (suppress detailed status during loop to reduce noise)
         RECORDING_CHECK_COUNT=0
-        while "$DEST_APP/Contents/MacOS/handy" --is-recording 2>/dev/null; do
+        while "$DEST_APP/Contents/MacOS/handy" --is-recording >/dev/null 2>&1; do
             RECORDING_CHECK_COUNT=$((RECORDING_CHECK_COUNT + 1))
-            echo "   Recording in progress... waiting (attempt $RECORDING_CHECK_COUNT)"
-            sleep 10
+            echo "   Recording session still active... waiting (attempt $RECORDING_CHECK_COUNT)"
+            sleep 5
         done
         
-        echo "   ✅ Recording finished. Proceeding with reinstall."
+        echo "   ✅ Recording session finished. Proceeding with reinstall."
+        
+        echo "   ✅ Recording session finished. Proceeding with reinstall."
     elif [[ $RECORDING_EXIT -eq 2 ]]; then
         # Flag not supported in this version - assume not recording and proceed
-        echo "3/9 ✅ $APP_NAME is not recording (flag not supported)."
+        echo "3/9 ✅ $APP_NAME is not recording (flag not supported in this version)."
     else
-        echo "3/9 ✅ $APP_NAME is not recording."
+        echo "3/9 ✅ $APP_NAME is not recording (no active session)."
     fi
 else
     echo "3/9 ✅ $APP_NAME is not running."

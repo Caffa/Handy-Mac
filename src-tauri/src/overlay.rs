@@ -37,13 +37,12 @@ const OVERLAY_WIDTH: f64 = 172.0;
 const OVERLAY_WINDOW_WIDTH: f64 = 540.0;
 /// Visible pill width (centered within the wider window).
 const OVERLAY_PILL_WIDTH: f64 = 172.0;
-/// Native window height — generous height to accommodate variable-length
-/// transcription text (multi-line paragraphs) without clipping. The window
-/// background is transparent, so extra height doesn't affect rendering.
-/// The feathered glass preview box will auto-height based on content.
-const OVERLAY_WINDOW_HEIGHT: f64 = 1000.0;
+/// Minimum window height for the recording pill (just the pill, no preview).
+const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 100.0;
 /// Visible pill height used for position calculations.
 const OVERLAY_PILL_HEIGHT: f64 = 36.0;
+/// Maximum percentage of screen height to use for the overlay window.
+const OVERLAY_MAX_SCREEN_RATIO: f64 = 0.85;
 
 #[cfg(target_os = "macos")]
 const OVERLAY_TOP_OFFSET: f64 = 46.0;
@@ -180,6 +179,13 @@ fn get_monitor_with_cursor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
     app_handle.primary_monitor().ok().flatten()
 }
 
+/// Calculate the overlay window height based on monitor height.
+/// Uses a percentage of screen height to accommodate variable-length
+/// transcription text without clipping, with a minimum for the pill.
+fn calculate_overlay_window_height(monitor_height: f64) -> f64 {
+    (monitor_height * OVERLAY_MAX_SCREEN_RATIO).max(OVERLAY_WINDOW_MIN_HEIGHT)
+}
+
 fn is_mouse_within_monitor(
     mouse_pos: (i32, i32),
     monitor_pos: &PhysicalPosition<i32>,
@@ -201,7 +207,7 @@ fn is_mouse_within_monitor(
         && mouse_y < (monitor_y + monitor_height as i32)
 }
 
-/// Returns overlay position in logical coordinates (points on macOS).
+/// Returns overlay position and window height in logical coordinates (points on macOS).
 ///
 /// Uses monitor position/size directly rather than work_area(), which can
 /// return incorrect coordinates on macOS for monitors with negative positions.
@@ -211,13 +217,16 @@ fn is_mouse_within_monitor(
 /// We must use LogicalPosition (not PhysicalPosition) because Tauri/tao
 /// converts PhysicalPosition using the scale factor of the monitor the window
 /// is *currently* on, which is wrong when moving cross-monitor.
-fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64)> {
+fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)> {
     let monitor = get_monitor_with_cursor(app_handle)?;
     let scale = monitor.scale_factor();
     let monitor_x = monitor.position().x as f64 / scale;
     let monitor_y = monitor.position().y as f64 / scale;
     let monitor_width = monitor.size().width as f64 / scale;
     let monitor_height = monitor.size().height as f64 / scale;
+
+    // Dynamic window height based on screen size (85% of screen height)
+    let window_height = calculate_overlay_window_height(monitor_height);
 
     let settings = settings::get_settings(app_handle);
 
@@ -228,7 +237,7 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64)> {
         OverlayPosition::Bottom | OverlayPosition::None => {
             // Use pill height for positioning so the visible content sits at
             // the same screen position regardless of the taller transparent window.
-            let window_extra = OVERLAY_WINDOW_HEIGHT - OVERLAY_PILL_HEIGHT;
+            let window_extra = window_height - OVERLAY_PILL_HEIGHT;
             monitor_y + monitor_height
                 - OVERLAY_PILL_HEIGHT
                 - OVERLAY_BOTTOM_OFFSET
@@ -236,21 +245,30 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64)> {
         }
     };
 
-    Some((x, y))
+    Some((x, y, window_height))
 }
 
 /// Creates the recording overlay window and keeps it hidden by default
 #[cfg(not(target_os = "macos"))]
 pub fn create_recording_overlay(app_handle: &AppHandle) {
-    // On Linux (Wayland), monitor detection often fails, but we don't need exact coordinates
-    // for Layer Shell as we use anchors. On other platforms, we require a monitor.
-    #[cfg(not(target_os = "linux"))]
-    {
-        let position = calculate_overlay_position(app_handle);
-        if position.is_none() {
-            debug!("Failed to determine overlay position, not creating overlay window");
-            return;
+    // Get initial monitor to determine window height
+    let (initial_height, has_monitor) = match get_monitor_with_cursor(app_handle) {
+        Some(monitor) => {
+            let scale = monitor.scale_factor();
+            let monitor_height = monitor.size().height as f64 / scale;
+            (calculate_overlay_window_height(monitor_height), true)
         }
+        None => {
+            // On Linux Wayland, monitor detection may fail; use a reasonable default
+            (calculate_overlay_window_height(1080.0), false)
+        }
+    };
+
+    // On non-Linux, require a monitor
+    #[cfg(not(target_os = "linux"))]
+    if !has_monitor {
+        debug!("Failed to determine overlay position, not creating overlay window");
+        return;
     }
 
     // Position starts unset — update_overlay_position() sets the correct
@@ -262,7 +280,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
     )
     .title("Recording")
     .resizable(false)
-    .inner_size(OVERLAY_WINDOW_WIDTH, OVERLAY_WINDOW_HEIGHT)
+    .inner_size(OVERLAY_WINDOW_WIDTH, initial_height)
     .shadow(false)
     .maximizable(false)
     .minimizable(false)
@@ -303,7 +321,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
 /// Creates the recording overlay panel and keeps it hidden by default (macOS)
 #[cfg(target_os = "macos")]
 pub fn create_recording_overlay(app_handle: &AppHandle) {
-    if let Some((x, y)) = calculate_overlay_position(app_handle) {
+    if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
         // PanelBuilder creates a Tauri window then converts it to NSPanel.
         // The window remains registered, so get_webview_window() still works.
         match PanelBuilder::<_, RecordingOverlayPanel>::new(app_handle, "recording_overlay")
@@ -313,7 +331,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
             .level(PanelLevel::Status)
             .size(tauri::Size::Logical(tauri::LogicalSize {
                 width: OVERLAY_WINDOW_WIDTH,
-                height: OVERLAY_WINDOW_HEIGHT,
+                height: window_height,
             }))
             .has_shadow(false)
             .transparent(true)
@@ -417,7 +435,7 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "processing", &OverlayMode::Transcribe);
 }
 
-/// Updates the overlay window position based on current settings
+/// Updates the overlay window position and size based on current settings
 pub fn update_overlay_position(app_handle: &AppHandle) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
@@ -425,9 +443,14 @@ pub fn update_overlay_position(app_handle: &AppHandle) {
             update_gtk_layer_shell_anchors(&overlay_window);
         }
 
-        if let Some((x, y)) = calculate_overlay_position(app_handle) {
+        if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
             let _ = overlay_window
                 .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            // Also resize window to match screen height (for different monitors)
+            let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: OVERLAY_WINDOW_WIDTH,
+                height: window_height,
+            }));
         }
     }
 }

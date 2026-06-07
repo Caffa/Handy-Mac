@@ -12,7 +12,7 @@ import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
-type OverlayState = "recording" | "transcribing" | "processing" | "usb-cycling";
+type OverlayState = "recording" | "transcribing" | "processing" | "usb-cycling" | "confirming";
 type OverlayAction = "transcribe" | "post_process" | "router";
 
 // If no mic-level event arrives within this many milliseconds,
@@ -26,6 +26,12 @@ const LEVEL_TIMEOUT_MS = 500;
 // The backend blocks for up to ~9s (5s uhubctl + 4s settle), so
 // 15s gives comfortable margin without hanging the UI for too long.
 const USB_CYCLING_SAFETY_TIMEOUT_MS = 15_000;
+
+// Countdown timer for routing confirmation (in milliseconds)
+const ROUTING_COUNTDOWN_MS = 2000;
+
+// Maximum time to wait for router result before hiding overlay (in milliseconds)
+const ROUTER_RESULT_TIMEOUT_MS = 30_000;
 
 /// Parse a compound payload of the form "state:action" emitted by the Rust
 /// backend. Legacy payloads (no colon) are treated as state-only with action
@@ -44,6 +50,22 @@ function parseOverlayPayload(payload: string): {
     state: statePart as OverlayState,
     action: actionPart as OverlayAction,
   };
+}
+
+/// Router handler result from backend
+interface RouterHandlerData {
+  status: string;
+  handler: string;
+  classification: string;
+  file_path: string | null;
+}
+
+/// Router result event from backend
+interface RouterResultEvent {
+  success: boolean;
+  summary: string | null;
+  error: string | null;
+  transcription_text: string;
 }
 
 const RecordingOverlay: React.FC = () => {
@@ -80,6 +102,20 @@ const RecordingOverlay: React.FC = () => {
 
   // Transcription preview for routing mode
   const [transcriptionPreview, setTranscriptionPreview] = useState<string>("");
+  
+  // Routing confirmation countdown
+  const [countdown, setCountdown] = useState<number>(0);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedText, setEditedText] = useState<string>("");
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  
+  // Router result display
+  const [routerResult, setRouterResult] = useState<RouterResultEvent | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Refs to avoid stale closures in async callbacks
+  const transcriptionPreviewRef = useRef(transcriptionPreview);
+  const editedTextRef = useRef(editedText);
 
   const isRouter = action === "router";
 
@@ -199,7 +235,7 @@ const RecordingOverlay: React.FC = () => {
         clearInterval(usbCyclingTimerRef.current);
       }
     };
-  }, [state, isVisible]);
+  }, [state, isVisible, usbCyclingStartTime]);
 
   // Track recording elapsed time for hybrid mode indicator
   useEffect(() => {
@@ -225,6 +261,107 @@ const RecordingOverlay: React.FC = () => {
     };
   }, [state, isVisible]);
 
+  // Keep refs in sync with state
+  useEffect(() => {
+    transcriptionPreviewRef.current = transcriptionPreview;
+  }, [transcriptionPreview]);
+  
+  useEffect(() => {
+    editedTextRef.current = editedText;
+  }, [editedText]);
+
+  // Countdown timer for routing confirmation
+  useEffect(() => {
+    if (state === "confirming" && !isEditing && countdown > 0) {
+      countdownRef.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 100) {
+            // Countdown finished - send the transcription
+            sendRoutingConfirmation(transcriptionPreviewRef.current);
+            return 0;
+          }
+          return prev - 100;
+        });
+      }, 100);
+    }
+
+    return () => {
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
+    };
+  }, [state, isEditing, countdown]);
+
+  // Focus textarea when entering edit mode
+  useEffect(() => {
+    if (isEditing && textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(
+        textareaRef.current.value.length,
+        textareaRef.current.value.length
+      );
+    }
+  }, [isEditing]);
+
+  // Handle router result timeout
+  useEffect(() => {
+    if (routerResult) {
+      const timeout = setTimeout(() => {
+        setRouterResult(null);
+        setIsVisible(false);
+      }, 5000); // Show result for 5 seconds
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [routerResult]);
+
+  // Send routing confirmation to backend
+  const sendRoutingConfirmation = useCallback(async (text: string) => {
+    try {
+      // Emit event to confirm routing with (possibly edited) text
+      await commands.confirmRouting(text);
+    } catch (e) {
+      console.error("Failed to send routing confirmation:", e);
+    }
+  }, []);
+
+  // Handle clicking on transcription to enter edit mode
+  const handleTranscriptionClick = useCallback(() => {
+    if (state === "confirming" && !isEditing) {
+      setIsEditing(true);
+      setEditedText(transcriptionPreviewRef.current);
+      // Pause countdown by setting isEditing
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
+    }
+  }, [state, isEditing]);
+
+  // Handle sending edited text
+  const handleSendEdited = useCallback(() => {
+    setIsEditing(false);
+    sendRoutingConfirmation(editedText);
+  }, [editedText, sendRoutingConfirmation]);
+
+  // Handle cancel during editing
+  const handleCancelEdit = useCallback(() => {
+    setIsEditing(false);
+    setEditedText("");
+    // Restart countdown from where we paused
+    setCountdown(ROUTING_COUNTDOWN_MS);
+  }, []);
+
+  // Handle opening result file
+  const handleOpenFile = useCallback(async (filePath: string) => {
+    try {
+      await commands.openPath(filePath);
+    } catch (e) {
+      console.error("Failed to open file:", e);
+    }
+  }, []);
+
   useEffect(() => {
     const setupEventListeners = async () => {
       // Listen for show-overlay event from Rust
@@ -236,6 +373,14 @@ const RecordingOverlay: React.FC = () => {
         setState(parsed.state);
         setAction(parsed.action);
         setIsVisible(true);
+        // Reset editing state on new recording
+        if (parsed.state === "recording") {
+          setTranscriptionPreview("");
+          setRouterResult(null);
+          setIsEditing(false);
+          setEditedText("");
+          setCountdown(0);
+        }
       });
 
       // Listen for hide-overlay event from Rust
@@ -245,6 +390,9 @@ const RecordingOverlay: React.FC = () => {
           if (current !== "usb-cycling") {
             setIsVisible(false);
             setTranscriptionPreview(""); // Clear preview when hiding
+            setRouterResult(null);
+            setIsEditing(false);
+            setCountdown(0);
           }
           return current;
         });
@@ -327,6 +475,30 @@ const RecordingOverlay: React.FC = () => {
         "transcription-preview",
         (event) => {
           setTranscriptionPreview(event.payload);
+          // Start countdown when we receive the transcription
+          setCountdown(ROUTING_COUNTDOWN_MS);
+          setState("confirming");
+          setIsEditing(false);
+          setEditedText("");
+        },
+      );
+
+      // Listen for routing state changes
+      const unlistenRoutingState = await listen<string>(
+        "routing-state",
+        (event) => {
+          const newState = event.payload;
+          if (newState === "processing") {
+            setState("processing");
+          }
+        },
+      );
+
+      // Listen for router result
+      const unlistenRouterResult = await listen<RouterResultEvent>(
+        "router-result",
+        (event) => {
+          setRouterResult(event.payload);
         },
       );
 
@@ -340,6 +512,8 @@ const RecordingOverlay: React.FC = () => {
         unlistenUsbCycleFailed();
         unlistenUsbCycleStage();
         unlistenTranscriptionPreview();
+        unlistenRoutingState();
+        unlistenRouterResult();
       };
     };
 
@@ -367,12 +541,20 @@ const RecordingOverlay: React.FC = () => {
     if (isRouter) classes.push("routing-mode");
     // Add enlarged overlay for "mic dead" state
     if (micDeadWarning && state === "recording") classes.push("mic-dead-overlay");
+    // Add editing state for larger overlay
+    if (isEditing && state === "confirming") classes.push("editing-overlay");
     return classes.join(" ");
   };
 
   const handleCancel = useCallback(() => {
     commands.cancelOperation();
   }, []);
+
+  // Format countdown seconds
+  const formatCountdown = (ms: number): string => {
+    const seconds = Math.ceil(ms / 1000);
+    return `${seconds}s`;
+  };
 
   return (
     <>
@@ -464,6 +646,15 @@ const RecordingOverlay: React.FC = () => {
               )}
             </div>
           )}
+          {/* Confirming state - waiting for user to confirm or edit */}
+          {state === "confirming" && !routerResult && (
+            <div className="confirming-text">
+              {isEditing ? t("overlay.editing", "Edit text:") : t("overlay.confirming", "Sending in")}
+              {!isEditing && countdown > 0 && (
+                <span className="countdown-timer">{formatCountdown(countdown)}</span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="overlay-right">
@@ -476,13 +667,74 @@ const RecordingOverlay: React.FC = () => {
               />
             </div>
           )}
+          {state === "confirming" && isEditing && (
+            <div className="confirm-buttons">
+              <div className="confirm-send-button" onClick={handleSendEdited}>
+                {t("overlay.send", "Send")}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Transcription preview for routing mode */}
-      {isRouter && transcriptionPreview && (
-        <div dir={direction} className="transcription-preview">
-          {transcriptionPreview}
+      {/* Transcription preview for routing mode - with edit capability */}
+      {isRouter && (transcriptionPreview || routerResult) && (
+        <div 
+          dir={direction} 
+          className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""}`}
+        >
+          {routerResult ? (
+            // Router result display
+            <div className="router-result">
+              {routerResult.success ? (
+                <div className="router-success">
+                  <div className="result-icon">✅</div>
+                  <div className="result-summary">{routerResult.summary}</div>
+                </div>
+              ) : (
+                <div className="router-error">
+                  <div className="result-icon">❌</div>
+                  <div className="result-message">
+                    {routerResult.error || t("overlay.routerError", "Routing failed")}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : isEditing ? (
+            // Edit mode - show textarea
+            <div className="edit-container">
+              <textarea
+                ref={textareaRef}
+                className="transcription-edit"
+                value={editedText}
+                onChange={(e) => setEditedText(e.target.value)}
+                placeholder={t("overlay.editPlaceholder", "Edit your text...")}
+                dir={direction}
+              />
+              <div className="edit-buttons">
+                <button className="edit-cancel-button" onClick={handleCancelEdit}>
+                  {t("overlay.cancel", "Cancel")}
+                </button>
+              </div>
+            </div>
+          ) : (
+            // Countdown view - show text with countdown overlay
+            <div 
+              className="transcription-text-preview" 
+              onClick={handleTranscriptionClick}
+              title={t("overlay.clickToEdit", "Click to edit")}
+            >
+              {transcriptionPreview}
+            </div>
+          )}
+          
+          {/* Countdown progress bar */}
+          {state === "confirming" && !isEditing && !routerResult && countdown > 0 && (
+            <div 
+              className="countdown-progress"
+              style={{ width: `${(countdown / ROUTING_COUNTDOWN_MS) * 100}%` }}
+            />
+          )}
         </div>
       )}
     </>

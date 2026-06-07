@@ -1123,8 +1123,38 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             let _ = overlay_window.emit("transcription-preview", &transcription_text);
                         }
 
+                        // ── Wait for user confirmation (with countdown) before routing ──
+                        // Create a oneshot channel for the frontend to send confirmation
+                        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel::<String>();
+                        
+                        // Store the pending routing state so the frontend can trigger it
+                        let pending_state: crate::commands::PendingRoutingState = std::sync::Arc::new(
+                            std::sync::Mutex::new(Some(crate::commands::PendingRouting { confirm_tx }))
+                        );
+                        ah.manage(pending_state);
+
+                        // Wait for confirmation with timeout (30 seconds)
+                        let confirmation_timeout = std::time::Duration::from_secs(30);
+                        let confirmed_text = match tokio::time::timeout(confirmation_timeout, confirm_rx).await {
+                            Ok(Ok(edited_text)) => {
+                                debug!("Router confirmation received, text length: {}", edited_text.len());
+                                edited_text
+                            }
+                            Ok(Err(_)) => {
+                                debug!("Router confirmation channel closed, using original text");
+                                transcription_text.clone()
+                            }
+                            Err(_) => {
+                                debug!("Router confirmation timeout, using original text");
+                                transcription_text.clone()
+                            }
+                        };
+
                         // ── Show "Filing…" overlay while routing ──
                         show_processing_overlay_with_mode(&ah, OverlayMode::Router);
+                        
+                        // Use the confirmed (possibly edited) text for routing
+                        let transcription_text = confirmed_text;
 
                         // ── Send transcription to boss_router ──
                         let settings = get_settings(&ah);

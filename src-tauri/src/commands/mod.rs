@@ -185,3 +185,48 @@ pub fn initialize_shortcuts(app: AppHandle) -> Result<(), String> {
     log::info!("Shortcuts initialized successfully");
     Ok(())
 }
+
+/// Open a path in the default application (file browser, editor, etc.)
+#[specta::specta]
+#[tauri::command]
+pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .open_path(path, None::<String>)
+        .map_err(|e| format!("Failed to open path: {}", e))?;
+    Ok(())
+}
+
+/// Pending routing confirmation state.
+/// This is used to communicate between the frontend (overlay) and the backend
+/// when the user confirms or edits a routing transcription.
+pub struct PendingRouting {
+    /// Sender for confirming routing with (possibly edited) text
+    pub confirm_tx: tokio::sync::oneshot::Sender<String>,
+}
+
+/// Thread-safe container for pending routing confirmation.
+/// Allows the frontend to trigger confirmation after the countdown/edit phase.
+pub type PendingRoutingState = std::sync::Arc<std::sync::Mutex<Option<PendingRouting>>>;
+
+/// Confirm routing with edited text.
+/// Called by the frontend when the user confirms the transcription
+/// (either by letting the countdown expire or by clicking "Send").
+#[specta::specta]
+#[tauri::command]
+pub fn confirm_routing(app: AppHandle, text: String) -> Result<(), String> {
+    // Get the pending routing state and send the confirmation
+    if let Some(state) = app.try_state::<PendingRoutingState>() {
+        // Try to take the sender out of the Mutex
+        let pending_opt = state.lock().unwrap().take();
+        if let Some(pending) = pending_opt {
+            if let Err(_) = pending.confirm_tx.send(text) {
+                log::warn!("Failed to send routing confirmation - receiver already dropped");
+            }
+            Ok(())
+        } else {
+            Err("No pending routing confirmation available - already used".to_string())
+        }
+    } else {
+        Err("No pending routing confirmation available".to_string())
+    }
+}

@@ -467,6 +467,8 @@ pub fn run(cli_args: CliArgs) {
             health::get_health_report,
             health::get_log_entries,
             helpers::clamshell::is_laptop,
+            commands::confirm_routing,
+            commands::open_path,
         ])
         .events(collect_events![managers::history::HistoryUpdatePayload,]);
 
@@ -530,9 +532,23 @@ pub fn run(cli_args: CliArgs) {
                 crate::utils::cancel_current_operation(app);
             } else if args.iter().any(|a| a == "--is-recording") {
                 // Query recording state and print to stdout
+                // Exit codes: 0 = recording (active session), 1 = not recording, 2 = error
                 if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
                     let is_recording = audio_manager.is_recording();
+                    let is_open = audio_manager.is_stream_open();
+                    let is_always_on = audio_manager.is_always_on();
+                    
+                    // Print detailed status for debugging
+                    eprintln!("Handy audio status:");
+                    eprintln!("  Recording session: {}", if is_recording { "ACTIVE" } else { "none" });
+                    eprintln!("  Mic stream: {}", if is_open { "open" } else { "closed" });
+                    eprintln!("  Always-on mode: {}", if is_always_on { "yes" } else { "no" });
+                    
+                    // Output simple result for scripts
                     println!("{}", if is_recording { "recording" } else { "not-recording" });
+                    
+                    // Exit code indicates if there's an ACTIVE RECORDING SESSION
+                    // (not just always-on mode, which doesn't need to wait)
                     std::process::exit(if is_recording { 0 } else { 1 });
                 } else {
                     eprintln!("error: AudioRecordingManager not initialized");
