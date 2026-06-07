@@ -77,14 +77,14 @@ echo ""
 # Build FIRST, before quitting the app, so the working app remains available
 # if the build fails.
 if [[ "$DO_SKIP_BUILD" == true ]]; then
-    echo "1/8 ⏩ Skipping build (--skip-build)"
+    echo "1/9 ⏩ Skipping build (--skip-build)"
     if [[ ! -d "$BUNDLE_DIR/$APP_BUNDLE" ]]; then
         echo "   ❌ No built .app found at $BUNDLE_DIR/$APP_BUNDLE"
         echo "   Run without --skip-build first."
         exit 1
     fi
 else
-    echo "1/8 🔨 Building Handy (production)..."
+    echo "1/9 🔨 Building Handy (production)..."
     echo "   This takes 3-10 minutes on incremental builds."
     echo ""
 
@@ -104,7 +104,7 @@ else
 fi
 
 # ─── Step 2: Create DMG ───────────────────────────────────────────────────────
-echo "2/8 📦 Creating DMG..."
+echo "2/9 📦 Creating DMG..."
 
 # Read version for DMG filename
 VERSION=$(grep '"version"' "$TAURI_DIR/tauri.conf.json" | head -1 | sed 's/.*: "//;s/".*//;s/\s*,//')
@@ -139,9 +139,10 @@ DEST_APP="$INSTALL_DEST/$APP_BUNDLE"
 
 if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
     # Check if Handy is recording using the CLI flag
-    # Exit codes: 0 = recording, 1 = not recording, 2 = error
-    "$DEST_APP/Contents/MacOS/handy" --is-recording 2>/dev/null
-    RECORDING_EXIT=$?
+    # Exit codes: 0 = recording, 1 = not recording, 2 = error/unknown flag
+    # Use || to capture exit code without triggering set -e exit
+    RECORDING_EXIT=0
+    "$DEST_APP/Contents/MacOS/handy" --is-recording 2>/dev/null || RECORDING_EXIT=$?
     
     if [[ $RECORDING_EXIT -eq 0 ]]; then
         echo "3/9 ⏸️  $APP_NAME is currently recording. Waiting for it to finish..."
@@ -155,6 +156,9 @@ if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
         done
         
         echo "   ✅ Recording finished. Proceeding with reinstall."
+    elif [[ $RECORDING_EXIT -eq 2 ]]; then
+        # Flag not supported in this version - assume not recording and proceed
+        echo "3/9 ✅ $APP_NAME is not recording (flag not supported)."
     else
         echo "3/9 ✅ $APP_NAME is not recording."
     fi
@@ -214,7 +218,7 @@ else
 fi
 
 # ─── Step 6: Install via Rapidmg ─────────────────────────────────────────────
-echo "6/8 🚀 Opening DMG with Rapidmg for auto-install..."
+echo "6/9 🚀 Opening DMG with Rapidmg for auto-install..."
 
 RAPIDMG_APP="/Applications/Rapidmg.app"
 if [[ ! -d "$RAPIDMG_APP" ]]; then
