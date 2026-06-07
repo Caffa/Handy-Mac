@@ -132,44 +132,62 @@ fi
 
 echo "   ✅ DMG created: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
 
-# ─── Step 3: Wait for recording to finish ────────────────────────────────────
-# Before quitting, check if Handy is currently recording and wait if needed.
-# Uses --is-recording CLI flag for reliable detection.
+# ─── Step 3: Wait for active use to finish ────────────────────────────────────
+# Before quitting, check if Handy is actively in use and wait if needed.
+# Uses --is-active-use CLI flag for reliable detection.
 #
-# IMPORTANT: We only wait for ACTIVE RECORDING SESSIONS (user-triggered 
-# transcriptions). Always-on mode (mic stream open) does NOT need to wait
-# because it's just keeping the microphone warm, not capturing audio for
-# transcription.
+# "Active use" includes:
+# - Recording (user speaking, audio being captured)
+# - Processing (transcription, post-processing, router filing)
+# - Pronunciation recording (model training)
+#
+# Always-on mode (mic stream open but NOT recording) does NOT count as active use.
+# The script will NOT wait in that case.
 DEST_APP="$INSTALL_DEST/$APP_BUNDLE"
 
 if pgrep -xi "$APP_NAME" > /dev/null 2>&1; then
-    # Check if Handy is recording using the CLI flag
-    # Exit codes: 0 = recording (active session), 1 = not recording, 2 = error/unknown flag
+    # Check if Handy is in active use using the CLI flag
+    # Exit codes: 0 = active use (recording/transcribing/processing), 1 = idle, 2 = error/unknown flag
     # Use || to capture exit code without triggering set -e exit
-    RECORDING_EXIT=0
-    "$DEST_APP/Contents/MacOS/handy" --is-recording 2>&1 || RECORDING_EXIT=$?
+    ACTIVE_EXIT=0
+    "$DEST_APP/Contents/MacOS/handy" --is-active-use 2>&1 || ACTIVE_EXIT=$?
     
-    if [[ $RECORDING_EXIT -eq 0 ]]; then
-        echo "3/9 ⏸️  $APP_NAME has an active recording session. Waiting for it to finish..."
-        echo "   (Always-on mode does not block - only active transcriptions do)"
+    if [[ $ACTIVE_EXIT -eq 0 ]]; then
+        echo "3/9 ⏸️  $APP_NAME is in active use. Waiting for it to finish..."
+        echo "   (Active use includes: recording, transcribing, post-processing, router filing)"
+        echo "   (Always-on mode does not count as active use)"
         
-        # Wait loop: check every 5 seconds until recording stops
+        # Wait loop: check every 5 seconds until idle
         # (suppress detailed status during loop to reduce noise)
-        RECORDING_CHECK_COUNT=0
-        while "$DEST_APP/Contents/MacOS/handy" --is-recording >/dev/null 2>&1; do
-            RECORDING_CHECK_COUNT=$((RECORDING_CHECK_COUNT + 1))
-            echo "   Recording session still active... waiting (attempt $RECORDING_CHECK_COUNT)"
+        ACTIVE_CHECK_COUNT=0
+        while "$DEST_APP/Contents/MacOS/handy" --is-active-use >/dev/null 2>&1; do
+            ACTIVE_CHECK_COUNT=$((ACTIVE_CHECK_COUNT + 1))
+            echo "   Still in active use... waiting (attempt $ACTIVE_CHECK_COUNT)"
             sleep 5
         done
         
-        echo "   ✅ Recording session finished. Proceeding with reinstall."
+        echo "   ✅ Active use finished. Proceeding with reinstall."
+    elif [[ $ACTIVE_EXIT -eq 2 ]]; then
+        # Flag not supported in this version - fall back to --is-recording
+        echo "3/9 ⏸️  $APP_NAME: --is-active-use not supported, checking recording state..."
+        RECORDING_EXIT=0
+        "$DEST_APP/Contents/MacOS/handy" --is-recording 2>&1 || RECORDING_EXIT=$?
         
-        echo "   ✅ Recording session finished. Proceeding with reinstall."
-    elif [[ $RECORDING_EXIT -eq 2 ]]; then
-        # Flag not supported in this version - assume not recording and proceed
-        echo "3/9 ✅ $APP_NAME is not recording (flag not supported in this version)."
+        if [[ $RECORDING_EXIT -eq 0 ]]; then
+            echo "   $APP_NAME has an active recording session. Waiting for it to finish..."
+            echo "   (Always-on mode does not block - only active transcriptions do)"
+            RECORDING_CHECK_COUNT=0
+            while "$DEST_APP/Contents/MacOS/handy" --is-recording >/dev/null 2>&1; do
+                RECORDING_CHECK_COUNT=$((RECORDING_CHECK_COUNT + 1))
+                echo "   Recording session still active... waiting (attempt $RECORDING_CHECK_COUNT)"
+                sleep 5
+            done
+            echo "   ✅ Recording session finished. Proceeding with reinstall."
+        else
+            echo "3/9 ✅ $APP_NAME is not recording (legacy check)."
+        fi
     else
-        echo "3/9 ✅ $APP_NAME is not recording (no active session)."
+        echo "3/9 ✅ $APP_NAME is idle (no active use)."
     fi
 else
     echo "3/9 ✅ $APP_NAME is not running."

@@ -1,6 +1,7 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -39,11 +40,27 @@ enum Stage {
     Processing { since: Instant },
 }
 
+impl Stage {
+    /// Returns true if this stage represents active use (Recording or Processing)
+    fn is_active(&self) -> bool {
+        !matches!(self, Stage::Idle)
+    }
+}
+
+/// Helper to update stage and sync the active_use flag
+fn set_stage(stage: &mut Stage, new_stage: Stage, active_use: &AtomicBool) {
+    *stage = new_stage;
+    active_use.store(stage.is_active(), Ordering::SeqCst);
+}
+
 /// Serialises all transcription lifecycle events through a single thread
 /// to eliminate race conditions between keyboard shortcuts, signals, and
 /// the async transcribe-paste pipeline.
 pub struct TranscriptionCoordinator {
     tx: Sender<Command>,
+    /// Shared flag indicating whether Handy is in active use (Recording or Processing stage).
+    /// This is used by the CLI `--is-active-use` flag to determine if the app is busy.
+    active_use: Arc<AtomicBool>,
 }
 
 pub fn is_transcribe_binding(id: &str) -> bool {
@@ -53,11 +70,15 @@ pub fn is_transcribe_binding(id: &str) -> bool {
 impl TranscriptionCoordinator {
     pub fn new(app: AppHandle) -> Self {
         let (tx, rx) = mpsc::channel();
+        let active_use = Arc::new(AtomicBool::new(false));
+        let active_use_clone = Arc::clone(&active_use);
         info!("Starting transcription coordinator thread");
 
         thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut stage = Stage::Idle;
+                // Sync active_use flag with initial stage
+                active_use_clone.store(false, Ordering::SeqCst);
                 let mut last_press: Option<Instant> = None;
 
                 loop {
@@ -71,7 +92,7 @@ impl TranscriptionCoordinator {
                                     "Processing stage exceeded {:?} timeout, auto-resetting to Idle",
                                     PROCESSING_TIMEOUT
                                 );
-                                stage = Stage::Idle;
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
                                 continue; // re-evaluate in next iteration
                             }
                             Some(PROCESSING_TIMEOUT - elapsed)
@@ -122,12 +143,12 @@ impl TranscriptionCoordinator {
                             if push_to_talk {
                                 if is_pressed && matches!(stage, Stage::Idle) {
                                     info!("Coordinator: starting recording for '{}'", binding_id);
-                                    start(&app, &mut stage, &binding_id, &hotkey_string);
+                                    start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
                                 } else if !is_pressed
                                     && matches!(&stage, Stage::Recording(id) if id == &binding_id)
                                 {
                                     info!("Coordinator: stopping recording for '{}'", binding_id);
-                                    stop(&app, &mut stage, &binding_id, &hotkey_string);
+                                    stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
                                 }
                             } else if is_pressed {
                                 match &stage {
@@ -136,14 +157,14 @@ impl TranscriptionCoordinator {
                                             "Coordinator: starting recording for '{}'",
                                             binding_id
                                         );
-                                        start(&app, &mut stage, &binding_id, &hotkey_string);
+                                        start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
                                     }
                                     Stage::Recording(id) if id == &binding_id => {
                                         info!(
                                             "Coordinator: stopping recording for '{}'",
                                             binding_id
                                         );
-                                        stop(&app, &mut stage, &binding_id, &hotkey_string);
+                                        stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
                                     }
                                     _ => {
                                         debug!("Ignoring press for '{binding_id}': pipeline busy")
@@ -159,7 +180,7 @@ impl TranscriptionCoordinator {
                                 recording_was_active
                             );
                             if recording_was_active || matches!(stage, Stage::Recording(_)) {
-                                stage = Stage::Idle;
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
                                 info!("Coordinator: cancelled, reset to Idle");
                             } else if matches!(stage, Stage::Processing { .. }) {
                                 // Allow cancel during processing too — if the
@@ -167,13 +188,13 @@ impl TranscriptionCoordinator {
                                 // way to unstick the app. The FinishGuard will
                                 // still fire when (if) the pipeline completes.
                                 warn!("Cancelling stuck processing stage");
-                                stage = Stage::Idle;
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
                             }
                         }
                         Command::ProcessingFinished => {
                             if matches!(stage, Stage::Processing { .. }) {
                                 info!("Coordinator: processing finished, reset to Idle");
-                                stage = Stage::Idle;
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
                             }
                         }
                         Command::ProcessingTimeout => {
@@ -185,7 +206,7 @@ impl TranscriptionCoordinator {
                                     "Processing stage timed out after {:?}, auto-resetting to Idle",
                                     PROCESSING_TIMEOUT
                                 );
-                                stage = Stage::Idle;
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
                             }
                         }
                     }
@@ -198,7 +219,19 @@ impl TranscriptionCoordinator {
             }
         });
 
-        Self { tx }
+        Self { tx, active_use }
+    }
+
+    /// Returns true if Handy is in active use (recording or processing).
+    /// This is used by the CLI `--is-active-use` flag to determine if
+    /// the app is busy and should not be quit.
+    pub fn is_active_use(&self) -> bool {
+        self.active_use.load(Ordering::SeqCst)
+    }
+
+    /// Returns a clone of the active_use Arc for external querying
+    pub fn active_use_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.active_use)
     }
 
     /// Send a keyboard/signal input event for a transcribe binding.
@@ -243,7 +276,13 @@ impl TranscriptionCoordinator {
     }
 }
 
-fn start(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &str) {
+fn start(
+    app: &AppHandle,
+    stage: &mut Stage,
+    binding_id: &str,
+    hotkey_string: &str,
+    active_use: &AtomicBool,
+) {
     let Some(action) = ACTION_MAP.get(binding_id) else {
         warn!("No action in ACTION_MAP for '{binding_id}'");
         return;
@@ -253,19 +292,29 @@ fn start(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &s
         .try_state::<Arc<AudioRecordingManager>>()
         .map_or(false, |a| a.is_recording())
     {
-        *stage = Stage::Recording(binding_id.to_string());
+        set_stage(stage, Stage::Recording(binding_id.to_string()), active_use);
     } else {
         debug!("Start for '{binding_id}' did not begin recording; staying idle");
     }
 }
 
-fn stop(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &str) {
+fn stop(
+    app: &AppHandle,
+    stage: &mut Stage,
+    binding_id: &str,
+    hotkey_string: &str,
+    active_use: &AtomicBool,
+) {
     let Some(action) = ACTION_MAP.get(binding_id) else {
         warn!("No action in ACTION_MAP for '{binding_id}'");
         return;
     };
     action.stop(app, binding_id, hotkey_string);
-    *stage = Stage::Processing {
-        since: Instant::now(),
-    };
+    set_stage(
+        stage,
+        Stage::Processing {
+            since: Instant::now(),
+        },
+        active_use,
+    );
 }

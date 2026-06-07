@@ -635,11 +635,13 @@ impl AudioRecordingManager {
         *did_mute_guard = false;
 
         if let Some(rec) = lock_with_log(&self.recorder, "recorder").as_mut() {
-            // If still recording, stop first.
+            // If still recording, stop first and reset state.
             if *lock_with_log(&self.is_recording, "is_recording") {
                 let _ = rec.stop();
                 *lock_with_log(&self.is_recording, "is_recording") = false;
             }
+            // Also ensure state is reset to Idle (is_recording() checks state, not flag)
+            *lock_with_log(&self.state, "state") = RecordingState::Idle;
             let _ = rec.close();
         }
 

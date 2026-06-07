@@ -530,9 +530,57 @@ pub fn run(cli_args: CliArgs) {
                 signal_handle::send_transcription_input(app, "transcribe_with_post_process", "CLI");
             } else if args.iter().any(|a| a == "--cancel") {
                 crate::utils::cancel_current_operation(app);
+            } else if args.iter().any(|a| a == "--is-active-use") {
+                // Query active use state: recording, transcribing, or processing.
+                // Exit codes: 0 = active use, 1 = idle, 2 = error
+                //
+                // "Active use" means Handy is in use and should not be quit:
+                // - Recording (user is speaking, audio being captured)
+                // - Processing (transcription, post-processing, router filing in progress)
+                // - Pronunciation recording (special mode for model training)
+                //
+                // Always-on mode with mic stream open but NOT actively recording
+                // is NOT considered active use and won't block quit.
+                //
+                // We check BOTH the coordinator state AND AudioRecordingManager because:
+                // - Coordinator tracks Recording/Processing stages for transcription pipeline
+                // - AudioRecordingManager tracks pronunciation recordings which bypass coordinator
+                let (is_coord_active, is_audio_recording) = {
+                    let coord = app.try_state::<TranscriptionCoordinator>();
+                    let audio = app.try_state::<Arc<AudioRecordingManager>>();
+                    (
+                        coord.as_ref().map_or(false, |c| c.is_active_use()),
+                        audio.as_ref().map_or(false, |a| a.is_recording()),
+                    )
+                };
+                let is_active = is_coord_active || is_audio_recording;
+                
+                // Also check audio state for debugging
+                let is_open = app.try_state::<Arc<AudioRecordingManager>>()
+                    .map_or(false, |a| a.is_stream_open());
+                let is_always_on = app.try_state::<Arc<AudioRecordingManager>>()
+                    .map_or(false, |a| a.is_always_on());
+                
+                // Print detailed status for debugging
+                eprintln!("Handy active use status:");
+                eprintln!("  Active use: {}", if is_active { "YES" } else { "no" });
+                eprintln!("  Coordinator stage: {}", if is_coord_active { "active" } else { "idle" });
+                eprintln!("  Recording session: {}", if is_audio_recording { "ACTIVE" } else { "none" });
+                eprintln!("  Mic stream: {}", if is_open { "open" } else { "closed" });
+                eprintln!("  Always-on mode: {}", if is_always_on { "yes" } else { "no" });
+                
+                // Output simple result for scripts
+                println!("{}", if is_active { "active-use" } else { "idle" });
+                
+                // Exit code indicates if Handy is in active use
+                std::process::exit(if is_active { 0 } else { 1 });
             } else if args.iter().any(|a| a == "--is-recording") {
                 // Query recording state and print to stdout
                 // Exit codes: 0 = recording (active session), 1 = not recording, 2 = error
+                //
+                // NOTE: This flag checks ONLY audio recording state. For scripts that need
+                // to wait for Handy to be fully idle (including processing/transcription),
+                // use --is-active-use instead.
                 if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
                     let is_recording = audio_manager.is_recording();
                     let is_open = audio_manager.is_stream_open();
