@@ -1119,7 +1119,12 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         };
 
                         // ── Emit transcription preview for routing overlay ──
+                        // The overlay transitions to "confirming" state and needs to resize
+                        // to accommodate the transcription preview. Update the window size
+                        // before emitting the event so the frontend has the correct bounds.
                         if let Some(overlay_window) = ah.get_webview_window("recording_overlay") {
+                            // Resize window to full height for transcription preview
+                            crate::overlay::update_overlay_position(&ah, "confirming", &OverlayMode::Router);
                             let _ = overlay_window.emit("transcription-preview", &transcription_text);
                         }
 

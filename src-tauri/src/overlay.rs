@@ -391,7 +391,7 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     // activates the Handy app, stealing focus from the user's target app.
     crate::focus::save_frontmost_app(app_handle);
 
-    update_overlay_position(app_handle, mode);
+    update_overlay_position(app_handle, state, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         let _ = overlay_window.show();
@@ -438,7 +438,8 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
 /// Updates the overlay window position and size based on current settings and mode.
 /// Router mode uses a taller window to accommodate the transcription preview,
 /// while regular transcription uses minimal height to avoid blocking click-through.
-pub fn update_overlay_position(app_handle: &AppHandle, mode: &OverlayMode) {
+/// During routing "processing" state, use minimal height since the preview is hidden.
+pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
         {
@@ -450,10 +451,13 @@ pub fn update_overlay_position(app_handle: &AppHandle, mode: &OverlayMode) {
                 .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
             
             // Use minimal height for regular transcription to allow click-through.
-            // Router mode needs the full height for the transcription preview.
+            // Router mode needs the full height ONLY when the transcription preview
+            // is visible (during "confirming" state), NOT during recording/transcribing.
+            // During recording, we only show the visualizer pill (45px).
+            // During confirming, we show the full transcription preview with edit button.
             let actual_height = match mode {
-                OverlayMode::Router => window_height,
-                OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
+                OverlayMode::Router if state == "confirming" => window_height,
+                OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
                     OVERLAY_WINDOW_MIN_HEIGHT
                 }
             };

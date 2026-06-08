@@ -562,7 +562,8 @@ pub fn change_overlay_position_setting(app: AppHandle, position: String) -> Resu
     // Update overlay position without recreating window
     // Use default Transcribe mode since overlay is likely not visible
     // (position change is a settings operation, not during active recording)
-    crate::overlay::update_overlay_position(&app, &crate::overlay::OverlayMode::Transcribe);
+    // State doesn't matter here since mode is Transcribe (always min height)
+    crate::overlay::update_overlay_position(&app, "recording", &crate::overlay::OverlayMode::Transcribe);
 
     Ok(())
 }
