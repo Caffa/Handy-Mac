@@ -380,6 +380,9 @@ const RecordingOverlay: React.FC = () => {
           setIsEditing(false);
           setEditedText("");
           setCountdown(0);
+          // Reset mic-level timestamp for dead-mic detection
+          lastLevelTimeRef.current = Date.now();
+          setMicDeadWarning(false);
         }
       });
 

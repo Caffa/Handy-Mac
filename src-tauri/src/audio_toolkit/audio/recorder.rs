@@ -103,6 +103,9 @@ pub struct AudioRecorder {
     /// Timestamp (ms since epoch) of the last audio chunk received by
     /// the consumer thread. Used to detect dead microphone streams.
     last_chunk_ms: Arc<AtomicU64>,
+    /// Timestamp (ms since epoch) when the stream was opened.
+    /// Used to provide a grace period for liveness checks.
+    opened_at_ms: Arc<AtomicU64>,
 }
 
 impl AudioRecorder {
@@ -114,6 +117,7 @@ impl AudioRecorder {
             vad: None,
             level_cb: None,
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
+            opened_at_ms: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -137,6 +141,12 @@ impl AudioRecorder {
 
         // Reset stream liveness timestamp
         self.last_chunk_ms.store(0, Ordering::Relaxed);
+        // Record when stream was opened for grace period
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.opened_at_ms.store(now_ms, Ordering::Relaxed);
 
         let (sample_tx, sample_rx) = mpsc::channel::<AudioChunk>();
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
@@ -334,22 +344,37 @@ impl AudioRecorder {
     /// Returns true if the microphone stream has received audio data within
     /// the last `timeout_ms` milliseconds. Returns false if the stream has
     /// never received data or if data stopped flowing.
+    /// 
+    /// Grace period: For the first 500ms after the stream opens, we return true
+    /// even if no audio has been received yet. This allows CoreAudio time to start
+    /// delivering samples. After 500ms, we require actual audio data.
     pub fn is_stream_alive(&self, timeout_ms: u64) -> bool {
         if self.cmd_tx.is_none() {
             // Stream not open
             return false;
         }
         let last = self.last_chunk_ms.load(Ordering::Relaxed);
-        if last == 0 {
-            // No data received yet — give it a brief grace period.
-            // The stream just opened, so we'll trust it for now.
-            // The caller should check again after a short delay.
-            return true;
-        }
+        let opened_at = self.opened_at_ms.load(Ordering::Relaxed);
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
+        
+        // Grace period: give CoreAudio ~500ms to start delivering samples
+        const GRACE_PERIOD_MS: u64 = 500;
+        let stream_age_ms = now_ms.saturating_sub(opened_at);
+        
+        if last == 0 {
+            // No audio received yet
+            // Return true only during grace period
+            if stream_age_ms < GRACE_PERIOD_MS {
+                return true;
+            }
+            // Grace period expired with no audio = zombie stream
+            return false;
+        }
+        
+        // Check if audio is flowing
         now_ms.saturating_sub(last) < timeout_ms
     }
 
