@@ -451,12 +451,11 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                 .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
             
             // Use minimal height for regular transcription to allow click-through.
-            // Router mode needs the full height ONLY when the transcription preview
-            // is visible (during "confirming" state), NOT during recording/transcribing.
-            // During recording, we only show the visualizer pill (45px).
-            // During confirming, we show the full transcription preview with edit button.
+            // Router mode needs full height during confirming (text preview) and
+            // processing (result display with checkmark/error message) states.
+            // During recording, we only show the visualizer pill (minimal height).
             let actual_height = match mode {
-                OverlayMode::Router if state == "confirming" => window_height,
+                OverlayMode::Router if state == "confirming" || state == "processing" => window_height,
                 OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
                     OVERLAY_WINDOW_MIN_HEIGHT
                 }
