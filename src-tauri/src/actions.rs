@@ -1254,15 +1254,17 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         send_macos_notification("Handy Router", &notification_text);
 
                                         // ── Clean up overlay after routing succeeds ──
-                                        // Only hide the overlay if no other recording is active.
-                                        let is_recording = ah_for_router
-                                            .try_state::<Arc<AudioRecordingManager>>()
-                                            .map_or(false, |rm| rm.is_recording());
-                                        if !is_recording {
+                                        // Only hide the overlay if no other transcription is active.
+                                        // Check TranscriptionCoordinator.is_active_use() which covers
+                                        // both Recording AND Processing stages (transcribing, filing, etc.)
+                                        let is_active = ah_for_router
+                                            .try_state::<Arc<TranscriptionCoordinator>>()
+                                            .map_or(false, |coord| coord.is_active_use());
+                                        if !is_active {
                                             utils::hide_recording_overlay(&ah_for_router);
                                             change_tray_icon(&ah_for_router, TrayIconState::Idle);
                                         } else {
-                                            info!("Router finished but recording is active — keeping overlay");
+                                            info!("Router finished but transcription pipeline is active — keeping overlay");
                                         }
                                     }
                                     Err(e) => {
@@ -1309,15 +1311,17 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         );
 
                                         // ── Clean up overlay after routing fails ──
-                                        // Same guard: don't hide overlay if another recording is active.
+                                        // Same guard: don't hide overlay if another transcription is active.
+                                        // Check TranscriptionCoordinator.is_active_use() which covers
+                                        // both Recording AND Processing stages (transcribing, filing, etc.)
                                         let is_other_active = ah_for_router
-                                            .try_state::<Arc<AudioRecordingManager>>()
-                                            .map_or(false, |rm| rm.is_recording());
+                                            .try_state::<Arc<TranscriptionCoordinator>>()
+                                            .map_or(false, |coord| coord.is_active_use());
                                         if !is_other_active {
                                             utils::hide_recording_overlay(&ah_for_router);
                                             change_tray_icon(&ah_for_router, TrayIconState::Idle);
                                         } else {
-                                            info!("Router failed but another recording is active — keeping overlay visible");
+                                            info!("Router failed but transcription pipeline is active — keeping overlay visible");
                                         }
                                     }
                                 }
