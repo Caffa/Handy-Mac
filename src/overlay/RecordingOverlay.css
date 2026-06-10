@@ -464,6 +464,12 @@
   pointer-events: none;
 }
 
+/* During processing (filing) state, make the preview click-through
+   so users can interact with the app below */
+.transcription-preview.processing {
+  pointer-events: none;
+}
+
 /* RTL support for edit placeholder */
 [dir="rtl"] .transcription-edit::placeholder {
   text-align: right;

@@ -684,7 +684,7 @@ const RecordingOverlay: React.FC = () => {
       {isRouter && (transcriptionPreview || routerResult) && (
         <div 
           dir={direction} 
-          className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""}`}
+          className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""} ${state === "processing" ? "processing" : ""}`}
         >
           {routerResult ? (
             // Router result display
