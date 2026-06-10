@@ -37,6 +37,9 @@ pub use smoothed::SmoothedVad;
 /// frame classified as speech, then truncates the audio after that point
 /// (plus a small hangover pad to avoid clipping final consonants).
 ///
+/// Also preserves a small buffer of leading silence before the first speech
+/// to avoid clipping the beginning of short sentences.
+///
 /// Returns the trimmed samples. If VAD creation fails or no speech is detected,
 /// returns the original audio unchanged (safe fallback).
 pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> Vec<f32> {
@@ -45,10 +48,15 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
     const FRAME_MS: u32 = 30;
     const FRAME_SAMPLES: usize =
         (constants::WHISPER_SAMPLE_RATE as usize * FRAME_MS as usize) / 1000;
-    // Keep 150ms of audio after the last detected speech frame
-    // to avoid clipping final consonants/tails of words
-    const HANGOVER_FRAMES: usize = 5;
+    // Keep 300ms of audio after the last detected speech frame
+    // to avoid clipping final consonants/tails of words (increased from 150ms
+    // to fix short sentence clipping)
+    const HANGOVER_FRAMES: usize = 10;
     const HANGOVER_SAMPLES: usize = HANGOVER_FRAMES * FRAME_SAMPLES;
+    // Keep 100ms of audio before the first detected speech frame
+    // to avoid clipping the beginning of short sentences
+    const LEADING_BUFFER_FRAMES: usize = 3;
+    const LEADING_BUFFER_SAMPLES: usize = LEADING_BUFFER_FRAMES * FRAME_SAMPLES;
 
     if audio.len() < FRAME_SAMPLES {
         return audio.to_vec();
@@ -65,8 +73,9 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
         }
     };
 
-    // Scan forward through the audio, tracking the last speech frame.
+    // Scan forward through the audio, tracking first and last speech frames.
     let total_frames = audio.len() / FRAME_SAMPLES;
+    let mut first_speech_frame_start: Option<usize> = None;
     let mut last_speech_frame_end: usize = 0;
 
     for frame_idx in 0..total_frames {
@@ -76,6 +85,9 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
 
         match vad.push_frame(frame) {
             Ok(vad_frame) if vad_frame.is_speech() => {
+                if first_speech_frame_start.is_none() {
+                    first_speech_frame_start = Some(start);
+                }
                 last_speech_frame_end = end;
             }
             Ok(_) => {} // Noise frame, continue scanning
@@ -92,20 +104,27 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
         return audio.to_vec();
     }
 
+    // Calculate the start point with leading buffer to preserve beginning of speech
+    let trimmed_start = match first_speech_frame_start {
+        Some(first_start) => first_start.saturating_sub(LEADING_BUFFER_SAMPLES),
+        None => 0,
+    };
+
     // Pad the cut point with a small hangover to avoid clipping
     let trimmed_len = (last_speech_frame_end + HANGOVER_SAMPLES).min(audio.len());
 
-    if trimmed_len >= audio.len() {
+    if trimmed_len >= audio.len() && trimmed_start == 0 {
         // Nothing to trim
         return audio.to_vec();
     }
 
     log::debug!(
-        "VAD trim: {} samples -> {} samples (removed {}ms of trailing silence)",
+        "VAD trim: {} samples -> {} samples (trimmed {}ms from start, {}ms from end)",
         audio.len(),
-        trimmed_len,
+        trimmed_len - trimmed_start,
+        trimmed_start * 1000 / constants::WHISPER_SAMPLE_RATE as usize,
         (audio.len() - trimmed_len) * 1000 / constants::WHISPER_SAMPLE_RATE as usize,
     );
 
-    audio[..trimmed_len].to_vec()
+    audio[trimmed_start..trimmed_len].to_vec()
 }

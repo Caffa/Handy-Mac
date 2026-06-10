@@ -966,17 +966,20 @@ impl AudioRecordingManager {
                     }
                 }
 
-                // Pad short audio to reduce Whisper hallucinations.
-                // Very short clips (< 3s) padded with silence cause Whisper to
-                // hallucinate repetitive text. A 3-second minimum gives Whisper
-                // enough context to produce a good transcription without
-                // hallucinating. The VAD-based trim_trailing_silence in the
-                // transcription pipeline further cleans up any trailing silence.
+                // Pad short audio with silence at the BEGINNING to reduce Whisper
+                // hallucinations and prevent clipping of the first words.
+                // Very short clips (< 3s) padded with silence at the end would cause
+                // Whisper to miss the first words. By padding at the start, we give
+                // Whisper context and ensure the captured speech timing is preserved.
+                // A 3-second minimum gives Whisper enough context to produce a good
+                // transcription without hallucinating. The VAD-based trim_trailing_silence
+                // in the transcription pipeline further cleans up any trailing silence.
                 let s_len = samples.len();
                 let min_samples = WHISPER_SAMPLE_RATE * 3; // 3 seconds minimum
                 if s_len > 0 && s_len < min_samples {
-                    let mut padded = samples;
-                    padded.resize(min_samples, 0.0);
+                    let needed_silence = min_samples - s_len;
+                    let mut padded = vec![0.0f32; needed_silence];
+                    padded.extend_from_slice(&samples);
                     Some(padded)
                 } else {
                     Some(samples)

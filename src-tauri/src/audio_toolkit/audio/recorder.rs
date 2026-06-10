@@ -70,14 +70,16 @@ const SILENCE_RMS_MULTIPLIER: f32 = 3.0;
 
 // SILENCE_THRESHOLD_MS: How long the volume must stay below the
 //   threshold before we decide the user has finished speaking.
-//   300 ms ≈ the length of a very short pause; it avoids cutting off
-//   natural micro-pauses in continuous speech.
-const SILENCE_THRESHOLD_MS: u64 = 300;
+//   500 ms ≈ the length of a short pause; it avoids cutting off
+//   natural micro-pauses in continuous speech and gives more time
+//   for trailing words in short sentences (increased from 300ms).
+const SILENCE_THRESHOLD_MS: u64 = 500;
 
 // MIN_BUFFER_MS: The shortest time we *always* wait before considering
 //   an early stop.  Guarantees we capture trailing consonants or a
 //   brief final syllable that might dip below threshold for a few ms.
-const MIN_BUFFER_MS: u64 = 100;
+//   Increased from 100ms to 200ms to better capture trailing words.
+const MIN_BUFFER_MS: u64 = 200;
 
 // NOISE_ALPHA: Exponential moving average (EMA) coefficient for noise
 //   floor estimation.  0.05 adapts fairly quickly to background changes
