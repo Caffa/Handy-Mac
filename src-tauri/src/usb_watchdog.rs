@@ -159,6 +159,54 @@ impl UsbWatchdog {
         self.on_mic_open_failed()
     }
 
+    /// Called when a transcription returns empty text despite having audio samples.
+    /// This may indicate the microphone is capturing silence/noise instead of actual audio.
+    /// Returns true if a USB power cycle was triggered.
+    pub fn on_silent_transcription(&self) -> bool {
+        if !self.enabled.load(Ordering::SeqCst) {
+            debug!("USB watchdog disabled, skipping silent transcription handler");
+            return false;
+        }
+
+        if self.cycling.load(Ordering::SeqCst) {
+            debug!("USB cycle already in progress, skipping silent transcription handler");
+            return false;
+        }
+
+        let failures = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
+        let threshold = self.fail_threshold.load(Ordering::SeqCst);
+        info!(
+            "USB watchdog: silent transcription detected (failure #{}, threshold: {})",
+            failures, threshold
+        );
+
+        if failures < threshold {
+            debug!("Failure count below threshold, not cycling yet");
+            return false;
+        }
+
+        warn!("USB watchdog: {} consecutive failures (silent transcription detected), triggering USB power cycle", failures);
+        self.power_cycle_blocking()
+    }
+
+    /// Called when a recording had very low audio levels (near silence).
+    /// This indicates the microphone may be dead or muted.
+    /// Returns true if a USB power cycle was triggered.
+    pub fn on_low_audio_level(&self) -> bool {
+        if !self.enabled.load(Ordering::SeqCst) {
+            debug!("USB watchdog disabled, skipping low audio level handler");
+            return false;
+        }
+
+        if self.cycling.load(Ordering::SeqCst) {
+            debug!("USB cycle already in progress, skipping low audio level handler");
+            return false;
+        }
+
+        warn!("USB watchdog: recording had very low audio level - treating as potential dead mic");
+        self.on_mic_open_failed()
+    }
+
     /// Attempt a USB hub port power cycle **synchronously** (blocking).
     fn power_cycle_blocking(&self) -> bool {
         // Check cooldown

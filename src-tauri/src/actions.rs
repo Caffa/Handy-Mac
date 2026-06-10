@@ -703,6 +703,14 @@ impl ShortcutAction for TranscribeAction {
                             }
 
                             if processed.final_text.is_empty() {
+                                // Transcription returned empty text - may indicate dead mic
+                                warn!("Transcription returned empty text - checking if USB watchdog should cycle");
+                                if rm.usb_watchdog.on_silent_transcription() {
+                                    // USB cycle was triggered - restart mic stream if needed
+                                    if let Err(e) = rm.restart_microphone_if_needed() {
+                                        error!("Failed to restart microphone after silent transcription USB cycle: {}", e);
+                                    }
+                                }
                                 utils::hide_recording_overlay(&ah);
                                 change_tray_icon(&ah, TrayIconState::Idle);
                             } else {

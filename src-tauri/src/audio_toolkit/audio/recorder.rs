@@ -1,7 +1,7 @@
 use std::{
     io::Error,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -106,6 +106,11 @@ pub struct AudioRecorder {
     /// Timestamp (ms since epoch) when the stream was opened.
     /// Used to provide a grace period for liveness checks.
     opened_at_ms: Arc<AtomicU64>,
+    /// Maximum audio level (RMS * 1_000_000) seen during the current recording.
+    /// Used to detect "no audio" situations where the mic might be dead.
+    /// Stored as AtomicU32 to avoid float atomics. Multiply by 1_000_000
+    /// to preserve precision when storing, divide when retrieving.
+    max_level: Arc<AtomicU32>,
 }
 
 impl AudioRecorder {
@@ -118,6 +123,7 @@ impl AudioRecorder {
             level_cb: None,
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
             opened_at_ms: Arc::new(AtomicU64::new(0)),
+            max_level: Arc::new(AtomicU32::new(0)),
         })
     }
 
@@ -165,6 +171,7 @@ impl AudioRecorder {
         // Move the optional level callback into the worker thread
         let level_cb = self.level_cb.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
+        let max_level = self.max_level.clone();
 
         let worker = std::thread::spawn(move || {
             let stop_flag = Arc::new(AtomicBool::new(false));
@@ -249,6 +256,7 @@ impl AudioRecorder {
                         level_cb,
                         stop_flag,
                         last_chunk_ms,
+                        max_level,
                     );
 
                     // Pause the stream before dropping to prevent heap corruption.
@@ -338,7 +346,20 @@ impl AudioRecorder {
         }
         self.device = None;
         self.last_chunk_ms.store(0, Ordering::Relaxed);
+        self.max_level.store(0, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Returns the maximum audio level (RMS) seen during the last recording.
+    /// The value is normalized (0.0 to ~1.0 for f32 samples).
+    /// Returns 0.0 if no recording has occurred or the recorder wasn't used.
+    pub fn get_max_level(&self) -> f32 {
+        self.max_level.load(Ordering::Relaxed) as f32 / 1_000_000.0
+    }
+
+    /// Resets the max level counter. Should be called before starting a new recording.
+    pub fn reset_max_level(&self) {
+        self.max_level.store(0, Ordering::Relaxed);
     }
 
     /// Returns true if the microphone stream has received audio data within
@@ -596,6 +617,7 @@ fn run_consumer(
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     stop_flag: Arc<AtomicBool>,
     last_chunk_ms: Arc<AtomicU64>,
+    max_level: Arc<AtomicU32>,
 ) {
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
@@ -727,6 +749,25 @@ fn run_consumer(
 
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
             let rms = compute_rms(frame);
+            
+            // Track max audio level during recording for noise detection
+            if recording {
+                // Store as u32 (RMS * 1_000_000) to avoid float atomics
+                let rms_scaled = (rms * 1_000_000.0) as u32;
+                let mut current_max = max_level.load(Ordering::Relaxed);
+                while rms_scaled > current_max {
+                    match max_level.compare_exchange_weak(
+                        current_max,
+                        rms_scaled,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(actual) => current_max = actual,
+                    }
+                }
+            }
+            
             let class = handle_frame(frame, recording, &vad, &mut processed_samples);
 
             // Update the running noise floor from VAD-noise frames while
@@ -796,6 +837,7 @@ fn run_consumer(
                     noise_floor_initialised = false;
                     smart_stop = None;
                     visualizer.reset();
+                    max_level.store(0, Ordering::Relaxed); // Reset max level for new recording
                     if let Some(v) = &vad {
                         v.lock().unwrap().reset();
                     }

@@ -124,6 +124,11 @@ fn set_mute(mute: bool) {
 
 const WHISPER_SAMPLE_RATE: usize = 16000;
 
+/// Threshold for "no audio detected" during recording.
+/// Max RMS below this indicates the microphone is likely dead or muted.
+/// ~0.001 is ~-60dB for normalized f32 samples — essentially silence.
+const NO_AUDIO_THRESHOLD: f32 = 0.001;
+
 /* ──────────────────────────────────────────────────────────────── */
 
 #[derive(Clone, Debug)]
@@ -907,15 +912,42 @@ impl AudioRecordingManager {
 
                 *lock_with_log(&self.is_recording, "is_recording") = false;
 
-                // Inform the USB watchdog about the recording result.
-                // If 0 samples were captured, this may trigger an automatic USB cycle.
-                if self.usb_watchdog.on_recording_finished(samples.len()) {
-                    // Watchdog completed a power cycle. Restart the stream if needed.
-                    if let Err(e) = self.restart_microphone_if_needed() {
-                        error!(
-                            "Failed to restart microphone after dead-stream USB cycle: {}",
-                            e
-                        );
+                // Check for very low audio levels (potential dead/muted mic)
+                // This detects cases where the mic "works" but captures only silence.
+                // NOTE: We intentionally do NOT call on_recording_finished() here because
+                // low audio is a failure condition - we want to count it as a failure
+                // and potentially trigger USB cycling. The next successful recording will
+                // reset the failure counter via on_recording_finished() -> on_mic_open_succeeded().
+                let max_level = lock_with_log(&self.recorder, "recorder")
+                    .as_ref()
+                    .map(|r| r.get_max_level())
+                    .unwrap_or(0.0);
+                
+                if samples.len() > 0 && max_level < NO_AUDIO_THRESHOLD {
+                    warn!(
+                        "Recording had very low audio level (max RMS: {:.6}, threshold: {:.6}) - mic may be dead/muted",
+                        max_level, NO_AUDIO_THRESHOLD
+                    );
+                    // Treat as a failure - USB watchdog will count it
+                    if self.usb_watchdog.on_low_audio_level() {
+                        if let Err(e) = self.restart_microphone_if_needed() {
+                            error!(
+                                "Failed to restart microphone after low-audio-level USB cycle: {}",
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    // Normal path: inform USB watchdog about recording result.
+                    // If 0 samples were captured, this may trigger an automatic USB cycle.
+                    if self.usb_watchdog.on_recording_finished(samples.len()) {
+                        // Watchdog completed a power cycle. Restart the stream if needed.
+                        if let Err(e) = self.restart_microphone_if_needed() {
+                            error!(
+                                "Failed to restart microphone after dead-stream USB cycle: {}",
+                                e
+                            );
+                        }
                     }
                 }
 

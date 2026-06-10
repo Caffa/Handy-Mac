@@ -308,6 +308,14 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Create the recording overlay window (hidden by default)
     utils::create_recording_overlay(app_handle);
+
+    // Position the overlay window based on current settings
+    // (on fresh install this uses defaults, on existing install it uses saved position)
+    crate::overlay::update_overlay_position(
+        app_handle,
+        "recording",
+        &crate::overlay::OverlayMode::Transcribe,
+    );
 }
 
 #[tauri::command]

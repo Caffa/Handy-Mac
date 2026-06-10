@@ -1,10 +1,8 @@
 use crate::input;
 use crate::settings;
 use crate::settings::OverlayPosition;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
-
-#[cfg(not(target_os = "macos"))]
 use log::debug;
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 #[cfg(not(target_os = "macos"))]
 use tauri::WebviewWindowBuilder;
@@ -229,22 +227,34 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
     let window_height = calculate_overlay_window_height(monitor_height);
 
     let settings = settings::get_settings(app_handle);
+    
+    debug!(
+        "calculate_overlay_position: overlay_position={:?}, monitor=({},{}) {}x{}",
+        settings.overlay_position, monitor_x, monitor_y, monitor_width, monitor_height
+    );
 
     // Center the window which is wider than the pill
     let x = monitor_x + (monitor_width - OVERLAY_WINDOW_WIDTH) / 2.0;
     let y = match settings.overlay_position {
-        OverlayPosition::Top => monitor_y + OVERLAY_TOP_OFFSET,
+        OverlayPosition::Top => {
+            let pos_y = monitor_y + OVERLAY_TOP_OFFSET;
+            debug!("calculate_overlay_position: Top position, y={}", pos_y);
+            pos_y
+        }
         OverlayPosition::Bottom | OverlayPosition::None => {
             // Use pill height for positioning so the visible content sits at
             // the same screen position regardless of the taller transparent window.
             let window_extra = window_height - OVERLAY_PILL_HEIGHT;
-            monitor_y + monitor_height
+            let pos_y = monitor_y + monitor_height
                 - OVERLAY_PILL_HEIGHT
                 - OVERLAY_BOTTOM_OFFSET
-                - window_extra / 2.0
+                - window_extra / 2.0;
+            debug!("calculate_overlay_position: Bottom/None position, y={}", pos_y);
+            pos_y
         }
     };
 
+    debug!("calculate_overlay_position: final position ({}, {})", x, y);
     Some((x, y, window_height))
 }
 
