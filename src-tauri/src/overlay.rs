@@ -461,11 +461,12 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                 .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
             
             // Use minimal height for regular transcription to allow click-through.
-            // Router mode needs full height during confirming (text preview) and
-            // processing (result display with checkmark/error message) states.
+            // Router mode needs full height during confirming (text preview) state.
+            // During processing (filing), use minimal height since only "Filing..."
+            // text is shown in the pill - the result panel appears after processing completes.
             // During recording, we only show the visualizer pill (minimal height).
             let actual_height = match mode {
-                OverlayMode::Router if state == "confirming" || state == "processing" => window_height,
+                OverlayMode::Router if state == "confirming" => window_height,
                 OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
                     OVERLAY_WINDOW_MIN_HEIGHT
                 }
@@ -492,6 +493,21 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let _ = window_clone.hide();
         });
+    }
+}
+
+/// Resizes the overlay to full height for showing router results.
+/// Called when router result arrives to display the success/error panel.
+pub fn resize_overlay_for_result(app_handle: &AppHandle) {
+    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
+        if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
+            let _ = overlay_window
+                .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: OVERLAY_WINDOW_WIDTH,
+                height: window_height,
+            }));
+        }
     }
 }
 

@@ -12,8 +12,8 @@ use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID}
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
-    self, show_processing_overlay, show_processing_overlay_with_mode, show_recording_overlay,
-    show_recording_overlay_with_mode, show_transcribing_overlay,
+    self, resize_overlay_for_result, show_processing_overlay, show_processing_overlay_with_mode,
+    show_recording_overlay, show_recording_overlay_with_mode, show_transcribing_overlay,
     show_transcribing_overlay_with_mode,
 };
 use crate::TranscriptionCoordinator;
@@ -1245,6 +1245,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                                         info!("Router completed: {}", summary_text);
 
+                                        // Resize overlay to show result panel
+                                        resize_overlay_for_result(&ah_for_router);
+
                                         let event = RouterResultEvent {
                                             success: any_success || handler_data.is_empty(),
                                             summary: Some(summary_text.clone()),
@@ -1299,6 +1302,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                             }
                                         }
 
+                                        // Resize overlay to show error result
+                                        resize_overlay_for_result(&ah_for_router);
+
                                         let event = RouterResultEvent {
                                             success: false,
                                             summary: None,
@@ -1344,6 +1350,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             });
                         } else {
                             warn!("No router_script_path configured; transcription not routed.");
+
+                            // Resize overlay to show error result
+                            resize_overlay_for_result(&ah);
 
                             // Emit event so frontend can show feedback
                             let event = RouterResultEvent {
