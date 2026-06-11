@@ -11,7 +11,7 @@ use tauri::WebviewWindowBuilder;
 use tauri::WebviewUrl;
 
 #[cfg(target_os = "macos")]
-use tauri_nspanel::{tauri_panel, CollectionBehavior, PanelBuilder, PanelLevel};
+use tauri_nspanel::{tauri_panel, CollectionBehavior, PanelBuilder, PanelLevel, WebviewWindowExt};
 
 #[cfg(target_os = "linux")]
 use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -464,7 +464,7 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
             // Use minimal height for regular transcription to allow click-through.
             // Router mode needs full height during confirming (text preview) and
             // processing (showing "Filing..." with visible but dimmed preview).
-            // During processing, the preview is visible but click-through via CSS.
+            // During processing, the window is click-through at the OS level.
             // During recording, we only show the visualizer pill (minimal height).
             let actual_height = match mode {
                 OverlayMode::Router if state == "confirming" || state == "processing" => window_height,
@@ -477,6 +477,16 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                 width: OVERLAY_WINDOW_WIDTH,
                 height: actual_height,
             }));
+        }
+
+        // On macOS, make the window click-through during router "processing" state.
+        // This allows clicks to pass through to the app below even on transparent areas.
+        #[cfg(target_os = "macos")]
+        {
+            let should_ignore_mouse_events = matches!(mode, OverlayMode::Router) && state == "processing";
+            if let Ok(panel) = overlay_window.to_panel::<RecordingOverlayPanel>() {
+                panel.set_ignores_mouse_events(should_ignore_mouse_events);
+            }
         }
     }
 }
