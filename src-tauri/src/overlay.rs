@@ -448,7 +448,8 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
 /// Updates the overlay window position and size based on current settings and mode.
 /// Router mode uses a taller window to accommodate the transcription preview,
 /// while regular transcription uses minimal height to avoid blocking click-through.
-/// During routing "processing" state, use minimal height since the preview is hidden.
+/// During processing (filing), the window stays tall to show the text preview,
+/// but CSS makes it click-through and visually dimmed.
 pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
@@ -461,12 +462,12 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                 .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
             
             // Use minimal height for regular transcription to allow click-through.
-            // Router mode needs full height during confirming (text preview) state.
-            // During processing (filing), use minimal height since only "Filing..."
-            // text is shown in the pill - the result panel appears after processing completes.
+            // Router mode needs full height during confirming (text preview) and
+            // processing (showing "Filing..." with visible but dimmed preview).
+            // During processing, the preview is visible but click-through via CSS.
             // During recording, we only show the visualizer pill (minimal height).
             let actual_height = match mode {
-                OverlayMode::Router if state == "confirming" => window_height,
+                OverlayMode::Router if state == "confirming" || state == "processing" => window_height,
                 OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
                     OVERLAY_WINDOW_MIN_HEIGHT
                 }
@@ -493,21 +494,6 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let _ = window_clone.hide();
         });
-    }
-}
-
-/// Resizes the overlay to full height for showing router results.
-/// Called when router result arrives to display the success/error panel.
-pub fn resize_overlay_for_result(app_handle: &AppHandle) {
-    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
-        if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
-            let _ = overlay_window
-                .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-            let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                width: OVERLAY_WINDOW_WIDTH,
-                height: window_height,
-            }));
-        }
     }
 }
 

@@ -464,10 +464,11 @@
   pointer-events: none;
 }
 
-/* During processing (filing) state, make the preview click-through
-   so users can interact with the app below */
+/* During processing (filing) state, the preview is visible but read-only
+   and click-through. Text is dimmed to indicate non-interactive state. */
 .transcription-preview.processing {
   pointer-events: none;
+  opacity: 0.6;
 }
 
 /* RTL support for edit placeholder */
