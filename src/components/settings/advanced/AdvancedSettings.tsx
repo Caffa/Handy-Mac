@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ShowOverlay } from "../ShowOverlay";
 import { ModelUnloadTimeoutSetting } from "../ModelUnloadTimeout";
 import { CustomWords } from "../CustomWords";
+import { CustomFillerWords } from "../CustomFillerWords";
 import { SettingsGroup } from "../../ui/SettingsGroup";
 import { StartHidden } from "../StartHidden";
 import { AutostartToggle } from "../AutostartToggle";
@@ -26,6 +27,7 @@ import { WordCorrectionThreshold } from "../WordCorrectionThreshold";
 import { AdvancedCustomWords } from "../AdvancedCustomWords";
 import { VerificationMode } from "../VerificationMode";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
+import { VadSensitivity } from "../VadSensitivity";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -70,6 +72,7 @@ export const AdvancedSettings: React.FC = () => {
         {!useAdvancedCustomWords ? (
           <>
             <CustomWords descriptionMode="tooltip" grouped />
+            <CustomFillerWords descriptionMode="tooltip" grouped />
             <WordCorrectionThreshold descriptionMode="tooltip" grouped />
           </>
         ) : (
@@ -91,6 +94,7 @@ export const AdvancedSettings: React.FC = () => {
           grouped={true}
         />
         <VerificationMode descriptionMode="tooltip" grouped={true} />
+        <VadSensitivity descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.history")}>

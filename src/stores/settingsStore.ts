@@ -122,6 +122,8 @@ const settingUpdaters: {
     commands.changeOverlayPositionSetting(value as string),
   debug_mode: (value) => commands.changeDebugModeSetting(value as boolean),
   custom_words: (value) => commands.updateCustomWords(value as string[]),
+  custom_filler_words: (value) =>
+    commands.updateCustomFillerWords(value as string[]),
   advanced_custom_words: (value) =>
     commands.updateAdvancedCustomWords(value as any[]),
   use_advanced_custom_words: (value) =>
@@ -185,6 +187,8 @@ const settingUpdaters: {
     commands.changeAdaptiveParakeetThresholdsSetting(value as boolean),
   verification_mode: (value) =>
     commands.changeVerificationModeSetting(value as boolean),
+  vad_sensitivity: (value) =>
+    commands.changeVadSensitivitySetting(value as string),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

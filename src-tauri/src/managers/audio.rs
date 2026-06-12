@@ -148,10 +148,12 @@ pub enum MicrophoneMode {
 fn create_audio_recorder(
     vad_path: &str,
     app_handle: &tauri::AppHandle,
+    vad_threshold: f32,
+    vad_hangover_frames: usize,
 ) -> Result<AudioRecorder, anyhow::Error> {
-    let silero = SileroVad::new(vad_path, 0.3)
+    let silero = SileroVad::new(vad_path, vad_threshold)
         .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
-    let smoothed_vad = SmoothedVad::new(Box::new(silero), 15, 15, 2);
+    let smoothed_vad = SmoothedVad::new(Box::new(silero), 15, vad_hangover_frames, 2);
 
     // Recorder with VAD plus a spectrum-level callback that forwards updates to
     // the frontend.
@@ -473,6 +475,10 @@ impl AudioRecordingManager {
     pub fn preload_vad(&self) -> Result<(), anyhow::Error> {
         let mut recorder_opt = lock_with_log(&self.recorder, "recorder");
         if recorder_opt.is_none() {
+            let settings = get_settings(&self.app_handle);
+            let vad_threshold = settings.vad_sensitivity.threshold();
+            let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
+            
             let vad_path = self
                 .app_handle
                 .path()
@@ -484,6 +490,8 @@ impl AudioRecordingManager {
             *recorder_opt = Some(create_audio_recorder(
                 vad_path.to_str().expect("VAD path should be valid UTF-8"),
                 &self.app_handle,
+                vad_threshold,
+                vad_hangover_frames,
             )?);
         }
         Ok(())
@@ -551,6 +559,10 @@ impl AudioRecordingManager {
             }
         }
 
+        let settings = get_settings(&self.app_handle);
+        let vad_threshold = settings.vad_sensitivity.threshold();
+        let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
+
         // Create a fresh recorder with VAD and level callback
         let vad_path = self
             .app_handle
@@ -564,6 +576,8 @@ impl AudioRecordingManager {
         let new_recorder = create_audio_recorder(
             vad_path.to_str().expect("VAD path should be valid UTF-8"),
             &self.app_handle,
+            vad_threshold,
+            vad_hangover_frames,
         )?;
 
         *recorder_opt = Some(new_recorder);

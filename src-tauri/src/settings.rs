@@ -165,6 +165,44 @@ pub enum RecordingRetentionPeriod {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
 #[serde(rename_all = "snake_case")]
+pub enum VadSensitivity {
+    VeryQuick,
+    Quick,
+    Balanced,
+    Relaxed,
+    VeryRelaxed,
+}
+
+impl Default for VadSensitivity {
+    fn default() -> Self {
+        VadSensitivity::Balanced
+    }
+}
+
+impl VadSensitivity {
+    pub fn threshold(&self) -> f32 {
+        match self {
+            VadSensitivity::VeryQuick => 0.45,
+            VadSensitivity::Quick => 0.38,
+            VadSensitivity::Balanced => 0.30,
+            VadSensitivity::Relaxed => 0.25,
+            VadSensitivity::VeryRelaxed => 0.20,
+        }
+    }
+
+    pub fn hangover_frames(&self) -> usize {
+        match self {
+            VadSensitivity::VeryQuick => 8,
+            VadSensitivity::Quick => 12,
+            VadSensitivity::Balanced => 15,
+            VadSensitivity::Relaxed => 20,
+            VadSensitivity::VeryRelaxed => 30,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
 pub enum KeyboardImplementation {
     Tauri,
     HandyKeys,
@@ -476,6 +514,8 @@ pub struct AppSettings {
     pub adaptive_parakeet_thresholds: bool,
     #[serde(default)]
     pub verification_mode: bool,
+    #[serde(default)]
+    pub vad_sensitivity: VadSensitivity,
     /// Convert US English spelling to British English after transcription.
     /// Applies common spelling conversions like: color → colour, analyze → analyse, etc.
     #[serde(default)]
@@ -929,6 +969,7 @@ pub fn get_default_settings() -> AppSettings {
         hybrid_long_audio_model: None,
         adaptive_parakeet_thresholds: default_adaptive_parakeet_thresholds(),
         verification_mode: false,
+        vad_sensitivity: VadSensitivity::Balanced,
         convert_us_to_british: false,
     }
 }

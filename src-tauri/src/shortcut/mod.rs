@@ -683,6 +683,19 @@ pub fn update_advanced_custom_words(app: AppHandle, words: Vec<CustomWord>) -> R
 
 #[tauri::command]
 #[specta::specta]
+pub fn update_custom_filler_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.custom_filler_words = if words.is_empty() {
+        None
+    } else {
+        Some(words)
+    };
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_use_advanced_custom_words_setting(
     app: AppHandle,
     enabled: bool,
@@ -1252,6 +1265,26 @@ pub fn change_adaptive_parakeet_thresholds_setting(
 pub fn change_verification_mode_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.verification_mode = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_vad_sensitivity_setting(
+    app: AppHandle,
+    sensitivity: String,
+) -> Result<(), String> {
+    let vad_sensitivity = match sensitivity.as_str() {
+        "very_quick" => settings::VadSensitivity::VeryQuick,
+        "quick" => settings::VadSensitivity::Quick,
+        "balanced" => settings::VadSensitivity::Balanced,
+        "relaxed" => settings::VadSensitivity::Relaxed,
+        "very_relaxed" => settings::VadSensitivity::VeryRelaxed,
+        _ => return Err(format!("Invalid VAD sensitivity: {}", sensitivity)),
+    };
+    let mut settings = settings::get_settings(&app);
+    settings.vad_sensitivity = vad_sensitivity;
     settings::write_settings(&app, settings);
     Ok(())
 }

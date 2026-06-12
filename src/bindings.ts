@@ -288,6 +288,14 @@ async updateAdvancedCustomWords(words: CustomWord[]) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
+async updateCustomFillerWords(words: string[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_custom_filler_words", { words }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeUseAdvancedCustomWordsSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_use_advanced_custom_words_setting", { enabled }) };
@@ -465,6 +473,14 @@ async changeAdaptiveParakeetThresholdsSetting(enabled: boolean) : Promise<Result
 async changeVerificationModeSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_verification_mode_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeVadSensitivitySetting(sensitivity: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_vad_sensitivity_setting", { sensitivity }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1125,7 +1141,7 @@ router_env_file?: string | null; custom_filler_words?: string[] | null; whisper_
 /**
  * Automatically power-cycle the USB device when macOS wakes from sleep.
  */
-usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null; adaptive_parakeet_thresholds?: boolean; verification_mode?: boolean; 
+usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null; adaptive_parakeet_thresholds?: boolean; verification_mode?: boolean; vad_sensitivity?: VadSensitivity; 
 /**
  * Convert US English spelling to British English after transcription.
  * Applies common spelling conversions like: color → colour, analyze → analyse, etc.
@@ -1309,6 +1325,7 @@ hub: string;
  * Port number on the hub (e.g. "1")
  */
 port: string }
+export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 

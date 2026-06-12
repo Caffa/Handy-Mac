@@ -92,6 +92,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     .filter(([_, config]) => config.enabled(settings))
     .map(([id, config]) => ({ id: id as SidebarSection, ...config }));
 
+  const showDebugHint = !settings?.debug_mode;
+
   return (
     <div className="flex flex-col w-40 h-full border-e border-mid-gray/20 items-center px-2">
       <HandyTextLogo width={120} className="m-4" />
@@ -121,6 +123,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           );
         })}
       </div>
+      {showDebugHint && (
+        <div className="mt-auto mb-2 px-2 py-1.5 text-xs text-mid-gray/60 text-center">
+          <span className="opacity-60">
+            {t("sidebar.debugHint")}{" "}
+            <kbd className="px-1 py-0.5 bg-mid-gray/20 rounded text-[10px] font-mono">
+              {navigator.platform.toLowerCase().includes("mac")
+                ? "⌘⇧D"
+                : "Ctrl+Shift+D"}
+            </kbd>
+          </span>
+        </div>
+      )}
     </div>
   );
 };

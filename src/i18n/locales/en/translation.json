@@ -15,7 +15,8 @@
     "postProcessing": "Post Process",
     "history": "History",
     "debug": "Debug",
-    "about": "About"
+    "about": "About",
+    "debugHint": "Debug settings:"
   },
   "onboarding": {
     "subtitle": "To get started, choose a transcription model",
@@ -405,6 +406,14 @@
         "add": "Add",
         "remove": "Remove {{word}}",
         "duplicate": "\"{{word}}\" already exists"
+      },
+      "customFillerWords": {
+        "title": "Custom Filler Words",
+        "description": "Add filler words to remove from transcriptions (like 'um', 'uh', 'like'). These words will be automatically filtered out from your transcribed text.",
+        "placeholder": "e.g. um",
+        "add": "Add",
+        "remove": "Remove {{word}}",
+        "duplicate": "\"{{word}}\" already exists in your filler words list"
       }
     },
     "postProcessing": {
@@ -511,7 +520,7 @@
         "title": "Advanced Custom Words",
         "description": "Add custom words with pronunciation variants. When the transcription matches a pronunciation, it will be replaced with the canonical word.",
         "toggleLabel": "Advanced Custom Words",
-        "toggleDescription": "Enable advanced custom word matching with pronunciation variants. When enabled, the simple custom words list and word correction threshold are replaced with an advanced editor below.",
+        "toggleDescription": "Switch to advanced mode with pronunciation variants. Only one mode (simple or advanced) is active at a time. Your words are preserved when switching between modes.",
         "placeholder": "Add a word",
         "add": "Add",
         "addPronunciation": "Add",
@@ -553,6 +562,16 @@
       "alwaysOnMicrophone": {
         "label": "Always-On Microphone",
         "description": "Keep microphone active for faster response"
+      },
+      "vadSensitivity": {
+        "title": "Recording Cutoff",
+        "description": "Adjust how quickly recording stops after you finish speaking",
+        "veryQuick": "Very Quick",
+        "quick": "Quick",
+        "balanced": "Balanced (recommended)",
+        "relaxed": "Relaxed",
+        "veryRelaxed": "Very Relaxed",
+        "placeholder": "Select sensitivity..."
       },
       "clamshellMicrophone": {
         "title": "Clamshell Microphone",
