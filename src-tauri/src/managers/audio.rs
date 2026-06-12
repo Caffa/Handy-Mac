@@ -782,8 +782,6 @@ impl AudioRecordingManager {
                         r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
                     });
 
-                self.usb_watchdog.on_stream_alive_check(stream_alive);
-
                 if !stream_alive {
                     warn!(
                         "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
