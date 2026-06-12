@@ -458,9 +458,6 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
         }
 
         if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
-            let _ = overlay_window
-                .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-            
             // Use minimal height for regular transcription to allow click-through.
             // Router mode needs full height during confirming (text preview) and
             // processing (showing "Filing..." with visible but dimmed preview).
@@ -472,21 +469,45 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                     OVERLAY_WINDOW_MIN_HEIGHT
                 }
             };
-            
-            let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                width: OVERLAY_WINDOW_WIDTH,
-                height: actual_height,
-            }));
+
+            #[cfg(target_os = "macos")]
+            {
+                // Window operations must run on the main thread on macOS to avoid
+                // AppKit crashes (set_position/set_size trigger NSWindow property
+                // updates like applyTags:mask: that require main-thread access).
+                let window = overlay_window.clone();
+                let _ = overlay_window.run_on_main_thread(move || {
+                    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                        width: OVERLAY_WINDOW_WIDTH,
+                        height: actual_height,
+                    }));
+                });
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = overlay_window
+                    .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+                let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                    width: OVERLAY_WINDOW_WIDTH,
+                    height: actual_height,
+                }));
+            }
         }
 
         // On macOS, make the window click-through during router "processing" state.
         // This allows clicks to pass through to the app below even on transparent areas.
+        // Note: set_ignores_mouse_events also requires main thread access.
         #[cfg(target_os = "macos")]
         {
             let should_ignore_mouse_events = matches!(mode, OverlayMode::Router) && state == "processing";
-            if let Ok(panel) = overlay_window.to_panel::<RecordingOverlayPanel>() {
-                panel.set_ignores_mouse_events(should_ignore_mouse_events);
-            }
+            let window = overlay_window.clone();
+            let _ = overlay_window.run_on_main_thread(move || {
+                if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
+                    panel.set_ignores_mouse_events(should_ignore_mouse_events);
+                }
+            });
         }
     }
 }
