@@ -28,6 +28,7 @@ import { AdvancedCustomWords } from "../AdvancedCustomWords";
 import { VerificationMode } from "../VerificationMode";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
 import { VadSensitivity } from "../VadSensitivity";
+import { StreamingTranscription } from "../StreamingTranscription";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -95,6 +96,7 @@ export const AdvancedSettings: React.FC = () => {
         />
         <VerificationMode descriptionMode="tooltip" grouped={true} />
         <VadSensitivity descriptionMode="tooltip" grouped={true} />
+        <StreamingTranscription descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.history")}>

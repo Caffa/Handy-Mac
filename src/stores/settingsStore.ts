@@ -189,6 +189,8 @@ const settingUpdaters: {
     commands.changeVerificationModeSetting(value as boolean),
   vad_sensitivity: (value) =>
     commands.changeVadSensitivitySetting(value as string),
+  streaming_transcription_enabled: (value) =>
+    commands.changeStreamingTranscriptionEnabledSetting(value as boolean),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

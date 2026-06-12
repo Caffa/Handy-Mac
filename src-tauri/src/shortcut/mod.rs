@@ -1288,3 +1288,15 @@ pub fn change_vad_sensitivity_setting(
     settings::write_settings(&app, settings);
     Ok(())
 }
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_streaming_transcription_enabled_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.streaming_transcription_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}

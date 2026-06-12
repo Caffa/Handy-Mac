@@ -516,6 +516,8 @@ pub struct AppSettings {
     pub verification_mode: bool,
     #[serde(default)]
     pub vad_sensitivity: VadSensitivity,
+    #[serde(default)]
+    pub streaming_transcription_enabled: bool,
     /// Convert US English spelling to British English after transcription.
     /// Applies common spelling conversions like: color → colour, analyze → analyse, etc.
     #[serde(default)]
@@ -970,6 +972,7 @@ pub fn get_default_settings() -> AppSettings {
         adaptive_parakeet_thresholds: default_adaptive_parakeet_thresholds(),
         verification_mode: false,
         vad_sensitivity: VadSensitivity::Balanced,
+        streaming_transcription_enabled: false,
         convert_us_to_british: false,
     }
 }

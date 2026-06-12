@@ -573,6 +573,10 @@
         "veryRelaxed": "Very Relaxed",
         "placeholder": "Select sensitivity..."
       },
+      "streamingTranscription": {
+        "label": "Real-Time Preview",
+        "description": "Show transcription text while you speak. Uses additional CPU."
+      },
       "clamshellMicrophone": {
         "title": "Clamshell Microphone",
         "description": "Microphone to use when laptop lid is closed"
