@@ -27,6 +27,7 @@ import {
 import { useOsType } from "@/hooks/useOsType";
 import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer } from "../../ui/AudioPlayer";
+import Badge from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
 
@@ -397,11 +398,27 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
 
   const formattedDate = formatDateTime(String(entry.timestamp), i18n.language);
 
+  // Parse routing result JSON if present
+  const routingResult = entry.routing_result
+    ? (JSON.parse(entry.routing_result) as Array<{
+        status: string;
+        handler: string;
+        classification: string;
+        file_path: string | null;
+      }>)
+    : null;
+
   return (
     <div className="px-4 py-2 pb-5 flex flex-col gap-3">
       <div className="flex justify-between items-center">
         <p className="text-sm font-medium">{formattedDate}</p>
-        <div className="flex items-center">
+        <div className="flex items-center gap-1">
+          {/* Routing status tag */}
+          {entry.routed && routingResult && (
+            <Badge variant="success" className="mr-1">
+              {t("settings.history.routed")}
+            </Badge>
+          )}
           <IconButton
             onClick={handleCopyText}
             disabled={!hasTranscription || retrying}
@@ -482,6 +499,18 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             ? entry.transcription_text
             : t("settings.history.transcriptionFailed")}
       </p>
+
+      {/* Routing result details */}
+      {entry.routed && routingResult && routingResult.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {routingResult.map((result, idx) => (
+            <Badge key={idx} variant="secondary" className="text-xs">
+              {result.status} {result.handler}
+              {result.classification && ` → ${result.classification}`}
+            </Badge>
+          ))}
+        </div>
+      )}
 
       <AudioPlayer onLoadRequest={handleLoadAudio} className="w-full" />
     </div>
