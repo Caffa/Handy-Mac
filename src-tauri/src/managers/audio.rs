@@ -2,6 +2,7 @@ use crate::audio_toolkit::{
     is_bluetooth_audio_active, list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad,
 };
 use crate::helpers::clamshell;
+use crate::managers::transcription::TranscriptionManager;
 use crate::portable;
 use crate::settings::{get_settings, AppSettings};
 use crate::usb_watchdog;
@@ -13,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Helper to lock a mutex with error logging instead of panic.
 /// Returns the guard, or logs an error and recovers from poisoned state.
@@ -155,8 +156,12 @@ fn create_audio_recorder(
         .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
     let smoothed_vad = SmoothedVad::new(Box::new(silero), 15, vad_hangover_frames, 2);
 
+    // Check if streaming transcription is enabled
+    let settings = get_settings(app_handle);
+    let streaming_enabled = settings.streaming_transcription_enabled;
+
     // Recorder with VAD plus a spectrum-level callback that forwards updates to
-    // the frontend.
+    // the frontend, and optionally a streaming transcription callback.
     let recorder = AudioRecorder::new()
         .map_err(|e| anyhow::anyhow!("Failed to create AudioRecorder: {}", e))?
         .with_vad(Box::new(smoothed_vad))
@@ -166,6 +171,46 @@ fn create_audio_recorder(
                 utils::emit_levels(&app_handle, &levels);
             }
         });
+
+    // Add streaming callback if enabled
+    let recorder = if streaming_enabled {
+        recorder.with_streaming_callback({
+            let app_handle = app_handle.clone();
+            move |samples| {
+                // This callback runs in the audio thread, so we need to spawn
+                // a blocking task to avoid blocking audio capture.
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    // Get the transcription manager from app state
+                    let tm = match app_handle.try_state::<Arc<TranscriptionManager>>() {
+                        Some(tm) => tm,
+                        None => {
+                            debug!("TranscriptionManager not available for streaming");
+                            return;
+                        }
+                    };
+
+                    // Transcribe the audio samples
+                    match tm.transcribe(samples) {
+                        Ok(result) if !result.text.is_empty() => {
+                            // Emit partial transcription event to frontend
+                            if let Err(e) = app_handle.emit("partial-transcription", &result.text) {
+                                warn!("Failed to emit partial-transcription event: {}", e);
+                            }
+                        }
+                        Ok(_) => {
+                            // Empty transcription - skip
+                        }
+                        Err(e) => {
+                            debug!("Streaming transcription failed: {}", e);
+                        }
+                    }
+                });
+            }
+        })
+    } else {
+        recorder
+    };
 
     Ok(recorder)
 }

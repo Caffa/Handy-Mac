@@ -103,6 +103,9 @@ const RecordingOverlay: React.FC = () => {
   // Transcription preview for routing mode
   const [transcriptionPreview, setTranscriptionPreview] = useState<string>("");
   
+  // Streaming transcription text (shown during recording)
+  const [streamingText, setStreamingText] = useState<string>("");
+  
   // Routing confirmation countdown
   const [countdown, setCountdown] = useState<number>(0);
   const [isEditing, setIsEditing] = useState(false);
@@ -376,6 +379,7 @@ const RecordingOverlay: React.FC = () => {
         // Reset editing state on new recording
         if (parsed.state === "recording") {
           setTranscriptionPreview("");
+          setStreamingText(""); // Clear streaming text
           setRouterResult(null);
           setIsEditing(false);
           setEditedText("");
@@ -486,6 +490,14 @@ const RecordingOverlay: React.FC = () => {
         },
       );
 
+      // Listen for partial transcription during streaming
+      const unlistenPartialTranscription = await listen<string>(
+        "partial-transcription",
+        (event) => {
+          setStreamingText(event.payload);
+        },
+      );
+
       // Listen for routing state changes
       const unlistenRoutingState = await listen<string>(
         "routing-state",
@@ -515,6 +527,7 @@ const RecordingOverlay: React.FC = () => {
         unlistenUsbCycleFailed();
         unlistenUsbCycleStage();
         unlistenTranscriptionPreview();
+        unlistenPartialTranscription();
         unlistenRoutingState();
         unlistenRouterResult();
       };
@@ -582,6 +595,12 @@ const RecordingOverlay: React.FC = () => {
                   {recordingElapsedSecs >= hybridThresholdSecs
                     ? t("overlay.hybridLong")
                     : t("overlay.hybridShort")}
+                </div>
+              )}
+              {/* Show streaming text if available */}
+              {streamingText && (
+                <div className="streaming-text">
+                  {streamingText}
                 </div>
               )}
               <div className="bars-container">

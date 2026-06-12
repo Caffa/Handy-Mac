@@ -102,6 +102,10 @@ pub struct AudioRecorder {
     worker_handle: Option<std::thread::JoinHandle<()>>,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
+    /// Callback invoked periodically during recording with accumulated audio samples.
+    /// The callback receives a clone of the current audio buffer for streaming transcription.
+    /// Called approximately every 2-3 seconds of recording.
+    streaming_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     /// Timestamp (ms since epoch) of the last audio chunk received by
     /// the consumer thread. Used to detect dead microphone streams.
     last_chunk_ms: Arc<AtomicU64>,
@@ -123,6 +127,7 @@ impl AudioRecorder {
             worker_handle: None,
             vad: None,
             level_cb: None,
+            streaming_cb: None,
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
             opened_at_ms: Arc::new(AtomicU64::new(0)),
             max_level: Arc::new(AtomicU32::new(0)),
@@ -139,6 +144,18 @@ impl AudioRecorder {
         F: Fn(Vec<f32>) + Send + Sync + 'static,
     {
         self.level_cb = Some(Arc::new(cb));
+        self
+    }
+
+    /// Set a callback to be invoked periodically during recording with the
+    /// accumulated audio buffer. This enables streaming transcription during
+    /// recording instead of waiting for the recording to complete.
+    /// The callback is called approximately every 2-3 seconds.
+    pub fn with_streaming_callback<F>(mut self, cb: F) -> Self
+    where
+        F: Fn(Vec<f32>) + Send + Sync + 'static,
+    {
+        self.streaming_cb = Some(Arc::new(cb));
         self
     }
 
@@ -172,6 +189,8 @@ impl AudioRecorder {
         let vad = self.vad.clone();
         // Move the optional level callback into the worker thread
         let level_cb = self.level_cb.clone();
+        // Move the optional streaming callback into the worker thread
+        let streaming_cb = self.streaming_cb.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
 
@@ -256,6 +275,7 @@ impl AudioRecorder {
                         sample_rx,
                         cmd_rx,
                         level_cb,
+                        streaming_cb,
                         stop_flag,
                         last_chunk_ms,
                         max_level,
@@ -617,6 +637,7 @@ fn run_consumer(
     sample_rx: mpsc::Receiver<AudioChunk>,
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
+    streaming_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     stop_flag: Arc<AtomicBool>,
     last_chunk_ms: Arc<AtomicU64>,
     max_level: Arc<AtomicU32>,
@@ -629,6 +650,10 @@ fn run_consumer(
 
     let mut processed_samples = Vec::<f32>::new();
     let mut recording = false;
+    
+    // Streaming transcription: invoke callback every ~2.5 seconds
+    const STREAMING_INTERVAL_MS: u64 = 2500;
+    let mut streaming_last_invoked: Option<std::time::Instant> = None;
 
     // Running estimate of background noise level, built from the RMS of
     // frames that VAD classifies as Noise during an active recording.
@@ -738,6 +763,25 @@ fn run_consumer(
             }
         }
 
+        // ---------- streaming transcription callback ----------------------- //
+        // Invoke the streaming callback periodically during active recording
+        // to enable real-time partial transcription display.
+        if recording && streaming_cb.is_some() {
+            let should_invoke = match streaming_last_invoked {
+                None => true, // First time: invoke after collecting some audio
+                Some(last) => last.elapsed().as_millis() as u64 >= STREAMING_INTERVAL_MS,
+            };
+            
+            if should_invoke {
+                if let Some(cb) = &streaming_cb {
+                    // Clone the current buffer for the callback
+                    let samples_clone = processed_samples.clone();
+                    cb(samples_clone);
+                    streaming_last_invoked = Some(std::time::Instant::now());
+                }
+            }
+        }
+
         // ---------- audio pipeline + noise/smart-stop tracking ---------- //
         // Flag set inside the push closure when the smart-stop condition
         // is met, so we can finalise after the closure returns (we cannot
@@ -840,6 +884,7 @@ fn run_consumer(
                     smart_stop = None;
                     visualizer.reset();
                     max_level.store(0, Ordering::Relaxed); // Reset max level for new recording
+                    streaming_last_invoked = None; // Reset streaming timer for new recording
                     if let Some(v) = &vad {
                         v.lock().unwrap().reset();
                     }

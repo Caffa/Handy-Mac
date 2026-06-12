@@ -92,6 +92,27 @@
   background: #818cf820;
 }
 
+.streaming-text {
+  font-size: 9px;
+  font-weight: 500;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #ffe5ee;
+  opacity: 0.8;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  padding: 2px 4px;
+  animation: pulse-opacity 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-opacity {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 0.5; }
+}
+
 .bar {
   width: 6px;
   background: #ffe5ee;
