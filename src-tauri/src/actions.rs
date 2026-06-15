@@ -1262,9 +1262,25 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         send_macos_notification("Handy Router", &notification_text);
 
                                         // ── Clean up overlay after routing succeeds ──
-                                        // Only hide the overlay if no other transcription is active.
-                                        // Check TranscriptionCoordinator.is_active_use() which covers
-                                        // both Recording AND Processing stages (transcribing, filing, etc.)
+                                        // ============================================================================
+                                        // BUGFIX (2026-06-15): Router Filing Race Condition
+                                        // ============================================================================
+                                        // PROBLEM: When router finishes filing and user has already started a new
+                                        // transcription, hide_overlay would dismiss the overlay mid-recording.
+                                        //
+                                        // ROOT CAUSE: Router thread is fire-and-forget. It runs after FinishGuard
+                                        // drops, so coordinator is already Idle when router thread finishes. User
+                                        // can start new transcription while router thread is still running.
+                                        //
+                                        // FIX: Check is_active_use() before hiding. If true, keep overlay visible.
+                                        // This guard catches the case where router finishes BEFORE user starts new
+                                        // recording. The frontend has a matching guard (RecordingOverlay.tsx lines
+                                        // 391-424) for the case where user starts recording DURING the 5-second
+                                        // result display timeout.
+                                        //
+                                        // See learning-log.md "Router Filing Race Condition — Overlay Dismissal Bug"
+                                        // for full documentation.
+                                        // ============================================================================
                                         let is_active = ah_for_router
                                             .try_state::<Arc<TranscriptionCoordinator>>()
                                             .map_or(false, |coord| coord.is_active_use());
@@ -1319,9 +1335,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         );
 
                                         // ── Clean up overlay after routing fails ──
-                                        // Same guard: don't hide overlay if another transcription is active.
-                                        // Check TranscriptionCoordinator.is_active_use() which covers
-                                        // both Recording AND Processing stages (transcribing, filing, etc.)
+                                        // Same BUGFIX (2026-06-15) as success case above — see comment there.
+                                        // Don't hide overlay if another transcription is active.
                                         let is_other_active = ah_for_router
                                             .try_state::<Arc<TranscriptionCoordinator>>()
                                             .map_or(false, |coord| coord.is_active_use());
@@ -1523,8 +1538,6 @@ struct RouterOutput {
     summary: String,
     /// Structured handler results for persistence and verification.
     handler_data: Vec<RouterHandlerData>,
-    /// True if at least one handler succeeded (status == "✅").
-    any_success: bool,
 }
 
 /// Parse the JSON output from boss_router.py --json.
@@ -1576,11 +1589,10 @@ fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
                         return None;
                     }
 
-                    let any_success = handler_data.iter().any(|d| d.status == "✅");
+                    let _any_success = handler_data.iter().any(|d| d.status == "✅");
                     return Some(RouterOutput {
                         summary: summaries.join(" | "),
                         handler_data,
-                        any_success,
                     });
                 }
             }

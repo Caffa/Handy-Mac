@@ -195,3 +195,80 @@ On macOS, showing an NSPanel with `orderFrontRegardless` can activate the parent
 - Alternatively, use `git stash push -m "description"` to save changes before experimenting
 - **Always add small inline comments** at each modification stage to document intent and avoid confusion when revisiting code later
 - Commit early and often — each logical checkpoint should get its own commit so you never lose more than one checkpoint's worth of work
+
+## Router Filing Race Condition — Overlay Dismissal Bug (2026-06-15)
+
+### Problem
+
+- When Handy is routing and filing away a note, if the user starts a new transcription in the middle of this, the router's completion dismisses the visualizer while the second transcription is still active
+- This has been reported multiple times by the user as a recurring bug
+
+### Root Cause
+
+The bug is a **race condition between the router thread and the frontend's overlay timeout**:
+
+1. **Router action flow:**
+   - Router spawns async block with `FinishGuard` (line 1011 in `actions.rs`)
+   - Transcription happens, confirmation wait, then router thread spawned (line 1199)
+   - Router thread is "fire-and-forget" — async block continues to end (line 1417)
+   - **`FinishGuard` drops immediately when async block ends**
+   - `FinishGuard::drop()` sends `ProcessingFinished` to coordinator
+   - Coordinator transitions from `Processing` → `Idle`
+   - User can now start new transcription
+
+2. **Router thread execution:**
+   - Runs subprocess (filing) independently
+   - When done, emits `router-result` event to frontend (line 1254)
+   - Frontend receives result and shows it for 5 seconds
+   - After 5 seconds, frontend's `useEffect` timeout calls `setIsVisible(false)` (lines 392-401 in `RecordingOverlay.tsx`)
+   - **This timeout hides the overlay without checking if a new recording is active**
+
+3. **The race:**
+   - Router thread finishes → `router-result` event → frontend shows result
+   - 5-second timeout starts
+   - User starts new transcription during those 5 seconds
+   - Frontend state becomes "recording" for new transcription
+   - 5-second timeout fires → frontend calls `setIsVisible(false)`
+   - **Overlay disappears even though new recording is active**
+
+### Why the Backend Check Doesn't Help
+
+The backend's `is_active_use()` check (lines 1268-1276) correctly prevents hiding from the router thread when a new recording is active. However, this check happens at the moment the router thread finishes, which is **before** the frontend's 5-second timeout. The real bug is in the frontend's timeout handler.
+
+### Fixes
+
+1. **Frontend: Check overlay state before hiding after router result timeout** (RecordingOverlay.tsx lines 391-401):
+   ```typescript
+   // Handle router result timeout
+   useEffect(() => {
+     if (routerResult) {
+       const timeout = setTimeout(() => {
+         setRouterResult(null);
+         // BUGFIX: Don't hide overlay if a new recording started during the 5-second display
+         // This prevents race condition where router result timeout fires while user is
+         // actively recording a second transcription
+         setState((current) => {
+           if (current === "recording" || current === "transcribing" || 
+               current === "processing" || current === "confirming") {
+             // New transcription is active — keep overlay visible
+             return current;
+           }
+           // No active transcription — safe to hide
+           setIsVisible(false);
+           setTranscriptionPreview("");
+           setCountdown(0);
+           return current;
+         });
+       }, 5000);
+       return () => clearTimeout(timeout);
+     }
+   }, [routerResult]);
+   ```
+
+2. **Add comment documenting the race condition** in `RecordingOverlay.tsx` near the router result timeout handler explaining why the state check is necessary.
+
+3. **Backend: Add `is_active_use()` guard documentation** in `actions.rs` lines 1264-1276 explaining the guard and noting that the frontend timeout also needs this protection.
+
+### Key Insight
+
+When frontend state transitions depend on timeouts, **always check current state before executing the timeout's action**. Timers fire asynchronously and the component's state may have changed since the timer was set. The closure captures stale state by default — use a state updater function or ref to check current state at timeout-fire time. For overlays, this means checking if recording/transcription is still active before hiding.

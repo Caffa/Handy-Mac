@@ -12,7 +12,12 @@ import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
-type OverlayState = "recording" | "transcribing" | "processing" | "usb-cycling" | "confirming";
+type OverlayState =
+  | "recording"
+  | "transcribing"
+  | "processing"
+  | "usb-cycling"
+  | "confirming";
 type OverlayAction = "transcribe" | "post_process" | "router";
 
 // If no mic-level event arrives within this many milliseconds,
@@ -92,29 +97,53 @@ const RecordingOverlay: React.FC = () => {
   } | null>(null);
 
   // USB cycling elapsed time for progress display
-  const [usbCyclingStartTime, setUsbCyclingStartTime] = useState<number | null>(null);
+  const [usbCyclingStartTime, setUsbCyclingStartTime] = useState<number | null>(
+    null,
+  );
   const [usbCyclingElapsed, setUsbCyclingElapsed] = useState(0);
-  const usbCyclingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const usbCyclingTimerRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
 
   // "Mic dead" detection: if no audio received for >1 second, show warning
   const [micDeadWarning, setMicDeadWarning] = useState(false);
   const micDeadTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Low audio level detection: if max level is consistently below threshold, show warning
+  // This catches cases where the mic "works" but captures almost nothing (e.g., dead/muted mic)
+  const [lowAudioWarning, setLowAudioWarning] = useState(false);
+  const lowAudioHistoryRef = useRef<number[]>([]);
+  const recordingStartTimeRef = useRef<number>(0);
+  const hadGoodAudioRef = useRef<boolean>(false); // Track if we've seen good audio during this recording
+  // The visualizer outputs normalized 0-1 values based on dB range (-55dB to -8dB).
+  // A value of 0.05 corresponds to roughly -54dB, indicating very low audio levels.
+  // Normal speech typically produces values in the 0.2-0.5 range.
+  const LOW_AUDIO_THRESHOLD = 0.05;
+  const GOOD_AUDIO_THRESHOLD = 0.08; // If we see this level, mic is working fine
+  const LOW_AUDIO_CHECK_SAMPLES = 10; // Check last 10 level samples (~800ms at 80ms intervals)
+  const LOW_AUDIO_MIN_RECORDING_MS = 1500; // Don't warn until at least 1.5s of recording
+
   // Transcription preview for routing mode
   const [transcriptionPreview, setTranscriptionPreview] = useState<string>("");
-  
+
   // Streaming transcription text (shown during recording)
   const [streamingText, setStreamingText] = useState<string>("");
-  
+
   // Routing confirmation countdown
   const [countdown, setCountdown] = useState<number>(0);
   const [isEditing, setIsEditing] = useState(false);
   const [editedText, setEditedText] = useState<string>("");
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  
+
   // Router result display
-  const [routerResult, setRouterResult] = useState<RouterResultEvent | null>(null);
+  const [routerResult, setRouterResult] = useState<RouterResultEvent | null>(
+    null,
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Fade-out state for transcription preview dismissal
+  const [isFadingOut, setIsFadingOut] = useState(false);
+  const fadeOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Refs to avoid stale closures in async callbacks
   const transcriptionPreviewRef = useRef(transcriptionPreview);
@@ -173,6 +202,58 @@ const RecordingOverlay: React.FC = () => {
       }
     };
   }, [state, isVisible]);
+
+  // Low audio level detection: warn if all recent levels are below threshold
+  // This catches cases where mic "works" but captures almost nothing
+  useEffect(() => {
+    if (state !== "recording" || !isVisible) {
+      setLowAudioWarning(false);
+      lowAudioHistoryRef.current = [];
+      return;
+    }
+
+    // Don't warn until we've been recording for a bit (avoid false positives on startup)
+    const elapsed = Date.now() - recordingStartTimeRef.current;
+    if (elapsed < LOW_AUDIO_MIN_RECORDING_MS) {
+      setLowAudioWarning(false);
+      return;
+    }
+
+    // If we've already seen good audio during this recording, don't warn
+    // (user spoke successfully earlier and is just pausing to think)
+    if (hadGoodAudioRef.current) {
+      setLowAudioWarning(false);
+      return;
+    }
+
+    // Check if we have enough samples and all are below threshold
+    const history = lowAudioHistoryRef.current;
+    if (history.length >= LOW_AUDIO_CHECK_SAMPLES) {
+      const allBelowThreshold = history.every(
+        (level) => level < LOW_AUDIO_THRESHOLD,
+      );
+      
+      // Debug logging for low-audio warning evaluation
+      console.log(
+        "[audio-level] history:",
+        history.map((l) => l.toFixed(3)).join(", "),
+        "| threshold:",
+        LOW_AUDIO_THRESHOLD,
+        "| allBelow:",
+        allBelowThreshold,
+        "| elapsed:",
+        (elapsed / 1000).toFixed(1) + "s",
+      );
+      
+      if (allBelowThreshold) {
+        console.warn("[audio-level] ⚠️ Low audio warning triggered - all samples below threshold");
+      }
+      
+      setLowAudioWarning(allBelowThreshold);
+    } else {
+      setLowAudioWarning(false);
+    }
+  }, [state, isVisible, levels]);
 
   // Fetch hybrid mode settings when overlay becomes visible
   useEffect(() => {
@@ -268,7 +349,7 @@ const RecordingOverlay: React.FC = () => {
   useEffect(() => {
     transcriptionPreviewRef.current = transcriptionPreview;
   }, [transcriptionPreview]);
-  
+
   useEffect(() => {
     editedTextRef.current = editedText;
   }, [editedText]);
@@ -302,22 +383,88 @@ const RecordingOverlay: React.FC = () => {
       textareaRef.current.focus();
       textareaRef.current.setSelectionRange(
         textareaRef.current.value.length,
-        textareaRef.current.value.length
+        textareaRef.current.value.length,
       );
     }
   }, [isEditing]);
 
-  // Handle router result timeout
+  // ============================================================================
+  // BUGFIX (2026-06-15): Router Filing Race Condition
+  // ============================================================================
+  // PROBLEM: When Handy is routing and filing a note, if the user starts a new
+  // transcription during the 5-second result display, the overlay would disappear
+  // mid-recording.
+  //
+  // ROOT CAUSE: Router thread is fire-and-forget. It emits `router-result` event,
+  // frontend shows result for 5 seconds with a timeout that calls setIsVisible(false).
+  // If user starts new recording during those 5 seconds, the timeout fires and hides
+  // the overlay even though recording is active.
+  //
+  // FIX: Check current state before hiding. The setState updater function lets us
+  // inspect current state at timeout-fire time. If state is recording/transcribing/
+  // processing/confirming, keep overlay visible and just clear the router result.
+  //
+  // See learning-log.md "Router Filing Race Condition — Overlay Dismissal Bug (2026-06-15)"
+  // for full documentation.
+  // ============================================================================
   useEffect(() => {
     if (routerResult) {
       const timeout = setTimeout(() => {
         setRouterResult(null);
-        setIsVisible(false);
+        // Check if a new recording/transcription is active before hiding overlay.
+        // The state may have changed since this timeout was set (user started new recording).
+        setState((current) => {
+          if (
+            current === "recording" ||
+            current === "transcribing" ||
+            current === "processing" ||
+            current === "confirming"
+          ) {
+            // New transcription is active — keep overlay visible, just clear the router result.
+            // The overlay will stay visible for the new recording/transcription.
+            return current;
+          }
+          // No active transcription — safe to hide overlay.
+          setIsVisible(false);
+          setTranscriptionPreview("");
+          setCountdown(0);
+          return current;
+        });
       }, 5000); // Show result for 5 seconds
-      
+
       return () => clearTimeout(timeout);
     }
   }, [routerResult]);
+
+  // Handle transcription preview fade-out when entering processing state
+  useEffect(() => {
+    // Clear any existing timer
+    if (fadeOutTimerRef.current) {
+      clearTimeout(fadeOutTimerRef.current);
+      fadeOutTimerRef.current = null;
+    }
+
+    if (state === "processing" && transcriptionPreview && !routerResult) {
+      // Start fade-out after a short delay (like a toast)
+      fadeOutTimerRef.current = setTimeout(() => {
+        setIsFadingOut(true);
+        // Clear the preview after fade-out animation completes
+        setTimeout(() => {
+          setTranscriptionPreview("");
+          setIsFadingOut(false);
+        }, 300);
+      }, 800); // Show for 800ms before fading out
+    } else {
+      // Reset fade-out state when not in processing
+      setIsFadingOut(false);
+    }
+
+    return () => {
+      if (fadeOutTimerRef.current) {
+        clearTimeout(fadeOutTimerRef.current);
+      }
+    };
+  }, [state, transcriptionPreview, routerResult]);
 
   // Send routing confirmation to backend
   const sendRoutingConfirmation = useCallback(async (text: string) => {
@@ -376,18 +523,22 @@ const RecordingOverlay: React.FC = () => {
         setState(parsed.state);
         setAction(parsed.action);
         setIsVisible(true);
-        // Reset editing state on new recording
-        if (parsed.state === "recording") {
-          setTranscriptionPreview("");
-          setStreamingText(""); // Clear streaming text
-          setRouterResult(null);
-          setIsEditing(false);
-          setEditedText("");
-          setCountdown(0);
-          // Reset mic-level timestamp for dead-mic detection
-          lastLevelTimeRef.current = Date.now();
-          setMicDeadWarning(false);
-        }
+          // Reset editing state on new recording
+          if (parsed.state === "recording") {
+            setTranscriptionPreview("");
+            setStreamingText(""); // Clear streaming text
+            setRouterResult(null);
+            setIsEditing(false);
+            setEditedText("");
+            setCountdown(0);
+            // Reset mic-level timestamp for dead-mic detection
+            lastLevelTimeRef.current = Date.now();
+            recordingStartTimeRef.current = Date.now();
+            setMicDeadWarning(false);
+            setLowAudioWarning(false);
+            lowAudioHistoryRef.current = [];
+            hadGoodAudioRef.current = false; // Reset good audio flag for new recording
+          }
       });
 
       // Listen for hide-overlay event from Rust
@@ -418,6 +569,32 @@ const RecordingOverlay: React.FC = () => {
 
         smoothedLevelsRef.current = smoothed;
         setLevels(smoothed.slice(0, 9));
+
+        // Track low audio levels during recording
+        // Calculate max level from the incoming audio data
+        const maxLevel = Math.max(...newLevels);
+        
+        // Debug logging for audio level threshold tuning
+        console.log(
+          "[audio-level] maxLevel:",
+          maxLevel.toFixed(3),
+          "| goodThreshold:",
+          GOOD_AUDIO_THRESHOLD,
+          "| hadGoodAudio:",
+          hadGoodAudioRef.current,
+        );
+        
+        // If we see good audio levels, mark that the mic is working
+        if (maxLevel >= GOOD_AUDIO_THRESHOLD) {
+          hadGoodAudioRef.current = true;
+          console.log("[audio-level] ✓ Good audio detected, suppressing low-audio warning");
+        }
+        
+        lowAudioHistoryRef.current.push(maxLevel);
+        // Keep only last N samples
+        if (lowAudioHistoryRef.current.length > LOW_AUDIO_CHECK_SAMPLES) {
+          lowAudioHistoryRef.current.shift();
+        }
       });
 
       // Listen for USB power-cycle events from Rust
@@ -428,6 +605,7 @@ const RecordingOverlay: React.FC = () => {
           // This shows the user that the USB device is being power-cycled.
           setState("usb-cycling");
           setMicDeadWarning(false); // Clear warning during recovery
+          setLowAudioWarning(false); // Clear low audio warning during recovery
         },
       );
 
@@ -436,7 +614,20 @@ const RecordingOverlay: React.FC = () => {
         () => {
           setUsbCycleStage(null);
           setMicDeadWarning(false);
-          // Close and reopen the overlay to reinitialize the transcription
+          setLowAudioWarning(false);
+          // Reset all audio level tracking state to start fresh after USB cycling.
+          // This ensures the frontend matches app restart behavior where all
+          // state is initialized fresh. Without this reset:
+          // 1. smoothedLevelsRef retains elevated values from before cycling
+          // 2. lowAudioHistoryRef may contain zeros from the reset period
+          // 3. recordingStartTimeRef is stale (recording started before cycling)
+          // All of these can cause "low audio" warnings or insensitive volume bars.
+          setLevels(Array(16).fill(0));
+          smoothedLevelsRef.current = Array(16).fill(0);
+           lowAudioHistoryRef.current = [];
+           recordingStartTimeRef.current = Date.now(); // Reset recording timer
+           hadGoodAudioRef.current = false; // Reset good audio flag after USB cycling
+           // Close and reopen the overlay to reinitialize the transcription
           // visualizer. This fixes the "mic not listening, volume bars
           // not moving" issue after USB cycling.
           setIsVisible(false);
@@ -454,7 +645,14 @@ const RecordingOverlay: React.FC = () => {
         () => {
           setUsbCycleStage(null);
           setMicDeadWarning(false);
-          setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
+          setLowAudioWarning(false);
+          // Reset all audio level tracking state on failure too
+          setLevels(Array(16).fill(0));
+          smoothedLevelsRef.current = Array(16).fill(0);
+           lowAudioHistoryRef.current = [];
+           recordingStartTimeRef.current = Date.now();
+           hadGoodAudioRef.current = false; // Reset good audio flag after USB cycling
+           setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
           setIsVisible(false);
         },
       );
@@ -487,6 +685,8 @@ const RecordingOverlay: React.FC = () => {
           setState("confirming");
           setIsEditing(false);
           setEditedText("");
+          // Reset fade-out state for new transcription
+          setIsFadingOut(false);
         },
       );
 
@@ -555,8 +755,11 @@ const RecordingOverlay: React.FC = () => {
     const classes = ["recording-overlay"];
     if (isVisible) classes.push("fade-in");
     if (isRouter) classes.push("routing-mode");
-    // Add enlarged overlay for "mic dead" state
-    if (micDeadWarning && state === "recording") classes.push("mic-dead-overlay");
+    // Add enlarged overlay for "mic dead" or "low audio" states
+    if ((micDeadWarning || lowAudioWarning) && state === "recording")
+      classes.push("mic-dead-overlay");
+    // Add enlarged overlay for USB cycling progress
+    if (state === "usb-cycling") classes.push("usb-cycling-overlay");
     // Add editing state for larger overlay
     if (isEditing && state === "confirming") classes.push("editing-overlay");
     return classes.join(" ");
@@ -578,15 +781,17 @@ const RecordingOverlay: React.FC = () => {
         <div className="overlay-left">{getIcon()}</div>
 
         <div className="overlay-middle">
-          {/* Mic dead warning - show when recording but no audio for >1s */}
-          {micDeadWarning && state === "recording" && (
+          {/* Mic dead or low audio warning - show when recording but no audio or very low levels */}
+          {(micDeadWarning || lowAudioWarning) && state === "recording" && (
             <div className="mic-dead-warning">
-              {t("overlay.micDead")}
+              {micDeadWarning
+                ? t("overlay.micDead")
+                : t("overlay.lowAudio", "Low audio - check microphone")}
             </div>
           )}
-          
+
           {/* Normal recording state */}
-          {state === "recording" && !micDeadWarning && (
+          {state === "recording" && !micDeadWarning && !lowAudioWarning && (
             <div className="bars-wrapper">
               {hybridEnabled && (
                 <div
@@ -599,9 +804,7 @@ const RecordingOverlay: React.FC = () => {
               )}
               {/* Show streaming text if available */}
               {streamingText && (
-                <div className="streaming-text">
-                  {streamingText}
-                </div>
+                <div className="streaming-text">{streamingText}</div>
               )}
               <div className="bars-container">
                 {levels.map((v, i) => (
@@ -642,26 +845,36 @@ const RecordingOverlay: React.FC = () => {
               {usbCycleStage && (
                 <>
                   <div className="usb-cycling-progress">
-                    {["resolving", "cycling", "waiting", "recovered"].map((s) => (
-                      <div
-                        key={s}
-                        className={`usb-cycling-dot ${
-                          ["resolving", "cycling", "waiting", "recovered"].indexOf(
-                            usbCycleStage.stage,
-                          ) >=
-                          ["resolving", "cycling", "waiting", "recovered"].indexOf(
-                            s,
-                          )
-                            ? "dot-active"
-                            : ""
-                        } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
-                      />
-                    ))}
+                    {["resolving", "cycling", "waiting", "recovered"].map(
+                      (s) => (
+                        <div
+                          key={s}
+                          className={`usb-cycling-dot ${
+                            [
+                              "resolving",
+                              "cycling",
+                              "waiting",
+                              "recovered",
+                            ].indexOf(usbCycleStage.stage) >=
+                            [
+                              "resolving",
+                              "cycling",
+                              "waiting",
+                              "recovered",
+                            ].indexOf(s)
+                              ? "dot-active"
+                              : ""
+                          } ${usbCycleStage.stage === s ? "dot-current" : ""}`}
+                        />
+                      ),
+                    )}
                   </div>
                   {/* Show elapsed time during USB cycling */}
                   {usbCyclingElapsed > 0 && (
                     <div className="usb-cycling-time">
-                      {t("overlay.usbCyclingTime", { seconds: usbCyclingElapsed })}
+                      {t("overlay.usbCyclingTime", {
+                        seconds: usbCyclingElapsed,
+                      })}
                     </div>
                   )}
                 </>
@@ -671,9 +884,13 @@ const RecordingOverlay: React.FC = () => {
           {/* Confirming state - waiting for user to confirm or edit */}
           {state === "confirming" && !routerResult && (
             <div className="confirming-text">
-              {isEditing ? t("overlay.editing", "Edit text:") : t("overlay.confirming", "Sending in")}
+              {isEditing
+                ? t("overlay.editing", "Edit text:")
+                : t("overlay.confirming", "Sending in")}
               {!isEditing && countdown > 0 && (
-                <span className="countdown-timer">{formatCountdown(countdown)}</span>
+                <span className="countdown-timer">
+                  {formatCountdown(countdown)}
+                </span>
               )}
             </div>
           )}
@@ -701,9 +918,9 @@ const RecordingOverlay: React.FC = () => {
 
       {/* Transcription preview for routing mode - with edit capability */}
       {isRouter && (transcriptionPreview || routerResult) && (
-        <div 
-          dir={direction} 
-          className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""} ${state === "processing" ? "processing" : ""}`}
+        <div
+          dir={direction}
+          className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""} ${isFadingOut ? "fade-out" : ""}`}
         >
           {routerResult ? (
             // Router result display
@@ -717,7 +934,8 @@ const RecordingOverlay: React.FC = () => {
                 <div className="router-error">
                   <div className="result-icon">❌</div>
                   <div className="result-message">
-                    {routerResult.error || t("overlay.routerError", "Routing failed")}
+                    {routerResult.error ||
+                      t("overlay.routerError", "Routing failed")}
                   </div>
                 </div>
               )}
@@ -734,29 +952,37 @@ const RecordingOverlay: React.FC = () => {
                 dir={direction}
               />
               <div className="edit-buttons">
-                <button className="edit-cancel-button" onClick={handleCancelEdit}>
+                <button
+                  className="edit-cancel-button"
+                  onClick={handleCancelEdit}
+                >
                   {t("overlay.cancel", "Cancel")}
                 </button>
               </div>
             </div>
           ) : (
             // Countdown view - show text with countdown overlay
-            <div 
-              className="transcription-text-preview" 
+            <div
+              className="transcription-text-preview"
               onClick={handleTranscriptionClick}
               title={t("overlay.clickToEdit", "Click to edit")}
             >
               {transcriptionPreview}
             </div>
           )}
-          
+
           {/* Countdown progress bar */}
-          {state === "confirming" && !isEditing && !routerResult && countdown > 0 && (
-            <div 
-              className="countdown-progress"
-              style={{ width: `${(countdown / ROUTING_COUNTDOWN_MS) * 100}%` }}
-            />
-          )}
+          {state === "confirming" &&
+            !isEditing &&
+            !routerResult &&
+            countdown > 0 && (
+              <div
+                className="countdown-progress"
+                style={{
+                  width: `${(countdown / ROUTING_COUNTDOWN_MS) * 100}%`,
+                }}
+              />
+            )}
         </div>
       )}
     </>
