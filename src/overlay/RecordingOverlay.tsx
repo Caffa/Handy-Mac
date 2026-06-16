@@ -33,7 +33,8 @@ const LEVEL_TIMEOUT_MS = 500;
 const USB_CYCLING_SAFETY_TIMEOUT_MS = 15_000;
 
 // Countdown timer for routing confirmation (in milliseconds)
-const ROUTING_COUNTDOWN_MS = 2000;
+// User requested 2-3 seconds after editing stage, so increased from 2s to 4.5s
+const ROUTING_COUNTDOWN_MS = 4500;
 
 // Maximum time to wait for router result before hiding overlay (in milliseconds)
 const ROUTER_RESULT_TIMEOUT_MS = 30_000;
@@ -562,9 +563,15 @@ const RecordingOverlay: React.FC = () => {
         const newLevels = event.payload as number[];
 
         // Apply smoothing to reduce jitter
+        // Use faster convergence when previous value is near zero (cold start after USB cycling)
+        // This prevents the visualizer from appearing "dampened" after USB cycling
         const smoothed = smoothedLevelsRef.current.map((prev, i) => {
           const target = newLevels[i] || 0;
-          return prev * 0.7 + target * 0.3; // Smooth transition
+          // Cold start: if prev is near zero, use faster convergence to reach true level quickly
+          // Normal smoothing: 70% prev + 30% target
+          // Cold start smoothing: 30% prev + 70% target (inverts the ratio for fast recovery)
+          const alpha = prev < 0.05 ? 0.7 : 0.3;
+          return prev * (1 - alpha) + target * alpha;
         });
 
         smoothedLevelsRef.current = smoothed;
