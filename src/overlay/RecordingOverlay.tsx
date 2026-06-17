@@ -149,6 +149,9 @@ const RecordingOverlay: React.FC = () => {
   // Refs to avoid stale closures in async callbacks
   const transcriptionPreviewRef = useRef(transcriptionPreview);
   const editedTextRef = useRef(editedText);
+  
+  // Track whether USB cycling is currently active (to ignore stale stage events)
+  const usbCyclingActiveRef = useRef(false);
 
   const isRouter = action === "router";
 
@@ -287,6 +290,7 @@ const RecordingOverlay: React.FC = () => {
             "USB cycling safety timeout: no completion event received after %dms, recovering to recording",
             USB_CYCLING_SAFETY_TIMEOUT_MS,
           );
+          usbCyclingActiveRef.current = false; // Reset ref when safety timeout triggers
           return "recording";
         }
         return prev;
@@ -526,6 +530,11 @@ const RecordingOverlay: React.FC = () => {
         setIsVisible(true);
           // Reset editing state on new recording
           if (parsed.state === "recording") {
+            // CRITICAL: Reset USB cycling state when starting a new recording.
+            // This ensures stale stage events from a previous cycle don't affect
+            // the new recording. Without this, the ref could remain true if the
+            // finished/failed event wasn't properly received.
+            usbCyclingActiveRef.current = false;
             setTranscriptionPreview("");
             setStreamingText(""); // Clear streaming text
             setRouterResult(null);
@@ -544,8 +553,33 @@ const RecordingOverlay: React.FC = () => {
 
       // Listen for hide-overlay event from Rust
       const unlistenHide = await listen("hide-overlay", () => {
-        // Functional update to avoid dependency on 'state'
+        // ============================================================================
+        // BUGFIX (2026-06-17): Router Filing Race Condition — Hide Overlay Event
+        // ============================================================================
+        // PROBLEM: When router finishes filing and user has already started a new
+        // transcription, the hide-overlay event would hide the overlay mid-recording.
+        //
+        // ROOT CAUSE: Router thread emits hide-overlay immediately when it finishes.
+        // If user started new recording between router finish and hide event emission,
+        // the event still arrives at frontend with stale state assumption.
+        //
+        // FIX: Check current state before hiding. If recording/transcribing/processing/
+        // confirming, keep overlay visible. This mirrors the fix in the router-result
+        // timeout handler (lines 414-441).
+        //
+        // See learning-log.md "Router Filing Race Condition" for full documentation.
+        // ============================================================================
         setState((current) => {
+          // Don't hide if a new recording/transcription is active
+          if (
+            current === "recording" ||
+            current === "transcribing" ||
+            current === "processing" ||
+            current === "confirming"
+          ) {
+            // New transcription is active — ignore the hide event
+            return current;
+          }
           if (current !== "usb-cycling") {
             setIsVisible(false);
             setTranscriptionPreview(""); // Clear preview when hiding
@@ -610,6 +644,7 @@ const RecordingOverlay: React.FC = () => {
         () => {
           // Only transition if we are currently recording (overlay is visible)
           // This shows the user that the USB device is being power-cycled.
+          usbCyclingActiveRef.current = true; // Mark USB cycling as active
           setState("usb-cycling");
           setMicDeadWarning(false); // Clear warning during recovery
           setLowAudioWarning(false); // Clear low audio warning during recovery
@@ -619,6 +654,7 @@ const RecordingOverlay: React.FC = () => {
       const unlistenUsbCycleFinished = await listen<string>(
         "usb-power-cycle-finished",
         () => {
+          usbCyclingActiveRef.current = false; // Mark USB cycling as inactive
           setUsbCycleStage(null);
           setMicDeadWarning(false);
           setLowAudioWarning(false);
@@ -650,6 +686,7 @@ const RecordingOverlay: React.FC = () => {
       const unlistenUsbCycleFailed = await listen<string>(
         "usb-power-cycle-failed",
         () => {
+          usbCyclingActiveRef.current = false; // Mark USB cycling as inactive
           setUsbCycleStage(null);
           setMicDeadWarning(false);
           setLowAudioWarning(false);
@@ -668,6 +705,16 @@ const RecordingOverlay: React.FC = () => {
         stage: string;
         message: string;
       }>("usb-power-cycle-stage", (event) => {
+        // Ignore stage events if USB cycling is no longer active.
+        // This prevents stale stage events from transitioning the state back
+        // to "usb-cycling" after the cycle has already finished.
+        if (!usbCyclingActiveRef.current) {
+          console.log(
+            "[usb-cycling] Ignoring stale stage event:",
+            event.payload.stage,
+          );
+          return;
+        }
         setUsbCycleStage(event.payload);
         // Also ensure we are in usb-cycling state and visible — the stage
         // event may arrive before the usb-power-cycle-started event, or
