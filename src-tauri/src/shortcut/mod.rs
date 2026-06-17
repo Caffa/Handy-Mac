@@ -717,6 +717,42 @@ pub fn change_extra_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.pre_recording_buffer_ms = ms;
+    settings::write_settings(&app, settings);
+
+    // Recreate the recorder if the stream is open to apply the new setting.
+    // The pre-recording buffer is only read when the recorder is created,
+    // so we need to recreate it for the change to take effect.
+    if let Some(rm) = app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>() {
+        if rm.is_stream_open() {
+            // Stop the current stream
+            rm.stop_microphone_stream();
+
+            // Recreate the recorder with the new setting
+            if let Err(e) = rm.recreate_recorder() {
+                error!("Failed to recreate recorder after pre-recording buffer change: {}", e);
+                return Err(format!("Failed to apply pre-recording buffer setting: {}", e));
+            }
+
+            // Restart the stream if in always-on mode or BT keep-alive
+            if rm.is_always_on() || rm.is_bt_keep_alive() {
+                if let Err(e) = rm.start_microphone_stream() {
+                    error!("Failed to restart microphone stream after pre-recording buffer change: {}", e);
+                    return Err(format!("Failed to restart microphone stream: {}", e));
+                }
+            }
+
+            info!("Recreated recorder with pre-recording buffer: {}ms", ms);
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_paste_delay_ms_setting(app: AppHandle, ms: u64) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.paste_delay_ms = ms;

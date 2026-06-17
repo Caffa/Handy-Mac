@@ -159,6 +159,7 @@ fn create_audio_recorder(
     // Check if streaming transcription is enabled
     let settings = get_settings(app_handle);
     let streaming_enabled = settings.streaming_transcription_enabled;
+    let pre_buffer_ms = settings.pre_recording_buffer_ms;
 
     // Recorder with VAD plus a spectrum-level callback that forwards updates to
     // the frontend, and optionally a streaming transcription callback.
@@ -212,6 +213,13 @@ fn create_audio_recorder(
         recorder
     };
 
+    // Add pre-buffer for always-on mode (captures audio before hotkey press)
+    let recorder = if pre_buffer_ms > 0 {
+        recorder.with_pre_buffer_ms(pre_buffer_ms)
+    } else {
+        recorder
+    };
+
     Ok(recorder)
 }
 
@@ -243,6 +251,7 @@ pub struct AudioRecordingManager {
     /// Handle to the background processing thread, if any.
     pub pronunciation_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
     /// Directory where pronunciation WAV files are saved.
+    #[allow(dead_code)]
     pub pronunciation_recordings_dir: PathBuf,
     /// Background liveness monitor thread handle
     liveness_monitor: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
@@ -386,10 +395,23 @@ impl AudioRecordingManager {
                             &app_handle,
                             crate::tray::TrayIconState::Recording,
                         );
+                        
+                        // Emit stage event so the overlay shows progress dots and elapsed time
+                        usb_watchdog::emit_stage_event_with_handle(
+                            &Some(app_handle.clone()),
+                            "recovering",
+                            "Recovering microphone stream...",
+                        );
 
                         // Try to restart
                         if let Err(e) = rm.start_microphone_stream() {
                             error!("Liveness monitor failed to restart stream: {}", e);
+                            // Emit failed event so frontend can recover from stuck state
+                            usb_watchdog::emit_cycle_event_with_handle(
+                                &Some(app_handle.clone()),
+                                "usb-power-cycle-failed",
+                                &format!("Stream restart failed: {}", e),
+                            );
                             utils::hide_recording_overlay(&app_handle);
                             crate::tray::change_tray_icon(
                                 &app_handle,
@@ -401,6 +423,12 @@ impl AudioRecordingManager {
                                 crate::tray::TrayIconState::Idle,
                             );
                             info!("Liveness monitor: stream restarted successfully");
+                            // Emit finished event so frontend clears the USB cycling state
+                            usb_watchdog::emit_cycle_event_with_handle(
+                                &Some(app_handle.clone()),
+                                "usb-power-cycle-finished",
+                                "Stream recovered successfully",
+                            );
                         }
                     }
                 }
@@ -412,6 +440,7 @@ impl AudioRecordingManager {
     }
 
     /// Stop the background liveness monitor thread
+    #[allow(dead_code)]
     fn stop_liveness_monitor(&self) {
         self.liveness_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = lock_with_log(&self.liveness_monitor, "liveness_monitor").take() {
@@ -591,8 +620,9 @@ impl AudioRecordingManager {
 
     /// Recreate the AudioRecorder to discard stale CPAL device handles.
     /// This is needed after a USB power cycle where the old device handle
-    /// may no longer be valid.
-    fn recreate_recorder(&self) -> Result<(), anyhow::Error> {
+    /// may no longer be valid, or when settings that affect the recorder
+    /// (like pre-recording buffer) are changed.
+    pub fn recreate_recorder(&self) -> Result<(), anyhow::Error> {
         info!("Recreating AudioRecorder to discard stale device handles");
 
         // Take the old recorder and drop it (this stops any existing stream)
@@ -638,8 +668,59 @@ impl AudioRecordingManager {
     fn start_microphone_stream_inner(&self) -> Result<(), anyhow::Error> {
         let mut open_flag = lock_with_log(&self.is_open, "is_open");
         if *open_flag {
-            debug!("Microphone stream already active");
-            return Ok(());
+            // Stream is already open, but check if the device has changed.
+            // This can happen after USB cycling where the stream was opened
+            // with a fallback device (e.g., webcam) and now the configured
+            // device (e.g., RØDE mic) has returned.
+            let settings = get_settings(&self.app_handle);
+            let configured_device_name = if let Ok(is_clamshell) = clamshell::is_clamshell() {
+                if is_clamshell && settings.clamshell_microphone.is_some() {
+                    settings.clamshell_microphone.as_ref()
+                } else {
+                    settings.selected_microphone.as_ref()
+                }
+            } else {
+                settings.selected_microphone.as_ref()
+            };
+
+            // Get the currently open device name
+            let current_device_name = {
+                let recorder_guard = lock_with_log(&self.recorder, "recorder");
+                recorder_guard.as_ref().and_then(|r| r.device_name())
+            };
+
+            // If device has changed, close and reopen
+            let device_changed = match (&configured_device_name, &current_device_name) {
+                (Some(configured), Some(current)) => {
+                    let changed = configured.as_str() != current.as_str();
+                    if changed {
+                        info!(
+                            "Device mismatch detected in start_microphone_stream_inner: configured={:?}, current={:?}",
+                            configured, current
+                        );
+                    }
+                    changed
+                }
+                (Some(_), None) => true, // Configured but no current device
+                (None, Some(_)) => false, // No configured device, use whatever is open
+                (None, None) => false,
+            };
+
+            if device_changed {
+                info!(
+                    "Device changed from {:?} to {:?}, reopening stream",
+                    current_device_name, configured_device_name
+                );
+                drop(open_flag); // Release lock before stopping
+                self.stop_microphone_stream();
+                // Recreate recorder to get fresh visualizer with correct sample rate
+                self.recreate_recorder()?;
+                // Re-acquire lock
+                open_flag = lock_with_log(&self.is_open, "is_open");
+            } else {
+                debug!("Microphone stream already active");
+                return Ok(());
+            }
         }
 
         let start_time = Instant::now();
@@ -766,8 +847,10 @@ impl AudioRecordingManager {
         // In always-on mode, check if the stream is alive and restart if needed.
         // KEY FIX: Also handle the case where the stream is NOT open at all
         // (e.g., after a failed USB power cycle recovery).
-        let need_stream_open = if is_always_on {
-            // Always-on mode: check if stream is alive
+        // ALSO FIX: Check if device changed (e.g., USB cycling fallback to webcam,
+        // now configured device has returned).
+        let need_stream_open = if is_always_on || bt_keep_alive {
+            // Always-on mode: check if stream is alive AND if device is correct
             let is_open = *lock_with_log(&self.is_open, "is_open");
 
             if !is_open {
@@ -775,26 +858,72 @@ impl AudioRecordingManager {
                 warn!("Always-on microphone stream is not open — restarting");
                 true
             } else {
-                // Stream is open, but check if it's actually producing data
-                let stream_alive = lock_with_log(&self.recorder, "recorder")
-                    .as_ref()
-                    .map_or(false, |r| {
-                        r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
-                    });
+                // Check if device has changed (USB cycling may have caused fallback)
+                let settings = get_settings(&self.app_handle);
+                let configured_device_name = if let Ok(is_clamshell) = clamshell::is_clamshell() {
+                    if is_clamshell && settings.clamshell_microphone.is_some() {
+                        settings.clamshell_microphone.as_ref()
+                    } else {
+                        settings.selected_microphone.as_ref()
+                    }
+                } else {
+                    settings.selected_microphone.as_ref()
+                };
 
-                if !stream_alive {
-                    warn!(
-                        "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
-                        Self::STREAM_LIVENESS_TIMEOUT_MS
+                let current_device_name = {
+                    let recorder_guard = lock_with_log(&self.recorder, "recorder");
+                    recorder_guard.as_ref().and_then(|r| r.device_name())
+                };
+
+                let device_changed = match (&configured_device_name, &current_device_name) {
+                    (Some(configured), Some(current)) => {
+                        let changed = configured.as_str() != current.as_str();
+                        if changed {
+                            info!(
+                                "Device mismatch detected: configured={:?}, current={:?}",
+                                configured, current
+                            );
+                        }
+                        changed
+                    }
+                    (Some(_), None) => true, // Configured but no current device
+                    (None, Some(_)) => false, // No configured device, use whatever is open
+                    (None, None) => false,
+                };
+
+                if device_changed {
+                    info!(
+                        "Device changed from {:?} to {:?}, reopening stream before recording",
+                        current_device_name, configured_device_name
                     );
+                    // Stop the current stream and recreate with correct device
+                    self.stop_microphone_stream();
+                    if let Err(e) = self.recreate_recorder() {
+                        warn!("Failed to recreate recorder for device change: {}", e);
+                    }
                     true
                 } else {
-                    false // Stream is alive, no action needed
+                    // Stream is open with correct device, check if it's alive
+                    let stream_alive = lock_with_log(&self.recorder, "recorder")
+                        .as_ref()
+                        .map_or(false, |r| {
+                            r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
+                        });
+
+                    if !stream_alive {
+                        warn!(
+                            "Always-on microphone stream appears dead (no audio for {}ms) — restarting",
+                            Self::STREAM_LIVENESS_TIMEOUT_MS
+                        );
+                        true
+                    } else {
+                        false // Stream is alive with correct device, no action needed
+                    }
                 }
             }
         } else {
-            // On-demand mode: need to open stream (unless BT keep-alive has it open)
-            !bt_keep_alive
+            // On-demand mode: need to open stream
+            true
         };
 
         if need_stream_open {
@@ -1060,6 +1189,11 @@ impl AudioRecordingManager {
     /// Check if always-on microphone mode is enabled
     pub fn is_always_on(&self) -> bool {
         matches!(*lock_with_log(&self.mode, "mode"), MicrophoneMode::AlwaysOn)
+    }
+
+    /// Check if Bluetooth keep-alive is active
+    pub fn is_bt_keep_alive(&self) -> bool {
+        *lock_with_log(&self.bt_keep_alive, "bt_keep_alive")
     }
 
     /// Cancel any ongoing recording without returning audio samples

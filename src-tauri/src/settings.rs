@@ -495,6 +495,12 @@ pub struct AppSettings {
     pub whisper_gpu_device: i32,
     #[serde(default)]
     pub extra_recording_buffer_ms: u64,
+    /// Pre-recording buffer in milliseconds for always-on microphone mode.
+    /// Captures audio from the last N ms before the hotkey is pressed.
+    /// Useful for catching the beginning of speech that starts before pressing the button.
+    /// Default: 0 (disabled). Recommended: 1000-3000ms.
+    #[serde(default)]
+    pub pre_recording_buffer_ms: u64,
     #[serde(default)]
     pub usb_watchdog_enabled: bool,
     #[serde(default)]
@@ -522,6 +528,10 @@ pub struct AppSettings {
     /// Applies common spelling conversions like: color → colour, analyze → analyse, etc.
     #[serde(default)]
     pub convert_us_to_british: bool,
+    /// Repetition suppression level (0-3): 0=off, 1=light, 2=moderate, 3=aggressive.
+    /// Manual control only - user adjusts when they notice artifacts.
+    #[serde(default)]
+    pub repetition_suppression_level: u8,
 }
 
 fn default_model() -> String {
@@ -962,6 +972,7 @@ pub fn get_default_settings() -> AppSettings {
         ort_accelerator: OrtAcceleratorSetting::default(),
         whisper_gpu_device: default_whisper_gpu_device(),
         extra_recording_buffer_ms: 0,
+        pre_recording_buffer_ms: 0,
         usb_watchdog_enabled: false,
         usb_watchdog_device_name: String::new(),
         usb_watchdog_cycle_on_wake: true,
@@ -974,6 +985,7 @@ pub fn get_default_settings() -> AppSettings {
         vad_sensitivity: VadSensitivity::Balanced,
         streaming_transcription_enabled: false,
         convert_us_to_british: false,
+        repetition_suppression_level: 0,
     }
 }
 
