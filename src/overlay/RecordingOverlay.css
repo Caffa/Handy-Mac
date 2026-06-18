@@ -414,12 +414,14 @@
   transition: width 100ms linear;
 }
 
-/* Router result display */
+/* Router result display - clean icons without white box */
 .router-result {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  padding: 16px 24px;
+  /* No background - just the icons floating */
 }
 
 .router-success {
@@ -436,20 +438,47 @@
   gap: 8px;
 }
 
+.result-icons {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.handler-icon {
+  font-size: 32px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+}
+
 .result-icon {
-  font-size: 24px;
+  font-size: 32px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
 }
 
 .result-summary {
-  font-size: 16px;
-  color: #333;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
   text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 .result-message {
   font-size: 14px;
-  color: #666;
+  color: rgba(255, 255, 255, 0.85);
   text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Remove white box background when showing result */
+.transcription-preview.has-result {
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  padding: 0;
 }
 
 /* Editing state overlay */

@@ -39,6 +39,27 @@ const ROUTING_COUNTDOWN_MS = 4500;
 // Maximum time to wait for router result before hiding overlay (in milliseconds)
 const ROUTER_RESULT_TIMEOUT_MS = 30_000;
 
+// Time to display router result before auto-hiding (in milliseconds)
+const ROUTER_RESULT_DISPLAY_MS = 10_000;
+
+// Handler icon mapping - icons for each router destination
+const HANDLER_ICONS: Record<string, string> = {
+  Daily: "📖",
+  "Apple Note": "📝",
+  "Project Devlog": "📁",
+  "Tiny Experiment": "🧪",
+  Zettelkasten: "🃏",
+  "Story Idea": "💡",
+  "Read Later": "📚",
+  Idea: "💭",
+  "Swipe File": "🔖",
+  Concerns: "⚠️",
+  "Emotional Rant": "😤",
+  Correction: "✏️",
+  // Default fallback
+  default: "✅",
+};
+
 /// Parse a compound payload of the form "state:action" emitted by the Rust
 /// backend. Legacy payloads (no colon) are treated as state-only with action
 /// defaulting to "transcribe".
@@ -72,6 +93,31 @@ interface RouterResultEvent {
   summary: string | null;
   error: string | null;
   transcription_text: string;
+}
+
+/// Parse handler names from summary string like "✅ Daily | ✅ Zettelkasten (my-note)"
+function parseHandlerNames(summary: string | null): string[] {
+  if (!summary) return [];
+
+  // Split by | and extract handler names
+  // Format: "✅ Daily | ✅ Zettelkasten (my-note)" or "✅ Daily"
+  return summary
+    .split("|")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      // Remove status emoji (✅, ❌, ⚠️) from the beginning
+      const cleaned = part.replace(/^[✅❌⚠️]\s*/, "").trim();
+      // Remove file path in parentheses like "(my-note)"
+      const withoutPath = cleaned.replace(/\s*\([^)]+\)\s*$/, "").trim();
+      return withoutPath;
+    })
+    .filter((name) => name.length > 0);
+}
+
+/// Get icon for a handler name
+function getHandlerIcon(handlerName: string): string {
+  return HANDLER_ICONS[handlerName] || HANDLER_ICONS.default;
 }
 
 const RecordingOverlay: React.FC = () => {
@@ -435,7 +481,7 @@ const RecordingOverlay: React.FC = () => {
           setCountdown(0);
           return current;
         });
-      }, 5000); // Show result for 5 seconds
+      }, ROUTER_RESULT_DISPLAY_MS); // Show result for configurable duration
 
       return () => clearTimeout(timeout);
     }
@@ -458,7 +504,7 @@ const RecordingOverlay: React.FC = () => {
           setTranscriptionPreview("");
           setIsFadingOut(false);
         }, 300);
-      }, 800); // Show for 800ms before fading out
+      }, 2000); // Show for 2 seconds before fading out
     } else {
       // Reset fade-out state when not in processing
       setIsFadingOut(false);
@@ -977,12 +1023,22 @@ const RecordingOverlay: React.FC = () => {
           className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""} ${isFadingOut ? "fade-out" : ""}`}
         >
           {routerResult ? (
-            // Router result display
+            // Router result display - icons only, no white box
             <div className="router-result">
               {routerResult.success ? (
                 <div className="router-success">
-                  <div className="result-icon">✅</div>
-                  <div className="result-summary">{routerResult.summary}</div>
+                  <div className="result-icons">
+                    {parseHandlerNames(routerResult.summary).map(
+                      (handlerName, idx) => (
+                        <span key={idx} className="handler-icon">
+                          {getHandlerIcon(handlerName)}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                  {routerResult.summary && (
+                    <div className="result-summary">{routerResult.summary}</div>
+                  )}
                 </div>
               ) : (
                 <div className="router-error">
