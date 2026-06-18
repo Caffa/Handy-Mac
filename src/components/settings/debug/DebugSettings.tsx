@@ -11,7 +11,6 @@ import { ClamshellMicrophoneSelector } from "../ClamshellMicrophoneSelector";
 import { UpdateChecksToggle } from "../UpdateChecksToggle";
 import { UsbWatchdog } from "./UsbWatchdog";
 import { RepetitionSuppressionSettings } from "./RepetitionSuppressionSettings";
-import { ExperimentReview } from "./ExperimentReview";
 
 export const DebugSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -33,7 +32,6 @@ export const DebugSettings: React.FC = () => {
         <UsbWatchdog descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
       <RepetitionSuppressionSettings />
-      <ExperimentReview />
     </div>
   );
 };
