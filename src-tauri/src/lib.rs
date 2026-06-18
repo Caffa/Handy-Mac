@@ -477,6 +477,7 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
             commands::history::update_history_entry_tags,
+            commands::history::update_history_entry_metadata,
             commands::experiments::create_experiment_group,
             commands::experiments::get_experiment_group,
             commands::experiments::update_experiment_group,

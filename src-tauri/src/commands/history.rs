@@ -167,3 +167,19 @@ pub async fn update_history_entry_tags(
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn update_history_entry_metadata(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    id: i64,
+    ground_truth: Option<String>,
+    quality: Option<String>,
+    speech_speed: Option<String>,
+) -> Result<(), String> {
+    history_manager
+        .update_metadata(id, ground_truth, quality, speech_speed)
+        .await
+        .map_err(|e| e.to_string())
+}

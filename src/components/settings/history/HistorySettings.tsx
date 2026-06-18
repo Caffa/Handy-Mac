@@ -15,8 +15,6 @@ import {
   Star,
   Trash2,
   Search,
-  Loader2,
-  Play,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -26,9 +24,6 @@ import {
   events,
   type HistoryEntry,
   type HistoryUpdatePayload,
-  type ExperimentGroup,
-  type TranscriptionVariant,
-  type ModelInfo,
 } from "@/bindings";
 import { useOsType } from "@/hooks/useOsType";
 import { formatDateTime } from "@/utils/dateFormat";
@@ -91,66 +86,10 @@ export const HistorySettings: React.FC = () => {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const entriesRef = useRef<HistoryEntry[]>([]);
   const loadingRef = useRef(false);
-  
-  // Experiment state
-  const [experiments, setExperiments] = useState<Map<number, ExperimentGroup>>(new Map());
-  const [variants, setVariants] = useState<Map<number, TranscriptionVariant[]>>(new Map());
-  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
-  const [generatingVariants, setGeneratingVariants] = useState<Set<number>>(new Set());
 
   // Keep ref in sync for use in IntersectionObserver callback
   useEffect(() => {
     entriesRef.current = entries;
-  }, [entries]);
-
-  // Load available models
-  useEffect(() => {
-    const loadModels = async () => {
-      try {
-        const result = await commands.getAvailableModels();
-        if (result.status === "ok") {
-          setAvailableModels(result.data.filter(m => m.is_downloaded));
-        }
-      } catch (e) {
-        console.error("Failed to load models:", e);
-      }
-    };
-    loadModels();
-  }, []);
-
-  // Load experiments for saved entries
-  useEffect(() => {
-    const loadExperiments = async () => {
-      const saved = entries.filter(e => e.saved);
-      for (const entry of saved) {
-        try {
-          const expResult = await commands.getExperimentGroup(entry.id);
-          if (expResult.status === "ok" && expResult.data) {
-            setExperiments(prev => {
-              const next = new Map(prev);
-              next.set(entry.id, expResult.data!);
-              return next;
-            });
-
-            // Load variants
-            const varResult = await commands.getVariantsForExperiment(expResult.data!.id);
-            if (varResult.status === "ok") {
-              setVariants(prev => {
-                const next = new Map(prev);
-                next.set(entry.id, varResult.data);
-                return next;
-              });
-            }
-          }
-        } catch (e) {
-          console.error("Failed to load experiment:", e);
-        }
-      }
-    };
-    
-    if (entries.length > 0) {
-      loadExperiments();
-    }
   }, [entries]);
 
   const loadPage = useCallback(async (cursor?: number) => {
@@ -322,100 +261,26 @@ export const HistorySettings: React.FC = () => {
     }
   };
 
-  // Create experiment for a saved recording
-  const createExperiment = async (entryId: number) => {
+  // Update metadata (quality, speech_speed, ground_truth)
+  const updateMetadata = async (
+    id: number,
+    ground_truth?: string,
+    quality?: string,
+    speech_speed?: string,
+  ) => {
     try {
-      const result = await commands.createExperimentGroup(entryId);
-      if (result.status === "ok") {
-        setExperiments(prev => {
-          const next = new Map(prev);
-          next.set(entryId, result.data);
-          return next;
-        });
-        toast.success("Experiment created");
-      }
-    } catch (e) {
-      console.error("Failed to create experiment:", e);
-      toast.error("Failed to create experiment");
-    }
-  };
-
-  // Update ground truth
-  const updateGroundTruth = async (entryId: number, groundTruth: string) => {
-    const exp = experiments.get(entryId);
-    if (!exp) return;
-
-    try {
-      const result = await commands.updateExperimentGroup(
-        exp.id,
-        groundTruth,
-        null,
-        null,
-        null,
-        null,
+      const result = await commands.updateHistoryEntryMetadata(
+        id,
+        ground_truth ?? null,
+        quality ?? null,
+        speech_speed ?? null,
       );
-      if (result.status === "ok") {
-        setExperiments(prev => {
-          const next = new Map(prev);
-          next.set(entryId, result.data);
-          return next;
-        });
+      if (result.status !== "ok") {
+        console.error("Failed to update metadata:", result.error);
       }
     } catch (e) {
-      console.error("Failed to update ground truth:", e);
+      console.error("Failed to update metadata:", e);
     }
-  };
-
-  // Generate variants for all saved recordings
-  const generateVariantsForAll = async () => {
-    const savedEntries = entries.filter(e => e.saved);
-    if (savedEntries.length === 0) {
-      toast.error("No saved recordings");
-      return;
-    }
-
-    const modelIds = availableModels.length > 0
-      ? availableModels.slice(0, 5).map(m => m.id)
-      : ["turbo", "medium", "small"];
-
-    setGeneratingVariants(new Set(savedEntries.map(e => e.id)));
-
-    let successCount = 0;
-    for (const entry of savedEntries) {
-      const exp = experiments.get(entry.id);
-      if (!exp || !exp.ground_truth) continue;
-
-      try {
-        const result = await commands.generateVariants(exp.id, modelIds);
-        if (result.status === "ok") {
-          // Add variants to database
-          for (const generated of result.data) {
-            await commands.addTranscriptionVariant(
-              exp.id,
-              generated.model_id,
-              generated.parameters,
-              generated.transcription_text,
-            );
-          }
-
-          // Reload variants
-          const varResult = await commands.getVariantsForExperiment(exp.id);
-          if (varResult.status === "ok") {
-            setVariants(prev => {
-              const next = new Map(prev);
-              next.set(entry.id, varResult.data);
-              return next;
-            });
-          }
-          successCount++;
-        }
-      } catch (e) {
-        console.error("Failed to generate variants for", entry.id, e);
-      }
-    }
-
-    setGeneratingVariants(new Set());
-    toast.success(`Generated variants for ${successCount}/${savedEntries.length} recordings`);
   };
 
   let content: React.ReactNode;
@@ -451,10 +316,9 @@ export const HistorySettings: React.FC = () => {
               getAudioUrl={getAudioUrl}
               deleteAudio={deleteAudioEntry}
               retryTranscription={retryHistoryEntry}
-              experimentGroup={experiments.get(entry.id) || null}
-              variants={variants.get(entry.id) || []}
-              onCreateExperiment={() => createExperiment(entry.id)}
-              onUpdateGroundTruth={(text) => updateGroundTruth(entry.id, text)}
+              onUpdateMetadata={(gt, q, ss) =>
+                updateMetadata(entry.id, gt, q, ss)
+              }
             />
           ))}
         </div>
@@ -473,32 +337,10 @@ export const HistorySettings: React.FC = () => {
               {t("settings.history.title")}
             </h2>
           </div>
-          <div className="flex items-center gap-2">
-            {entries.some(e => e.saved && experiments.get(e.id)?.ground_truth) && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={generateVariantsForAll}
-                disabled={generatingVariants.size > 0}
-              >
-                {generatingVariants.size > 0 ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 mr-1" />
-                    Generate Variants
-                  </>
-                )}
-              </Button>
-            )}
-            <OpenRecordingsButton
-              onClick={openRecordingsFolder}
-              label={t("settings.history.openFolder")}
-            />
-          </div>
+          <OpenRecordingsButton
+            onClick={openRecordingsFolder}
+            label={t("settings.history.openFolder")}
+          />
         </div>
         {/* Search bar */}
         <div className="px-4">
@@ -528,10 +370,7 @@ interface HistoryEntryProps {
   getAudioUrl: (fileName: string) => Promise<string | null>;
   deleteAudio: (id: number) => Promise<void>;
   retryTranscription: (id: number) => Promise<void>;
-  experimentGroup: ExperimentGroup | null;
-  variants: TranscriptionVariant[];
-  onCreateExperiment: () => void;
-  onUpdateGroundTruth: (text: string) => void;
+  onUpdateMetadata: (ground_truth?: string, quality?: string, speech_speed?: string) => Promise<void>;
 }
 
 const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
@@ -541,18 +380,13 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   getAudioUrl,
   deleteAudio,
   retryTranscription,
-  experimentGroup,
-  variants,
-  onCreateExperiment,
-  onUpdateGroundTruth,
+  onUpdateMetadata,
 }) => {
   const { t, i18n } = useTranslation();
   const [showCopied, setShowCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [editingGroundTruth, setEditingGroundTruth] = useState(false);
-  const [groundTruth, setGroundTruth] = useState(
-    experimentGroup?.ground_truth || entry.transcription_text,
-  );
+  const [groundTruth, setGroundTruth] = useState(entry.ground_truth || entry.transcription_text);
 
   const hasTranscription = entry.transcription_text.trim().length > 0;
 
@@ -604,30 +438,12 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
       }>)
     : null;
 
-  // Calculate match score helper
-  const calculateMatchScore = (text: string, truth: string): number => {
-    const a = text.toLowerCase().trim();
-    const b = truth.toLowerCase().trim();
-    if (a === b) return 100;
-
-    const wordsA = a.split(/\s+/);
-    const wordsB = b.split(/\s+/);
-    const common = wordsA.filter((w) => wordsB.includes(w)).length;
-    const total = Math.max(wordsA.length, wordsB.length);
-    return Math.round((common / total) * 100);
-  };
-
   return (
     <div className="px-4 py-2 pb-5 flex flex-col gap-3">
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-2">
           <p className="text-sm font-medium">{formattedDate}</p>
           <span className="text-xs text-text/40 font-mono">#{entry.id}</span>
-          {entry.saved && experimentGroup && (
-            <Badge variant="success" className="text-xs">
-              Experiment
-            </Badge>
-          )}
         </div>
         <div className="flex items-center gap-1">
           {/* Routing status tag */}
@@ -688,137 +504,121 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
         </div>
       </div>
 
-      {/* Transcription text or ground truth editing */}
-      {entry.saved && experimentGroup ? (
+      {/* Transcription text */}
+      <p
+        className={`italic text-sm pb-2 ${
+          retrying
+            ? ""
+            : hasTranscription
+              ? "text-text/90 select-text cursor-text whitespace-pre-wrap break-words"
+              : "text-text/40"
+        }`}
+        style={
+          retrying
+            ? { animation: "transcribe-pulse 3s ease-in-out infinite" }
+            : undefined
+        }
+      >
+        {retrying && (
+          <style>{`
+            @keyframes transcribe-pulse {
+              0%, 100% { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
+              50% { color: color-mix(in srgb, var(--color-text) 90%, transparent); }
+            }
+          `}</style>
+        )}
+        {retrying
+          ? t("settings.history.transcribing")
+          : hasTranscription
+            ? entry.transcription_text
+            : t("settings.history.transcriptionFailed")}
+      </p>
+
+      {/* Quality and speed tags for saved entries */}
+      {entry.saved && (
         <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-primary font-medium">Ground Truth:</span>
-            {editingGroundTruth ? (
-              <div className="flex-1 flex items-center gap-2">
-                <input
-                  type="text"
-                  className="flex-1 px-2 py-1 border border-border rounded bg-surface text-text text-sm"
-                  value={groundTruth}
-                  onChange={(e) => setGroundTruth(e.target.value)}
-                  placeholder="Correct the transcription..."
-                />
+          {/* Ground truth editing */}
+          {editingGroundTruth ? (
+            <div className="space-y-2">
+              <textarea
+                className="w-full p-2 border border-border rounded bg-surface text-text text-sm"
+                value={groundTruth}
+                onChange={(e) => setGroundTruth(e.target.value)}
+                rows={2}
+                placeholder="What did you actually say?"
+              />
+              <div className="flex gap-2">
                 <Button
                   size="sm"
                   onClick={() => {
-                    onUpdateGroundTruth(groundTruth);
+                    onUpdateMetadata(groundTruth, undefined, undefined);
                     setEditingGroundTruth(false);
                   }}
                 >
-                  <Check className="w-3 h-3" />
+                  <Check className="w-3 h-3 mr-1" />
+                  Save
                 </Button>
                 <Button
                   size="sm"
                   variant="secondary"
                   onClick={() => {
-                    setGroundTruth(experimentGroup?.ground_truth || entry.transcription_text);
+                    setGroundTruth(entry.ground_truth || entry.transcription_text);
                     setEditingGroundTruth(false);
                   }}
                 >
-                  <X className="w-3 h-3" />
+                  <X className="w-3 h-3 mr-1" />
+                  Cancel
                 </Button>
               </div>
-            ) : (
-              <div
-                className="flex-1 cursor-pointer"
-                onClick={() => setEditingGroundTruth(true)}
-              >
-                <p className="text-sm text-text">
-                  {experimentGroup.ground_truth || entry.transcription_text}
-                </p>
-                <p className="text-xs text-text/40">Click to edit</p>
-              </div>
-            )}
-          </div>
-
-          {/* Variants */}
-          {variants.length > 0 && (
-            <div className="mt-2 space-y-1">
-              <p className="text-xs text-text/60">Variants:</p>
-              {variants
-                .sort((a, b) => (a.ranking || 999) - (b.ranking || 999))
-                .slice(0, 3)
-                .map((variant) => {
-                  const score = experimentGroup.ground_truth
-                    ? calculateMatchScore(variant.transcription_text, experimentGroup.ground_truth)
-                    : null;
-                  return (
-                    <div
-                      key={variant.id}
-                      className="flex items-center gap-2 text-xs"
-                    >
-                      <span className="font-mono text-text/60 w-20 truncate">
-                        {variant.model_id}
-                      </span>
-                      {score !== null && (
-                        <span className={`px-1.5 py-0.5 rounded text-xs ${
-                          score >= 90 ? "bg-green-500/20 text-green-500" :
-                          score >= 70 ? "bg-yellow-500/20 text-yellow-500" :
-                          "bg-red-500/20 text-red-500"
-                        }`}>
-                          {score}%
-                        </span>
-                      )}
-                      {variant.is_acceptable && (
-                        <Check className="w-3 h-3 text-green-500" />
-                      )}
-                      <span className="flex-1 truncate text-text/80">
-                        {variant.transcription_text}
-                      </span>
-                    </div>
-                  );
-                })}
-              {variants.length > 3 && (
-                <p className="text-xs text-text/40">+{variants.length - 3} more variants</p>
-              )}
+            </div>
+          ) : (
+            <div
+              className="cursor-pointer"
+              onClick={() => setEditingGroundTruth(true)}
+            >
+              <p className="text-xs text-text/60">
+                Ground Truth: <span className="text-text">{entry.ground_truth || "Click to edit"}</span>
+              </p>
             </div>
           )}
-        </div>
-      ) : (
-        <p
-          className={`italic text-sm pb-2 ${
-            retrying
-              ? ""
-              : hasTranscription
-                ? "text-text/90 select-text cursor-text whitespace-pre-wrap break-words"
-                : "text-text/40"
-          }`}
-          style={
-            retrying
-              ? { animation: "transcribe-pulse 3s ease-in-out infinite" }
-              : undefined
-          }
-        >
-          {retrying && (
-            <style>{`
-              @keyframes transcribe-pulse {
-                0%, 100% { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
-                50% { color: color-mix(in srgb, var(--color-text) 90%, transparent); }
-              }
-            `}</style>
-          )}
-          {retrying
-            ? t("settings.history.transcribing")
-            : hasTranscription
-              ? entry.transcription_text
-              : t("settings.history.transcriptionFailed")}
-        </p>
-      )}
 
-      {/* Create experiment button for saved entries without experiments */}
-      {entry.saved && !experimentGroup && (
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={onCreateExperiment}
-          className="w-full"
-        >
-          Create Experiment
-        </Button>
+          {/* Quality tags */}
+          <div className="flex gap-2 flex-wrap">
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-text/60">Quality:</span>
+              {(["good", "okay", "bad"] as const).map((q) => (
+                <button
+                  key={q}
+                  className={`px-2 py-0.5 rounded text-xs ${
+                    entry.quality === q
+                      ? "bg-primary text-white"
+                      : "bg-surface-secondary text-text/70 hover:text-text"
+                  }`}
+                  onClick={() => onUpdateMetadata(undefined, q, undefined)}
+                >
+                  {q.charAt(0).toUpperCase() + q.slice(1)}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-text/60">Speed:</span>
+              {(["fast", "normal", "slow"] as const).map((s) => (
+                <button
+                  key={s}
+                  className={`px-2 py-0.5 rounded text-xs ${
+                    entry.speech_speed === s
+                      ? "bg-primary text-white"
+                      : "bg-surface-secondary text-text/70 hover:text-text"
+                  }`}
+                  onClick={() => onUpdateMetadata(undefined, undefined, s)}
+                >
+                  {s.charAt(0).toUpperCase() + s.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Routing result details */}

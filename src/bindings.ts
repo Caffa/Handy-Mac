@@ -1048,14 +1048,6 @@ async retryHistoryEntryTranscription(id: number) : Promise<Result<null, string>>
     else return { status: "error", error: e  as any };
 }
 },
-async updateHistoryEntryTags(id: number, tags: string | null) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("update_history_entry_tags", { id, tags }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async updateHistoryLimit(limit: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_history_limit", { limit }) };
@@ -1072,49 +1064,65 @@ async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
-async createExperimentGroup(recording_id: number) : Promise<Result<ExperimentGroup, string>> {
+async updateHistoryEntryTags(id: number, tags: string | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("create_experiment_group", { recording_id }) };
+    return { status: "ok", data: await TAURI_INVOKE("update_history_entry_tags", { id, tags }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getExperimentGroup(recording_id: number) : Promise<Result<ExperimentGroup | null, string>> {
+async updateHistoryEntryMetadata(id: number, groundTruth: string | null, quality: string | null, speechSpeed: string | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_experiment_group", { recording_id }) };
+    return { status: "ok", data: await TAURI_INVOKE("update_history_entry_metadata", { id, groundTruth, quality, speechSpeed }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async updateExperimentGroup(id: number, ground_truth: string | null, speech_speed: string | null, recording_quality: string | null, notes: string | null, is_complete: boolean | null) : Promise<Result<ExperimentGroup, string>> {
+async createExperimentGroup(recordingId: number) : Promise<Result<ExperimentGroup, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("update_experiment_group", { id, ground_truth, speech_speed, recording_quality, notes, is_complete }) };
+    return { status: "ok", data: await TAURI_INVOKE("create_experiment_group", { recordingId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async addTranscriptionVariant(experiment_group_id: number, model_id: string, parameters: string, transcription_text: string) : Promise<Result<TranscriptionVariant, string>> {
+async getExperimentGroup(recordingId: number) : Promise<Result<ExperimentGroup | null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("add_transcription_variant", { experiment_group_id, model_id, parameters, transcription_text }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_experiment_group", { recordingId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getVariantsForExperiment(experiment_group_id: number) : Promise<Result<TranscriptionVariant[], string>> {
+async updateExperimentGroup(id: number, groundTruth: string | null, speechSpeed: string | null, recordingQuality: string | null, notes: string | null, isComplete: boolean | null) : Promise<Result<ExperimentGroup, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_variants_for_experiment", { experiment_group_id }) };
+    return { status: "ok", data: await TAURI_INVOKE("update_experiment_group", { id, groundTruth, speechSpeed, recordingQuality, notes, isComplete }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async updateTranscriptionVariant(id: number, ranking: number | null, is_acceptable: boolean | null, notes: string | null, match_score: number | null) : Promise<Result<TranscriptionVariant, string>> {
+async addTranscriptionVariant(experimentGroupId: number, modelId: string, parameters: string, transcriptionText: string) : Promise<Result<TranscriptionVariant, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("update_transcription_variant", { id, ranking, is_acceptable, notes, match_score }) };
+    return { status: "ok", data: await TAURI_INVOKE("add_transcription_variant", { experimentGroupId, modelId, parameters, transcriptionText }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getVariantsForExperiment(experimentGroupId: number) : Promise<Result<TranscriptionVariant[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_variants_for_experiment", { experimentGroupId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateTranscriptionVariant(id: number, ranking: number | null, isAcceptable: boolean | null, notes: string | null, matchScore: number | null) : Promise<Result<TranscriptionVariant, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_transcription_variant", { id, ranking, isAcceptable, notes, matchScore }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1128,9 +1136,13 @@ async getCompleteExperiments() : Promise<Result<ExperimentGroup[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async generateVariants(experiment_group_id: number, models: string[]) : Promise<Result<GeneratedVariant[], string>> {
+/**
+ * Generate transcription variants using multiple models and parameter configurations.
+ * This runs the same audio through different transcription settings to compare accuracy.
+ */
+async generateVariants(experimentGroupId: number, models: string[]) : Promise<Result<GeneratedVariant[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("generate_variants", { experiment_group_id, models }) };
+    return { status: "ok", data: await TAURI_INVOKE("generate_variants", { experimentGroupId, models }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1228,7 +1240,14 @@ router_script_path?: string | null;
  * Path to a .env file containing env vars (e.g. TELEGRAM_DAILY_LOG_BOT)
  * to pass to the router script subprocess.
  */
-router_env_file?: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; 
+router_env_file?: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; 
+/**
+ * Pre-recording buffer in milliseconds for always-on microphone mode.
+ * Captures audio from the last N ms before the hotkey is pressed.
+ * Useful for catching the beginning of speech that starts before pressing the button.
+ * Default: 0 (disabled). Recommended: 1000-3000ms.
+ */
+pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; 
 /**
  * Automatically power-cycle the USB device when macOS wakes from sleep.
  */
@@ -1237,7 +1256,12 @@ usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_thre
  * Convert US English spelling to British English after transcription.
  * Applies common spelling conversions like: color → colour, analyze → analyse, etc.
  */
-convert_us_to_british?: boolean }
+convert_us_to_british?: boolean; 
+/**
+ * Repetition suppression level (0-3): 0=off, 1=light, 2=moderate, 3=aggressive.
+ * Manual control only - user adjusts when they notice artifacts.
+ */
+repetition_suppression_level?: number }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1323,6 +1347,11 @@ export type CustomSounds = { start: boolean; stop: boolean }
 export type CustomWord = { word: string; pronunciations?: string[] }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type ErrorRecord = { timestamp_ms: number; event_type: string; message: string; session_id: string | null }
+export type ExperimentGroup = { id: number; recording_id: number; original_transcript: string; ground_truth: string | null; speech_speed: string; recording_quality: string; created_at: number; is_complete: boolean; notes: string | null }
+/**
+ * Result of generating variants for an experiment
+ */
+export type GeneratedVariant = { model_id: string; parameters: string; transcription_text: string }
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
 export type HealthReport = { app_version: string; platform: string; uptime_secs: number; total_sessions: number; successful_sessions: number; failed_sessions: number; avg_transcription_ms: number; p95_transcription_ms: number; model_load_times: ModelLoadStat[]; recent_errors: ErrorRecord[]; usb_watchdog_cycles: number; device_changes: number; current_mic: string; current_model: string; log_level: string }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; model_id: string | null; routed: boolean; 
@@ -1331,12 +1360,27 @@ export type HistoryEntry = { id: number; file_name: string; timestamp: number; s
  * `[{"status":"✅","handler":"Daily","classification":"diary_entry","file_path":null}]`.
  * Set after the boss_router subprocess completes.
  */
-routing_result: string | null
+routing_result: string | null; 
 /**
  * JSON array of tags for categorizing recordings, e.g. `["fast", "slow", "test"]`.
  * Used for research and experimentation purposes.
  */
-tags: string | null }
+tags: string | null; 
+/**
+ * Ground truth text - what the user actually said (corrected transcription).
+ * Used for transcription accuracy experiments.
+ */
+ground_truth: string | null; 
+/**
+ * Quality rating: "good", "okay", "bad".
+ * User's assessment of recording quality.
+ */
+quality: string | null; 
+/**
+ * Speech speed: "fast", "normal", "slow".
+ * User's assessment of speech speed.
+ */
+speech_speed: string | null }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
@@ -1358,10 +1402,6 @@ export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
-export type ExperimentGroup = { id: number; recording_id: number; original_transcript: string; ground_truth: string | null; speech_speed: string; recording_quality: string; created_at: number; is_complete: boolean; notes: string | null }
-export type TranscriptionVariant = { id: number; experiment_group_id: number; model_id: string; parameters: string; transcription_text: string; match_score: number | null; ranking: number | null; is_acceptable: boolean; created_at: number; notes: string | null }
-export type VariantConfig = { model_id: string; parameters: string; display_name: string }
-export type GeneratedVariant = { model_id: string; parameters: string; transcription_text: string }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
@@ -1408,6 +1448,7 @@ phases_json: string | null;
 errors: string[] }
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
+export type TranscriptionVariant = { id: number; experiment_group_id: number; model_id: string; parameters: string; transcription_text: string; match_score: number | null; ranking: number | null; is_acceptable: boolean; created_at: number; notes: string | null }
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 /**
  * A USB device discovered by `uhubctl`.

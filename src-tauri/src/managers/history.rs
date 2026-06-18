@@ -34,8 +34,12 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN model_id TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN routed BOOLEAN NOT NULL DEFAULT 0;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN routing_result TEXT;"),
-    M::up("ALTER TABLE transcription_history ADD COLUMN tags TEXT;"), // JSON array of tags like ["fast", "slow"]
-    // Experiment system: track transcription accuracy tests
+    M::up("ALTER TABLE transcription_history ADD COLUMN tags TEXT;"),
+    // Quality and metadata for data tagging
+    M::up("ALTER TABLE transcription_history ADD COLUMN ground_truth TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN quality TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN speech_speed TEXT;"),
+    // Experiment system: track transcription accuracy tests (for programmatic use)
     M::up(
         "CREATE TABLE IF NOT EXISTS experiment_groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +137,15 @@ pub struct HistoryEntry {
     /// JSON array of tags for categorizing recordings, e.g. `["fast", "slow", "test"]`.
     /// Used for research and experimentation purposes.
     pub tags: Option<String>,
+    /// Ground truth text - what the user actually said (corrected transcription).
+    /// Used for transcription accuracy experiments.
+    pub ground_truth: Option<String>,
+    /// Quality rating: "good", "okay", "bad".
+    /// User's assessment of recording quality.
+    pub quality: Option<String>,
+    /// Speech speed: "fast", "normal", "slow".
+    /// User's assessment of speech speed.
+    pub speech_speed: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -281,6 +294,9 @@ impl HistoryManager {
             routed: row.get("routed")?,
             routing_result: row.get("routing_result")?,
             tags: row.get("tags")?,
+            ground_truth: row.get("ground_truth")?,
+            quality: row.get("quality")?,
+            speech_speed: row.get("speech_speed")?,
         })
     }
 
@@ -345,6 +361,9 @@ impl HistoryManager {
             routed,
             routing_result: None,
             tags: None,
+            ground_truth: None,
+            quality: None,
+            speech_speed: None,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -725,6 +744,54 @@ impl HistoryManager {
         )?;
 
         debug!("Updated tags for entry {}: {:?}", id, tags);
+
+        // Get the updated entry to emit
+        let entry = self.get_entry_by_id(id).await?;
+        if let Some(entry) = entry {
+            if let Err(e) = (HistoryUpdatePayload::Updated { entry }).emit(&self.app_handle) {
+                error!("Failed to emit history-updated event: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update metadata (ground_truth, quality, speech_speed) for a history entry.
+    /// Used for data tagging in the experiment system.
+    pub async fn update_metadata(
+        &self,
+        id: i64,
+        ground_truth: Option<String>,
+        quality: Option<String>,
+        speech_speed: Option<String>,
+    ) -> Result<()> {
+        let conn = self.get_connection()?;
+
+        if let Some(gt) = &ground_truth {
+            conn.execute(
+                "UPDATE transcription_history SET ground_truth = ?1 WHERE id = ?2",
+                params![gt, id],
+            )?;
+        }
+
+        if let Some(q) = &quality {
+            conn.execute(
+                "UPDATE transcription_history SET quality = ?1 WHERE id = ?2",
+                params![q, id],
+            )?;
+        }
+
+        if let Some(ss) = &speech_speed {
+            conn.execute(
+                "UPDATE transcription_history SET speech_speed = ?1 WHERE id = ?2",
+                params![ss, id],
+            )?;
+        }
+
+        debug!(
+            "Updated metadata for entry {}: ground_truth={:?}, quality={:?}, speech_speed={:?}",
+            id, ground_truth, quality, speech_speed
+        );
 
         // Get the updated entry to emit
         let entry = self.get_entry_by_id(id).await?;
