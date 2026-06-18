@@ -76,7 +76,7 @@ impl UsbWatchdog {
             cycling: Arc::new(AtomicBool::new(false)),
             last_cycle_epoch: AtomicU64::new(0),
             consecutive_failures: AtomicU64::new(0),
-            fail_threshold: AtomicU64::new(2),
+            fail_threshold: AtomicU64::new(1),
             app_handle,
         }
     }
@@ -465,7 +465,7 @@ impl UsbWatchdog {
     }
 }
 
-fn emit_cycle_event_with_handle(
+pub fn emit_cycle_event_with_handle(
     app_handle: &Option<tauri::AppHandle>,
     event_name: &str,
     message: &str,

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::Error,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -117,6 +118,10 @@ pub struct AudioRecorder {
     /// Stored as AtomicU32 to avoid float atomics. Multiply by 1_000_000
     /// to preserve precision when storing, divide when retrieving.
     max_level: Arc<AtomicU32>,
+    /// Pre-recording buffer in milliseconds. When >0, stores the last N ms
+    /// of audio continuously and prepends it to recordings when they start.
+    /// Only effective in always-on microphone mode.
+    pre_buffer_ms: Arc<AtomicU32>,
 }
 
 impl AudioRecorder {
@@ -131,6 +136,7 @@ impl AudioRecorder {
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
             opened_at_ms: Arc::new(AtomicU64::new(0)),
             max_level: Arc::new(AtomicU32::new(0)),
+            pre_buffer_ms: Arc::new(AtomicU32::new(0)),
         })
     }
 
@@ -156,6 +162,16 @@ impl AudioRecorder {
         F: Fn(Vec<f32>) + Send + Sync + 'static,
     {
         self.streaming_cb = Some(Arc::new(cb));
+        self
+    }
+
+    /// Set the pre-recording buffer duration in milliseconds.
+    /// When >0 and the stream is open (always-on mode), the recorder
+    /// continuously stores the last N ms of audio. When recording starts,
+    /// this buffer is prepended to capture speech that began before the
+    /// hotkey was pressed.
+    pub fn with_pre_buffer_ms(self, ms: u64) -> Self {
+        self.pre_buffer_ms.store(ms as u32, Ordering::Relaxed);
         self
     }
 
@@ -193,6 +209,7 @@ impl AudioRecorder {
         let streaming_cb = self.streaming_cb.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
+        let pre_buffer_ms = self.pre_buffer_ms.load(Ordering::Relaxed);
 
         let worker = std::thread::spawn(move || {
             let stop_flag = Arc::new(AtomicBool::new(false));
@@ -211,6 +228,19 @@ impl AudioRecorder {
                     channels,
                     config.sample_format()
                 );
+                
+                // Debug: Log all supported configs to detect if device capabilities change after USB cycling
+                if let Ok(configs) = thread_device.supported_input_configs() {
+                    for cfg in configs {
+                        log::debug!(
+                            "[audio-config] Supported: rate={}-{} channels={} format={:?}",
+                            cfg.min_sample_rate().0,
+                            cfg.max_sample_rate().0,
+                            cfg.channels(),
+                            cfg.sample_format()
+                        );
+                    }
+                }
 
                 let stream = match config.sample_format() {
                     cpal::SampleFormat::U8 => AudioRecorder::build_stream::<u8>(
@@ -279,6 +309,7 @@ impl AudioRecorder {
                         stop_flag,
                         last_chunk_ms,
                         max_level,
+                        pre_buffer_ms,
                     );
 
                     // Pause the stream before dropping to prevent heap corruption.
@@ -421,6 +452,12 @@ impl AudioRecorder {
         now_ms.saturating_sub(last) < timeout_ms
     }
 
+    /// Returns the name of the currently open device, if any.
+    /// Used to detect device changes after USB cycling.
+    pub fn device_name(&self) -> Option<String> {
+        self.device.as_ref().and_then(|d| d.name().ok())
+    }
+
     fn build_stream<T>(
         device: &cpal::Device,
         config: &cpal::SupportedStreamConfig,
@@ -438,6 +475,26 @@ impl AudioRecorder {
         let stream_cb = move |data: &[T], _: &cpal::InputCallbackInfo| {
             if stop_flag.load(Ordering::Relaxed) {
                 if !eos_sent {
+                    // Process the final buffer BEFORE sending EndOfStream.
+                    // This ensures the last ~10-50ms of audio isn't lost when stopping.
+                    // We do NOT reset eos_sent here because we want to send the final
+                    // samples only once, then the sentinel.
+                    output_buffer.clear();
+                    if channels == 1 {
+                        output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
+                    } else {
+                        let frame_count = data.len() / channels;
+                        output_buffer.reserve(frame_count);
+                        for frame in data.chunks_exact(channels) {
+                            let mono_sample = frame
+                                .iter()
+                                .map(|&sample| sample.to_sample::<f32>())
+                                .sum::<f32>()
+                                / channels as f32;
+                            output_buffer.push(mono_sample);
+                        }
+                    }
+                    let _ = sample_tx.send(AudioChunk::Samples(output_buffer.clone()));
                     let _ = sample_tx.send(AudioChunk::EndOfStream);
                     eos_sent = true;
                 }
@@ -641,6 +698,7 @@ fn run_consumer(
     stop_flag: Arc<AtomicBool>,
     last_chunk_ms: Arc<AtomicU64>,
     max_level: Arc<AtomicU32>,
+    pre_buffer_ms: u32,
 ) {
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
@@ -666,6 +724,17 @@ fn run_consumer(
     // period after the user released the hotkey, continuing to record
     // until silence is detected or the maximum time expires.
     let mut smart_stop: Option<SmartStopState> = None;
+
+    // Pre-recording buffer for always-on microphone mode.
+    // Stores the last N ms of resampled audio (at 16kHz) continuously.
+    // When recording starts, this buffer is prepended to capture speech
+    // that began before the hotkey was pressed.
+    let pre_buffer_max_samples = if pre_buffer_ms > 0 {
+        (pre_buffer_ms as u64 * constants::WHISPER_SAMPLE_RATE as u64 / 1000) as usize
+    } else {
+        0
+    };
+    let mut pre_buffer: VecDeque<f32> = VecDeque::with_capacity(pre_buffer_max_samples);
 
     // ---------- spectrum visualisation setup ---------------------------- //
     const BUCKETS: usize = 16;
@@ -814,6 +883,18 @@ fn run_consumer(
                 }
             }
             
+            // When NOT recording, store frames in pre-buffer for always-on mode
+            // This captures audio BEFORE the hotkey is pressed
+            if !recording && pre_buffer_max_samples > 0 {
+                // Pre-buffer raw resampled audio (no VAD filtering)
+                for &sample in frame {
+                    pre_buffer.push_back(sample);
+                    if pre_buffer.len() > pre_buffer_max_samples {
+                        pre_buffer.pop_front();
+                    }
+                }
+            }
+            
             let class = handle_frame(frame, recording, &vad, &mut processed_samples);
 
             // Update the running noise floor from VAD-noise frames while
@@ -878,6 +959,22 @@ fn run_consumer(
                 Cmd::Start => {
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
+                    
+                    // Prepend pre-buffer if configured (always-on mode)
+                    // This captures speech that started BEFORE the hotkey was pressed
+                    if pre_buffer_max_samples > 0 && !pre_buffer.is_empty() {
+                        let pre_buffer_len = pre_buffer.len();
+                        processed_samples.reserve(pre_buffer_len);
+                        processed_samples.extend(pre_buffer.iter().copied());
+                        log::debug!(
+                            "Pre-buffer: prepended {} samples ({}ms) to recording",
+                            pre_buffer_len,
+                            pre_buffer_len * 1000 / constants::WHISPER_SAMPLE_RATE as usize
+                        );
+                        // Clear the pre-buffer after use
+                        pre_buffer.clear();
+                    }
+                    
                     recording = true;
                     noise_floor = DEFAULT_NOISE_FLOOR;
                     noise_floor_initialised = false;

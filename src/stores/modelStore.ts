@@ -320,7 +320,8 @@ export const useModelStore = create<ModelsStore>()(
 
                 // Only update stats every 100ms minimum
                 if (timeDiff >= 0.1) {
-                  const bytesDiff = progress.downloaded - current.totalDownloaded;
+                  const bytesDiff =
+                    progress.downloaded - current.totalDownloaded;
                   const currentSpeed = bytesDiff / (1024 * 1024) / timeDiff;
                   const validCurrentSpeed = Math.max(0, currentSpeed);
                   const smoothedSpeed =

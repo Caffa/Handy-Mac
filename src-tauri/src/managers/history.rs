@@ -34,7 +34,65 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN model_id TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN routed BOOLEAN NOT NULL DEFAULT 0;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN routing_result TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN tags TEXT;"), // JSON array of tags like ["fast", "slow"]
+    // Experiment system: track transcription accuracy tests
+    M::up(
+        "CREATE TABLE IF NOT EXISTS experiment_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL,
+            original_transcript TEXT NOT NULL,
+            ground_truth TEXT,
+            speech_speed TEXT DEFAULT 'normal',
+            recording_quality TEXT DEFAULT 'good',
+            created_at INTEGER NOT NULL,
+            is_complete BOOLEAN NOT NULL DEFAULT 0,
+            notes TEXT,
+            FOREIGN KEY (recording_id) REFERENCES transcription_history(id)
+        );",
+    ),
+    M::up(
+        "CREATE TABLE IF NOT EXISTS transcription_variants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_group_id INTEGER NOT NULL,
+            model_id TEXT NOT NULL,
+            parameters TEXT NOT NULL,
+            transcription_text TEXT NOT NULL,
+            match_score REAL,
+            ranking INTEGER,
+            is_acceptable BOOLEAN NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            notes TEXT,
+            FOREIGN KEY (experiment_group_id) REFERENCES experiment_groups(id)
+        );",
+    ),
 ];
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct ExperimentGroup {
+    pub id: i64,
+    pub recording_id: i64,
+    pub original_transcript: String,
+    pub ground_truth: Option<String>,
+    pub speech_speed: String,
+    pub recording_quality: String,
+    pub created_at: i64,
+    pub is_complete: bool,
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct TranscriptionVariant {
+    pub id: i64,
+    pub experiment_group_id: i64,
+    pub model_id: String,
+    pub parameters: String,
+    pub transcription_text: String,
+    pub match_score: Option<f32>,
+    pub ranking: Option<i32>,
+    pub is_acceptable: bool,
+    pub created_at: i64,
+    pub notes: Option<String>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct PaginatedHistory {
@@ -72,6 +130,9 @@ pub struct HistoryEntry {
     /// `[{"status":"✅","handler":"Daily","classification":"diary_entry","file_path":null}]`.
     /// Set after the boss_router subprocess completes.
     pub routing_result: Option<String>,
+    /// JSON array of tags for categorizing recordings, e.g. `["fast", "slow", "test"]`.
+    /// Used for research and experimentation purposes.
+    pub tags: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -219,6 +280,7 @@ impl HistoryManager {
             model_id: row.get("model_id")?,
             routed: row.get("routed")?,
             routing_result: row.get("routing_result")?,
+            tags: row.get("tags")?,
         })
     }
 
@@ -282,6 +344,7 @@ impl HistoryManager {
             model_id,
             routed,
             routing_result: None,
+            tags: None,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -522,7 +585,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -536,7 +599,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -548,7 +611,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags
                      FROM transcription_history
                      ORDER BY id DESC ",
                 )?;
@@ -582,7 +645,8 @@ impl HistoryManager {
                 post_process_requested,
                 model_id,
                 routed,
-                routing_result
+                routing_result,
+                tags
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -650,6 +714,29 @@ impl HistoryManager {
         Ok(())
     }
 
+    /// Update tags for a history entry.
+    /// Tags should be a JSON array string like `["fast", "test"]` or None to clear.
+    pub async fn update_tags(&self, id: i64, tags: Option<String>) -> Result<()> {
+        let conn = self.get_connection()?;
+
+        conn.execute(
+            "UPDATE transcription_history SET tags = ?1 WHERE id = ?2",
+            params![tags, id],
+        )?;
+
+        debug!("Updated tags for entry {}: {:?}", id, tags);
+
+        // Get the updated entry to emit
+        let entry = self.get_entry_by_id(id).await?;
+        if let Some(entry) = entry {
+            if let Err(e) = (HistoryUpdatePayload::Updated { entry }).emit(&self.app_handle) {
+                error!("Failed to emit history-updated event: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn get_audio_file_path(&self, file_name: &str) -> PathBuf {
         self.recordings_dir.join(file_name)
     }
@@ -680,7 +767,8 @@ impl HistoryManager {
                 post_process_requested,
                 model_id,
                 routed,
-                routing_result
+                routing_result,
+                tags
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT ?1",
@@ -709,7 +797,8 @@ impl HistoryManager {
                 post_process_requested,
                 model_id,
                 routed,
-                routing_result
+                routing_result,
+                tags
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -758,6 +847,329 @@ impl HistoryManager {
         } else {
             format!("Recording {}", timestamp)
         }
+    }
+
+    // ========== Experiment Management ==========
+
+    /// Create a new experiment group for a saved recording
+    pub async fn create_experiment_group(
+        &self,
+        recording_id: i64,
+        original_transcript: String,
+    ) -> Result<ExperimentGroup> {
+        let conn = self.get_connection()?;
+        let created_at = Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT INTO experiment_groups (
+                recording_id,
+                original_transcript,
+                ground_truth,
+                speech_speed,
+                recording_quality,
+                created_at,
+                is_complete,
+                notes
+            ) VALUES (?1, ?2, NULL, 'normal', 'good', ?3, 0, NULL)",
+            params![recording_id, original_transcript, created_at],
+        )?;
+
+        let id = conn.last_insert_rowid();
+
+        let group = ExperimentGroup {
+            id,
+            recording_id,
+            original_transcript,
+            ground_truth: None,
+            speech_speed: "normal".to_string(),
+            recording_quality: "good".to_string(),
+            created_at,
+            is_complete: false,
+            notes: None,
+        };
+
+        debug!("Created experiment group {} for recording {}", id, recording_id);
+        Ok(group)
+    }
+
+    /// Get experiment group by recording ID
+    pub async fn get_experiment_group_by_recording(&self, recording_id: i64) -> Result<Option<ExperimentGroup>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, recording_id, original_transcript, ground_truth, speech_speed, recording_quality, created_at, is_complete, notes
+             FROM experiment_groups
+             WHERE recording_id = ?1",
+        )?;
+
+        let group = stmt
+            .query_row([recording_id], |row| {
+                Ok(ExperimentGroup {
+                    id: row.get(0)?,
+                    recording_id: row.get(1)?,
+                    original_transcript: row.get(2)?,
+                    ground_truth: row.get(3)?,
+                    speech_speed: row.get(4)?,
+                    recording_quality: row.get(5)?,
+                    created_at: row.get(6)?,
+                    is_complete: row.get(7)?,
+                    notes: row.get(8)?,
+                })
+            })
+            .optional()?;
+
+        Ok(group)
+    }
+
+    /// Update experiment group (ground truth, speech speed, quality, etc.)
+    pub async fn update_experiment_group(
+        &self,
+        id: i64,
+        ground_truth: Option<String>,
+        speech_speed: Option<String>,
+        recording_quality: Option<String>,
+        notes: Option<String>,
+        is_complete: Option<bool>,
+    ) -> Result<ExperimentGroup> {
+        let conn = self.get_connection()?;
+
+        // Build UPDATE query with concrete parameters
+        if ground_truth.is_some() {
+            conn.execute(
+                "UPDATE experiment_groups SET ground_truth = ?1 WHERE id = ?2",
+                params![ground_truth, id],
+            )?;
+        }
+        if let Some(speed) = speech_speed {
+            conn.execute(
+                "UPDATE experiment_groups SET speech_speed = ?1 WHERE id = ?2",
+                params![speed, id],
+            )?;
+        }
+        if let Some(quality) = recording_quality {
+            conn.execute(
+                "UPDATE experiment_groups SET recording_quality = ?1 WHERE id = ?2",
+                params![quality, id],
+            )?;
+        }
+        if notes.is_some() {
+            conn.execute(
+                "UPDATE experiment_groups SET notes = ?1 WHERE id = ?2",
+                params![notes, id],
+            )?;
+        }
+        if let Some(complete) = is_complete {
+            conn.execute(
+                "UPDATE experiment_groups SET is_complete = ?1 WHERE id = ?2",
+                params![complete as i32, id],
+            )?;
+        }
+
+        drop(conn);
+        self.get_experiment_group_by_id(id).await?
+            .ok_or_else(|| anyhow!("Experiment group {} not found after update", id))
+    }
+
+    /// Get experiment group by ID
+    pub async fn get_experiment_group_by_id(&self, id: i64) -> Result<Option<ExperimentGroup>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, recording_id, original_transcript, ground_truth, speech_speed, recording_quality, created_at, is_complete, notes
+             FROM experiment_groups
+             WHERE id = ?1",
+        )?;
+
+        let group = stmt
+            .query_row([id], |row| {
+                Ok(ExperimentGroup {
+                    id: row.get(0)?,
+                    recording_id: row.get(1)?,
+                    original_transcript: row.get(2)?,
+                    ground_truth: row.get(3)?,
+                    speech_speed: row.get(4)?,
+                    recording_quality: row.get(5)?,
+                    created_at: row.get(6)?,
+                    is_complete: row.get(7)?,
+                    notes: row.get(8)?,
+                })
+            })
+            .optional()?;
+
+        Ok(group)
+    }
+
+    /// Add a transcription variant to an experiment group
+    pub async fn add_variant(
+        &self,
+        experiment_group_id: i64,
+        model_id: String,
+        parameters: String,
+        transcription_text: String,
+    ) -> Result<TranscriptionVariant> {
+        let conn = self.get_connection()?;
+        let created_at = Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT INTO transcription_variants (
+                experiment_group_id,
+                model_id,
+                parameters,
+                transcription_text,
+                match_score,
+                ranking,
+                is_acceptable,
+                created_at,
+                notes
+            ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0, ?5, NULL)",
+            params![experiment_group_id, model_id, parameters, transcription_text, created_at],
+        )?;
+
+        let id = conn.last_insert_rowid();
+
+        Ok(TranscriptionVariant {
+            id,
+            experiment_group_id,
+            model_id,
+            parameters,
+            transcription_text,
+            match_score: None,
+            ranking: None,
+            is_acceptable: false,
+            created_at,
+            notes: None,
+        })
+    }
+
+    /// Get all variants for an experiment group
+    pub async fn get_variants_for_experiment(&self, experiment_group_id: i64) -> Result<Vec<TranscriptionVariant>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, experiment_group_id, model_id, parameters, transcription_text, match_score, ranking, is_acceptable, created_at, notes
+             FROM transcription_variants
+             WHERE experiment_group_id = ?1
+             ORDER BY ranking ASC NULLS LAST, created_at ASC",
+        )?;
+
+        let variants = stmt
+            .query_map([experiment_group_id], |row| {
+                Ok(TranscriptionVariant {
+                    id: row.get(0)?,
+                    experiment_group_id: row.get(1)?,
+                    model_id: row.get(2)?,
+                    parameters: row.get(3)?,
+                    transcription_text: row.get(4)?,
+                    match_score: row.get(5)?,
+                    ranking: row.get(6)?,
+                    is_acceptable: row.get(7)?,
+                    created_at: row.get(8)?,
+                    notes: row.get(9)?,
+                })
+            })?
+            .filter_map(|v| v.ok())
+            .collect();
+
+        Ok(variants)
+    }
+
+    /// Update a variant (ranking, acceptability, notes, match score)
+    pub async fn update_variant(
+        &self,
+        id: i64,
+        ranking: Option<i32>,
+        is_acceptable: Option<bool>,
+        notes: Option<String>,
+        match_score: Option<f32>,
+    ) -> Result<TranscriptionVariant> {
+        let conn = self.get_connection()?;
+
+        // Update each field separately to avoid dynamic trait objects
+        if let Some(r) = ranking {
+            conn.execute(
+                "UPDATE transcription_variants SET ranking = ?1 WHERE id = ?2",
+                params![r, id],
+            )?;
+        }
+        if let Some(acc) = is_acceptable {
+            conn.execute(
+                "UPDATE transcription_variants SET is_acceptable = ?1 WHERE id = ?2",
+                params![acc as i32, id],
+            )?;
+        }
+        if notes.is_some() {
+            conn.execute(
+                "UPDATE transcription_variants SET notes = ?1 WHERE id = ?2",
+                params![notes, id],
+            )?;
+        }
+        if let Some(score) = match_score {
+            conn.execute(
+                "UPDATE transcription_variants SET match_score = ?1 WHERE id = ?2",
+                params![score, id],
+            )?;
+        }
+
+        drop(conn);
+        self.get_variant_by_id(id).await?
+            .ok_or_else(|| anyhow!("Variant {} not found after update", id))
+    }
+
+    /// Get variant by ID
+    pub async fn get_variant_by_id(&self, id: i64) -> Result<Option<TranscriptionVariant>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, experiment_group_id, model_id, parameters, transcription_text, match_score, ranking, is_acceptable, created_at, notes
+             FROM transcription_variants
+             WHERE id = ?1",
+        )?;
+
+        let variant = stmt
+            .query_row([id], |row| {
+                Ok(TranscriptionVariant {
+                    id: row.get(0)?,
+                    experiment_group_id: row.get(1)?,
+                    model_id: row.get(2)?,
+                    parameters: row.get(3)?,
+                    transcription_text: row.get(4)?,
+                    match_score: row.get(5)?,
+                    ranking: row.get(6)?,
+                    is_acceptable: row.get(7)?,
+                    created_at: row.get(8)?,
+                    notes: row.get(9)?,
+                })
+            })
+            .optional()?;
+
+        Ok(variant)
+    }
+
+    /// Get all complete experiment groups (with ground truth and at least one variant)
+    pub async fn get_complete_experiment_groups(&self) -> Result<Vec<ExperimentGroup>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT eg.id, eg.recording_id, eg.original_transcript, eg.ground_truth, eg.speech_speed, eg.recording_quality, eg.created_at, eg.is_complete, eg.notes
+             FROM experiment_groups eg
+             INNER JOIN transcription_variants tv ON eg.id = tv.experiment_group_id
+             WHERE eg.ground_truth IS NOT NULL
+             ORDER BY eg.created_at DESC",
+        )?;
+
+        let groups = stmt
+            .query_map([], |row| {
+                Ok(ExperimentGroup {
+                    id: row.get(0)?,
+                    recording_id: row.get(1)?,
+                    original_transcript: row.get(2)?,
+                    ground_truth: row.get(3)?,
+                    speech_speed: row.get(4)?,
+                    recording_quality: row.get(5)?,
+                    created_at: row.get(6)?,
+                    is_complete: row.get(7)?,
+                    notes: row.get(8)?,
+                })
+            })?
+            .filter_map(|g| g.ok())
+            .collect();
+
+        Ok(groups)
     }
 }
 

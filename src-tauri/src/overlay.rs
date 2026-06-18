@@ -29,12 +29,9 @@ tauri_panel! {
     })
 }
 
-const OVERLAY_WIDTH: f64 = 172.0;
 /// Native window width for transcription preview — needs to accommodate
 /// the preview text which is ~3x wider than the visualizer pill (516px).
 const OVERLAY_WINDOW_WIDTH: f64 = 540.0;
-/// Visible pill width (centered within the wider window).
-const OVERLAY_PILL_WIDTH: f64 = 172.0;
 /// Minimum window height for the recording pill (just the pill, no preview).
 const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 100.0;
 /// Visible pill height used for position calculations.
@@ -371,6 +368,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
 /// overlay to vary icon/colours/labels based on the originating action.
 pub enum OverlayMode {
     Transcribe,
+    #[allow(dead_code)]
     TranscribeWithPostProcess,
     Router,
 }

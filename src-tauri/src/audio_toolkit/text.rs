@@ -606,6 +606,177 @@ pub(crate) fn dedup_word_fragments(text: &str) -> String {
     result.join(" ")
 }
 
+/// Protected words that should NOT be deduplicated even if repeated.
+/// These are commonly used in legitimate speech patterns (stuttering, emphasis, etc.).
+const PROTECTED_WORDS: &[&str] = &[
+    // Pronouns - common in stuttering/stammering
+    "i", "you", "he", "she", "we", "they", "it", "me", "him", "her", "us", "them",
+    // Articles
+    "a", "an", "the",
+    // Common intensifiers (often repeated for emphasis)
+    "very", "so", "quite", "really", "too", "just",
+    // Conjunctions
+    "and", "or", "but", "if", "then", "because", "that", "which",
+    // Common prepositions
+    "to", "for", "with", "from", "in", "on", "at", "by",
+    // Common verbs that might be repeated
+    "is", "was", "are", "were", "be", "been", "have", "has", "had", "do", "does", "did",
+    // Common adverbs
+    "not", "now", "here", "there", "how", "why", "when", "where",
+];
+
+/// Checks if a word is in the protected list (case-insensitive).
+fn is_protected_word(word: &str) -> bool {
+    let word_lower = word.to_lowercase();
+    PROTECTED_WORDS.contains(&word_lower.as_str())
+}
+
+/// Detects repeated consecutive words in text.
+///
+/// Returns a vector of (word, count) tuples for words that appear consecutively
+/// (count >= 2). This helps detect transcription artifacts like "def def definitely"
+/// or "the the house".
+///
+/// # Arguments
+/// * `text` - The text to analyze
+///
+/// # Returns
+/// Vector of (word, count) tuples for repeated consecutive words
+pub fn detect_repeated_words(text: &str) -> Vec<(&str, usize)> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut repetitions: Vec<(&str, usize)> = Vec::new();
+    let mut i = 0;
+
+    while i < words.len() {
+        // Extract alphabetic part for comparison
+        let current_alpha: String = words[i]
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .collect();
+        let current_lower = current_alpha.to_lowercase();
+
+        if current_alpha.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Count consecutive repetitions (case-insensitive, alphabetic only)
+        let mut count = 1;
+        while i + count < words.len() {
+            let next_alpha: String = words[i + count]
+                .chars()
+                .filter(|c| c.is_alphabetic())
+                .collect();
+            let next_lower = next_alpha.to_lowercase();
+
+            if next_alpha.is_empty() || next_lower != current_lower {
+                break;
+            }
+            count += 1;
+        }
+
+        if count >= 2 {
+            repetitions.push((words[i], count));
+        }
+
+        i += count;
+    }
+
+    repetitions
+}
+
+/// Removes repeated consecutive words based on suppression level.
+///
+/// Protected words (common pronouns, articles, intensifiers, etc.) are NEVER
+/// deduplicated even if repeated, as this is legitimate speech pattern.
+///
+/// Level 0 (Off): No removal
+/// Level 1 (Light): Remove 3+ repetitions to single instance (e.g., "def def def" -> "def")
+/// Level 2 (Moderate): Remove 2+ repetitions to single instance (e.g., "def def" -> "def")
+/// Level 3 (Aggressive): Same as Moderate
+///
+/// # Arguments
+/// * `text` - The text to process
+/// * `level` - Suppression level (0-3)
+///
+/// # Returns
+/// The text with repetitions removed according to level
+pub fn suppress_repeated_words(text: &str, level: u8) -> String {
+    if level == 0 {
+        return text.to_string();
+    }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return text.to_string();
+    }
+
+    let min_repetitions = if level >= 2 { 2 } else { 3 };
+
+    let mut result: Vec<String> = Vec::new();
+    let mut i = 0;
+
+    while i < words.len() {
+        // Extract alphabetic part for comparison
+        let current_alpha: String = words[i]
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .collect();
+        let current_lower = current_alpha.to_lowercase();
+
+        if current_alpha.is_empty() {
+            result.push(words[i].to_string());
+            i += 1;
+            continue;
+        }
+
+        // Count consecutive repetitions
+        let mut count = 1;
+        while i + count < words.len() {
+            let next_alpha: String = words[i + count]
+                .chars()
+                .filter(|c| c.is_alphabetic())
+                .collect();
+            let next_lower = next_alpha.to_lowercase();
+
+            if !next_alpha.is_empty() && next_lower == current_lower {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Check if this word is protected (should never be deduplicated)
+        if is_protected_word(&current_lower) {
+            // Keep all instances of protected words
+            for j in 0..count {
+                result.push(words[i + j].to_string());
+            }
+            i += count;
+            continue;
+        }
+
+        // If repetitions meet threshold, keep only one
+        if count >= min_repetitions {
+            // Keep only one instance, preserving punctuation
+            result.push(words[i].to_string());
+            i += count;
+        } else {
+            // Keep all instances
+            for j in 0..count {
+                result.push(words[i + j].to_string());
+            }
+            i += count;
+        }
+    }
+
+    result.join(" ")
+}
+
 /// Collapses repeated words (3+ repetitions) to a single instance.
 /// E.g., "wh wh wh wh" -> "wh", "I I I I" -> "I"
 fn collapse_stutters(text: &str) -> String {
@@ -2526,5 +2697,172 @@ mod tests {
             convert_us_to_british("I realized the color was wrong after I organized it"),
             "I realised the colour was wrong after I organised it"
         );
+    }
+
+    // --- detect_repeated_words tests ---
+
+    #[test]
+    fn test_detect_repeated_words_basic() {
+        let result = detect_repeated_words("def def definitely");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ("def", 2));
+    }
+
+    #[test]
+    fn test_detect_repeated_words_three_reps() {
+        // Note: "the" is a protected word, so it won't be suppressed
+        // but detect_repeated_words still reports it for informational purposes
+        let result = detect_repeated_words("the the the house");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ("the", 3));
+    }
+
+    #[test]
+    fn test_detect_repeated_words_no_reps() {
+        let result = detect_repeated_words("hello world test");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_detect_repeated_words_case_insensitive() {
+        let result = detect_repeated_words("The THE the house");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ("The", 3));
+    }
+
+    #[test]
+    fn test_detect_repeated_words_multiple_groups() {
+        let result = detect_repeated_words("def def the the test");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("def", 2));
+        assert_eq!(result[1], ("the", 2));
+    }
+
+    #[test]
+    fn test_detect_repeated_words_with_punctuation() {
+        let result = detect_repeated_words("def, def. definitely");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ("def,", 2));
+    }
+
+    // --- suppress_repeated_words tests ---
+
+    #[test]
+    fn test_suppress_repeated_words_off() {
+        let text = "def def definitely";
+        let result = suppress_repeated_words(text, 0);
+        assert_eq!(result, "def def definitely");
+    }
+
+    #[test]
+    fn test_suppress_repeated_words_light() {
+        let text = "def def def definitely";
+        let result = suppress_repeated_words(text, 1);
+        assert_eq!(result, "def definitely");
+    }
+
+    #[test]
+    fn test_suppress_repeated_words_moderate() {
+        let text = "def def definitely";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "def definitely");
+    }
+
+    #[test]
+    fn test_suppress_repeated_words_preserves_two() {
+        let text = "no no is fine";
+        // Level 1 requires 3+ reps, so "no no" (2 reps) is preserved
+        let result = suppress_repeated_words(text, 1);
+        assert_eq!(result, "no no is fine");
+    }
+
+    #[test]
+    fn test_suppress_repeated_words_with_punctuation() {
+        let text = "def, def. definitely";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "def, definitely");
+    }
+
+    #[test]
+    fn test_suppress_repeated_words_empty() {
+        let result = suppress_repeated_words("", 2);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_suppress_repeated_words_no_match() {
+        let text = "hello world test";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "hello world test");
+    }
+
+    // --- protected words tests ---
+
+    #[test]
+    fn test_suppress_protected_pronoun() {
+        // "I I I" should NOT be suppressed - it's a protected pronoun
+        let text = "I I I think so";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "I I I think so");
+    }
+
+    #[test]
+    fn test_suppress_protected_article() {
+        // "the the" should NOT be suppressed - "the" is a protected article
+        let text = "the the table";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "the the table");
+    }
+
+    #[test]
+    fn test_suppress_protected_intensifier() {
+        // "very very" should NOT be suppressed - legitimate emphasis
+        let text = "very very good";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "very very good");
+    }
+
+    #[test]
+    fn test_suppress_protected_conjunction() {
+        // "and and" should NOT be suppressed
+        let text = "and and then";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "and and then");
+    }
+
+    #[test]
+    fn test_suppress_non_protected_word() {
+        // "def def" SHOULD be suppressed - not a protected word
+        let text = "def def definitely";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "def definitely");
+    }
+
+    #[test]
+    fn test_suppress_mixed_protected_and_nonprotected() {
+        // Protected "I I" stays, non-protected "def def" gets cleaned
+        let text = "I I think def def definitely";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "I I think def definitely");
+    }
+
+    #[test]
+    fn test_suppress_protected_case_insensitive() {
+        // Protected words should work case-insensitively
+        let text = "THE THE table";
+        let result = suppress_repeated_words(text, 2);
+        assert_eq!(result, "THE THE table");
+    }
+
+    #[test]
+    fn test_is_protected_word() {
+        assert!(is_protected_word("i"));
+        assert!(is_protected_word("I"));
+        assert!(is_protected_word("the"));
+        assert!(is_protected_word("very"));
+        assert!(is_protected_word("and"));
+        assert!(!is_protected_word("def"));
+        assert!(!is_protected_word("hello"));
+        assert!(!is_protected_word("definitely"));
     }
 }

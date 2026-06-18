@@ -204,7 +204,10 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> =
     const handleAddWord = () => {
       const trimmedWord = newWord.trim();
       // Remove punctuation and special characters from the word
-      const sanitizedWord = trimmedWord.replace(/[<>"'&.,!?;:'"()\[\]{}@#$%^&*+=|\\/_~`]/g, "");
+      const sanitizedWord = trimmedWord.replace(
+        /[<>"'&.,!?;:'"()\[\]{}@#$%^&*+=|\\/_~`]/g,
+        "",
+      );
       if (!sanitizedWord || sanitizedWord.length > 100) return;
 
       if (advancedWords.some((w: CustomWord) => w.word === sanitizedWord)) {
@@ -244,7 +247,10 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> =
       if (!trimmed) return;
 
       // Remove punctuation from the pronunciation for cleaner matching
-      const sanitizedPronunciation = trimmed.replace(/[<>"'&.,!?;:'"()\[\]{}@#$%^&*+=|\\/_~`]/g, "");
+      const sanitizedPronunciation = trimmed.replace(
+        /[<>"'&.,!?;:'"()\[\]{}@#$%^&*+=|\\/_~`]/g,
+        "",
+      );
       if (!sanitizedPronunciation) return;
 
       const updated = [...advancedWords];
@@ -351,7 +357,6 @@ export const AdvancedCustomWords: React.FC<AdvancedCustomWordsProps> =
           }
         }
       },
-      // eslint-disable-next-line react-hooks/exhaustive-deps
       [t, getSetting, updateSetting],
     );
 

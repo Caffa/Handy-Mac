@@ -272,3 +272,73 @@ The backend's `is_active_use()` check (lines 1268-1276) correctly prevents hidin
 ### Key Insight
 
 When frontend state transitions depend on timeouts, **always check current state before executing the timeout's action**. Timers fire asynchronously and the component's state may have changed since the timer was set. The closure captures stale state by default — use a state updater function or ref to check current state at timeout-fire time. For overlays, this means checking if recording/transcription is still active before hiding.
+
+## Router Filing Race Condition — Hide-Overlay Event Race (2026-06-17)
+
+### Problem
+
+- When Handy is routing and filing a note, if the user starts a second routing transcription in the middle of this, the visualizer disappears when the first routing finishes filing
+- The first router's completion calls `hide_recording_overlay()` which emits a `hide-overlay` event
+- If the user has already started a new recording, this event incorrectly hides the overlay mid-recording
+
+### Root Cause
+
+The bug is a **race condition between the hide-overlay event emission and the frontend's event handler**:
+
+1. **Timeline:**
+   - **t=0ms**: Router #1 finishes filing → backend checks `is_active_use()` → returns `false` (no #2 yet)
+   - **t=0ms**: Backend calls `hide_recording_overlay()` → emits `hide-overlay` event immediately
+   - **t=50ms**: User presses hotkey for routing #2
+   - **t=50ms**: Backend starts recording #2 → emits `show-overlay` event with state "recording"
+   - **t=100ms**: Frontend receives `hide-overlay` → **unconditionally hides overlay** (no state check!)
+   - **t=100ms**: Frontend receives `show-overlay` → sets state to "recording" and `isVisible(true)`
+   - **Result**: Race between hide and show events - if hide is processed after show, overlay disappears
+
+2. **The `hide-overlay` event handler in `RecordingOverlay.tsx` (lines 549-561 original) only checked for `"usb-cycling"` state**, not for active recording/transcription states
+
+3. **The backend's `is_active_use()` check is insufficient** because:
+   - It checks state at the moment the router thread finishes
+   - The user might start a new recording **after** the check but **before** the event is processed
+   - Event emission is immediate, but frontend state changes happen asynchronously
+
+### Why the Previous Fix Didn't Catch This
+
+The 2026-06-15 fix addressed the **router-result timeout race** (frontend 5-second timeout firing during active recording). This fix addresses a different race: **the hide-overlay event emission race** where the event arrives at the frontend after a new recording has already started.
+
+### Fixes
+
+1. **Frontend: Add state check to `hide-overlay` event handler** (RecordingOverlay.tsx lines 548-588):
+   ```typescript
+   const unlistenHide = await listen("hide-overlay", () => {
+     // Check current state before hiding
+     setState((current) => {
+       // Don't hide if a new recording/transcription is active
+       if (
+         current === "recording" ||
+         current === "transcribing" ||
+         current === "processing" ||
+         current === "confirming"
+       ) {
+         // New transcription is active — ignore the hide event
+         return current;
+       }
+       if (current !== "usb-cycling") {
+         setIsVisible(false);
+         setTranscriptionPreview("");
+         setRouterResult(null);
+         setIsEditing(false);
+         setCountdown(0);
+       }
+       return current;
+     });
+   });
+   ```
+
+2. **Backend: Update comment documenting both race fixes** in `actions.rs` lines 1298-1317 noting:
+   - Backend guard (is_active_use check) for hide before user starts new recording
+   - Frontend guard (hide-overlay handler state check) for hide event arriving after new recording starts
+   - Frontend guard (router-result timeout state check) for 5-second timeout firing during new recording
+
+### Key Insight
+
+Event-based UI updates must **defensively check current state at event-handler time**, not trust the state that existed when the event was emitted. The emission time and handling time are different — the user may have started a new action in between. For overlays, this means the `hide-overlay` event handler must check if recording/transcription is still active before hiding, just like the router-result timeout handler does.

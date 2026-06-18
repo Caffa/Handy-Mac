@@ -7,6 +7,7 @@
 Handy is a **free, open source, cross-platform desktop speech-to-text application** built with Tauri (Rust backend + React/TypeScript frontend). It provides offline speech transcription using local Whisper and Parakeet models.
 
 ### Key Features:
+
 - **Offline Speech Recognition**: Uses Whisper models or Parakeet V3 for transcription
 - **Voice Activity Detection (VAD)**: Silero VAD for filtering silence
 - **Audio Feedback**: Configurable sound notifications for start/stop recording
@@ -14,6 +15,7 @@ Handy is a **free, open source, cross-platform desktop speech-to-text applicatio
 - **Multiple Recording Modes**: Always-on vs On-demand microphone modes
 
 ### Technology Stack:
+
 - **Frontend**: React + TypeScript + Tailwind CSS
 - **Backend**: Rust with Tauri 2.x
 - **Audio I/O**: CPAL (Cross-Platform Audio Library)
@@ -26,6 +28,7 @@ Handy is a **free, open source, cross-platform desktop speech-to-text applicatio
 ## Audio Processing Code Locations
 
 ### 1. Audio Feedback System
+
 **File**: `/src-tauri/src/audio_feedback.rs`
 
 The audio feedback system handles playback of start/stop recording sounds using the `rodio` library.
@@ -54,14 +57,17 @@ pub fn play_audio_file(
 ```
 
 **Relevant Settings** (from `/src-tauri/src/settings.rs`):
+
 - `audio_feedback: bool` - Enable/disable audio feedback
 - `audio_feedback_volume: f32` - Volume level (default: 0.5)
 - `sound_theme: SoundTheme` - Theme selection (Custom, Modern, Classic, etc.)
 
 ### 2. Audio Recording Manager
+
 **File**: `/src-tauri/src/managers/audio.rs` (1078 lines)
 
 This is the main audio management module that handles:
+
 - Microphone stream lifecycle
 - Recording state management
 - Bluetooth keep-alive functionality
@@ -108,11 +114,13 @@ if s_len > 0 && s_len < min_samples {
 ```
 
 ### 3. Audio Recorder (Low-Level)
+
 **File**: `/src-tauri/src/audio_toolkit/audio/recorder.rs` (917 lines)
 
 Core audio capture implementation using CPAL.
 
 **Key Features:**
+
 - Multi-threaded audio capture with dedicated worker thread
 - Resampling from device sample rate to 16kHz (Whisper sample rate)
 - Voice Activity Detection integration
@@ -159,6 +167,7 @@ const MIN_BUFFER_MS: u64 = 100;
 ```
 
 ### 4. VAD (Voice Activity Detection) Module
+
 **File**: `/src-tauri/src/audio_toolkit/vad/mod.rs` (111 lines)
 
 **Key Function: trim_trailing_silence (Lines 42-110)**
@@ -173,9 +182,9 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
     // to avoid clipping final consonants/tails of words
     const HANGOVER_FRAMES: usize = 5;
     const HANGOVER_SAMPLES: usize = HANGOVER_FRAMES * FRAME_SAMPLES;
-    
+
     // ... VAD processing logic ...
-    
+
     // Pad the cut point with a small hangover to avoid clipping
     let trimmed_len = (last_speech_frame_end + HANGOVER_SAMPLES).min(audio.len());
     audio[..trimmed_len].to_vec()
@@ -204,6 +213,7 @@ let audio = match self.app_handle.path().resolve(
 ```
 
 ### 5. Audio Resampler
+
 **File**: `/src-tauri/src/audio_toolkit/audio/resampler.rs` (99 lines)
 
 Uses `rubato` library for resampling audio from device sample rate to 16kHz.
@@ -222,6 +232,7 @@ const RESAMPLER_CHUNK_SIZE: usize = 1024;
 ```
 
 ### 6. Transcription Manager
+
 **File**: `/src-tauri/src/managers/transcription.rs` (1184+ lines)
 
 Handles transcription using various engines (Whisper, Parakeet, Moonshine, etc.)
@@ -273,15 +284,18 @@ if s_len > 0 && s_len < min_samples {
 **Location**: `/src-tauri/src/audio_toolkit/vad/mod.rs`, Lines 42-110
 
 The `trim_trailing_silence` function:
+
 - Processes audio in 30ms frames
 - Keeps 150ms (5 frames) of "hangover" after last detected speech
 - Uses a threshold of 0.5 for speech detection
 
 **Potential Issue**: If VAD is too aggressive (threshold too high), it might:
+
 - Trim actual speech at the end of sentences
 - Cut off trailing words or final consonants
 
 **Current Settings**:
+
 - Frame size: 30ms
 - Hangover: 150ms (5 frames)
 - Threshold: 0.5
@@ -291,6 +305,7 @@ The `trim_trailing_silence` function:
 **Location**: `/src-tauri/src/audio_toolkit/audio/recorder.rs`, Lines 63-90
 
 **Configuration**:
+
 - `SILENCE_RMS_MULTIPLIER`: 3.0x noise floor
 - `SILENCE_THRESHOLD_MS`: 300ms of silence before stopping
 - `MIN_BUFFER_MS`: 100ms minimum buffer
@@ -324,6 +339,7 @@ fn start_microphone_stream_inner(&self) -> Result<(), anyhow::Error> {
 **Location**: `/src-tauri/src/actions.rs`, Lines 486-510
 
 In on-demand mode:
+
 ```rust
 // Small delay to ensure microphone stream is active
 std::thread::sleep(std::time::Duration::from_millis(100));
@@ -362,17 +378,17 @@ pub fn finish(&mut self, mut emit: impl FnMut(&[f32])) {
 
 ### From `/src-tauri/src/settings.rs`:
 
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `audio_feedback` | bool | false | Enable audio feedback sounds |
-| `audio_feedback_volume` | f32 | 0.5 | Volume level for feedback sounds |
-| `sound_theme` | SoundTheme | Modern | Theme for start/stop sounds |
-| `always_on_microphone` | bool | false | Keep mic stream always open |
-| `extra_recording_buffer_ms` | u64 | 0 | Extra buffer time after hotkey release |
-| `lazy_stream_close` | bool | false | Delay mic stream close after recording |
-| `hybrid_mode_enabled` | bool | false | Use different models for short/long audio |
-| `hybrid_threshold_secs` | f64 | 10.0 | Threshold for short/long audio classification |
-| `mute_while_recording` | bool | false | Mute system output during recording |
+| Setting                     | Type       | Default | Description                                   |
+| --------------------------- | ---------- | ------- | --------------------------------------------- |
+| `audio_feedback`            | bool       | false   | Enable audio feedback sounds                  |
+| `audio_feedback_volume`     | f32        | 0.5     | Volume level for feedback sounds              |
+| `sound_theme`               | SoundTheme | Modern  | Theme for start/stop sounds                   |
+| `always_on_microphone`      | bool       | false   | Keep mic stream always open                   |
+| `extra_recording_buffer_ms` | u64        | 0       | Extra buffer time after hotkey release        |
+| `lazy_stream_close`         | bool       | false   | Delay mic stream close after recording        |
+| `hybrid_mode_enabled`       | bool       | false   | Use different models for short/long audio     |
+| `hybrid_threshold_secs`     | f64        | 10.0    | Threshold for short/long audio classification |
+| `mute_while_recording`      | bool       | false   | Mute system output during recording           |
 
 ---
 
@@ -408,16 +424,16 @@ pub fn finish(&mut self, mut emit: impl FnMut(&[f32])) {
 
 ## Key Files Summary
 
-| File | Purpose | Lines |
-|------|---------|-------|
-| `audio_feedback.rs` | Audio playback for feedback sounds | 142 |
-| `managers/audio.rs` | Audio recording manager | 1078 |
-| `audio_toolkit/audio/recorder.rs` | Low-level audio capture | 917 |
-| `audio_toolkit/vad/mod.rs` | VAD and silence trimming | 111 |
-| `audio_toolkit/audio/resampler.rs` | Audio resampling | 99 |
-| `managers/transcription.rs` | Transcription orchestration | 1184+ |
-| `actions.rs` | Action handlers for shortcuts | 1204+ |
-| `settings.rs` | Configuration settings | 1100+ |
+| File                               | Purpose                            | Lines |
+| ---------------------------------- | ---------------------------------- | ----- |
+| `audio_feedback.rs`                | Audio playback for feedback sounds | 142   |
+| `managers/audio.rs`                | Audio recording manager            | 1078  |
+| `audio_toolkit/audio/recorder.rs`  | Low-level audio capture            | 917   |
+| `audio_toolkit/vad/mod.rs`         | VAD and silence trimming           | 111   |
+| `audio_toolkit/audio/resampler.rs` | Audio resampling                   | 99    |
+| `managers/transcription.rs`        | Transcription orchestration        | 1184+ |
+| `actions.rs`                       | Action handlers for shortcuts      | 1204+ |
+| `settings.rs`                      | Configuration settings             | 1100+ |
 
 ---
 

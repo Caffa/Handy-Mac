@@ -125,6 +125,14 @@ async changeExtraRecordingBufferSetting(ms: number) : Promise<Result<null, strin
     else return { status: "error", error: e  as any };
 }
 },
+async changePreRecordingBufferSetting(ms: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_pre_recording_buffer_setting", { ms }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changePasteDelayMsSetting(ms: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_paste_delay_ms_setting", { ms }) };
@@ -997,6 +1005,9 @@ async unloadModelManually() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async setRepetitionSuppressionLevel(level: number) : Promise<void> {
+    await TAURI_INVOKE("set_repetition_suppression_level", { level });
+},
 async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<Result<PaginatedHistory, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_history_entries", { cursor, limit }) };
@@ -1037,6 +1048,14 @@ async retryHistoryEntryTranscription(id: number) : Promise<Result<null, string>>
     else return { status: "error", error: e  as any };
 }
 },
+async updateHistoryEntryTags(id: number, tags: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_history_entry_tags", { id, tags }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async updateHistoryLimit(limit: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_history_limit", { limit }) };
@@ -1048,6 +1067,70 @@ async updateHistoryLimit(limit: number) : Promise<Result<null, string>> {
 async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_recording_retention_period", { period }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createExperimentGroup(recording_id: number) : Promise<Result<ExperimentGroup, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_experiment_group", { recording_id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getExperimentGroup(recording_id: number) : Promise<Result<ExperimentGroup | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_experiment_group", { recording_id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateExperimentGroup(id: number, ground_truth: string | null, speech_speed: string | null, recording_quality: string | null, notes: string | null, is_complete: boolean | null) : Promise<Result<ExperimentGroup, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_experiment_group", { id, ground_truth, speech_speed, recording_quality, notes, is_complete }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async addTranscriptionVariant(experiment_group_id: number, model_id: string, parameters: string, transcription_text: string) : Promise<Result<TranscriptionVariant, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_transcription_variant", { experiment_group_id, model_id, parameters, transcription_text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getVariantsForExperiment(experiment_group_id: number) : Promise<Result<TranscriptionVariant[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_variants_for_experiment", { experiment_group_id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateTranscriptionVariant(id: number, ranking: number | null, is_acceptable: boolean | null, notes: string | null, match_score: number | null) : Promise<Result<TranscriptionVariant, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_transcription_variant", { id, ranking, is_acceptable, notes, match_score }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getCompleteExperiments() : Promise<Result<ExperimentGroup[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_complete_experiments") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async generateVariants(experiment_group_id: number, models: string[]) : Promise<Result<GeneratedVariant[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_variants", { experiment_group_id, models }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1145,7 +1228,7 @@ router_script_path?: string | null;
  * Path to a .env file containing env vars (e.g. TELEGRAM_DAILY_LOG_BOT)
  * to pass to the router script subprocess.
  */
-router_env_file?: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; 
+router_env_file?: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; 
 /**
  * Automatically power-cycle the USB device when macOS wakes from sleep.
  */
@@ -1248,7 +1331,12 @@ export type HistoryEntry = { id: number; file_name: string; timestamp: number; s
  * `[{"status":"✅","handler":"Daily","classification":"diary_entry","file_path":null}]`.
  * Set after the boss_router subprocess completes.
  */
-routing_result: string | null }
+routing_result: string | null
+/**
+ * JSON array of tags for categorizing recordings, e.g. `["fast", "slow", "test"]`.
+ * Used for research and experimentation purposes.
+ */
+tags: string | null }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
@@ -1270,6 +1358,10 @@ export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
+export type ExperimentGroup = { id: number; recording_id: number; original_transcript: string; ground_truth: string | null; speech_speed: string; recording_quality: string; created_at: number; is_complete: boolean; notes: string | null }
+export type TranscriptionVariant = { id: number; experiment_group_id: number; model_id: string; parameters: string; transcription_text: string; match_score: number | null; ranking: number | null; is_acceptable: boolean; created_at: number; notes: string | null }
+export type VariantConfig = { model_id: string; parameters: string; display_name: string }
+export type GeneratedVariant = { model_id: string; parameters: string; transcription_text: string }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }

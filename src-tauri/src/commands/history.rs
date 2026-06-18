@@ -153,3 +153,17 @@ pub async fn update_recording_retention_period(
 
     Ok(())
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn update_history_entry_tags(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    id: i64,
+    tags: Option<String>,
+) -> Result<(), String> {
+    history_manager
+        .update_tags(id, tags)
+        .await
+        .map_err(|e| e.to_string())
+}

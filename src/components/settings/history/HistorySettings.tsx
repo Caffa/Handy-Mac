@@ -411,7 +411,10 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   return (
     <div className="px-4 py-2 pb-5 flex flex-col gap-3">
       <div className="flex justify-between items-center">
-        <p className="text-sm font-medium">{formattedDate}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium">{formattedDate}</p>
+          <span className="text-xs text-text/40 font-mono">#{entry.id}</span>
+        </div>
         <div className="flex items-center gap-1">
           {/* Routing status tag */}
           {entry.routed && routingResult && (

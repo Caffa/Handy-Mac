@@ -564,8 +564,8 @@
         "description": "Keep microphone active for faster response"
       },
       "vadSensitivity": {
-        "title": "Recording Cutoff",
-        "description": "Adjust how quickly recording stops after you finish speaking",
+        "title": "Voice Detection Sensitivity",
+        "description": "Adjust how sensitive the voice activity detection is. Higher sensitivity detects speech more aggressively, while lower sensitivity requires clearer speech.",
         "veryQuick": "Very Quick",
         "quick": "Quick",
         "balanced": "Balanced (recommended)",
@@ -574,8 +574,8 @@
         "placeholder": "Select sensitivity..."
       },
       "streamingTranscription": {
-        "label": "Real-Time Preview",
-        "description": "Show transcription text while you speak. Uses additional CPU."
+        "label": "Live Transcription",
+        "description": "Show transcription text in real-time while you speak. Uses additional CPU."
       },
       "clamshellMicrophone": {
         "title": "Clamshell Microphone",
@@ -611,6 +611,10 @@
         "title": "Recording Buffer",
         "description": "Maximum extra time (ms) to keep recording after releasing the key. The buffer stops early when the microphone detects silence, so it rarely waits the full duration. 0 = no extra buffer."
       },
+      "preRecordingBuffer": {
+        "title": "Pre-Recording Buffer",
+        "description": "Capture audio from before you pressed the hotkey. When using Always-On microphone mode, stores the last N ms of audio continuously. When you press the hotkey, this audio is prepended to capture words you started saying before pressing. Recommended: 1000-3000ms. Only works with Always-On microphone mode."
+      },
       "usbWatchdog": {
         "label": "USB Power Watchdog",
         "description": "Automatically power-cycle the USB port when the microphone can't be opened. Requires uhubctl.",
@@ -627,6 +631,13 @@
           "label": "Cycle on Wake",
           "description": "Automatically power-cycle the USB port when the computer wakes up from sleep."
         }
+      },
+      "repetitionSuppression": {
+        "title": "Repetition Suppression",
+        "description": "Remove repeated consecutive words from transcriptions. Protected words (pronouns, articles, intensifiers) are never removed as they're often legitimate speech.",
+        "loading": "Loading...",
+        "level": "Suppression Level",
+        "protectedNotice": "Protected words: I, you, the, a, very, so, and, or, but, to, for, with, is, was, etc. These are never deduplicated even if repeated."
       }
     },
     "about": {
@@ -739,6 +750,7 @@
     "routing": "Routing…",
     "filing": "Filing…",
     "micDead": "Microphone not responding",
+    "lowAudio": "Low audio - check microphone",
     "confirming": "Sending in",
     "editing": "Edit text:",
     "send": "Send",
@@ -746,6 +758,7 @@
     "clickToEdit": "Click to edit",
     "editPlaceholder": "Edit your text...",
     "routerError": "Routing failed",
-    "routerSuccess": "Routed successfully"
+    "routerSuccess": "Routed successfully",
+    "noSpeech": "No speech detected"
   }
 }

@@ -1092,6 +1092,40 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         );
 
                         let transcription_text = transcription.text.trim().to_string();
+
+                        // ── Handle empty transcription in router mode ──
+                        // If the user didn't speak anything (silence), skip the routing flow
+                        // and show a notification instead of trying to route an empty message.
+                        if transcription_text.is_empty() {
+                            warn!("Router transcription returned empty text - skipping routing");
+
+                            // Trigger USB watchdog check (same as normal transcription)
+                            if rm.usb_watchdog.on_silent_transcription() {
+                                if let Err(e) = rm.restart_microphone_if_needed() {
+                                    error!(
+                                        "Failed to restart microphone after silent transcription USB cycle: {}",
+                                        e
+                                    );
+                                }
+                            }
+
+                            // Show notification about empty transcription
+                            send_macos_notification("Handy Router", "No speech detected");
+
+                            // Hide overlay and reset tray
+                            utils::hide_recording_overlay(&ah);
+                            change_tray_icon(&ah, TrayIconState::Idle);
+
+                            // End session tracking if present
+                            if let (Some(ref s), Some(tracker)) =
+                                (&sid, ah.try_state::<Arc<SessionTracker>>())
+                            {
+                                tracker.fail_session(s, "Empty transcription - no speech detected");
+                            }
+
+                            return;
+                        }
+
                         let model_id_for_history = transcription.model_id.clone();
 
                         // ── Structured session tracking ──
@@ -1274,9 +1308,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         //
                                         // FIX: Check is_active_use() before hiding. If true, keep overlay visible.
                                         // This guard catches the case where router finishes BEFORE user starts new
-                                        // recording. The frontend has a matching guard (RecordingOverlay.tsx lines
-                                        // 391-424) for the case where user starts recording DURING the 5-second
-                                        // result display timeout.
+                                        // recording. The frontend has TWO matching guards:
+                                        // 1. RecordingOverlay.tsx hide-overlay handler (lines 548-588): checks state
+                                        //    before hiding on event emission race condition.
+                                        // 2. RecordingOverlay.tsx router-result timeout (lines 414-441): checks state
+                                        //    before hiding after 5-second result display timeout.
                                         //
                                         // See learning-log.md "Router Filing Race Condition — Overlay Dismissal Bug"
                                         // for full documentation.
@@ -1337,6 +1373,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         // ── Clean up overlay after routing fails ──
                                         // Same BUGFIX (2026-06-15) as success case above — see comment there.
                                         // Don't hide overlay if another transcription is active.
+                                        // The frontend also guards against hide-overlay event races.
                                         let is_other_active = ah_for_router
                                             .try_state::<Arc<TranscriptionCoordinator>>()
                                             .map_or(false, |coord| coord.is_active_use());

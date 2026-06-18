@@ -1,7 +1,7 @@
 use crate::audio_toolkit::audio::AudioQualityMetrics;
 use crate::audio_toolkit::{
     apply_advanced_custom_words, apply_custom_words, convert_us_to_british,
-    filter_transcription_output, trim_trailing_silence,
+    filter_transcription_output, suppress_repeated_words, trim_trailing_silence,
 };
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
@@ -569,7 +569,7 @@ impl TranscriptionManager {
         // Critical for Whisper (hallucinates on silence) AND for autoregressive
         // transducer models (Parakeet TDT) whose decoder free-runs language
         // model continuations into trailing silence.
-        let effective_model_info = self.model_manager.get_model_info(&effective_model_id);
+        let _effective_model_info = self.model_manager.get_model_info(&effective_model_id);
 
         let audio = match self.app_handle.path().resolve(
             "resources/models/silero_vad_v4.onnx",
@@ -916,6 +916,13 @@ impl TranscriptionManager {
             filtered_result
         };
 
+        // Apply repetition suppression based on current level
+        // (protected words like pronouns, articles, and intensifiers are never removed)
+        let suppressed_result = suppress_repeated_words(
+            &british_result,
+            settings.repetition_suppression_level,
+        );
+
         let et = std::time::Instant::now();
         let translation_note = if settings.translate_to_english {
             " (translated)"
@@ -946,7 +953,7 @@ impl TranscriptionManager {
             }
         }
 
-        let final_result = british_result;
+        let final_result = suppressed_result;
 
         if final_result.is_empty() {
             info!("Transcription result is empty");

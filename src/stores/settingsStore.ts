@@ -168,6 +168,8 @@ const settingUpdaters: {
     commands.changeWhisperGpuDevice(value as number),
   extra_recording_buffer_ms: (value) =>
     commands.changeExtraRecordingBufferSetting(value as number),
+  pre_recording_buffer_ms: (value) =>
+    commands.changePreRecordingBufferSetting(value as number),
   usb_watchdog_enabled: (value) =>
     commands.changeUsbWatchdogEnabledSetting(value as boolean),
   usb_watchdog_device_name: (value) =>

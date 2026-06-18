@@ -10,7 +10,8 @@ pub use audio::{
     save_wav_file, verify_wav_file, AudioRecorder, CpalDeviceInfo,
 };
 pub use text::{
-    apply_advanced_custom_words, apply_custom_words, convert_us_to_british, filter_transcription_output,
+    apply_advanced_custom_words, apply_custom_words, convert_us_to_british, detect_repeated_words,
+    filter_transcription_output, suppress_repeated_words,
 };
 pub use utils::get_cpal_host;
 pub use vad::{trim_trailing_silence, SileroVad, VoiceActivityDetector};

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import { RefreshCcw } from "lucide-react";
 import { ToggleSwitch } from "../../ui/ToggleSwitch";
 import { useSettings } from "../../../hooks/useSettings";
 import { commands, type UsbDevice } from "@/bindings";
@@ -154,7 +155,7 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
                   className="px-2 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
                   title={t("settings.debug.usbWatchdog.refreshDevices")}
                 >
-                  <span aria-hidden="true">↻</span>
+                  <RefreshCcw className="w-4 h-4" />
                 </button>
               </div>
               {deviceName && (

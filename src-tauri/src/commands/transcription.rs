@@ -20,6 +20,15 @@ pub fn set_model_unload_timeout(app: AppHandle, timeout: ModelUnloadTimeout) {
 
 #[tauri::command]
 #[specta::specta]
+pub fn set_repetition_suppression_level(app: AppHandle, level: u8) {
+    let mut settings = get_settings(&app);
+    // Clamp level to valid range (0-3)
+    settings.repetition_suppression_level = level.min(3);
+    write_settings(&app, settings);
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn get_model_load_status(
     transcription_manager: State<TranscriptionManager>,
 ) -> Result<ModelLoadStatus, String> {

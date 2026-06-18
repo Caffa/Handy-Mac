@@ -134,7 +134,16 @@ impl AudioVisualiser {
 
             // Map configurable dB range to 0-1 with gain and curve shaping
             let normalized = ((db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0.0, 1.0);
-            buckets[bucket_idx] = (normalized * GAIN).powf(CURVE_POWER).clamp(0.0, 1.0);
+            let bucket_value = (normalized * GAIN).powf(CURVE_POWER).clamp(0.0, 1.0);
+            buckets[bucket_idx] = bucket_value;
+            
+            // Debug: Log first bucket value periodically to track signal levels
+            if bucket_idx == 0 {
+                log::debug!(
+                    "[visualizer] bucket_0: db={:.1} normalized={:.3} value={:.3} noise_floor={:.1}",
+                    db, normalized, bucket_value, self.noise_floor[bucket_idx]
+                );
+            }
         }
 
         // Apply light smoothing to reduce jitter
@@ -152,5 +161,6 @@ impl AudioVisualiser {
         self.buffer.clear();
         // Reset noise floor to initial values
         self.noise_floor.fill(-40.0);
+        log::debug!("AudioVisualiser reset: noise floor initialized to -40dB");
     }
 }
