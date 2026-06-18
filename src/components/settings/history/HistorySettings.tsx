@@ -268,6 +268,19 @@ export const HistorySettings: React.FC = () => {
     quality?: string,
     speech_speed?: string,
   ) => {
+    // Optimistic update
+    setEntries((prev) =>
+      prev.map((e) => {
+        if (e.id !== id) return e;
+        return {
+          ...e,
+          ...(ground_truth !== undefined && { ground_truth }),
+          ...(quality !== undefined && { quality }),
+          ...(speech_speed !== undefined && { speech_speed }),
+        };
+      }),
+    );
+
     try {
       const result = await commands.updateHistoryEntryMetadata(
         id,
@@ -277,9 +290,13 @@ export const HistorySettings: React.FC = () => {
       );
       if (result.status !== "ok") {
         console.error("Failed to update metadata:", result.error);
+        // Reload to revert on failure
+        loadPage();
       }
     } catch (e) {
       console.error("Failed to update metadata:", e);
+      // Reload to revert on failure
+      loadPage();
     }
   };
 
