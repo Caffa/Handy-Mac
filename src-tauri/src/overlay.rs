@@ -38,6 +38,8 @@ const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 100.0;
 const OVERLAY_PILL_HEIGHT: f64 = 36.0;
 /// Maximum percentage of screen height to use for the overlay window.
 const OVERLAY_MAX_SCREEN_RATIO: f64 = 0.85;
+/// Window height for live captions mode (taller to show multi-line text)
+const OVERLAY_LIVE_CAPTIONS_HEIGHT: f64 = 280.0;
 
 #[cfg(target_os = "macos")]
 const OVERLAY_TOP_OFFSET: f64 = 46.0;
@@ -464,7 +466,11 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
             let actual_height = match mode {
                 OverlayMode::Router if state == "confirming" || state == "processing" => window_height,
                 OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
-                    OVERLAY_WINDOW_MIN_HEIGHT
+                    if state == "recording" && settings::get_settings(app_handle).live_captions_enabled {
+                        OVERLAY_LIVE_CAPTIONS_HEIGHT
+                    } else {
+                        OVERLAY_WINDOW_MIN_HEIGHT
+                    }
                 }
             };
 

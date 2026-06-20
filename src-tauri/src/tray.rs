@@ -332,6 +332,10 @@ mod tests {
             model_id: None,
             routed: false,
             routing_result: None,
+            tags: None,
+            ground_truth: None,
+            quality: None,
+            speech_speed: None,
         }
     }
 

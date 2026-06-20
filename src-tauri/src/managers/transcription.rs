@@ -959,11 +959,21 @@ impl TranscriptionManager {
             WordCorrectionMode::Replacement => !settings.word_replacements.is_empty(),
         };
 
+        info!(
+            "Word correction check: mode={:?}, has_words={}, is_whisper={}, num_replacements={}, raw_text='{}'",
+            settings.word_correction_mode,
+            has_words,
+            is_whisper,
+            settings.word_replacements.len(),
+            result.text
+        );
+
         // Save suppressed token count before result.text is consumed below
         let suppressed_token_count = result.suppressed_token_count;
 
         let corrected_result = if has_words && !is_whisper {
-            match settings.word_correction_mode {
+            let before = result.text.clone();
+            let corrected = match settings.word_correction_mode {
                 WordCorrectionMode::WordBias => apply_custom_words(
                     &result.text,
                     &settings.custom_words,
@@ -977,7 +987,19 @@ impl TranscriptionManager {
                 WordCorrectionMode::Replacement => {
                     apply_word_replacements(&result.text, &settings.word_replacements)
                 }
+            };
+            if corrected != before {
+                info!("Word correction applied: '{}' -> '{}'", before, corrected);
+            } else if !settings.word_replacements.is_empty() {
+                // Log first few replacements for debugging
+                let sample: Vec<_> = settings.word_replacements.iter().take(3).collect();
+                debug!(
+                    "No word correction applied. Text: '{}', Sample replacements: {:?}",
+                    before,
+                    sample.iter().map(|r| format!("{}->{}", r.mistranslation, r.correction)).collect::<Vec<_>>()
+                );
             }
+            corrected
         } else {
             result.text
         };
