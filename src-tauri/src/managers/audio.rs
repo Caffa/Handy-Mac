@@ -191,9 +191,20 @@ fn create_audio_recorder(
                         }
                     };
 
+                    // Check if streaming was cancelled (recording stopped)
+                    if tm.is_streaming_cancelled() {
+                        debug!("Skipping streaming transcription - cancellation requested");
+                        return;
+                    }
+
                     // Transcribe the audio samples
                     match tm.transcribe(samples) {
                         Ok(result) if !result.text.is_empty() => {
+                            // Check again after transcription in case it was cancelled mid-work
+                            if tm.is_streaming_cancelled() {
+                                debug!("Discarding streaming transcription result - cancelled");
+                                return;
+                            }
                             // Emit partial transcription event to frontend
                             if let Err(e) = app_handle.emit("partial-transcription", &result.text) {
                                 warn!("Failed to emit partial-transcription event: {}", e);

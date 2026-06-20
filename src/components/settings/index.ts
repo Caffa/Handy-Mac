@@ -21,6 +21,8 @@ export { ShortcutInput } from "./ShortcutInput";
 export { TranslateToEnglish } from "./TranslateToEnglish";
 export { CustomWords } from "./CustomWords";
 export { AdvancedCustomWords } from "./AdvancedCustomWords";
+export { WordReplacements } from "./WordReplacements";
+export { WordCorrectionModeSelector } from "./WordCorrectionModeSelector";
 export { WordCorrectionThreshold } from "./WordCorrectionThreshold";
 export { PostProcessingToggle } from "./PostProcessingToggle";
 export { PostProcessingSettingsApi } from "./PostProcessingSettingsApi";

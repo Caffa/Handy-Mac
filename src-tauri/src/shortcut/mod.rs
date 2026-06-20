@@ -728,6 +728,18 @@ pub fn change_word_correction_mode(
 
 #[tauri::command]
 #[specta::specta]
+pub fn update_word_replacements(
+    app: AppHandle,
+    replacements: Vec<settings::WordReplacement>,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.word_replacements = replacements;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_extra_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.extra_recording_buffer_ms = ms;

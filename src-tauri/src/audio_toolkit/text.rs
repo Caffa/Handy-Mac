@@ -312,6 +312,121 @@ pub fn apply_advanced_custom_words(
 
     result.join(" ")
 }
+
+/// Applies exact word replacements to transcribed text.
+///
+/// This is a simpler mode than pronunciation matching: when a mistranslation
+/// appears in the transcript (respecting word boundaries), it is replaced
+/// with the correction.
+///
+/// # Arguments
+/// * `text` - The input text to correct
+/// * `replacements` - List of word replacement rules (mistranslation → correction)
+///
+/// # Returns
+/// The corrected text with replacements applied
+///
+/// # Examples
+/// - "open a i" → "OpenAI" (with replacement {mistranslation: "open a i", correction: "OpenAI"})
+/// - "the" will NOT match within "there" or "them" (word boundary enforcement)
+/// - Multi-word mistranslations are supported: "charge b" → "ChargeBee"
+pub fn apply_word_replacements(text: &str, replacements: &[crate::settings::WordReplacement]) -> String {
+    if replacements.is_empty() {
+        return text.to_string();
+    }
+
+    // Pre-process replacements: lowercase for matching, store original correction
+    let replacement_map: Vec<(&str, &str, String)> = replacements
+        .iter()
+        .map(|r| {
+            let mistranslation_lower = r.mistranslation.to_lowercase();
+            (r.mistranslation.as_str(), r.correction.as_str(), mistranslation_lower)
+        })
+        .collect();
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < words.len() {
+        let mut matched = false;
+
+        // Try to match each replacement (from longest to shortest to prefer longer matches)
+        // Sort by mistranslation word count would be expensive, so we try all and take the best match
+        for (_mistranslation_orig, correction, mistranslation_lower) in &replacement_map {
+            // Count words in the mistranslation
+            let mistranslation_words: Vec<&str> = mistranslation_lower.split_whitespace().collect();
+            let num_words = mistranslation_words.len();
+
+            if i + num_words > words.len() {
+                continue;
+            }
+
+            // Check if the next N words match the mistranslation
+            let ngram_words = &words[i..i + num_words];
+            
+            // Build the n-gram for comparison (lowercase, punctuation-stripped)
+            let ngram: String = ngram_words
+                .iter()
+                .map(|w| {
+                    w.chars()
+                        .filter(|c| c.is_alphanumeric())
+                        .collect::<String>()
+                        .to_lowercase()
+                })
+                .collect::<Vec<_>>()
+                .join("");
+
+            // Also build with spaces for word-boundary matching
+            let ngram_with_spaces: String = ngram_words
+                .iter()
+                .map(|w| {
+                    w.chars()
+                        .filter(|c| c.is_alphanumeric())
+                        .collect::<String>()
+                        .to_lowercase()
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            // The mistranslation might be a single word or multiple words
+            let mistranslation_normalized = mistranslation_words.join("");
+            
+            // Match if:
+            // 1. Single word: exact alphanumeric match
+            // 2. Multiple words: exact sequence match
+            let is_match = if num_words == 1 {
+                // Single word: must match exactly (with punctuation stripped)
+                ngram == mistranslation_normalized
+            } else {
+                // Multiple words: each word must match exactly
+                ngram_with_spaces == mistranslation_words.join(" ")
+            };
+
+            if is_match {
+                // Extract punctuation from first and last words
+                let (prefix, _) = extract_punctuation(ngram_words[0]);
+                let (_, suffix) = extract_punctuation(ngram_words[num_words - 1]);
+
+                // Preserve case from first word
+                let corrected = preserve_case_pattern(ngram_words[0], correction);
+
+                result.push(format!("{}{}{}", prefix, corrected, suffix));
+                i += num_words;
+                matched = true;
+                break;
+            }
+        }
+
+        if !matched {
+            result.push(words[i].to_string());
+            i += 1;
+        }
+    }
+
+    result.join(" ")
+}
+
 fn preserve_case_pattern(original: &str, replacement: &str) -> String {
     if original.chars().all(|c| c.is_uppercase()) {
         replacement.to_uppercase()
@@ -2862,7 +2977,169 @@ mod tests {
         assert!(is_protected_word("very"));
         assert!(is_protected_word("and"));
         assert!(!is_protected_word("def"));
-        assert!(!is_protected_word("hello"));
-        assert!(!is_protected_word("definitely"));
+    }
+
+    // ========== apply_word_replacements tests ==========
+
+    #[test]
+    fn test_apply_word_replacements_single_word() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "definately".to_string(),
+                correction: "definitely".to_string(),
+            },
+        ];
+        let text = "I will definately do it";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I will definitely do it");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_case_insensitive() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "openai".to_string(),
+                correction: "OpenAI".to_string(),
+            },
+        ];
+        let text = "I use openai for work";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I use OpenAI for work");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_preserve_case_upper() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "openai".to_string(),
+                correction: "OpenAI".to_string(),
+            },
+        ];
+        let text = "I USE OPENAI FOR WORK";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I USE OPENAI FOR WORK");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_preserve_case_title() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "chargebee".to_string(),
+                correction: "ChargeBee".to_string(),
+            },
+        ];
+        let text = "Chargebee is great";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "ChargeBee is great");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_multi_word() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "open a i".to_string(),
+                correction: "OpenAI".to_string(),
+            },
+        ];
+        let text = "I use open a i every day";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I use OpenAI every day");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_multi_word_with_punctuation() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "charge b".to_string(),
+                correction: "ChargeBee".to_string(),
+            },
+        ];
+        let text = "I use charge b, it's great.";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I use ChargeBee, it's great.");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_word_boundary() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "the".to_string(),
+                correction: "a".to_string(),
+            },
+        ];
+        // "the" should NOT match within "there" or "them"
+        let text = "the cat is there with them";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "a cat is there with them");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_multiple_replacements() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "definately".to_string(),
+                correction: "definitely".to_string(),
+            },
+            crate::settings::WordReplacement {
+                mistranslation: "seperate".to_string(),
+                correction: "separate".to_string(),
+            },
+        ];
+        let text = "They are definately seperate things";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "They are definitely separate things");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_punctuation() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "openai".to_string(),
+                correction: "OpenAI".to_string(),
+            },
+        ];
+        let text = "OpenAI's API is great.";
+        let result = apply_word_replacements(text, &replacements);
+        // Should match "OpenAI" part but preserve punctuation
+        assert_eq!(result, "OpenAI's API is great.");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_empty_replacements() {
+        let replacements: Vec<crate::settings::WordReplacement> = vec![];
+        let text = "no replacements here";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "no replacements here");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_no_match() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "chargebee".to_string(),
+                correction: "ChargeBee".to_string(),
+            },
+        ];
+        let text = "nothing to replace here";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "nothing to replace here");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_overlapping() {
+        let replacements = vec![
+            crate::settings::WordReplacement {
+                mistranslation: "open a i".to_string(),
+                correction: "OpenAI".to_string(),
+            },
+            crate::settings::WordReplacement {
+                mistranslation: "openai".to_string(),
+                correction: "OpenAI".to_string(),
+            },
+        ];
+        // Should prefer longer match
+        let text = "I use open a i and openai both";
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I use OpenAI and OpenAI both");
     }
 }

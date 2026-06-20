@@ -453,7 +453,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -604,7 +604,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -618,7 +618,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -630,7 +630,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
                      FROM transcription_history
                      ORDER BY id DESC ",
                 )?;
@@ -665,7 +665,10 @@ impl HistoryManager {
                 model_id,
                 routed,
                 routing_result,
-                tags
+                tags,
+                ground_truth,
+                quality,
+                speech_speed
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -695,7 +698,11 @@ impl HistoryManager {
                 post_process_requested,
                 model_id,
                 routed,
-                routing_result
+                routing_result,
+                tags,
+                ground_truth,
+                quality,
+                speech_speed
              FROM transcription_history
              WHERE LENGTH(transcription_text) > 0
              ORDER BY timestamp DESC
@@ -835,7 +842,10 @@ impl HistoryManager {
                 model_id,
                 routed,
                 routing_result,
-                tags
+                tags,
+                ground_truth,
+                quality,
+                speech_speed
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT ?1",
@@ -865,7 +875,10 @@ impl HistoryManager {
                 model_id,
                 routed,
                 routing_result,
-                tags
+                tags,
+                ground_truth,
+                quality,
+                speech_speed
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -1260,7 +1273,11 @@ mod tests {
                 post_process_requested BOOLEAN NOT NULL DEFAULT 0,
                 model_id TEXT,
                 routed BOOLEAN NOT NULL DEFAULT 0,
-                routing_result TEXT
+                routing_result TEXT,
+                tags TEXT,
+                ground_truth TEXT,
+                quality TEXT,
+                speech_speed TEXT
             );",
         )
         .expect("create transcription_history table ");
@@ -1278,8 +1295,14 @@ mod tests {
                 post_processed_text,
                 post_process_prompt,
                 post_process_requested,
-                model_id
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                model_id,
+                routed,
+                routing_result,
+                tags,
+                ground_truth,
+                quality,
+                speech_speed
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 format!("handy-{timestamp}.wav "),
                 timestamp,
@@ -1289,6 +1312,12 @@ mod tests {
                 post_processed,
                 Option::<String>::None,
                 false,
+                Option::<String>::None,
+                false,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
                 Option::<String>::None,
             ],
         )

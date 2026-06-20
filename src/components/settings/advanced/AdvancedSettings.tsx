@@ -25,6 +25,8 @@ import { HybridMode } from "../HybridMode";
 import { ToggleSwitch } from "../../ui/ToggleSwitch";
 import { WordCorrectionThreshold } from "../WordCorrectionThreshold";
 import { AdvancedCustomWords } from "../AdvancedCustomWords";
+import { WordReplacements } from "../WordReplacements";
+import { WordCorrectionModeSelector } from "../WordCorrectionModeSelector";
 import { VerificationMode } from "../VerificationMode";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
 import { VadSensitivity } from "../VadSensitivity";
@@ -34,8 +36,7 @@ export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
   const { getSetting, updateSetting, isUpdating } = useSettings();
   const experimentalEnabled = getSetting("experimental_enabled") || false;
-  const useAdvancedCustomWords =
-    getSetting("use_advanced_custom_words") || false;
+  const wordCorrectionMode = getSetting("word_correction_mode") || "WordBias";
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
@@ -56,28 +57,17 @@ export const AdvancedSettings: React.FC = () => {
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.transcription")}>
-        <ToggleSwitch
-          checked={useAdvancedCustomWords}
-          onChange={(checked) =>
-            updateSetting("use_advanced_custom_words", checked)
-          }
-          disabled={isUpdating("use_advanced_custom_words")}
-          isUpdating={isUpdating("use_advanced_custom_words")}
-          label={t("settings.debug.advancedCustomWords.toggleLabel")}
-          description={t(
-            "settings.debug.advancedCustomWords.toggleDescription",
-          )}
-          descriptionMode="tooltip"
-          grouped={true}
-        />
-        {!useAdvancedCustomWords ? (
+        <WordCorrectionModeSelector descriptionMode="tooltip" grouped />
+        {wordCorrectionMode === "WordBias" ? (
           <>
             <CustomWords descriptionMode="tooltip" grouped />
             <CustomFillerWords descriptionMode="tooltip" grouped />
             <WordCorrectionThreshold descriptionMode="tooltip" grouped />
           </>
-        ) : (
+        ) : wordCorrectionMode === "Pronunciation" ? (
           <AdvancedCustomWords descriptionMode="tooltip" grouped />
+        ) : (
+          <WordReplacements descriptionMode="tooltip" grouped />
         )}
         <AppendTrailingSpace descriptionMode="tooltip" grouped={true} />
         <ConvertUsToBritish descriptionMode="tooltip" grouped={true} />

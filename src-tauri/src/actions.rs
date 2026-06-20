@@ -448,6 +448,9 @@ impl ShortcutAction for TranscribeAction {
         // Load model in the background
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
+        
+        // Clear any previous streaming cancellation flag when starting a new recording
+        tm.clear_streaming_cancel();
 
         // Load ASR model and VAD model in parallel
         tm.initiate_model_load();
@@ -554,6 +557,11 @@ impl ShortcutAction for TranscribeAction {
     fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
         // Unregister the cancel shortcut when transcription stops
         shortcut::unregister_cancel_shortcut(app);
+
+        // Cancel any in-progress streaming transcription to prevent wasted work
+        let tm = app.state::<Arc<TranscriptionManager>>();
+        tm.cancel_streaming();
+        debug!("Cancelled streaming transcription for final transcription");
 
         let stop_time = Instant::now();
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
@@ -954,6 +962,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
         // Load model in the background
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
+        
+        // Clear any previous streaming cancellation flag when starting a new recording
+        tm.clear_streaming_cancel();
+        
         tm.initiate_model_load();
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
@@ -1041,6 +1053,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
     fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
         // Unregister cancel shortcut
         shortcut::unregister_cancel_shortcut(app);
+
+        // Cancel any in-progress streaming transcription to prevent wasted work
+        let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
+        tm.cancel_streaming();
+        debug!("Cancelled streaming transcription for router final transcription");
 
         let stop_time = Instant::now();
         debug!(

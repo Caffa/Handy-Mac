@@ -96,6 +96,10 @@ pub struct TranscriptionManager {
     /// every 2.5s during recording. When recording stops, the final transcription
     /// must wait for any in-progress streaming transcription to complete.
     is_transcribing: Arc<AtomicBool>,
+    /// Flag to cancel streaming transcription when recording stops.
+    /// When set, the streaming callback should skip transcription and return early.
+    /// This prevents wasted work when the user stops recording mid-streaming-transcription.
+    cancel_streaming: Arc<AtomicBool>,
 }
 
 impl TranscriptionManager {
@@ -111,6 +115,7 @@ impl TranscriptionManager {
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
             is_transcribing: Arc::new(AtomicBool::new(false)),
+            cancel_streaming: Arc::new(AtomicBool::new(false)),
         };
 
         // Start the idle watcher
@@ -247,6 +252,25 @@ impl TranscriptionManager {
             unload_duration.as_millis()
         );
         Ok(())
+    }
+
+    /// Request cancellation of any in-progress streaming transcription.
+    /// Called when recording stops to prevent wasted work on partial audio.
+    pub fn cancel_streaming(&self) {
+        self.cancel_streaming.store(true, Ordering::Release);
+        debug!("Streaming cancellation requested");
+    }
+
+    /// Clear the streaming cancellation flag.
+    /// Should be called when starting a new recording session.
+    pub fn clear_streaming_cancel(&self) {
+        self.cancel_streaming.store(false, Ordering::Release);
+    }
+
+    /// Check if streaming cancellation has been requested.
+    /// Streaming callbacks should check this and abort early if true.
+    pub fn is_streaming_cancelled(&self) -> bool {
+        self.cancel_streaming.load(Ordering::Acquire)
     }
 
     fn now_ms() -> u64 {
