@@ -474,6 +474,20 @@
         "label": "Mikrofon immer aktiv",
         "description": "Mikrofon für schnellere Reaktion aktiv halten"
       },
+      "vadSensitivity": {
+        "title": "Spracherkennungsempfindlichkeit",
+        "description": "Passe die Empfindlichkeit der Spracherkennung an. Höhere Empfindlichkeit erkennt Sprache aggressiver, während niedrigere Empfindlichkeit klarere Sprache erfordert.",
+        "veryQuick": "Sehr schnell",
+        "quick": "Schnell",
+        "balanced": "Ausgewogen (empfohlen)",
+        "relaxed": "Entspannt",
+        "veryRelaxed": "Sehr entspannt",
+        "placeholder": "Empfindlichkeit auswählen..."
+      },
+      "liveCaptions": {
+        "label": "Live-Untertitel",
+        "description": "Live-Untertitel während der Aufnahme unter den Lautstärkebalken anzeigen. Verwendet zusätzliche CPU."
+      },
       "clamshellMicrophone": {
         "title": "Clamshell-Mikrofon",
         "description": "Mikrofon bei geschlossenem Laptop-Deckel"

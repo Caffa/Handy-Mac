@@ -474,6 +474,20 @@
         "label": "Mikrofon Her Zaman Açık",
         "description": "Daha hızlı yanıt için mikrofonu aktif tutar"
       },
+      "vadSensitivity": {
+        "title": "Ses Algılama Hassasiyeti",
+        "description": "Ses aktivitesi algılamanın hassasiyetini ayarlayın. Daha yüksek hassasiyet konuşmayı daha agresif algılar, daha düşük hassasiyet daha net konuşma gerektirir.",
+        "veryQuick": "Çok Hızlı",
+        "quick": "Hızlı",
+        "balanced": "Dengeli (önerilen)",
+        "relaxed": "Rahat",
+        "veryRelaxed": "Çok Rahat",
+        "placeholder": "Hassasiyet seçin..."
+      },
+      "liveCaptions": {
+        "label": "Canlı Altyazılar",
+        "description": "Kayıt sırasında ses seviyesi çubuklarının altında canlı altyazıları gösterir. Ek CPU kullanır."
+      },
       "clamshellMicrophone": {
         "title": "Kapalı Kapak Mikrofonu",
         "description": "Dizüstü bilgisayar kapağı kapalıyken kullanılacak mikrofon"

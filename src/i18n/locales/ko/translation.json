@@ -474,6 +474,20 @@
         "label": "항상 켜진 마이크",
         "description": "더 빠른 응답을 위해 마이크를 활성 상태로 유지"
       },
+      "vadSensitivity": {
+        "title": "음성 감지 민감도",
+        "description": "음성 활동 감지의 민감도를 조정합니다. 민감도가 높을수록 음성을 더 적극적으로 감지하고, 낮을수록 더 명확한 음성이 필요합니다.",
+        "veryQuick": "매우 빠름",
+        "quick": "빠름",
+        "balanced": "균형 (권장)",
+        "relaxed": "완화됨",
+        "veryRelaxed": "매우 완화됨",
+        "placeholder": "민감도 선택..."
+      },
+      "liveCaptions": {
+        "label": "실시간 자막",
+        "description": "녹음 중 볼륨 표시줄 아래에 실시간 자막을 표시합니다. 추가 CPU를 사용합니다."
+      },
       "clamshellMicrophone": {
         "title": "클램셸 마이크",
         "description": "노트북 덮개가 닫혀 있을 때 사용할 마이크"

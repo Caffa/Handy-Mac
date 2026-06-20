@@ -474,6 +474,20 @@
         "label": "Microfone Sempre Ativo",
         "description": "Manter microfone ativo para resposta mais rápida"
       },
+      "vadSensitivity": {
+        "title": "Sensibilidade de Detecção de Voz",
+        "description": "Ajuste a sensibilidade da detecção de atividade de voz. Maior sensibilidade detecta fala de forma mais agressiva, enquanto menor sensibilidade requer fala mais clara.",
+        "veryQuick": "Muito Rápido",
+        "quick": "Rápido",
+        "balanced": "Equilibrado (recomendado)",
+        "relaxed": "Relaxado",
+        "veryRelaxed": "Muito Relaxado",
+        "placeholder": "Selecionar sensibilidade..."
+      },
+      "liveCaptions": {
+        "label": "Legendas em Tempo Real",
+        "description": "Mostrar legendas em tempo real abaixo das barras de volume durante a gravação. Usa CPU adicional."
+      },
       "clamshellMicrophone": {
         "title": "Microfone em Modo Fechado",
         "description": "Microfone a usar quando a tampa do laptop está fechada"

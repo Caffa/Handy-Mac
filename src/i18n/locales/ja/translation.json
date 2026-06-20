@@ -474,6 +474,20 @@
         "label": "マイク常時オン",
         "description": "より速い応答のためにマイクをアクティブに保つ"
       },
+      "vadSensitivity": {
+        "title": "音声検出感度",
+        "description": "音声アクティビティ検出の感度を調整します。感度を高くすると音声をより積極的に検出し、低くするとより明瞭な音声が必要になります。",
+        "veryQuick": "非常に速い",
+        "quick": "速い",
+        "balanced": "バランス（推奨）",
+        "relaxed": "ゆるやか",
+        "veryRelaxed": "非常にゆるやか",
+        "placeholder": "感度を選択..."
+      },
+      "liveCaptions": {
+        "label": "ライブキャプション",
+        "description": "録音中に音量バーの下にライブキャプションを表示します。追加のCPUを使用します。"
+      },
       "clamshellMicrophone": {
         "title": "クラムシェルマイク",
         "description": "ノートパソコンの蓋を閉じたときに使用するマイク"

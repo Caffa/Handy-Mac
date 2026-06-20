@@ -474,6 +474,20 @@
         "label": "Vždy zapnutý mikrofon",
         "description": "Udržovat mikrofon aktivní pro rychlejší odezvu"
       },
+      "vadSensitivity": {
+        "title": "Citlivost detekce hlasu",
+        "description": "Upravte citlivost detekce hlasové aktivity. Vyšší citlivost detekuje řeč agresivněji, zatímco nižší citlivost vyžaduje jasnější řeč.",
+        "veryQuick": "Velmi rychlá",
+        "quick": "Rychlá",
+        "balanced": "Vyvážená (doporučeno)",
+        "relaxed": "Uvolněná",
+        "veryRelaxed": "Velmi uvolněná",
+        "placeholder": "Vyberte citlivost..."
+      },
+      "liveCaptions": {
+        "label": "Živé titulky",
+        "description": "Zobrazit živé titulky pod ukazateli hlasitosti během nahrávání. Používá další procesor."
+      },
       "clamshellMicrophone": {
         "title": "Mikrofon při zavřeném víku",
         "description": "Mikrofon, který se použije při zavřeném víku notebooku"

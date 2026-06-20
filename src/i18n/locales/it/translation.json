@@ -474,6 +474,20 @@
         "label": "Microfono Sempre Attivo",
         "description": "Tieni il microfono attivo per una risposta più rapida"
       },
+      "vadSensitivity": {
+        "title": "Sensibilità Rilevamento Vocale",
+        "description": "Regola la sensibilità del rilevamento dell'attività vocale. Una sensibilità più alta rileva il parlato in modo più aggressivo, mentre una sensibilità più bassa richiede un parlato più chiaro.",
+        "veryQuick": "Molto Veloce",
+        "quick": "Veloce",
+        "balanced": "Bilanciato (consigliato)",
+        "relaxed": "Rilassato",
+        "veryRelaxed": "Molto Rilassato",
+        "placeholder": "Seleziona sensibilità..."
+      },
+      "liveCaptions": {
+        "label": "Sottotitoli in Tempo Reale",
+        "description": "Mostra sottotitoli in tempo reale sotto le barre del volume durante la registrazione. Usa CPU aggiuntiva."
+      },
       "clamshellMicrophone": {
         "title": "Microfono a portatile chiuso",
         "description": "Microfono da usare quando il portatile è chiuso"

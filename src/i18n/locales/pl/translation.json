@@ -474,6 +474,20 @@
         "label": "Mikrofon zawsze aktywny",
         "description": "Utrzymuj mikrofon aktywny dla szybszej reakcji"
       },
+      "vadSensitivity": {
+        "title": "Czułość wykrywania głosu",
+        "description": "Dostosuj czułość wykrywania aktywności głosowej. Wyższa czułość wykrywa mowę bardziej agresywnie, podczas gdy niższa czułość wymaga wyraźniejszej mowy.",
+        "veryQuick": "Bardzo szybka",
+        "quick": "Szybka",
+        "balanced": "Zrównoważona (zalecane)",
+        "relaxed": "Rozluźniona",
+        "veryRelaxed": "Bardzo rozluźniona",
+        "placeholder": "Wybierz czułość..."
+      },
+      "liveCaptions": {
+        "label": "Napisy na żywo",
+        "description": "Wyświetlaj napisy na żywo pod paskami głośności podczas nagrywania. Używa dodatkowego procesora."
+      },
       "clamshellMicrophone": {
         "title": "Mikrofon przy zamkniętej pokrywie",
         "description": "Mikrofon używany, gdy pokrywa laptopa jest zamknięta"

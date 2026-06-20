@@ -474,6 +474,20 @@
         "label": "麥克風常開",
         "description": "保持麥克風啟用以獲得更快的回應"
       },
+      "vadSensitivity": {
+        "title": "語音檢測靈敏度",
+        "description": "調整語音活動檢測的靈敏度。靈敏度更高會更積極地檢測語音，靈敏度更低則需要更清晰的語音。",
+        "veryQuick": "非常快",
+        "quick": "快",
+        "balanced": "平衡（推薦）",
+        "relaxed": "寬鬆",
+        "veryRelaxed": "非常寬鬆",
+        "placeholder": "選擇靈敏度..."
+      },
+      "liveCaptions": {
+        "label": "即時字幕",
+        "description": "在錄製期間在音量條下方顯示即時字幕。使用額外的 CPU。"
+      },
       "clamshellMicrophone": {
         "title": "闔蓋麥克風",
         "description": "筆記型電腦闔蓋時使用的麥克風"
