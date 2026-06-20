@@ -2413,7 +2413,7 @@ dependencies = [
 
 [[package]]
 name = "handy"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2469,6 +2469,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "transcribe-rs",
+ "uuid",
  "vad-rs",
  "varcon",
  "windows 0.61.3",

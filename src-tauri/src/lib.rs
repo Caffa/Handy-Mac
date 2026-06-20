@@ -36,6 +36,7 @@ use managers::audio::AudioRecordingManager;
 use managers::history::HistoryManager;
 use managers::model::ModelManager;
 use managers::transcription::TranscriptionManager;
+use managers::transcription_retry::TranscriptionRetryQueue;
 
 #[cfg(unix)]
 use signal_hook::consts::{SIGUSR1, SIGUSR2};
@@ -168,6 +169,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     );
     let history_manager =
         Arc::new(HistoryManager::new(app_handle).expect("Failed to initialize history manager"));
+    let retry_queue = Arc::new(
+        TranscriptionRetryQueue::new(app_handle.clone())
+            .expect("Failed to initialize transcription retry queue"),
+    );
 
     // Apply accelerator preferences before any model loads
     managers::transcription::apply_accelerator_settings(app_handle);
@@ -178,6 +183,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(model_manager.clone());
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
+    app_handle.manage(retry_queue.clone());
     app_handle.manage(Arc::new(session::SessionTracker::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
 
@@ -386,6 +392,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::update_custom_words,
             shortcut::update_advanced_custom_words,
             shortcut::update_custom_filler_words,
+            shortcut::update_word_replacements,
             shortcut::change_use_advanced_custom_words_setting,
             shortcut::change_word_correction_mode,
             shortcut::suspend_binding,
@@ -479,6 +486,11 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_recording_retention_period,
             commands::history::update_history_entry_tags,
             commands::history::update_history_entry_metadata,
+            commands::transcription_retry::get_retry_queue,
+            commands::transcription_retry::retry_transcription,
+            commands::transcription_retry::remove_from_retry_queue,
+            commands::transcription_retry::clear_retry_queue,
+            commands::transcription_retry::get_retry_queue_count,
             commands::experiments::create_experiment_group,
             commands::experiments::get_experiment_group,
             commands::experiments::update_experiment_group,

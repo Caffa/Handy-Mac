@@ -6,6 +6,7 @@ use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
+use crate::managers::transcription_retry::{TranscriptionFailure, TranscriptionRetryQueue};
 use crate::overlay::OverlayMode;
 use crate::session::SessionTracker;
 use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID};
@@ -779,20 +780,83 @@ impl ShortcutAction for TranscribeAction {
                             {
                                 tracker.fail_session(s, &err.to_string());
                             }
+                            
+                            // Classify the error for retry handling
+                            let failure_type = TranscriptionFailure::Unknown {
+                                error: err.to_string(),
+                            };
+                            
+                            // Get fallback models from settings (hybrid mode models)
+                            let fallback_models = {
+                                let settings = get_settings(&ah);
+                                let mut models = Vec::new();
+                                if settings.hybrid_mode_enabled {
+                                    if let Some(short_model) = &settings.hybrid_short_audio_model {
+                                        if short_model != &settings.selected_model {
+                                            models.push(short_model.clone());
+                                        }
+                                    }
+                                    if let Some(long_model) = &settings.hybrid_long_audio_model {
+                                        if long_model != &settings.selected_model 
+                                            && !models.contains(long_model) {
+                                            models.push(long_model.clone());
+                                        }
+                                    }
+                                }
+                                models
+                            };
+                            
                             // Save entry with empty text so user can retry
-                            if wav_saved {
-                                if let Err(save_err) = hm.save_entry(
-                                    file_name,
+                            let history_entry_id = if wav_saved {
+                                let entry_result = hm.save_entry(
+                                    file_name.clone(),
                                     String::new(),
                                     post_process,
                                     None,
                                     None,
                                     None,
                                     false, // routed: not sent to router
-                                ) {
-                                    error!("Failed to save failed history entry: {}", save_err);
+                                );
+                                
+                                match entry_result {
+                                    Ok(entry) => {
+                                        info!("Saved history entry {} for failed transcription", entry.id);
+                                        Some(entry.id)
+                                    }
+                                    Err(save_err) => {
+                                        error!("Failed to save failed history entry: {}", save_err);
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            
+                            // Add to retry queue for automatic retry
+                            if wav_saved {
+                                if let Some(retry_queue) = ah.try_state::<Arc<TranscriptionRetryQueue>>() {
+                                    let wav_path = hm.recordings_dir().join(&file_name);
+                                    let model_id = {
+                                        let settings = get_settings(&ah);
+                                        settings.selected_model.clone()
+                                    };
+                                    
+                                    if let Err(retry_err) = retry_queue.add_failed_transcription(
+                                        wav_path,
+                                        model_id,
+                                        fallback_models,
+                                        failure_type,
+                                        post_process,
+                                        None, // post_process_prompt
+                                        history_entry_id,
+                                    ) {
+                                        error!("Failed to add transcription to retry queue: {}", retry_err);
+                                    } else {
+                                        info!("Added failed transcription to retry queue for automatic retry");
+                                    }
                                 }
                             }
+                            
                             utils::hide_recording_overlay(&ah);
                             change_tray_icon(&ah, TrayIconState::Idle);
                         }
