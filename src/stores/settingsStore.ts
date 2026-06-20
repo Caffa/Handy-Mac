@@ -6,6 +6,7 @@ import type {
   AudioDevice,
   WhisperAcceleratorSetting,
   OrtAcceleratorSetting,
+  WordReplacement,
 } from "@/bindings";
 import { commands } from "@/bindings";
 
@@ -126,6 +127,10 @@ const settingUpdaters: {
     commands.updateCustomFillerWords(value as string[]),
   advanced_custom_words: (value) =>
     commands.updateAdvancedCustomWords(value as any[]),
+  word_replacements: (value) =>
+    commands.updateWordReplacements(value as WordReplacement[]),
+  word_correction_mode: (value) =>
+    commands.changeWordCorrectionMode(value as string),
   use_advanced_custom_words: (value) =>
     commands.changeUseAdvancedCustomWordsSetting(value as boolean),
   word_correction_threshold: (value) =>
@@ -235,6 +240,7 @@ export const useSettingsStore = create<SettingsStore>()(
             clamshell_microphone: settings.clamshell_microphone ?? "Default",
             selected_output_device:
               settings.selected_output_device ?? "Default",
+            vad_sensitivity: settings.vad_sensitivity ?? "balanced",
           };
           set({ settings: normalizedSettings, isLoading: false });
         } else {

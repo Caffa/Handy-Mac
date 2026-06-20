@@ -5,6 +5,26 @@ import { Dropdown } from "../ui/Dropdown";
 import { SettingContainer } from "../ui/SettingContainer";
 import type { VadSensitivity as VadSensitivityType } from "../../bindings";
 
+// Valid VAD sensitivity values for runtime validation
+const VALID_SENSITIVITIES: VadSensitivityType[] = [
+  "very_quick",
+  "quick",
+  "balanced",
+  "relaxed",
+  "very_relaxed",
+];
+
+// Validate and normalize VAD sensitivity value
+const validateVadSensitivity = (value: unknown): VadSensitivityType => {
+  if (
+    typeof value === "string" &&
+    VALID_SENSITIVITIES.includes(value as VadSensitivityType)
+  ) {
+    return value as VadSensitivityType;
+  }
+  return "balanced";
+};
+
 interface VadSensitivityProps {
   descriptionMode?: "inline" | "tooltip";
   grouped?: boolean;
@@ -15,8 +35,7 @@ export const VadSensitivity: React.FC<VadSensitivityProps> = React.memo(
     const { t } = useTranslation();
     const { getSetting, updateSetting, isUpdating } = useSettings();
 
-    const vadSensitivity: VadSensitivityType =
-      (getSetting("vad_sensitivity") as VadSensitivityType) || "balanced";
+    const vadSensitivity = validateVadSensitivity(getSetting("vad_sensitivity"));
 
     const options = [
       {
@@ -52,7 +71,7 @@ export const VadSensitivity: React.FC<VadSensitivityProps> = React.memo(
           selectedValue={vadSensitivity}
           options={options}
           onSelect={(value) =>
-            updateSetting("vad_sensitivity", value as VadSensitivityType)
+            updateSetting("vad_sensitivity", validateVadSensitivity(value))
           }
           disabled={isUpdating("vad_sensitivity")}
           placeholder={t("settings.advanced.vadSensitivity.placeholder")}

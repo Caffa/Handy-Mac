@@ -8,6 +8,18 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+// Safe JSON parse with fallback
+const parseJsonArray = <T,>(json: string | null, fallback: T[] = []): T[] => {
+  if (!json) return fallback;
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch (e) {
+    console.error("Failed to parse JSON:", json, e);
+    return fallback;
+  }
+};
+
 interface TestResult {
   modelId: string;
   modelName: string;
@@ -202,20 +214,20 @@ export const TranscriptionLab: React.FC = () => {
 
       if (!filePath) return;
 
-      const exportData = await Promise.all(
-        taggedEntries.map(async (entry) => {
-          const audioPath = await commands.getAudioFilePath(entry.file_name);
-          return {
-            id: entry.id,
-            timestamp: entry.timestamp,
-            transcription: entry.transcription_text,
-            model_id: entry.model_id,
-            tags: JSON.parse(entry.tags || "[]"),
-            audio_file: entry.file_name,
-            saved: entry.saved,
-          };
-        }),
-      );
+          const exportData = await Promise.all(
+            taggedEntries.map(async (entry) => {
+              const audioPath = await commands.getAudioFilePath(entry.file_name);
+              return {
+                id: entry.id,
+                timestamp: entry.timestamp,
+                transcription: entry.transcription_text,
+                model_id: entry.model_id,
+                tags: parseJsonArray(entry.tags),
+                audio_file: entry.file_name,
+                saved: entry.saved,
+              };
+            }),
+          );
 
       await writeFile(filePath, new TextEncoder().encode(JSON.stringify(exportData, null, 2)));
     } catch (e) {
@@ -228,6 +240,7 @@ export const TranscriptionLab: React.FC = () => {
 
     setTesting(true);
     setError(null);
+    let originalModel: string | null = null;
 
     try {
       // Get current model
@@ -235,7 +248,7 @@ export const TranscriptionLab: React.FC = () => {
       if (settingsResult.status !== "ok") {
         throw new Error("Failed to get settings");
       }
-      const originalModel = settingsResult.data.selected_model;
+      originalModel = settingsResult.data.selected_model ?? null;
 
       // Switch to test model
       await commands.setActiveModel(selectedModelId);
@@ -262,15 +275,23 @@ export const TranscriptionLab: React.FC = () => {
           ]);
         }
       }
-
-      // Restore original model
-      if (originalModel) {
-        await commands.setActiveModel(originalModel);
-      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      setError(errorMsg);
+      console.error("Test failed:", e);
     } finally {
       setTesting(false);
+      // Restore original model - MUST run even if test failed
+      if (originalModel) {
+        try {
+          await commands.setActiveModel(originalModel);
+        } catch (restoreError) {
+          console.error("Failed to restore original model:", restoreError);
+          setError(
+            `Test completed but failed to restore original model "${originalModel}". Please check your settings.`
+          );
+        }
+      }
     }
   };
 
@@ -326,7 +347,7 @@ export const TranscriptionLab: React.FC = () => {
                     <div className="mt-1">
                       <TagInput
                         entryId={entry.id}
-                        currentTags={entry.tags ? JSON.parse(entry.tags) : []}
+                        currentTags={parseJsonArray(entry.tags)}
                         onTagsUpdate={handleTagsUpdate}
                       />
                     </div>

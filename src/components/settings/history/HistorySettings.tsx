@@ -55,6 +55,23 @@ const IconButton: React.FC<{
 
 const PAGE_SIZE = 30;
 
+// Safe JSON parse for routing_result
+const parseRoutingResult = (json: string | null): Array<{
+  status: string;
+  handler: string;
+  classification: string;
+  file_path: string | null;
+}> | null => {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    console.error("Failed to parse routing_result:", json, e);
+    return null;
+  }
+};
+
 interface OpenRecordingsButtonProps {
   onClick: () => void;
   label: string;
@@ -87,6 +104,7 @@ export const HistorySettings: React.FC = () => {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const entriesRef = useRef<HistoryEntry[]>([]);
   const loadingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Keep ref in sync for use in IntersectionObserver callback
   useEffect(() => {
@@ -96,6 +114,14 @@ export const HistorySettings: React.FC = () => {
   const loadPage = useCallback(async (cursor?: number) => {
     const isFirstPage = cursor === undefined;
     if (!isFirstPage && loadingRef.current) return;
+
+    // Abort previous load if this is a new first-page load
+    if (isFirstPage && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+    const abortController = abortControllerRef.current;
+
     loadingRef.current = true;
 
     if (isFirstPage) {
@@ -108,6 +134,10 @@ export const HistorySettings: React.FC = () => {
         cursor ?? null,
         PAGE_SIZE,
       );
+
+      // Check if aborted
+      if (abortController.signal.aborted) return;
+
       if (result.status === "ok") {
         const { entries: newEntries, has_more } = result.data;
         setEntries((prev) =>
@@ -123,13 +153,17 @@ export const HistorySettings: React.FC = () => {
         }
       }
     } catch (error) {
-      console.error("Failed to load history entries:", error);
-      if (isFirstPage) {
-        setError(error instanceof Error ? error.message : String(error));
+      if (!abortController.signal.aborted) {
+        console.error("Failed to load history entries:", error);
+        if (isFirstPage) {
+          setError(error instanceof Error ? error.message : String(error));
+        }
       }
     } finally {
-      setLoading(false);
-      loadingRef.current = false;
+      if (!abortController.signal.aborted) {
+        setLoading(false);
+        loadingRef.current = false;
+      }
     }
   }, []);
 
@@ -475,15 +509,8 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
 
   const formattedDate = formatDateTime(String(entry.timestamp), i18n.language);
 
-  // Parse routing result JSON if present
-  const routingResult = entry.routing_result
-    ? (JSON.parse(entry.routing_result) as Array<{
-        status: string;
-        handler: string;
-        classification: string;
-        file_path: string | null;
-      }>)
-    : null;
+  // Parse routing result JSON if present (with safe parsing)
+  const routingResult = parseRoutingResult(entry.routing_result);
 
   return (
     <div className="px-4 py-2 pb-5 flex flex-col gap-3">

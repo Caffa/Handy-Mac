@@ -629,6 +629,7 @@ const RecordingOverlay: React.FC = () => {
           if (current !== "usb-cycling") {
             setIsVisible(false);
             setTranscriptionPreview(""); // Clear preview when hiding
+            setStreamingText(""); // Clear streaming text when hiding
             setRouterResult(null);
             setIsEditing(false);
             setCountdown(0);
@@ -791,10 +792,15 @@ const RecordingOverlay: React.FC = () => {
       );
 
       // Listen for partial transcription during streaming
+      // Only update if live captions are enabled and text has changed
       const unlistenPartialTranscription = await listen<string>(
         "partial-transcription",
         (event) => {
-          setStreamingText(event.payload);
+          // Prevent unnecessary re-renders if text hasn't changed
+          setStreamingText((prev) => {
+            if (prev === event.payload) return prev;
+            return event.payload;
+          });
         },
       );
 
@@ -915,9 +921,16 @@ const RecordingOverlay: React.FC = () => {
                   />
                 ))}
               </div>
-              {/* Show live captions below the bars */}
-              {streamingText && (
-                <div className="live-captions">{streamingText}</div>
+              {/* Show live captions below the bars - only during recording state */}
+              {state === "recording" && streamingText && streamingText.trim() && (
+                <div 
+                  className="live-captions"
+                  role="status"
+                  aria-live="polite"
+                  aria-label="Live transcription"
+                >
+                  {streamingText}
+                </div>
               )}
             </div>
           )}

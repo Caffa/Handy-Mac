@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   commands,
@@ -56,7 +56,7 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
     setDraggedIndex(index);
   };
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
+  const handleDragOver = async (e: React.DragEvent, index: number) => {
     e.preventDefault();
     if (draggedIndex === null || draggedIndex === index) return;
 
@@ -65,12 +65,12 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
     newVariants.splice(draggedIndex, 1);
     newVariants.splice(index, 0, draggedVariant);
 
-    // Update rankings
-    newVariants.forEach((v, i) => {
-      if (v.ranking !== i + 1) {
-        onUpdateVariant(v.id, i + 1, null, null, null);
+    // Update rankings sequentially to ensure consistency
+    for (let i = 0; i < newVariants.length; i++) {
+      if (newVariants[i].ranking !== i + 1) {
+        await onUpdateVariant(newVariants[i].id, i + 1, null, null, null);
       }
-    });
+    }
 
     setDraggedIndex(null);
   };
@@ -81,8 +81,13 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
     if (a === b) return 100;
 
     // Simple word-level similarity
-    const wordsA = a.split(/\s+/);
-    const wordsB = b.split(/\s+/);
+    const wordsA = a.split(/\s+/).filter(w => w.length > 0);
+    const wordsB = b.split(/\s+/).filter(w => w.length > 0);
+
+    // Handle empty strings
+    if (wordsA.length === 0 && wordsB.length === 0) return 100;
+    if (wordsA.length === 0 || wordsB.length === 0) return 0;
+
     const common = wordsA.filter((w) => wordsB.includes(w)).length;
     const total = Math.max(wordsA.length, wordsB.length);
     return Math.round((common / total) * 100);
@@ -234,7 +239,7 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
                   setIsGenerating(false);
                 }
               }}
-              disabled={!experimentGroup?.ground_truth}
+              disabled={!experimentGroup?.ground_truth?.trim()}
             >
               <Plus className="w-4 h-4 mr-1" />
               Generate Variants
@@ -378,6 +383,8 @@ export const ExperimentReview: React.FC = () => {
 
   // Load saved recordings
   useEffect(() => {
+    const abortController = new AbortController();
+
     const loadEntries = async () => {
       try {
         const result = await commands.getHistoryEntries(null, 50);
@@ -387,6 +394,8 @@ export const ExperimentReview: React.FC = () => {
 
           // Load experiment groups for each saved recording
           for (const entry of saved) {
+            if (abortController.signal.aborted) break;
+
             const expResult = await commands.getExperimentGroup(entry.id);
             if (expResult.status === "ok" && expResult.data) {
               setExperiments((prev) => {
@@ -410,10 +419,14 @@ export const ExperimentReview: React.FC = () => {
           }
         }
       } catch (e) {
-        console.error("Failed to load entries:", e);
+        if (!abortController.signal.aborted) {
+          console.error("Failed to load entries:", e);
+        }
       }
     };
     loadEntries();
+
+    return () => abortController.abort();
   }, []);
 
   const handleCreateExperiment = async (entry: HistoryEntry) => {
@@ -578,10 +591,12 @@ export const ExperimentReview: React.FC = () => {
                     if (result.status === "ok") {
                       setVariants((prev) => {
                         const next = new Map(prev);
-                        const entryVars = next.get(entry.id) || [];
+                        // Create new array to avoid mutating original
+                        const entryVars = [...(next.get(entry.id) || [])];
                         const idx = entryVars.findIndex((v) => v.id === id);
                         if (idx >= 0) {
                           entryVars[idx] = result.data;
+                          next.set(entry.id, entryVars);
                         }
                         return next;
                       });
@@ -590,17 +605,28 @@ export const ExperimentReview: React.FC = () => {
                     console.error("Failed to update variant:", e);
                   }
                 }}
-                onUpdateMetadata={(speech_speed, recording_quality) => {
+                onUpdateMetadata={async (speech_speed, recording_quality) => {
                   const exp = experiments.get(entry.id);
                   if (!exp) return;
-                  commands.updateExperimentGroup(
-                    exp.id,
-                    null,
-                    speech_speed,
-                    recording_quality,
-                    null,
-                    null,
-                  );
+                  try {
+                    const result = await commands.updateExperimentGroup(
+                      exp.id,
+                      null,
+                      speech_speed,
+                      recording_quality,
+                      null,
+                      null,
+                    );
+                    if (result.status === "ok") {
+                      setExperiments((prev) => {
+                        const next = new Map(prev);
+                        next.set(entry.id, result.data);
+                        return next;
+                      });
+                    }
+                  } catch (e) {
+                    console.error("Failed to update metadata:", e);
+                  }
                 }}
               />
             ))}
