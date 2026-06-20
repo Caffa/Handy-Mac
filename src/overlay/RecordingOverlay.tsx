@@ -895,45 +895,6 @@ const RecordingOverlay: React.FC = () => {
                 : t("overlay.lowAudio", "Low audio - check microphone")}
             </div>
           )}
-
-          {/* Normal recording state */}
-          {state === "recording" && !micDeadWarning && !lowAudioWarning && (
-            <div className="bars-wrapper">
-              {hybridEnabled && (
-                <div
-                  className={`hybrid-indicator ${recordingElapsedSecs >= hybridThresholdSecs ? "hybrid-long" : "hybrid-short"}`}
-                >
-                  {recordingElapsedSecs >= hybridThresholdSecs
-                    ? t("overlay.hybridLong")
-                    : t("overlay.hybridShort")}
-                </div>
-              )}
-              <div className="bars-container">
-                {levels.map((v, i) => (
-                  <div
-                    key={i}
-                    className={`bar${isRouter ? " routing-bar" : ""}`}
-                    style={{
-                      height: `${Math.min(25, 5 + Math.pow(v, 0.7) * 22)}px`,
-                      transition: "height 80ms linear, opacity 120ms ease-out",
-                      opacity: Math.max(0.2, v * 1.7),
-                    }}
-                  />
-                ))}
-              </div>
-              {/* Show live captions below the bars - only during recording state */}
-              {state === "recording" && streamingText && streamingText.trim() && (
-                <div 
-                  className="live-captions"
-                  role="status"
-                  aria-live="polite"
-                  aria-label="Live transcription"
-                >
-                  {streamingText}
-                </div>
-              )}
-            </div>
-          )}
           {state === "transcribing" && (
             <div
               className={`transcribing-text${isRouter ? " routing-text" : ""}`}
@@ -1028,6 +989,52 @@ const RecordingOverlay: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Live transcription visualizer - positioned below the pill */}
+      {isVisible &&
+        state === "recording" &&
+        !micDeadWarning &&
+        !lowAudioWarning && (
+          <div
+            dir={direction}
+            className={`live-transcription-visualizer ${isVisible ? "fade-in" : ""} ${isRouter ? "routing-mode" : ""}`}
+          >
+            <div className="visualizer-bars-row">
+              {hybridEnabled && (
+                <div
+                  className={`hybrid-indicator ${recordingElapsedSecs >= hybridThresholdSecs ? "hybrid-long" : "hybrid-short"}`}
+                >
+                  {recordingElapsedSecs >= hybridThresholdSecs
+                    ? t("overlay.hybridLong")
+                    : t("overlay.hybridShort")}
+                </div>
+              )}
+              <div className="bars-container">
+                {levels.map((v, i) => (
+                  <div
+                    key={i}
+                    className={`bar${isRouter ? " routing-bar" : ""}`}
+                    style={{
+                      height: `${Math.min(25, 5 + Math.pow(v, 0.7) * 22)}px`,
+                      transition: "height 80ms linear, opacity 120ms ease-out",
+                      opacity: Math.max(0.2, v * 1.7),
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+            {streamingText && streamingText.trim() && (
+              <div
+                className="live-captions"
+                role="status"
+                aria-live="polite"
+                aria-label="Live transcription"
+              >
+                {streamingText}
+              </div>
+            )}
+          </div>
+        )}
 
       {/* Transcription preview for routing mode - with edit capability */}
       {isRouter && (transcriptionPreview || routerResult) && (

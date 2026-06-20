@@ -130,7 +130,7 @@ const settingUpdaters: {
   word_replacements: (value) =>
     commands.updateWordReplacements(value as WordReplacement[]),
   word_correction_mode: (value) =>
-    commands.changeWordCorrectionMode(value as string),
+    commands.changeWordCorrectionMode(value as import("@/bindings").WordCorrectionMode),
   use_advanced_custom_words: (value) =>
     commands.changeUseAdvancedCustomWordsSetting(value as boolean),
   word_correction_threshold: (value) =>

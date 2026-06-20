@@ -36,7 +36,7 @@ export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
   const { getSetting, updateSetting, isUpdating } = useSettings();
   const experimentalEnabled = getSetting("experimental_enabled") || false;
-  const wordCorrectionMode = getSetting("word_correction_mode") || "WordBias";
+  const wordCorrectionMode = getSetting("word_correction_mode") || "word_bias";
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
@@ -58,13 +58,13 @@ export const AdvancedSettings: React.FC = () => {
 
       <SettingsGroup title={t("settings.advanced.groups.transcription")}>
         <WordCorrectionModeSelector descriptionMode="tooltip" grouped />
-        {wordCorrectionMode === "WordBias" ? (
+        {wordCorrectionMode === "word_bias" ? (
           <>
             <CustomWords descriptionMode="tooltip" grouped />
             <CustomFillerWords descriptionMode="tooltip" grouped />
             <WordCorrectionThreshold descriptionMode="tooltip" grouped />
           </>
-        ) : wordCorrectionMode === "Pronunciation" ? (
+        ) : wordCorrectionMode === "pronunciation" ? (
           <AdvancedCustomWords descriptionMode="tooltip" grouped />
         ) : (
           <WordReplacements descriptionMode="tooltip" grouped />

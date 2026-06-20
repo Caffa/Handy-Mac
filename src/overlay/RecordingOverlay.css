@@ -18,19 +18,7 @@
   pointer-events: none;
 }
 
-/* Expand overlay when hybrid indicator is shown */
-.recording-overlay:has(.hybrid-indicator) {
-  height: 45px;
-  border-radius: 32.5px;
-  margin-top: 0;
-}
-
-/* Expand overlay when live captions are shown */
-.recording-overlay:has(.live-captions) {
-  height: auto;
-  min-height: 65px;
-  padding-bottom: 10px;
-}
+/* Hybrid indicator and live captions are now in a separate container below the pill */
 
 .overlay-left {
   display: flex;
@@ -61,18 +49,6 @@
   overflow: hidden;
   /* Bars are visual-only, allow clicks to pass through */
   pointer-events: none;
-}
-
-/* Give bars more room when hybrid indicator is present */
-.recording-overlay:has(.hybrid-indicator) .bars-container {
-  height: 37.5px;
-}
-
-.bars-wrapper {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
 }
 
 .hybrid-indicator {
@@ -151,6 +127,66 @@
   border-radius: 2px;
   transition: height 80ms linear;
   min-height: 5px;
+}
+
+/* ── Live transcription visualizer (below pill) ── */
+.live-transcription-visualizer {
+  position: fixed;
+  top: 55px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 420px;
+  max-width: 90vw;
+  background: #000000cc;
+  border-radius: 12px;
+  padding: 10px 16px;
+  opacity: 0;
+  transition: opacity 300ms ease-out;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-transcription-visualizer.fade-in {
+  opacity: 1;
+}
+
+.live-transcription-visualizer.routing-mode {
+  background: #1e3a5fcc;
+}
+
+.visualizer-bars-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Adjust bars container for wider visualizer */
+.live-transcription-visualizer .bars-container {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 3px;
+  height: 30px;
+}
+
+/* Adjust live captions for wider visualizer */
+.live-transcription-visualizer .live-captions {
+  font-size: 13px;
+  font-weight: 500;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #ffe5ee;
+  max-width: 380px;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  text-align: center;
+  line-height: 1.4;
+  animation: pulse-opacity 1.5s ease-in-out infinite;
 }
 
 .recording-overlay.fade-in {

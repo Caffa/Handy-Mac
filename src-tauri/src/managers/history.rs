@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local, Utc};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
@@ -215,6 +215,11 @@ impl HistoryManager {
             debug!("Database already at latest version {}", version_after);
         }
 
+        // Defensive schema verification: ensure all expected columns exist
+        // This handles edge cases where user_version is correct but columns are missing
+        // (e.g., from failed migrations that were manually patched)
+        self.verify_and_fix_schema(&conn)?;
+
         Ok(())
     }
 
@@ -272,6 +277,90 @@ impl HistoryManager {
             );
         }
 
+        Ok(())
+    }
+
+    /// Verify database schema integrity and fix missing columns.
+    /// This handles edge cases where user_version is correct but columns are missing
+    /// (e.g., from failed migrations or manual database edits).
+    fn verify_and_fix_schema(&self, conn: &Connection) -> Result<()> {
+        // Expected columns for transcription_history (migrations 1-11)
+        let expected_columns = [
+            "id",
+            "file_name",
+            "timestamp",
+            "saved",
+            "title",
+            "transcription_text",
+            "post_processed_text",
+            "post_process_prompt",
+            "post_process_requested",
+            "model_id",
+            "routed",
+            "routing_result",
+            "tags",
+            "ground_truth",
+            "quality",
+            "speech_speed",
+        ];
+
+        // Get actual columns from the database
+        let mut stmt = conn.prepare(
+            "SELECT name FROM pragma_table_info('transcription_history') ORDER BY cid",
+        )?;
+        let actual_columns: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Find missing columns
+        let missing_columns: Vec<&str> = expected_columns
+            .iter()
+            .filter(|col| !actual_columns.contains(&col.to_string()))
+            .copied()
+            .collect();
+
+        if missing_columns.is_empty() {
+            debug!("Schema verification passed - all columns present");
+            return Ok(());
+        }
+
+        // Log warning about schema inconsistency
+        warn!(
+            "Schema inconsistency detected: missing columns {:?}. User may have encountered \
+             a partial migration. Attempting to fix...",
+            missing_columns
+        );
+
+        // Add missing columns
+        for column in missing_columns {
+            let column_def = match column {
+                "ground_truth" => "ground_truth TEXT",
+                "quality" => "quality TEXT",
+                "speech_speed" => "speech_speed TEXT",
+                // These columns should have been created by migrations, but if somehow missing,
+                // add them with safe defaults
+                "post_processed_text" => "post_processed_text TEXT",
+                "post_process_prompt" => "post_process_prompt TEXT",
+                "post_process_requested" => "post_process_requested BOOLEAN NOT NULL DEFAULT 0",
+                "model_id" => "model_id TEXT",
+                "routed" => "routed BOOLEAN NOT NULL DEFAULT 0",
+                "routing_result" => "routing_result TEXT",
+                "tags" => "tags TEXT",
+                // Base columns should never be missing (table creation), but handle gracefully
+                _ => {
+                    warn!("Unexpected missing column '{}', skipping", column);
+                    continue;
+                }
+            };
+
+            info!("Adding missing column '{}' to transcription_history", column);
+            conn.execute(
+                &format!("ALTER TABLE transcription_history ADD COLUMN {}", column_def),
+                [],
+            )?;
+        }
+
+        info!("Schema verification completed - all columns now present");
         Ok(())
     }
 
