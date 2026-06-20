@@ -104,14 +104,16 @@
 /* Live captions displayed below the pill during recording */
 .live-captions-box {
   position: fixed;
-  top: 55px;
+  top: 53px;
   left: 50%;
   transform: translateX(-50%);
   min-width: 200px;
   max-width: 420px;
+  width: auto;
+  height: auto;
   background: #000000cc;
   border-radius: 12px;
-  padding: 10px 16px;
+  padding: 8px 12px;
   opacity: 0;
   transition: opacity 300ms ease-out;
   z-index: 9998;
@@ -126,6 +128,7 @@
   text-align: center;
   line-height: 1.4;
   animation: pulse-opacity 1.5s ease-in-out infinite;
+  display: block;
 }
 
 .live-captions-box.fade-in {
