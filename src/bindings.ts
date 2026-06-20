@@ -304,14 +304,6 @@ async updateCustomFillerWords(words: string[]) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async changeUseAdvancedCustomWordsSetting(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_use_advanced_custom_words_setting", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async updateWordReplacements(replacements: WordReplacement[]) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_word_replacements", { replacements }) };
@@ -320,7 +312,15 @@ async updateWordReplacements(replacements: WordReplacement[]) : Promise<Result<n
     else return { status: "error", error: e  as any };
 }
 },
-async changeWordCorrectionMode(mode: string) : Promise<Result<null, string>> {
+async changeUseAdvancedCustomWordsSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_use_advanced_custom_words_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeWordCorrectionMode(mode: WordCorrectionMode) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_word_correction_mode", { mode }) };
 } catch (e) {
@@ -1096,6 +1096,61 @@ async updateHistoryEntryMetadata(id: number, groundTruth: string | null, quality
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Get all pending retry entries.
+ */
+async getRetryQueue() : Promise<Result<RetryableTranscription[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_retry_queue") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Manually trigger a retry for a specific entry.
+ */
+async retryTranscription(entryId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retry_transcription", { entryId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove a specific entry from the retry queue.
+ */
+async removeFromRetryQueue(entryId: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_from_retry_queue", { entryId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Clear all pending retry entries.
+ */
+async clearRetryQueue() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_retry_queue") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the count of pending retries.
+ */
+async getRetryQueueCount() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_retry_queue_count") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async createExperimentGroup(recordingId: number) : Promise<Result<ExperimentGroup, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("create_experiment_group", { recordingId }) };
@@ -1246,7 +1301,17 @@ historyUpdatePayload: "history-update-payload"
 
 /** user-defined types **/
 
-export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; use_advanced_custom_words?: boolean; word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; 
+export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
+/**
+ * Deprecated: Use `word_correction_mode` instead.
+ * Kept for backward compatibility during migration.
+ */
+use_advanced_custom_words?: boolean; 
+/**
+ * Word correction mode. Defaults to WordBias for backward compatibility.
+ * Migrated from `use_advanced_custom_words` if that field is true.
+ */
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; 
 /**
  * Path to boss_router.py for the "Transcribe with Router" action.
  * Set to Some(path) to enable router integration.
@@ -1366,14 +1431,6 @@ export type CustomSounds = { start: boolean; stop: boolean }
  * will match "charge b" or "charge bee" in the transcript and replace it with "ChargeBee".
  */
 export type CustomWord = { word: string; pronunciations?: string[] }
-/**
- * A word replacement rule for exact word-to-word substitution.
- * 
- * Example: `WordReplacement { mistranslation: "open a i", correction: "OpenAI" }`
- * will replace "open a i" with "OpenAI" in the transcript.
- */
-export type WordReplacement = { mistranslation: string; correction: string }
-export type WordCorrectionMode = "WordBias" | "Pronunciation" | "Replacement"
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type ErrorRecord = { timestamp_ms: number; event_type: string; message: string; session_id: string | null }
 export type ExperimentGroup = { id: number; recording_id: number; original_transcript: string; ground_truth: string | null; speech_speed: string; recording_quality: string; created_at: number; is_complete: boolean; notes: string | null }
@@ -1457,6 +1514,71 @@ transcription: string;
  */
 matches_canonical: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
+/**
+ * Represents a pending transcription retry.
+ * Contains all information needed to re-attempt transcription.
+ */
+export type RetryableTranscription = { 
+/**
+ * Unique identifier for this retry entry
+ */
+id: string; 
+/**
+ * Path to the saved audio file
+ */
+audio_path: string; 
+/**
+ * Unix timestamp when the audio was recorded
+ */
+timestamp: number; 
+/**
+ * Model ID to use for transcription
+ */
+model_id: string; 
+/**
+ * Fallback models to try if primary fails
+ */
+fallback_models: string[]; 
+/**
+ * Index into fallback_models (0 = primary, 1+ = fallbacks)
+ */
+current_model_index: number; 
+/**
+ * Number of retry attempts made
+ */
+retry_count: number; 
+/**
+ * Maximum retry attempts allowed
+ */
+max_retries: number; 
+/**
+ * Last failure type
+ */
+last_failure: TranscriptionFailure | null; 
+/**
+ * Error message from last attempt
+ */
+last_error: string; 
+/**
+ * When to retry next (None = ready immediately)
+ */
+next_retry_at: number | null; 
+/**
+ * Whether post-processing was requested
+ */
+post_process: boolean; 
+/**
+ * Post-processing prompt if any
+ */
+post_process_prompt: string | null; 
+/**
+ * History entry ID (if created before failure)
+ */
+history_entry_id: number | null; 
+/**
+ * Whether this entry is currently being processed
+ */
+is_processing: boolean }
 export type SecretMap = Partial<{ [key in string]: string }>
 /**
  * Summary of a completed (or failed) session — stored in the ring buffer
@@ -1477,6 +1599,39 @@ phases_json: string | null;
 errors: string[] }
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
+/**
+ * Classification of transcription failure types.
+ * Different failures require different retry strategies.
+ */
+export type TranscriptionFailure = 
+/**
+ * Model failed to load (wrong ID, corrupted, missing files)
+ */
+{ ModelLoadFailure: { model_id: string; error: string } } | 
+/**
+ * Transcription inference failed (engine error)
+ */
+{ InferenceFailure: { model_id: string; error: string } } | 
+/**
+ * Engine panicked during transcription
+ */
+{ EnginePanic: { model_id: string } } | 
+/**
+ * Operation timed out (took too long)
+ */
+{ Timeout: { model_id: string; duration_secs: number } } | 
+/**
+ * GPU/memory resource unavailable
+ */
+{ ResourceUnavailable: { resource: string; error: string } } | 
+/**
+ * Audio was silent/empty (no retry needed)
+ */
+"SilentAudio" | 
+/**
+ * Unknown/uncategorized failure
+ */
+{ Unknown: { error: string } }
 export type TranscriptionVariant = { id: number; experiment_group_id: number; model_id: string; parameters: string; transcription_text: string; match_score: number | null; ranking: number | null; is_acceptable: boolean; created_at: number; notes: string | null }
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 /**
@@ -1498,6 +1653,34 @@ port: string }
 export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
+/**
+ * Word correction mode selection.
+ * 
+ * Determines which word correction algorithm to apply:
+ * - `WordBias`: Simple word bias using fuzzy matching (Levenshtein + Soundex)
+ * - `Pronunciation`: Advanced matching with pronunciation variants
+ * - `Replacement`: Direct word-to-word substitution with exact matching
+ */
+export type WordCorrectionMode = "word_bias" | "pronunciation" | "replacement"
+/**
+ * A word replacement rule for exact word-to-word substitution.
+ * 
+ * This is a simpler mode than pronunciation matching: when the `mistranslation`
+ * appears in the transcript (respecting word boundaries), it is replaced with
+ * the `correction`.
+ * 
+ * Example: `WordReplacement { mistranslation: "open a i", correction: "OpenAI" }`
+ * will replace "open a i" with "OpenAI" in the transcript.
+ */
+export type WordReplacement = { 
+/**
+ * The word or phrase that appears incorrectly in transcripts
+ */
+mistranslation: string; 
+/**
+ * The correct word or phrase to replace it with
+ */
+correction: string }
 
 /** tauri-specta globals **/
 
