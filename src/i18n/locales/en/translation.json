@@ -481,6 +481,8 @@
       "openFolder": "Open Recordings Folder",
       "loading": "Loading history...",
       "empty": "No transcriptions yet. Start recording to build your history!",
+      "error": "Failed to load history",
+      "retry": "Retry",
       "search": "Search history...",
       "noResults": "No matching transcriptions found",
       "copyToClipboard": "Copy transcription to clipboard",
@@ -544,6 +546,26 @@
         "allModelsMatch": "All models correctly heard '{{word}}' - no new pronunciations needed",
         "allModelsDuplicate": "All model transcriptions already exist as pronunciations for '{{word}}'"
       },
+      "wordReplacements": {
+        "title": "Word Replacements",
+        "description": "Replace specific mistranscriptions with corrections. When the wrong text appears, it will be replaced exactly with the correct text.",
+        "mistranslationPlaceholder": "Wrong text",
+        "correctionPlaceholder": "Correct text",
+        "add": "Add",
+        "remove": "Remove {{mistranslation}} → {{correction}}",
+        "duplicate": "\"{{mistranslation}}\" already has a replacement",
+        "bothFieldsRequired": "Both fields are required",
+        "mistranslationTooLong": "Mistranslation is too long (max 100 characters)",
+        "correctionTooLong": "Correction is too long (max 100 characters)",
+        "hint": "Enter the text that appears incorrectly and what it should be corrected to"
+      },
+      "wordCorrectionMode": {
+        "label": "Word Correction Mode",
+        "description": "Choose how custom words are matched: Fuzzy (word bias), Pronunciation (variants), or Exact (replacements)",
+        "wordBias": "Fuzzy Matching",
+        "pronunciation": "Pronunciation Variants",
+        "replacement": "Exact Replacements"
+      },
       "historyLimit": {
         "title": "History Limit",
         "description": "Maximum number of history entries to keep",
@@ -573,9 +595,9 @@
         "veryRelaxed": "Very Relaxed",
         "placeholder": "Select sensitivity..."
       },
-      "streamingTranscription": {
-        "label": "Live Transcription",
-        "description": "Show transcription text in real-time while you speak. Uses additional CPU."
+      "liveCaptions": {
+        "label": "Live Captions",
+        "description": "Show live captions below the volume bars during recording. Uses additional CPU."
       },
       "clamshellMicrophone": {
         "title": "Clamshell Microphone",

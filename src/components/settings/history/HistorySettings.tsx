@@ -81,6 +81,7 @@ export const HistorySettings: React.FC = () => {
   const osType = useOsType();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -97,7 +98,10 @@ export const HistorySettings: React.FC = () => {
     if (!isFirstPage && loadingRef.current) return;
     loadingRef.current = true;
 
-    if (isFirstPage) setLoading(true);
+    if (isFirstPage) {
+      setLoading(true);
+      setError(null); // Clear previous errors
+    }
 
     try {
       const result = await commands.getHistoryEntries(
@@ -110,9 +114,19 @@ export const HistorySettings: React.FC = () => {
           isFirstPage ? newEntries : [...prev, ...newEntries],
         );
         setHasMore(has_more);
+      } else {
+        // Show error message instead of silent empty state
+        const errorMsg = result.error || "Failed to load history";
+        console.error("History load error:", errorMsg);
+        if (isFirstPage) {
+          setError(errorMsg);
+        }
       }
     } catch (error) {
       console.error("Failed to load history entries:", error);
+      if (isFirstPage) {
+        setError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setLoading(false);
       loadingRef.current = false;
@@ -306,6 +320,22 @@ export const HistorySettings: React.FC = () => {
     content = (
       <div className="px-4 py-3 text-center text-text/60">
         {t("settings.history.loading")}
+      </div>
+    );
+  } else if (error) {
+    // Show error message instead of silent empty state
+    content = (
+      <div className="px-4 py-3 text-center">
+        <div className="text-red-500 mb-2">
+          {t("settings.history.error", "Failed to load history")}
+        </div>
+        <div className="text-text/60 text-sm mb-3">{error}</div>
+        <button
+          onClick={() => loadPage()}
+          className="px-3 py-1.5 text-sm bg-accent/10 text-accent rounded hover:bg-accent/20 transition-colors"
+        >
+          {t("settings.history.retry", "Retry")}
+        </button>
       </div>
     );
   } else if (entries.length === 0) {

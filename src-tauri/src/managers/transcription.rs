@@ -1,12 +1,13 @@
 use crate::audio_toolkit::audio::AudioQualityMetrics;
 use crate::audio_toolkit::{
-    apply_advanced_custom_words, apply_custom_words, convert_us_to_british,
+    apply_advanced_custom_words, apply_custom_words, apply_word_replacements, convert_us_to_british,
     filter_transcription_output, suppress_repeated_words, trim_trailing_silence,
 };
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::settings::{
     get_settings, ModelUnloadTimeout, OrtAcceleratorSetting, WhisperAcceleratorSetting,
+    WordCorrectionMode,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -90,6 +91,11 @@ pub struct TranscriptionManager {
     watcher_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
+    /// Flag to prevent concurrent transcription calls (streaming vs final).
+    /// When streaming transcription is enabled, partial transcriptions run
+    /// every 2.5s during recording. When recording stops, the final transcription
+    /// must wait for any in-progress streaming transcription to complete.
+    is_transcribing: Arc<AtomicBool>,
 }
 
 impl TranscriptionManager {
@@ -104,6 +110,7 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
+            is_transcribing: Arc::new(AtomicBool::new(false)),
         };
 
         // Start the idle watcher
@@ -467,6 +474,36 @@ impl TranscriptionManager {
             ));
         }
 
+        // Wait for any in-progress transcription to complete.
+        // This prevents race conditions between streaming transcription (running
+        // every 2.5s during recording) and the final transcription (after recording stops).
+        // We use a spin-wait with yield to avoid blocking the thread indefinitely.
+        let wait_start = std::time::Instant::now();
+        let max_wait = Duration::from_secs(30);
+        while self.is_transcribing.load(Ordering::Relaxed) {
+            if wait_start.elapsed() > max_wait {
+                warn!("Timed out waiting for previous transcription to complete");
+                return Err(anyhow::anyhow!(
+                    "Another transcription is in progress. Please wait and try again."
+                ));
+            }
+            std::thread::yield_now();
+        }
+
+        // Set transcribing flag for the duration of this transcription
+        self.is_transcribing.store(true, Ordering::Relaxed);
+        struct TranscribingGuard {
+            flag: Arc<AtomicBool>,
+        }
+        impl Drop for TranscribingGuard {
+            fn drop(&mut self) {
+                self.flag.store(false, Ordering::Relaxed);
+            }
+        }
+        let _guard = TranscribingGuard {
+            flag: self.is_transcribing.clone(),
+        };
+
         // Update last activity timestamp
         self.touch_activity();
 
@@ -702,22 +739,39 @@ impl TranscriptionManager {
                             let params = WhisperInferenceParams {
                                 language: whisper_language,
                                 translate: settings.translate_to_english,
-                                initial_prompt: if settings.use_advanced_custom_words
-                                    && !settings.advanced_custom_words.is_empty()
-                                {
-                                    // Advanced mode: use only canonical words
-                                    Some(
-                                        settings
-                                            .advanced_custom_words
-                                            .iter()
-                                            .map(|cw| cw.word.as_str())
-                                            .collect::<Vec<_>>()
-                                            .join(", "),
-                                    )
-                                } else if !settings.custom_words.is_empty() {
-                                    Some(settings.custom_words.join(", "))
-                                } else {
-                                    None
+                                initial_prompt: match settings.word_correction_mode {
+                                    WordCorrectionMode::Pronunciation
+                                        if !settings.advanced_custom_words.is_empty() =>
+                                    {
+                                        // Advanced mode: use only canonical words
+                                        Some(
+                                            settings
+                                                .advanced_custom_words
+                                                .iter()
+                                                .map(|cw| cw.word.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(", "),
+                                        )
+                                    }
+                                    WordCorrectionMode::WordBias
+                                        if !settings.custom_words.is_empty() =>
+                                    {
+                                        Some(settings.custom_words.join(", "))
+                                    }
+                                    WordCorrectionMode::Replacement
+                                        if !settings.word_replacements.is_empty() =>
+                                    {
+                                        // Replacement mode: use corrections as prompt
+                                        Some(
+                                            settings
+                                                .word_replacements
+                                                .iter()
+                                                .map(|r| r.correction.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(", "),
+                                        )
+                                    }
+                                    _ => None,
                                 },
                                 single_segment: is_short_audio,
                                 use_greedy: is_short_audio,
@@ -875,28 +929,30 @@ impl TranscriptionManager {
             .map(|info| matches!(info.engine_type, EngineType::Whisper))
             .unwrap_or(false);
 
-        let has_words = if settings.use_advanced_custom_words {
-            !settings.advanced_custom_words.is_empty()
-        } else {
-            !settings.custom_words.is_empty()
+        let has_words = match settings.word_correction_mode {
+            WordCorrectionMode::WordBias => !settings.custom_words.is_empty(),
+            WordCorrectionMode::Pronunciation => !settings.advanced_custom_words.is_empty(),
+            WordCorrectionMode::Replacement => !settings.word_replacements.is_empty(),
         };
 
         // Save suppressed token count before result.text is consumed below
         let suppressed_token_count = result.suppressed_token_count;
 
         let corrected_result = if has_words && !is_whisper {
-            if settings.use_advanced_custom_words {
-                apply_advanced_custom_words(
-                    &result.text,
-                    &settings.advanced_custom_words,
-                    settings.word_correction_threshold,
-                )
-            } else {
-                apply_custom_words(
+            match settings.word_correction_mode {
+                WordCorrectionMode::WordBias => apply_custom_words(
                     &result.text,
                     &settings.custom_words,
                     settings.word_correction_threshold,
-                )
+                ),
+                WordCorrectionMode::Pronunciation => apply_advanced_custom_words(
+                    &result.text,
+                    &settings.advanced_custom_words,
+                    settings.word_correction_threshold,
+                ),
+                WordCorrectionMode::Replacement => {
+                    apply_word_replacements(&result.text, &settings.word_replacements)
+                }
             }
         } else {
             result.text

@@ -358,6 +358,37 @@ pub struct CustomWord {
     pub pronunciations: Vec<String>,
 }
 
+/// A word replacement rule for exact word-to-word substitution.
+///
+/// This is a simpler mode than pronunciation matching: when the `mistranslation`
+/// appears in the transcript (respecting word boundaries), it is replaced with
+/// the `correction`.
+///
+/// Example: `WordReplacement { mistranslation: "open a i", correction: "OpenAI" }`
+/// will replace "open a i" with "OpenAI" in the transcript.
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct WordReplacement {
+    /// The word or phrase that appears incorrectly in transcripts
+    pub mistranslation: String,
+    /// The correct word or phrase to replace it with
+    pub correction: String,
+}
+
+/// Word correction mode selection.
+///
+/// Determines which word correction algorithm to apply:
+/// - `WordBias`: Simple word bias using fuzzy matching (Levenshtein + Soundex)
+/// - `Pronunciation`: Advanced matching with pronunciation variants
+/// - `Replacement`: Direct word-to-word substitution with exact matching
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WordCorrectionMode {
+    #[default]
+    WordBias,
+    Pronunciation,
+    Replacement,
+}
+
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub(crate) struct SecretMap(HashMap<String, String>);
@@ -427,7 +458,15 @@ pub struct AppSettings {
     #[serde(default)]
     pub advanced_custom_words: Vec<CustomWord>,
     #[serde(default)]
+    pub word_replacements: Vec<WordReplacement>,
+    /// Deprecated: Use `word_correction_mode` instead.
+    /// Kept for backward compatibility during migration.
+    #[serde(default)]
     pub use_advanced_custom_words: bool,
+    /// Word correction mode. Defaults to WordBias for backward compatibility.
+    /// Migrated from `use_advanced_custom_words` if that field is true.
+    #[serde(default)]
+    pub word_correction_mode: WordCorrectionMode,
     #[serde(default)]
     pub model_unload_timeout: ModelUnloadTimeout,
     #[serde(default = "default_word_correction_threshold")]
@@ -522,8 +561,10 @@ pub struct AppSettings {
     pub verification_mode: bool,
     #[serde(default)]
     pub vad_sensitivity: VadSensitivity,
+    /// Show live captions during recording. When enabled, partial transcriptions
+    /// are displayed in real-time as you speak, below the volume bars.
     #[serde(default)]
-    pub streaming_transcription_enabled: bool,
+    pub live_captions_enabled: bool,
     /// Convert US English spelling to British English after transcription.
     /// Applies common spelling conversions like: color → colour, analyze → analyse, etc.
     #[serde(default)]
@@ -590,7 +631,10 @@ fn default_auto_submit() -> bool {
 }
 
 fn default_history_limit() -> usize {
-    5
+    // Keep last 100 unsaved transcriptions before auto-cleanup.
+    // This provides a reasonable buffer for users who don't save entries.
+    // Saved entries are never auto-deleted.
+    100
 }
 
 fn default_recording_retention_period() -> RecordingRetentionPeriod {
@@ -935,7 +979,9 @@ pub fn get_default_settings() -> AppSettings {
         log_level: default_log_level(),
         custom_words: Vec::new(),
         advanced_custom_words: Vec::new(),
+        word_replacements: Vec::new(),
         use_advanced_custom_words: false,
+        word_correction_mode: WordCorrectionMode::WordBias,
         model_unload_timeout: ModelUnloadTimeout::default(),
         word_correction_threshold: default_word_correction_threshold(),
         history_limit: default_history_limit(),
@@ -983,7 +1029,7 @@ pub fn get_default_settings() -> AppSettings {
         adaptive_parakeet_thresholds: default_adaptive_parakeet_thresholds(),
         verification_mode: false,
         vad_sensitivity: VadSensitivity::Balanced,
-        streaming_transcription_enabled: false,
+        live_captions_enabled: false,
         convert_us_to_british: false,
         repetition_suppression_level: 0,
     }
@@ -1056,6 +1102,17 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                 if settings.usb_watchdog_enabled && !settings.usb_watchdog_cycle_on_wake {
                     debug!("Migrating usb_watchdog_cycle_on_wake to true for enabled watchdog");
                     settings.usb_watchdog_cycle_on_wake = true;
+                    updated = true;
+                }
+
+                // Migrate use_advanced_custom_words to word_correction_mode
+                // The old boolean field is kept for backward compatibility but the
+                // new enum field takes precedence.
+                if settings.use_advanced_custom_words
+                    && settings.word_correction_mode == WordCorrectionMode::WordBias
+                {
+                    debug!("Migrating use_advanced_custom_words=true to word_correction_mode=Pronunciation");
+                    settings.word_correction_mode = WordCorrectionMode::Pronunciation;
                     updated = true;
                 }
 

@@ -156,13 +156,13 @@ fn create_audio_recorder(
         .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
     let smoothed_vad = SmoothedVad::new(Box::new(silero), 15, vad_hangover_frames, 2);
 
-    // Check if streaming transcription is enabled
+    // Check if live captions is enabled
     let settings = get_settings(app_handle);
-    let streaming_enabled = settings.streaming_transcription_enabled;
+    let live_captions_enabled = settings.live_captions_enabled;
     let pre_buffer_ms = settings.pre_recording_buffer_ms;
 
     // Recorder with VAD plus a spectrum-level callback that forwards updates to
-    // the frontend, and optionally a streaming transcription callback.
+    // the frontend, and optionally a streaming transcription callback for live captions.
     let recorder = AudioRecorder::new()
         .map_err(|e| anyhow::anyhow!("Failed to create AudioRecorder: {}", e))?
         .with_vad(Box::new(smoothed_vad))
@@ -174,7 +174,7 @@ fn create_audio_recorder(
         });
 
     // Add streaming callback if enabled
-    let recorder = if streaming_enabled {
+    let recorder = if live_captions_enabled {
         recorder.with_streaming_callback({
             let app_handle = app_handle.clone();
             move |samples| {

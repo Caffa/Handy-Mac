@@ -18,11 +18,18 @@
   pointer-events: none;
 }
 
-/* Expand overlay pill when hybrid indicator is shown */
+/* Expand overlay when hybrid indicator is shown */
 .recording-overlay:has(.hybrid-indicator) {
   height: 45px;
   border-radius: 32.5px;
   margin-top: 0;
+}
+
+/* Expand overlay when live captions are shown */
+.recording-overlay:has(.live-captions) {
+  height: auto;
+  min-height: 65px;
+  padding-bottom: 10px;
 }
 
 .overlay-left {
@@ -93,6 +100,7 @@
 }
 
 .streaming-text {
+  /* Deprecated - replaced by live-captions. Kept for backward compatibility. */
   font-size: 9px;
   font-weight: 500;
   font-family:
@@ -105,6 +113,24 @@
   text-overflow: ellipsis;
   text-align: center;
   padding: 2px 4px;
+  animation: pulse-opacity 1.5s ease-in-out infinite;
+}
+
+/* Live captions displayed below the volume bars during recording */
+.live-captions {
+  font-size: 12px;
+  font-weight: 500;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #ffe5ee;
+  max-width: 200px;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  text-align: center;
+  padding: 4px 8px;
+  margin-top: 2px;
+  line-height: 1.3;
   animation: pulse-opacity 1.5s ease-in-out infinite;
 }
 

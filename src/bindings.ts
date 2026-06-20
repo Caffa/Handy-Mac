@@ -494,9 +494,9 @@ async changeVadSensitivitySetting(sensitivity: string) : Promise<Result<null, st
     else return { status: "error", error: e  as any };
 }
 },
-async changeStreamingTranscriptionEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+async changeLiveCaptionsEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_streaming_transcription_enabled_setting", { enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_live_captions_enabled_setting", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1251,7 +1251,12 @@ pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_d
 /**
  * Automatically power-cycle the USB device when macOS wakes from sleep.
  */
-usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null; adaptive_parakeet_thresholds?: boolean; verification_mode?: boolean; vad_sensitivity?: VadSensitivity; streaming_transcription_enabled?: boolean; 
+usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null; adaptive_parakeet_thresholds?: boolean; verification_mode?: boolean; vad_sensitivity?: VadSensitivity; 
+/**
+ * Show live captions during recording. When enabled, partial transcriptions
+ * are displayed in real-time as you speak, below the volume bars.
+ */
+live_captions_enabled?: boolean; 
 /**
  * Convert US English spelling to British English after transcription.
  * Applies common spelling conversions like: color → colour, analyze → analyse, etc.

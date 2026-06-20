@@ -701,7 +701,27 @@ pub fn change_use_advanced_custom_words_setting(
     enabled: bool,
 ) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
+    // Backward compatibility: map boolean to mode
+    settings.word_correction_mode = if enabled {
+        settings::WordCorrectionMode::Pronunciation
+    } else {
+        settings::WordCorrectionMode::WordBias
+    };
     settings.use_advanced_custom_words = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_word_correction_mode(
+    app: AppHandle,
+    mode: settings::WordCorrectionMode,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.word_correction_mode = mode;
+    // Keep use_advanced_custom_words in sync for backward compatibility
+    settings.use_advanced_custom_words = mode == settings::WordCorrectionMode::Pronunciation;
     settings::write_settings(&app, settings);
     Ok(())
 }
@@ -1327,12 +1347,12 @@ pub fn change_vad_sensitivity_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_streaming_transcription_enabled_setting(
+pub fn change_live_captions_enabled_setting(
     app: AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
-    settings.streaming_transcription_enabled = enabled;
+    settings.live_captions_enabled = enabled;
     settings::write_settings(&app, settings);
     Ok(())
 }

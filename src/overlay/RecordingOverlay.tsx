@@ -902,10 +902,6 @@ const RecordingOverlay: React.FC = () => {
                     : t("overlay.hybridShort")}
                 </div>
               )}
-              {/* Show streaming text if available */}
-              {streamingText && (
-                <div className="streaming-text">{streamingText}</div>
-              )}
               <div className="bars-container">
                 {levels.map((v, i) => (
                   <div
@@ -919,6 +915,10 @@ const RecordingOverlay: React.FC = () => {
                   />
                 ))}
               </div>
+              {/* Show live captions below the bars */}
+              {streamingText && (
+                <div className="live-captions">{streamingText}</div>
+              )}
             </div>
           )}
           {state === "transcribing" && (
