@@ -31,6 +31,7 @@ import { AudioPlayer } from "../../ui/AudioPlayer";
 import Badge from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
+import { RetryQueue } from "./RetryQueue";
 
 const IconButton: React.FC<{
   onClick: () => void;
@@ -411,6 +412,9 @@ export const HistorySettings: React.FC = () => {
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
+      {/* Retry Queue - Failed transcriptions */}
+      <RetryQueue className="space-y-2" />
+      
       <div className="space-y-2">
         <div className="px-4 flex items-center justify-between">
           <div>

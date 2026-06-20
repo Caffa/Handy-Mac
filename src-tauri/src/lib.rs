@@ -35,6 +35,7 @@ use env_filter::Builder as EnvFilterBuilder;
 use managers::audio::AudioRecordingManager;
 use managers::history::HistoryManager;
 use managers::model::ModelManager;
+use managers::retry_worker::RetryWorker;
 use managers::transcription::TranscriptionManager;
 use managers::transcription_retry::TranscriptionRetryQueue;
 
@@ -173,6 +174,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         TranscriptionRetryQueue::new(app_handle.clone())
             .expect("Failed to initialize transcription retry queue"),
     );
+    let retry_worker = Arc::new(RetryWorker::new());
 
     // Apply accelerator preferences before any model loads
     managers::transcription::apply_accelerator_settings(app_handle);
@@ -184,6 +186,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(retry_queue.clone());
+    app_handle.manage(retry_worker.clone());
     app_handle.manage(Arc::new(session::SessionTracker::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
 
@@ -726,6 +729,12 @@ pub fn run(cli_args: CliArgs) {
                     let _ = transcription_manager.initiate_model_load();
                 }
             });
+
+            // Start the retry worker to process failed transcriptions in the background.
+            // Checks every 60 seconds for pending retries.
+            if let Some(retry_worker) = app_handle.try_state::<Arc<RetryWorker>>() {
+                retry_worker.start(app_handle.clone());
+            }
 
             // Install uhubctl if missing (macOS only, via Homebrew) so the
             // USB watchdog can recover dead USB audio devices automatically.

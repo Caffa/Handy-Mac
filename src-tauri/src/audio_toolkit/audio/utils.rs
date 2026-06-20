@@ -121,6 +121,95 @@ pub fn verify_wav_file<P: AsRef<Path>>(file_path: P, expected_samples: usize) ->
     Ok(())
 }
 
+/// Result of audio validation.
+#[derive(Debug, Clone)]
+pub enum AudioValidationResult {
+    /// Audio is valid and contains speech
+    Valid {
+        /// Duration in seconds
+        duration_secs: f64,
+        /// Number of samples
+        sample_count: usize,
+    },
+    /// Audio is silent or near-silent (no speech detected)
+    Silent {
+        /// Maximum amplitude detected
+        max_amplitude: f32,
+        /// Duration in seconds
+        duration_secs: f64,
+    },
+    /// Audio file is corrupted or unreadable
+    Corrupted {
+        /// Error message
+        error: String,
+    },
+}
+
+/// Validate audio samples to detect silence vs corruption vs valid speech.
+/// Returns a classification result for intelligent retry decisions.
+pub fn validate_audio(samples: &[f32], sample_rate: u32) -> AudioValidationResult {
+    if samples.is_empty() {
+        return AudioValidationResult::Corrupted {
+            error: "Empty audio samples".to_string(),
+        };
+    }
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    
+    // Calculate audio statistics
+    let mut max_amplitude = 0.0f32;
+    let mut rms_sum = 0.0f32;
+    
+    for sample in samples {
+        let abs_sample = sample.abs();
+        max_amplitude = max_amplitude.max(abs_sample);
+        rms_sum += abs_sample * abs_sample;
+    }
+    
+    let rms = (rms_sum / samples.len() as f32).sqrt();
+    
+    // Threshold for silence detection (empirically determined)
+    // - Max amplitude < 0.01 (very quiet, likely silence)
+    // - RMS < 0.005 (sustained low energy)
+    const SILENCE_MAX_THRESHOLD: f32 = 0.01;
+    const SILENCE_RMS_THRESHOLD: f32 = 0.005;
+    
+    if max_amplitude < SILENCE_MAX_THRESHOLD && rms < SILENCE_RMS_THRESHOLD {
+        debug!(
+            "Audio classified as silent: max_amplitude={:.6}, rms={:.6}, duration={:.2}s",
+            max_amplitude, rms, duration_secs
+        );
+        AudioValidationResult::Silent {
+            max_amplitude,
+            duration_secs,
+        }
+    } else {
+        debug!(
+            "Audio classified as valid: max_amplitude={:.6}, rms={:.6}, duration={:.2}s",
+            max_amplitude, rms, duration_secs
+        );
+        AudioValidationResult::Valid {
+            duration_secs,
+            sample_count: samples.len(),
+        }
+    }
+}
+
+/// Validate a WAV file and return the validation result.
+/// This is a convenience function that reads the file and validates the samples.
+pub fn validate_wav_file<P: AsRef<Path>>(file_path: P) -> AudioValidationResult {
+    let samples = match read_wav_samples(file_path.as_ref()) {
+        Ok(s) => s,
+        Err(e) => {
+            return AudioValidationResult::Corrupted {
+                error: format!("Failed to read WAV file: {}", e),
+            };
+        }
+    };
+    
+    validate_audio(&samples, 16000) // Standard sample rate for Handy
+}
+
 /// Save audio samples as a WAV file
 pub fn save_wav_file<P: AsRef<Path>>(file_path: P, samples: &[f32]) -> Result<()> {
     let spec = WavSpec {
