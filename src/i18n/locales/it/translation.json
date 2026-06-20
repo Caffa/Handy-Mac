@@ -356,6 +356,20 @@
         "add": "Aggiungi",
         "remove": "Rimuovi {{word}}",
         "duplicate": "\"{{word}}\" esiste già"
+      },
+      "vadSensitivity": {
+        "title": "Sensibilità Rilevamento Vocale",
+        "description": "Regola la sensibilità del rilevamento dell'attività vocale. Una sensibilità più alta rileva il parlato in modo più aggressivo, mentre una sensibilità più bassa richiede un parlato più chiaro.",
+        "veryQuick": "Molto Veloce",
+        "quick": "Veloce",
+        "balanced": "Bilanciato (consigliato)",
+        "relaxed": "Rilassato",
+        "veryRelaxed": "Molto Rilassato",
+        "placeholder": "Seleziona sensibilità..."
+      },
+      "liveCaptions": {
+        "label": "Sottotitoli in Tempo Reale",
+        "description": "Mostra sottotitoli in tempo reale sotto le barre del volume durante la registrazione. Usa CPU aggiuntiva."
       }
     },
     "postProcessing": {

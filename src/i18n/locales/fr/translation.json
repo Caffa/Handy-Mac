@@ -356,6 +356,20 @@
         "add": "Ajouter",
         "remove": "Supprimer {{word}}",
         "duplicate": "\"{{word}}\" existe déjà"
+      },
+      "vadSensitivity": {
+        "title": "Sensibilité de Détection Vocale",
+        "description": "Ajustez la sensibilité de la détection d'activité vocale. Une sensibilité plus élevée détecte la parole de manière plus agressive, tandis qu'une sensibilité plus faible nécessite une parole plus claire.",
+        "veryQuick": "Très Rapide",
+        "quick": "Rapide",
+        "balanced": "Équilibré (recommandé)",
+        "relaxed": "Détendu",
+        "veryRelaxed": "Très Détendu",
+        "placeholder": "Sélectionner la sensibilité..."
+      },
+      "liveCaptions": {
+        "label": "Sous-titres en Direct",
+        "description": "Afficher les sous-titres en direct sous les barres de volume pendant l'enregistrement. Utilise du CPU supplémentaire."
       }
     },
     "postProcessing": {

@@ -356,6 +356,20 @@
         "add": "Ekle",
         "remove": "{{word}} Kaldır",
         "duplicate": "\"{{word}}\" zaten mevcut"
+      },
+      "vadSensitivity": {
+        "title": "Ses Algılama Hassasiyeti",
+        "description": "Ses aktivitesi algılamanın hassasiyetini ayarlayın. Daha yüksek hassasiyet konuşmayı daha agresif algılar, daha düşük hassasiyet daha net konuşma gerektirir.",
+        "veryQuick": "Çok Hızlı",
+        "quick": "Hızlı",
+        "balanced": "Dengeli (önerilen)",
+        "relaxed": "Rahat",
+        "veryRelaxed": "Çok Rahat",
+        "placeholder": "Hassasiyet seçin..."
+      },
+      "liveCaptions": {
+        "label": "Canlı Altyazılar",
+        "description": "Kayıt sırasında ses seviyesi çubuklarının altında canlı altyazıları gösterir. Ek CPU kullanır."
       }
     },
     "postProcessing": {

@@ -414,6 +414,20 @@
         "add": "Add",
         "remove": "Remove {{word}}",
         "duplicate": "\"{{word}}\" already exists in your filler words list"
+      },
+      "vadSensitivity": {
+        "title": "Voice Detection Sensitivity",
+        "description": "Adjust how sensitive the voice activity detection is. Higher sensitivity detects speech more aggressively, while lower sensitivity requires clearer speech.",
+        "veryQuick": "Very Quick",
+        "quick": "Quick",
+        "balanced": "Balanced (recommended)",
+        "relaxed": "Relaxed",
+        "veryRelaxed": "Very Relaxed",
+        "placeholder": "Select sensitivity..."
+      },
+      "liveCaptions": {
+        "label": "Live Captions",
+        "description": "Show live captions below the volume bars during recording. Uses additional CPU."
       }
     },
     "postProcessing": {

@@ -356,6 +356,20 @@
         "add": "Lägg till",
         "remove": "Ta bort {{word}}",
         "duplicate": "\"{{word}}\" finns redan"
+      },
+      "vadSensitivity": {
+        "title": "Känslighet för röstidentifiering",
+        "description": "Justera känsligheten för röstaktivitetsidentifiering. Högre känslighet identifierar tal mer aggressivt, medan lägre känslighet kräver tydligare tal.",
+        "veryQuick": "Väldigt snabb",
+        "quick": "Snabb",
+        "balanced": "Balanserad (rekommenderas)",
+        "relaxed": "Avslappnad",
+        "veryRelaxed": "Väldigt avslappnad",
+        "placeholder": "Välj känslighet..."
+      },
+      "liveCaptions": {
+        "label": "Undertexter i realtid",
+        "description": "Visa undertexter i realtid under volymfälten under inspelning. Använder ytterligare processorkraft."
       }
     },
     "postProcessing": {

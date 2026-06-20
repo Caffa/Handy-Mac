@@ -356,6 +356,20 @@
         "add": "Thêm",
         "remove": "Xóa {{word}}",
         "duplicate": "\"{{word}}\" đã tồn tại"
+      },
+      "vadSensitivity": {
+        "title": "Độ nhạy phát hiện giọng nói",
+        "description": "Điều chỉnh độ nhạy của tính năng phát hiện hoạt động giọng nói. Độ nhạy cao hơn sẽ phát hiện giọng nói tích cực hơn, trong khi độ nhạy thấp hơn yêu cầu giọng nói rõ ràng hơn.",
+        "veryQuick": "Rất nhanh",
+        "quick": "Nhanh",
+        "balanced": "Cân bằng (khuyến nghị)",
+        "relaxed": "Thoải mái",
+        "veryRelaxed": "Rất thoải mái",
+        "placeholder": "Chọn độ nhạy..."
+      },
+      "liveCaptions": {
+        "label": "Phụ đề trực tiếp",
+        "description": "Hiển thị phụ đề trực tiếp bên dưới thanh âm lượng trong khi ghi âm. Sử dụng thêm CPU."
       }
     },
     "postProcessing": {

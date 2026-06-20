@@ -356,6 +356,20 @@
         "add": "Přidat",
         "remove": "Odebrat {{word}}",
         "duplicate": "\"{{word}}\" již existuje"
+      },
+      "vadSensitivity": {
+        "title": "Citlivost detekce hlasu",
+        "description": "Upravte citlivost detekce hlasové aktivity. Vyšší citlivost detekuje řeč agresivněji, zatímco nižší citlivost vyžaduje jasnější řeč.",
+        "veryQuick": "Velmi rychlá",
+        "quick": "Rychlá",
+        "balanced": "Vyvážená (doporučeno)",
+        "relaxed": "Uvolněná",
+        "veryRelaxed": "Velmi uvolněná",
+        "placeholder": "Vyberte citlivost..."
+      },
+      "liveCaptions": {
+        "label": "Živé titulky",
+        "description": "Zobrazit živé titulky pod ukazateli hlasitosti během nahrávání. Používá další procesor."
       }
     },
     "postProcessing": {
