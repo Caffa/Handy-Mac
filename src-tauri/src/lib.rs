@@ -712,8 +712,8 @@ pub fn run(cli_args: CliArgs) {
             // the get_available_accelerators command), causing a UI freeze.
             // Result is cached in a OnceLock inside the transcription manager.
             std::thread::spawn(|| {
-                let _ = crate::managers::transcription::get_available_accelerators();
-            });
+                 let _ = crate::managers::transcription::get_available_accelerators();
+             });
 
             // Pre-warm the ASR model on a background thread so it's ready when
             // the user first presses the hotkey. Without this, the model is loaded
@@ -746,7 +746,6 @@ pub fn run(cli_args: CliArgs) {
                 // Start sleep/wake listener to auto-cycle USB on wake from sleep.
                 sleep_wake::start_sleep_wake_listener(app_handle.clone());
             }
-
             // Hide tray icon if --no-tray was passed
             if cli_args.no_tray {
                 tray::set_tray_visibility(&app_handle, false);

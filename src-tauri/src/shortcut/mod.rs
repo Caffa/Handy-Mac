@@ -1367,4 +1367,6 @@ pub fn change_live_captions_enabled_setting(
     settings.live_captions_enabled = enabled;
     settings::write_settings(&app, settings);
     Ok(())
+=======
+>>>>>>> 966ff99 (query gpu async (#1246))
 }
