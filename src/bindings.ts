@@ -518,6 +518,14 @@ async changeLiveCaptionsEnabledSetting(enabled: boolean) : Promise<Result<null, 
     else return { status: "error", error: e  as any };
 }
 },
+async changeOverlayScaleSetting(scale: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_overlay_scale_setting", { scale }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Start key recording mode
  */
@@ -1338,6 +1346,11 @@ usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_thre
  * are displayed in real-time as you speak, below the volume bars.
  */
 live_captions_enabled?: boolean; 
+/**
+ * UI scale factor for the overlay (1.0 = normal, 2.0 = double size).
+ * Scales the pill, live captions, and window dimensions proportionally.
+ */
+overlay_scale?: number; 
 /**
  * Convert US English spelling to British English after transcription.
  * Applies common spelling conversions like: color → colour, analyze → analyse, etc.

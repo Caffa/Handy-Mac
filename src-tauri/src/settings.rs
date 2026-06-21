@@ -445,7 +445,7 @@ pub struct AppSettings {
     pub selected_output_device: Option<String>,
     #[serde(default = "default_translate_to_english")]
     pub translate_to_english: bool,
-    #[serde(default = "default_selected_language")]
+    #[serde(default = "default_app_language")]
     pub selected_language: String,
     #[serde(default = "default_overlay_position")]
     pub overlay_position: OverlayPosition,
@@ -565,6 +565,10 @@ pub struct AppSettings {
     /// are displayed in real-time as you speak, below the volume bars.
     #[serde(default)]
     pub live_captions_enabled: bool,
+    /// UI scale factor for the overlay (1.0 = normal, 2.0 = double size).
+    /// Scales the pill, live captions, and window dimensions proportionally.
+    #[serde(default = "default_overlay_scale")]
+    pub overlay_scale: f64,
     /// Convert US English spelling to British English after transcription.
     /// Applies common spelling conversions like: color → colour, analyze → analyse, etc.
     #[serde(default)]
@@ -599,8 +603,12 @@ fn default_update_checks_enabled() -> bool {
     true
 }
 
-fn default_selected_language() -> String {
-    "auto".to_string()
+fn default_overlay_scale() -> f64 {
+    1.0
+}
+
+fn default_convert_us_to_british() -> bool {
+    false
 }
 
 fn default_overlay_position() -> OverlayPosition {
@@ -1030,6 +1038,7 @@ pub fn get_default_settings() -> AppSettings {
         verification_mode: false,
         vad_sensitivity: VadSensitivity::Balanced,
         live_captions_enabled: false,
+        overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
         repetition_suppression_level: 0,
     }

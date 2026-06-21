@@ -420,6 +420,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_verification_mode_setting,
             shortcut::change_vad_sensitivity_setting,
             shortcut::change_live_captions_enabled_setting,
+            shortcut::change_overlay_scale_setting,
             shortcut::handy_keys::start_handy_keys_recording,
             shortcut::handy_keys::stop_handy_keys_recording,
             trigger_update_check,

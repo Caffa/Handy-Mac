@@ -31,6 +31,7 @@ import { VerificationMode } from "../VerificationMode";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
 import { VadSensitivity } from "../VadSensitivity";
 import { LiveCaptions } from "../LiveCaptions";
+import { OverlayScale } from "../OverlayScale";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -87,6 +88,7 @@ export const AdvancedSettings: React.FC = () => {
         <VerificationMode descriptionMode="tooltip" grouped={true} />
         <VadSensitivity descriptionMode="tooltip" grouped={true} />
         <LiveCaptions descriptionMode="tooltip" grouped={true} />
+        <OverlayScale descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.history")}>

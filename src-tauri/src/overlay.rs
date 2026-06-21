@@ -30,8 +30,11 @@ tauri_panel! {
 }
 
 /// Native window width for transcription preview — needs to accommodate
-/// the preview text which is ~3x wider than the visualizer pill (516px).
-const OVERLAY_WINDOW_WIDTH: f64 = 540.0;
+/// the live captions box which can be up to 600px (or 1200px at 2x scale).
+/// Also accommodates the preview text which is ~3x wider than the visualizer pill (516px).
+const OVERLAY_WINDOW_WIDTH: f64 = 800.0;
+/// Base window width (used for scaled calculations).
+const OVERLAY_WINDOW_WIDTH_BASE: f64 = 800.0;
 /// Minimum window height for the recording pill (just the pill, no preview).
 const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 100.0;
 /// Visible pill height used for position calculations.
@@ -450,6 +453,7 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
 /// while regular transcription uses minimal height to avoid blocking click-through.
 /// During processing (filing), the window stays tall to show the text preview,
 /// but CSS makes it click-through and visually dimmed.
+/// The overlay_scale setting (1.0 or 2.0) scales the window dimensions.
 pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
@@ -458,6 +462,9 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
         }
 
         if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
+            // Get the overlay scale setting (1.0 = normal, 2.0 = double size)
+            let overlay_scale = settings::get_settings(app_handle).overlay_scale;
+            
             // Use minimal height for regular transcription to allow click-through.
             // Router mode needs full height during confirming (text preview) and
             // processing (showing "Filing..." with visible but dimmed preview).
@@ -467,12 +474,15 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                 OverlayMode::Router if state == "confirming" || state == "processing" => window_height,
                 OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
                     if state == "recording" && settings::get_settings(app_handle).live_captions_enabled {
-                        OVERLAY_LIVE_CAPTIONS_HEIGHT
+                        OVERLAY_LIVE_CAPTIONS_HEIGHT * overlay_scale
                     } else {
-                        OVERLAY_WINDOW_MIN_HEIGHT
+                        OVERLAY_WINDOW_MIN_HEIGHT * overlay_scale
                     }
                 }
             };
+            
+            // Scale the window width based on overlay_scale
+            let actual_width = OVERLAY_WINDOW_WIDTH_BASE * overlay_scale;
 
             #[cfg(target_os = "macos")]
             {
@@ -483,7 +493,7 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                 let _ = overlay_window.run_on_main_thread(move || {
                     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
                     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                        width: OVERLAY_WINDOW_WIDTH,
+                        width: actual_width,
                         height: actual_height,
                     }));
                 });
@@ -494,7 +504,7 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
                 let _ = overlay_window
                     .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
                 let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                    width: OVERLAY_WINDOW_WIDTH,
+                    width: actual_width,
                     height: actual_height,
                 }));
             }

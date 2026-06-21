@@ -308,7 +308,7 @@ const RecordingOverlay: React.FC = () => {
   // Fetch hybrid mode settings when overlay becomes visible
   useEffect(() => {
     if (!isVisible) return;
-    const fetchHybridSettings = async () => {
+    const fetchSettings = async () => {
       try {
         const result = await commands.getAppSettings();
         if (result.status === "ok" && result.data) {
@@ -319,7 +319,25 @@ const RecordingOverlay: React.FC = () => {
         // Silently ignore — indicator simply won't show
       }
     };
-    fetchHybridSettings();
+    fetchSettings();
+  }, [isVisible]);
+
+  // Overlay scale setting (1.0 = normal, 2.0 = double size)
+  const [overlayScale, setOverlayScale] = useState(1.0);
+
+  // Fetch overlay scale setting
+  useEffect(() => {
+    const fetchOverlayScale = async () => {
+      try {
+        const result = await commands.getAppSettings();
+        if (result.status === "ok" && result.data) {
+          setOverlayScale(result.data.overlay_scale ?? 1.0);
+        }
+      } catch {
+        // Silently ignore — default to 1.0
+      }
+    };
+    fetchOverlayScale();
   }, [isVisible]);
 
   // Safety timeout: if we stay in "usb-cycling" state for too long,
@@ -883,7 +901,11 @@ const RecordingOverlay: React.FC = () => {
 
   return (
     <>
-      <div dir={direction} className={getOverlayClassNames()}>
+      <div 
+        dir={direction} 
+        className={getOverlayClassNames()}
+        style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
+      >
         <div className="overlay-left">{getIcon()}</div>
 
         <div className="overlay-middle">
@@ -1016,6 +1038,7 @@ const RecordingOverlay: React.FC = () => {
           <div
             dir={direction}
             className={`live-captions-box ${isVisible ? "fade-in" : ""} ${isRouter ? "routing-mode" : ""}`}
+            style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
             role="status"
             aria-live="polite"
             aria-label="Live transcription"

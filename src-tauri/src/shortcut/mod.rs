@@ -1367,6 +1367,20 @@ pub fn change_live_captions_enabled_setting(
     settings.live_captions_enabled = enabled;
     settings::write_settings(&app, settings);
     Ok(())
-=======
->>>>>>> 966ff99 (query gpu async (#1246))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_overlay_scale_setting(
+    app: AppHandle,
+    scale: f64,
+) -> Result<(), String> {
+    // Validate scale: only allow 1.0 or 2.0
+    if scale != 1.0 && scale != 2.0 {
+        return Err(format!("Invalid overlay scale: {}. Must be 1.0 or 2.0", scale));
+    }
+    let mut settings = settings::get_settings(&app);
+    settings.overlay_scale = scale;
+    settings::write_settings(&app, settings);
+    Ok(())
 }

@@ -1,12 +1,13 @@
 .recording-overlay {
-  height: 45px;
-  width: 172px;
+  --overlay-scale: 1;
+  height: calc(45px * var(--overlay-scale));
+  width: calc(172px * var(--overlay-scale));
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  padding: 6px;
+  padding: calc(6px * var(--overlay-scale));
   background: #000000cc;
-  border-radius: 22.5px;
+  border-radius: calc(22.5px * var(--overlay-scale));
   opacity: 0;
   transition:
     opacity 300ms ease-out,
@@ -103,21 +104,22 @@
 
 /* Live captions displayed below the pill during recording */
 .live-captions-box {
+  --overlay-scale: 1;
   position: fixed;
-  top: 53px;
+  top: calc(53px * var(--overlay-scale));
   left: 50%;
   transform: translateX(-50%);
-  min-width: 200px;
-  max-width: 500px;
+  min-width: calc(600px * var(--overlay-scale));
+  max-width: calc(1500px * var(--overlay-scale));
   width: auto;
   height: auto;
   background: #000000cc;
-  border-radius: 12px;
-  padding: 8px 12px;
+  border-radius: calc(12px * var(--overlay-scale));
+  padding: calc(8px * var(--overlay-scale)) calc(12px * var(--overlay-scale));
   opacity: 0;
   transition: opacity 300ms ease-out;
   z-index: 9998;
-  font-size: 18px;
+  font-size: calc(18px * var(--overlay-scale));
   font-weight: 500;
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

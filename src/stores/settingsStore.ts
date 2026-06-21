@@ -198,6 +198,8 @@ const settingUpdaters: {
     commands.changeVadSensitivitySetting(value as string),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
+  overlay_scale: (value) =>
+    commands.changeOverlayScaleSetting(value as number),
 };
 
 export const useSettingsStore = create<SettingsStore>()(
