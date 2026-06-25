@@ -946,7 +946,10 @@ impl TranscriptionManager {
         };
 
         // Apply word correction if custom words are configured.
-        // Skip for Whisper models since custom words are already passed as initial_prompt.
+        // For WordBias and Pronunciation modes, skip for Whisper models since custom words
+        // are already passed as initial_prompt which biases the model's vocabulary.
+        // For Replacement mode, ALWAYS apply word replacements as a post-processing step
+        // because exact word substitutions should be guaranteed, not just hinted.
         let is_whisper = self
             .model_manager
             .get_model_info(&effective_model_id)
@@ -971,37 +974,51 @@ impl TranscriptionManager {
         // Save suppressed token count before result.text is consumed below
         let suppressed_token_count = result.suppressed_token_count;
 
-        let corrected_result = if has_words && !is_whisper {
-            let before = result.text.clone();
-            let corrected = match settings.word_correction_mode {
-                WordCorrectionMode::WordBias => apply_custom_words(
-                    &result.text,
-                    &settings.custom_words,
-                    settings.word_correction_threshold,
-                ),
-                WordCorrectionMode::Pronunciation => apply_advanced_custom_words(
-                    &result.text,
-                    &settings.advanced_custom_words,
-                    settings.word_correction_threshold,
-                ),
-                WordCorrectionMode::Replacement => {
-                    apply_word_replacements(&result.text, &settings.word_replacements)
+        let corrected_result = match settings.word_correction_mode {
+            // Replacement mode: ALWAYS apply word replacements, even for Whisper models.
+            // Unlike WordBias/Pronunciation which use initial_prompt as hints, word replacements
+            // are exact substitutions that should be guaranteed in the output.
+            WordCorrectionMode::Replacement if !settings.word_replacements.is_empty() => {
+                let before = result.text.clone();
+                let corrected = apply_word_replacements(&result.text, &settings.word_replacements);
+                if corrected != before {
+                    info!("Word replacement applied: '{}' -> '{}'", before, corrected);
+                } else {
+                    // Log first few replacements for debugging
+                    let sample: Vec<_> = settings.word_replacements.iter().take(3).collect();
+                    debug!(
+                        "No word replacement applied. Text: '{}', Sample replacements: {:?}",
+                        before,
+                        sample.iter().map(|r| format!("{}->{}", r.mistranslation, r.correction)).collect::<Vec<_>>()
+                    );
                 }
-            };
-            if corrected != before {
-                info!("Word correction applied: '{}' -> '{}'", before, corrected);
-            } else if !settings.word_replacements.is_empty() {
-                // Log first few replacements for debugging
-                let sample: Vec<_> = settings.word_replacements.iter().take(3).collect();
-                debug!(
-                    "No word correction applied. Text: '{}', Sample replacements: {:?}",
-                    before,
-                    sample.iter().map(|r| format!("{}->{}", r.mistranslation, r.correction)).collect::<Vec<_>>()
-                );
+                corrected
             }
-            corrected
-        } else {
-            result.text
+            // WordBias and Pronunciation modes: skip for Whisper models (already passed as initial_prompt)
+            _ if has_words && !is_whisper => {
+                let before = result.text.clone();
+                let corrected = match settings.word_correction_mode {
+                    WordCorrectionMode::WordBias => apply_custom_words(
+                        &result.text,
+                        &settings.custom_words,
+                        settings.word_correction_threshold,
+                    ),
+                    WordCorrectionMode::Pronunciation => apply_advanced_custom_words(
+                        &result.text,
+                        &settings.advanced_custom_words,
+                        settings.word_correction_threshold,
+                    ),
+                    WordCorrectionMode::Replacement => {
+                        // This branch is unreachable due to the pattern above, but Rust needs it
+                        result.text.clone()
+                    }
+                };
+                if corrected != before {
+                    info!("Word correction applied: '{}' -> '{}'", before, corrected);
+                }
+                corrected
+            }
+            _ => result.text,
         };
 
         // Filter out filler words and hallucinations
