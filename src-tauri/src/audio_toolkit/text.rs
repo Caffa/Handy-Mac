@@ -1,11 +1,10 @@
 use natural::phonetics::soundex;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use std::collections::HashMap;
 use strsim::levenshtein;
-use varcon::{Category, VARCON};
 
 use crate::settings::CustomWord;
+use super::spelling_dictionaries::{SpellingDictionary, convert_us_to_british_with_dict};
 
 /// Builds an n-gram string by cleaning and concatenating words
 ///
@@ -984,100 +983,11 @@ pub fn filter_transcription_output(
     filtered.trim().to_string()
 }
 
-/// Lookup table for US English to British English spelling conversions.
-/// Built lazily from the varcon database on first use.
-static US_TO_BRITISH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
-    let mut map = HashMap::new();
-    
-    // Build a lookup from the varcon database
-    // Each Cluster has entries, each Entry has variants with different spellings.
-    // We need to find pairs: one variant with American category, another with BritishIse.
-    for cluster in VARCON.iter() {
-        for entry in cluster.entries.iter() {
-            // Find American and British variants
-            let mut american_word: Option<&'static str> = None;
-            let mut british_word: Option<&'static str> = None;
-            
-            for variant in entry.variants.iter() {
-                for type_info in variant.types.iter() {
-                    if type_info.category & Category::American == Category::American {
-                        american_word = Some(variant.word);
-                    }
-                    if type_info.category & Category::BritishIse == Category::BritishIse {
-                        british_word = Some(variant.word);
-                    }
-                }
-            }
-            
-            // If we have different spellings for American and British, add to map
-            // Note: american_word and british_word come from DIFFERENT variants
-            if let (Some(us), Some(uk)) = (american_word, british_word) {
-                if us != uk {
-                    map.insert(us, uk);
-                }
-            }
-        }
-    }
-    
-    // Remove semantic ambiguities where both words exist in British English
-    // with different meanings. Automatic conversion is incorrect because
-    // context determines which word to use:
-    
-    // check/cheque: check (verify/examine) vs cheque (payment order)
-    map.remove("check");
-    map.remove("checks");
-    map.remove("checked");
-    map.remove("checking");
-    
-    // program/programme: program (computer software) vs programme (TV show/schedule)
-    // Both are valid in British English with different meanings
-    map.remove("program");
-    map.remove("programs");
-    map.remove("programmed");
-    map.remove("programming");
-    
-    // tire/tyre: tire (to become weary) vs tyre (wheel covering)
-    // Both are valid in British English
-    map.remove("tire");
-    map.remove("tires");
-    map.remove("tired");
-    map.remove("tiring");
-    
-    // catalog/catalogue: catalog (computing/database) vs catalogue (traditional)
-    // Both are valid in British English (catalog common in tech contexts)
-    map.remove("catalog");
-    map.remove("catalogs");
-    map.remove("cataloged");
-    map.remove("cataloging");
-    
-    // dialog/dialogue: dialog (UI element) vs dialogue (conversation)
-    // Both are valid in British English (dialog is computing term)
-    map.remove("dialog");
-    map.remove("dialogs");
-    
-    // install/instal: incorrect conversion - "install" is spelled the same in both variants
-    // varcon incorrectly treats "install" as American and "instal" as British
-    // "install" is the correct spelling in both American and British English
-    map.remove("install");
-    map.remove("installs");
-    map.remove("installed");
-    map.remove("installing");// Add gray/grey which might not be in the database
-    // These are common conversions that users expect
-    map.insert("gray", "grey");
-    map.insert("grays", "greys");
-    map.insert("grayed", "greyed");
-    map.insert("graying", "greying");
-    map.insert("grayer", "greyer");
-    map.insert("grayest", "greyest");
-    
-    map
-});
-
-/// Converts US English spelling to British English using the varcon database.
-///
-/// The varcon database contains thousands of spelling variants based on
-/// the VARCON project which covers American, British, Canadian, and Australian
-/// English spelling differences.
+/// Converts US English spelling to British English.
+/// 
+/// Uses the DWYL dictionary by default (curated, human-verified, ~180 common pairs).
+/// For speech-to-text, DWYL is recommended as it excludes archaic spellings
+/// and semantic ambiguities.
 ///
 /// # Arguments
 /// * `text` - The input text with US English spelling
@@ -1085,92 +995,7 @@ static US_TO_BRITISH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
 /// # Returns
 /// Text with British English spelling applied
 pub fn convert_us_to_british(text: &str) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut converted_words: Vec<String> = Vec::new();
-
-    for word in words {
-        // Extract leading punctuation and trailing punctuation
-        let (prefix, core, suffix) = extract_word_parts(word);
-
-        let core_lower = core.to_lowercase();
-        
-        // Look up the word in our conversion map
-        let converted = US_TO_BRITISH.get(core_lower.as_str());
-        
-        let result_word = if let Some(&british) = converted {
-            // Preserve case pattern
-            preserve_case_pattern(core, british)
-        } else if core_lower.ends_with("es") {
-            // Try singular form for plurals ending in -es
-            let base = &core_lower[..core_lower.len() - 2];
-            if let Some(&british_base) = US_TO_BRITISH.get(base) {
-                // Some words add -es in plural
-                let british_form = if british_base.ends_with('e') || british_base.ends_with('s') {
-                    format!("{}es", british_base)
-                } else {
-                    format!("{}es", british_base)
-                };
-                preserve_case_pattern(core, &british_form)
-            } else {
-                core.to_string()
-            }
-        } else if core_lower.ends_with("s") && core_lower.len() > 1 {
-            // Try singular form for plurals ending in -s
-            let base = &core_lower[..core_lower.len() - 1];
-            if let Some(&british_base) = US_TO_BRITISH.get(base) {
-                let british_form = if british_base.ends_with('s') {
-                    british_base.to_string()
-                } else {
-                    format!("{}s", british_base)
-                };
-                preserve_case_pattern(core, &british_form)
-            } else {
-                core.to_string()
-            }
-        } else if core_lower.ends_with("ed") {
-            // Try base form for past tense
-            let base = &core_lower[..core_lower.len() - 2];
-            if let Some(&british_base) = US_TO_BRITISH.get(base) {
-                let british_form = format!("{}ed", british_base);
-                preserve_case_pattern(core, &british_form)
-            } else if core_lower.ends_with("ied") {
-                // Try -y form for -ied (e.g., organized -> organised)
-                let base = format!("{}y", &core_lower[..core_lower.len() - 3]);
-                if let Some(&british_base) = US_TO_BRITISH.get(base.as_str()) {
-                    let british_form = format!("{}ied", british_base.strip_suffix('e').unwrap_or(british_base));
-                    preserve_case_pattern(core, &british_form)
-                } else {
-                    core.to_string()
-                }
-            } else {
-                core.to_string()
-            }
-        } else if core_lower.ends_with("ing") {
-            // Try base form for -ing
-            let base = &core_lower[..core_lower.len() - 3];
-            if let Some(&british_base) = US_TO_BRITISH.get(base) {
-                let british_form = format!("{}ing", british_base);
-                preserve_case_pattern(core, &british_form)
-            } else if core_lower.ends_with("ying") {
-                // Try -y form for -ying (e.g., organizing -> organising)
-                let base = format!("{}y", &core_lower[..core_lower.len() - 4]);
-                if let Some(&british_base) = US_TO_BRITISH.get(base.as_str()) {
-                    let british_form = format!("{}ying", british_base.strip_suffix('e').unwrap_or(british_base));
-                    preserve_case_pattern(core, &british_form)
-                } else {
-                    core.to_string()
-                }
-            } else {
-                core.to_string()
-            }
-        } else {
-            core.to_string()
-        };
-
-        converted_words.push(format!("{}{}{}", prefix, result_word, suffix));
-    }
-
-    converted_words.join(" ")
+    convert_us_to_british_with_dict(text, SpellingDictionary::Dwyl)
 }
 
 /// Extracts leading punctuation, core word, and trailing punctuation from a word.

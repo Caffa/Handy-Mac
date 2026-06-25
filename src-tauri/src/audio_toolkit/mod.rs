@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod constants;
+pub mod spelling_dictionaries;
 pub mod text;
 pub mod utils;
 pub mod vad;
@@ -10,6 +11,7 @@ pub use audio::{
     save_wav_file, validate_audio, validate_wav_file, verify_wav_file, AudioRecorder,
     AudioValidationResult, CpalDeviceInfo,
 };
+pub use spelling_dictionaries::SpellingDictionary;
 pub use text::{
     apply_advanced_custom_words, apply_custom_words, apply_word_replacements, convert_us_to_british,
     detect_repeated_words, filter_transcription_output, suppress_repeated_words,

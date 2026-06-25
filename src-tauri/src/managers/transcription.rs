@@ -1,6 +1,6 @@
 use crate::audio_toolkit::audio::AudioQualityMetrics;
 use crate::audio_toolkit::{
-    apply_advanced_custom_words, apply_custom_words, apply_word_replacements, convert_us_to_british,
+    apply_advanced_custom_words, apply_custom_words, apply_word_replacements,
     filter_transcription_output, suppress_repeated_words, trim_trailing_silence,
 };
 use crate::managers::audio::AudioRecordingManager;
@@ -1029,8 +1029,10 @@ impl TranscriptionManager {
         );
 
         // Apply US to British English spelling conversion if enabled
+        // Uses the selected dictionary (DWYL by default, excludes archaic spellings)
         let british_result = if settings.convert_us_to_british {
-            convert_us_to_british(&filtered_result)
+            use crate::audio_toolkit::spelling_dictionaries::convert_us_to_british_with_dict;
+            convert_us_to_british_with_dict(&filtered_result, settings.spelling_dictionary)
         } else {
             filtered_result
         };

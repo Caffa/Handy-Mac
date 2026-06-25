@@ -7,6 +7,8 @@ use std::fmt;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
+use crate::audio_toolkit::SpellingDictionary;
+
 pub const APPLE_INTELLIGENCE_PROVIDER_ID: &str = "apple_intelligence";
 pub const APPLE_INTELLIGENCE_DEFAULT_MODEL_ID: &str = "Apple Intelligence";
 
@@ -573,6 +575,11 @@ pub struct AppSettings {
     /// Applies common spelling conversions like: color → colour, analyze → analyse, etc.
     #[serde(default)]
     pub convert_us_to_british: bool,
+    /// Spelling dictionary source for US-to-British conversion.
+    /// Options: "dwyl" (curated, ~180 pairs) or "cspell" (comprehensive).
+    /// DWYL is recommended for speech-to-text (excludes archaic spellings).
+    #[serde(default)]
+    pub spelling_dictionary: SpellingDictionary,
     /// Repetition suppression level (0-3): 0=off, 1=light, 2=moderate, 3=aggressive.
     /// Manual control only - user adjusts when they notice artifacts.
     #[serde(default)]
@@ -1040,6 +1047,7 @@ pub fn get_default_settings() -> AppSettings {
         live_captions_enabled: false,
         overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
+        spelling_dictionary: SpellingDictionary::default(),
         repetition_suppression_level: 0,
     }
 }
