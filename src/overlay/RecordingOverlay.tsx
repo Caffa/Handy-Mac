@@ -11,6 +11,7 @@ import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
+import { PartialTranscriptionEvent, TranscriptionSegment } from "@/lib/types/events";
 
 type OverlayState =
   | "recording"
@@ -120,6 +121,43 @@ function getHandlerIcon(handlerName: string): string {
   return HANDLER_ICONS[handlerName] || HANDLER_ICONS.default;
 }
 
+/// Filter filler words from the start of streaming transcription text.
+function filterStreamingText(text: string): string {
+  const fillerWords = ["okay", "yeah", "um", "uh", "so", "like", "you know", "right", "well"];
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+
+  const words = trimmed.split(/\s+/);
+  if (words.length < 2) {
+    const lowerText = trimmed.toLowerCase();
+    const isFiller = fillerWords.some(
+      (fw) =>
+        lowerText === fw ||
+        lowerText === `${fw}.` ||
+        lowerText === `${fw},`,
+    );
+    if (isFiller) return "";
+    return trimmed;
+  }
+
+  const firstWord = words[0].toLowerCase().replace(/[.,!?]/, "");
+  const isFillerStart = fillerWords.includes(firstWord);
+
+  if (isFillerStart && words.length >= 2) {
+    const secondWord = words[1].toLowerCase().replace(/[.,!?]/, "");
+    const isContinuation =
+      fillerWords.includes(secondWord) ||
+      secondWord === "and" ||
+      secondWord === "but";
+
+    if (isContinuation && words.length === 2) return "";
+    if (isContinuation) return words.slice(1).join(" ");
+    return words.slice(1).join(" ");
+  }
+
+  return trimmed;
+}
+
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
@@ -175,6 +213,7 @@ const RecordingOverlay: React.FC = () => {
 
   // Streaming transcription text (shown during recording)
   const [streamingText, setStreamingText] = useState<string>("");
+  const [streamingSegments, setStreamingSegments] = useState<TranscriptionSegment[]>([]);
 
   // Routing confirmation countdown
   const [countdown, setCountdown] = useState<number>(0);
@@ -517,11 +556,11 @@ const RecordingOverlay: React.FC = () => {
       // Start fade-out after a short delay (like a toast)
       fadeOutTimerRef.current = setTimeout(() => {
         setIsFadingOut(true);
-        // Clear the preview after fade-out animation completes
+        // Clear the preview after fade-out animation completes (100ms)
         setTimeout(() => {
           setTranscriptionPreview("");
           setIsFadingOut(false);
-        }, 300);
+        }, 100);
       }, 2000); // Show for 2 seconds before fading out
     } else {
       // Reset fade-out state when not in processing
@@ -601,6 +640,7 @@ const RecordingOverlay: React.FC = () => {
             usbCyclingActiveRef.current = false;
             setTranscriptionPreview("");
             setStreamingText(""); // Clear streaming text
+            setStreamingSegments([]);
             setRouterResult(null);
             setIsEditing(false);
             setEditedText("");
@@ -648,6 +688,7 @@ const RecordingOverlay: React.FC = () => {
             setIsVisible(false);
             setTranscriptionPreview(""); // Clear preview when hiding
             setStreamingText(""); // Clear streaming text when hiding
+            setStreamingSegments([]);
             setRouterResult(null);
             setIsEditing(false);
             setCountdown(0);
@@ -809,16 +850,47 @@ const RecordingOverlay: React.FC = () => {
         },
       );
 
-      // Listen for partial transcription during streaming
-      // Only update if live captions are enabled and text has changed
-      const unlistenPartialTranscription = await listen<string>(
+      // Listen for partial transcription during streaming.
+      // Receives structured payload with segments and timestamps.
+      // Accumulates segments by timestamp to prevent early content from
+      // disappearing when Whisper re-interprets longer audio buffers.
+      const unlistenPartialTranscription = await listen<PartialTranscriptionEvent>(
         "partial-transcription",
         (event) => {
-          // Prevent unnecessary re-renders if text hasn't changed
-          setStreamingText((prev) => {
-            if (prev === event.payload) return prev;
-            return event.payload;
-          });
+          const { text, segments } = event.payload;
+
+          if (segments && segments.length > 0) {
+            // Merge new segments with accumulated segments by timestamp.
+            // Any existing segment that overlaps with a new segment is
+            // replaced. Non-overlapping existing segments are preserved.
+            // Also compute display text from the merged result in one pass.
+            setStreamingSegments((prev) => {
+              const merged = [...prev];
+              for (const ns of segments) {
+                const kept = merged.filter(
+                  (es) => !(es.start < ns.end && es.end > ns.start),
+                );
+                kept.push(ns);
+                merged.splice(0, merged.length, ...kept);
+              }
+              merged.sort((a, b) => a.start - b.start);
+
+              // Derive display text from merged segments
+              const text = merged.map((s) => s.text).join(" ");
+              setStreamingText((prevText) => {
+                const filtered = filterStreamingText(text);
+                return filtered || prevText;
+              });
+
+              return merged;
+            });
+          } else {
+            // Fallback for models without timestamps (e.g. Moonshine)
+            setStreamingText((prev) => {
+              if (prev === text) return prev;
+              return filterStreamingText(text) || prev;
+            });
+          }
         },
       );
 
@@ -865,14 +937,14 @@ const RecordingOverlay: React.FC = () => {
       // Paper-plane icon for routing actions (blue #3b82f6)
       const iconColor = "#3b82f6";
       if (state === "recording") {
-        return <RoutingIcon color={iconColor} width={22} height={22} />;
+        return <RoutingIcon color={iconColor} width={30} height={30} />;
       }
-      return <RoutingIcon color={iconColor} width={22} height={22} />;
+      return <RoutingIcon color={iconColor} width={30} height={30} />;
     }
     if (state === "recording") {
-      return <MicrophoneIcon width={22} height={22} />;
+      return <MicrophoneIcon width={30} height={30} />;
     }
-    return <TranscriptionIcon width={22} height={22} />;
+    return <TranscriptionIcon width={30} height={30} />;
   };
 
   const getOverlayClassNames = (): string => {
@@ -925,7 +997,7 @@ const RecordingOverlay: React.FC = () => {
                   key={i}
                   className={`bar${isRouter ? " routing-bar" : ""}`}
                   style={{
-                    height: `${Math.min(25, 5 + Math.pow(v, 0.7) * 22)}px`,
+                    height: `${Math.min(35, 7 + Math.pow(v, 0.7) * 28)}px`,
                     transition: "height 80ms linear, opacity 120ms ease-out",
                     opacity: Math.max(0.2, v * 1.7),
                   }}
@@ -1012,8 +1084,8 @@ const RecordingOverlay: React.FC = () => {
           {state === "recording" && (
             <div className="cancel-button" onClick={handleCancel}>
               <CancelIcon
-                width={25}
-                height={25}
+                width={33}
+                height={33}
                 color={isRouter ? "#3b82f6" : undefined}
               />
             </div>

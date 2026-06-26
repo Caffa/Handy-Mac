@@ -135,7 +135,10 @@ const NO_AUDIO_THRESHOLD: f32 = 0.001;
 #[derive(Clone, Debug)]
 pub enum RecordingState {
     Idle,
-    Recording { binding_id: String },
+    Recording { 
+        binding_id: String,
+        start_time: Instant,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -205,8 +208,8 @@ fn create_audio_recorder(
                                 debug!("Discarding streaming transcription result - cancelled");
                                 return;
                             }
-                            // Emit partial transcription event to frontend
-                            if let Err(e) = app_handle.emit("partial-transcription", &result.text) {
+                            // Emit partial transcription event with segments for frontend merge
+                            if let Err(e) = app_handle.emit("partial-transcription", &result) {
                                 warn!("Failed to emit partial-transcription event: {}", e);
                             }
                         }
@@ -992,6 +995,7 @@ impl AudioRecordingManager {
                     *lock_with_log(&self.is_recording, "is_recording") = true;
                     *state = RecordingState::Recording {
                         binding_id: binding_id.to_string(),
+                        start_time: Instant::now(),
                     };
                     debug!("Recording started for binding {binding_id}");
                     return Ok(());
@@ -1057,7 +1061,12 @@ impl AudioRecordingManager {
         match *state {
             RecordingState::Recording {
                 binding_id: ref active,
+                start_time,
             } if active == binding_id => {
+                // Calculate recording duration for USB watchdog checks
+                let recording_duration = start_time.elapsed().as_secs_f32();
+                debug!("Recording duration: {:.1}s", recording_duration);
+
                 // NOTE: We intentionally keep the state as Recording during the
                 // smart-stop buffer period so that try_start_recording() rejects
                 // new recordings while we are still capturing trailing audio.
@@ -1122,11 +1131,12 @@ impl AudioRecordingManager {
                 
                 if samples.len() > 0 && max_level < NO_AUDIO_THRESHOLD {
                     warn!(
-                        "Recording had very low audio level (max RMS: {:.6}, threshold: {:.6}) - mic may be dead/muted",
-                        max_level, NO_AUDIO_THRESHOLD
+                        "Recording had very low audio level (max RMS: {:.6}, threshold: {:.6}, duration: {:.1}s) - mic may be dead/muted",
+                        max_level, NO_AUDIO_THRESHOLD, recording_duration
                     );
                     // Treat as a failure - USB watchdog will count it
-                    if self.usb_watchdog.on_low_audio_level() {
+                    // Pass recording duration so it can require minimum duration before counting
+                    if self.usb_watchdog.on_low_audio_level(recording_duration) {
                         if let Err(e) = self.restart_microphone_if_needed() {
                             error!(
                                 "Failed to restart microphone after low-audio-level USB cycle: {}",
@@ -1137,7 +1147,8 @@ impl AudioRecordingManager {
                 } else {
                     // Normal path: inform USB watchdog about recording result.
                     // If 0 samples were captured, this may trigger an automatic USB cycle.
-                    if self.usb_watchdog.on_recording_finished(samples.len()) {
+                    // Pass recording duration so it can require minimum duration before counting.
+                    if self.usb_watchdog.on_recording_finished(samples.len(), recording_duration) {
                         // Watchdog completed a power cycle. Restart the stream if needed.
                         if let Err(e) = self.restart_microphone_if_needed() {
                             error!(

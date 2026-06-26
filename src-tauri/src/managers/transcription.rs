@@ -34,7 +34,7 @@ use transcribe_rs::{
 };
 
 /// Result of a transcription call, including metadata about which model was used.
-#[derive(Clone, Debug, Serialize, Type)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TranscriptionOutput {
     /// The transcribed text.
     pub text: String,
@@ -44,6 +44,10 @@ pub struct TranscriptionOutput {
     /// if the engine supports this (currently only Parakeet). `None` for
     /// engines that don't track suppression or when no tokens were suppressed.
     pub suppressed_token_count: Option<usize>,
+    /// Raw segments with timestamps from the transcription engine.
+    /// Only populated for engines that support timestamps (Whisper, Parakeet).
+    /// `None` for engines like Moonshine that don't produce timestamps.
+    pub segments: Option<Vec<transcribe_rs::TranscriptionSegment>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -659,6 +663,7 @@ impl TranscriptionManager {
                 text: String::new(),
                 model_id: effective_model_id,
                 suppressed_token_count: None,
+                segments: None,
             });
         }
 
@@ -1088,6 +1093,7 @@ impl TranscriptionManager {
             text: final_result,
             model_id: effective_model_id,
             suppressed_token_count: suppressed_token_count,
+            segments: result.segments,
         })
     }
 

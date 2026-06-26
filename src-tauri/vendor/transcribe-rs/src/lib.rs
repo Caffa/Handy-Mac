@@ -116,6 +116,7 @@ pub mod remote;
 #[cfg(feature = "openai")]
 pub use remote::RemoteTranscriptionEngine;
 
+use serde::Serialize;
 use std::path::Path;
 
 /// Describes the capabilities of a speech model.
@@ -249,7 +250,7 @@ pub trait SpeechModel: Send {
 ///
 /// Contains both the full transcribed text and detailed timing information
 /// for individual segments within the audio.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TranscriptionResult {
     /// The complete transcribed text from the audio
     pub text: String,
@@ -291,7 +292,7 @@ impl TranscriptionResult {
 ///
 /// Represents a portion of the transcribed audio with start and end timestamps
 /// and the corresponding text content.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TranscriptionSegment {
     /// Start time of the segment in seconds
     pub start: f32,

@@ -18,3 +18,16 @@ export interface LowVolumeWarningEvent {
   model_id: string;
   transcription: string;
 }
+
+export interface TranscriptionSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface PartialTranscriptionEvent {
+  text: string;
+  model_id: string;
+  suppressed_token_count: number | null;
+  segments: TranscriptionSegment[] | null;
+}
