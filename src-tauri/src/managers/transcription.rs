@@ -636,15 +636,19 @@ impl TranscriptionManager {
         // model continuations into trailing silence.
         let _effective_model_info = self.model_manager.get_model_info(&effective_model_id);
 
+        // Use the same VAD threshold as recording to avoid dropping audio that was
+        // captured during recording but then trimmed away before transcription.
+        // Previously used hardcoded 0.5 which was more aggressive than the recording
+        // VAD (default 0.30), causing first/last words to be dropped.
+        let vad_threshold = settings.vad_sensitivity.threshold();
+
         let audio = match self.app_handle.path().resolve(
             "resources/models/silero_vad_v4.onnx",
             tauri::path::BaseDirectory::Resource,
         ) {
             Ok(vad_path) => {
                 let path_str = vad_path.to_str().unwrap_or("");
-                // Use 0.5 threshold to match Python implementation.
-                // Lower values (0.3) were too aggressive and trimmed soft trailing words.
-                trim_trailing_silence(&audio, path_str, 0.5)
+                trim_trailing_silence(&audio, path_str, vad_threshold)
             }
             Err(e) => {
                 warn!(

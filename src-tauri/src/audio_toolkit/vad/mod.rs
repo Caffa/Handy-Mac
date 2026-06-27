@@ -53,9 +53,15 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
     // to fix short sentence clipping)
     const HANGOVER_FRAMES: usize = 10;
     const HANGOVER_SAMPLES: usize = HANGOVER_FRAMES * FRAME_SAMPLES;
-    // Keep 100ms of audio before the first detected speech frame
-    // to avoid clipping the beginning of short sentences
-    const LEADING_BUFFER_FRAMES: usize = 3;
+    // Keep 200ms of audio before the first detected speech frame
+    // to avoid clipping the beginning of short sentences.
+    // Increased from 100ms (3 frames) to 200ms (7 frames) to provide more
+    // margin when VAD detects speech slightly late (e.g., soft first syllable).
+    // The recording VAD has an onset delay of ~60-90ms before it marks speech,
+    // and the first syllable may be quieter than the detection threshold.
+    // A 200ms buffer ensures we capture the full first word even if VAD
+    // triggers partway through it.
+    const LEADING_BUFFER_FRAMES: usize = 7;
     const LEADING_BUFFER_SAMPLES: usize = LEADING_BUFFER_FRAMES * FRAME_SAMPLES;
 
     if audio.len() < FRAME_SAMPLES {
