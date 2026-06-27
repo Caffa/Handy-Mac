@@ -281,6 +281,9 @@ impl WhisperEngine {
                 end,
                 text: text.to_string(),
             });
+            if !full_text.is_empty() && !full_text.ends_with(char::is_whitespace) {
+                full_text.push(' ');
+            }
             full_text.push_str(text);
         }
 
@@ -290,6 +293,22 @@ impl WhisperEngine {
             suppressed_token_count: None,
         })
     }
+}
+
+/// Concatenate segment texts with proper spacing between them.
+///
+/// Inserts a single space between segments unless the accumulated text
+/// already ends with whitespace. This mirrors the logic used during
+/// Whisper inference when building `full_text` from individual segments.
+fn concatenate_segments(segments: &[&str]) -> String {
+    let mut result = String::new();
+    for text in segments {
+        if !result.is_empty() && !result.ends_with(char::is_whitespace) {
+            result.push(' ');
+        }
+        result.push_str(text);
+    }
+    result.trim().to_string()
 }
 
 impl SpeechModel for WhisperEngine {
@@ -320,5 +339,76 @@ impl SpeechModel for WhisperEngine {
             ..Default::default()
         };
         self.infer(samples, &params)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_segment_concatenation_preserves_spacing() {
+        // When Whisper returns multiple segments, they should be joined
+        // with proper spacing, not concatenated without spaces.
+        //
+        // Bug was: segments ["Hello world", "how are you"]
+        // produced "Hello worldhow are you" instead of "Hello world how are you"
+        let segments = vec!["Hello world", "how are you"];
+        let result = concatenate_segments(&segments);
+        assert_eq!(result, "Hello world how are you");
+    }
+
+    #[test]
+    fn test_segment_concatenation_single_segment() {
+        // A single segment should pass through unchanged (trimmed).
+        let segments = vec!["Hello world"];
+        let result = concatenate_segments(&segments);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_segment_concatenation_trailing_space() {
+        // If a segment already ends with whitespace, don't add an extra space.
+        // "Hello world " ends with space, so no separator space is added;
+        // after trimming: "Hello world how are you".
+        let segments = vec!["Hello world ", "how are you"];
+        let result = concatenate_segments(&segments);
+        assert_eq!(result, "Hello world how are you");
+    }
+
+    #[test]
+    fn test_segment_concatenation_empty_segments() {
+        // Empty segments: space is added before "", then "Hello " ends
+        // with whitespace so no extra space before "world".
+        // After trimming: "Hello world" (not "Hello  world").
+        let segments = vec!["Hello", "", "world"];
+        let result = concatenate_segments(&segments);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_segment_concatenation_trims_result() {
+        // Leading/trailing whitespace in the final result is trimmed.
+        // "  Hello  " ends with spaces → no separator space added before "world  "
+        // Raw result: "  Hello  world  " → trimmed: "Hello  world"
+        let segments = vec!["  Hello  ", "world  "];
+        let result = concatenate_segments(&segments);
+        assert_eq!(result, "Hello  world");
+    }
+
+    #[test]
+    fn test_segment_concatenation_empty_input() {
+        // Empty input should produce an empty string.
+        let segments: Vec<&str> = vec![];
+        let result = concatenate_segments(&segments);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_segment_concatenation_newline_separator() {
+        // Segments ending with newlines should not get an extra space.
+        let segments = vec!["Hello\n", "world"];
+        let result = concatenate_segments(&segments);
+        assert_eq!(result, "Hello\nworld");
     }
 }
