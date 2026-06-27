@@ -60,16 +60,14 @@ impl TranscriptionFailure {
     pub fn should_auto_retry(&self) -> bool {
         match self {
             // These failures might succeed on retry
+            Self::ModelLoadFailure { .. } => true,  // Can succeed with fallback model
             Self::InferenceFailure { .. } => true,
             Self::Timeout { .. } => true,
             Self::ResourceUnavailable { .. } => true,
             Self::Unknown { .. } => true,
             
-            // These won't succeed on retry with the same model
-            Self::ModelLoadFailure { .. } => false,
-            Self::EnginePanic { .. } => false,
-            
-            // Silent audio is expected, not an error
+            // These won't succeed on retry
+            Self::EnginePanic { .. } => false,  // Panic indicates serious issue
             Self::SilentAudio => false,
         }
     }

@@ -708,16 +708,61 @@ impl TranscriptionManager {
             // If the engine panics, we simply don't put it back (effectively unloading it)
             // instead of poisoning the mutex.
             let mut engine = match engine_guard.take() {
-                Some(e) => e,
+                Some(e) => {
+                    // Release the lock before transcribing — no mutex held during the engine call
+                    drop(engine_guard);
+                    e
+                }
                 None => {
-                    return Err(anyhow::anyhow!(
-                        "Model failed to load after auto-load attempt. Please check your model settings."
-                    ));
+                    warn!("Engine not loaded when transcribe() started - attempting emergency load");
+                    drop(engine_guard);
+                    
+                    // Try to load the model immediately
+                    let model_id = settings.selected_model.clone();
+                    
+                    // Try loading primary model
+                    if let Err(e) = self.load_model(&model_id) {
+                        warn!("Primary model load failed: {} - trying fallback models", e);
+                        
+                        // Try fallback models from hybrid mode
+                        let mut fallback_tried = false;
+                        if settings.hybrid_mode_enabled {
+                            for fallback in [&settings.hybrid_short_audio_model, &settings.hybrid_long_audio_model]
+                                .into_iter()
+                                .filter_map(|m| m.as_ref())
+                                .filter(|m| *m != &model_id) 
+                            {
+                                info!("Trying fallback model: {}", fallback);
+                                if self.load_model(fallback).is_ok() {
+                                    fallback_tried = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if !fallback_tried {
+                            return Err(anyhow::anyhow!(
+                                "Model failed to load and no fallback available: {}", e
+                            ));
+                        }
+                    }
+                    
+                    // Re-acquire engine after load
+                    let mut engine_guard = self.lock_engine();
+                    match engine_guard.take() {
+                        Some(e) => {
+                            // Release the lock before transcribing
+                            drop(engine_guard);
+                            e
+                        }
+                        None => {
+                            return Err(anyhow::anyhow!(
+                                "Model failed to load after emergency load attempt"
+                            ));
+                        }
+                    }
                 }
             };
-
-            // Release the lock before transcribing — no mutex held during the engine call
-            drop(engine_guard);
 
             let transcribe_result = catch_unwind(AssertUnwindSafe(
                 || -> Result<transcribe_rs::TranscriptionResult> {

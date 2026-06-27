@@ -174,7 +174,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         TranscriptionRetryQueue::new(app_handle.clone())
             .expect("Failed to initialize transcription retry queue"),
     );
-    let retry_worker = Arc::new(RetryWorker::new());
+    let retry_worker = Arc::new(RetryWorker::new().with_interval(10));
 
     // Apply accelerator preferences before any model loads
     managers::transcription::apply_accelerator_settings(app_handle);

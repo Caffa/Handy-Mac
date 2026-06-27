@@ -791,14 +791,30 @@ impl ShortcutAction for TranscribeAction {
                                 tracker.fail_session(s, &err.to_string());
                             }
                             
+                            // Get settings for error classification and fallback models
+                            let settings = get_settings(&ah);
+                            
                             // Classify the error for retry handling
-                            let failure_type = TranscriptionFailure::Unknown {
-                                error: err.to_string(),
+                            let failure_type = if err.to_string().contains("Model is not loaded") 
+                                || err.to_string().contains("failed to load")
+                                || err.to_string().contains("Timed out waiting for model") {
+                                TranscriptionFailure::ModelLoadFailure {
+                                    model_id: settings.selected_model.clone(),
+                                    error: err.to_string(),
+                                }
+                            } else if err.to_string().contains("timed out") {
+                                TranscriptionFailure::Timeout {
+                                    model_id: settings.selected_model.clone(),
+                                    duration_secs: 120,
+                                }
+                            } else {
+                                TranscriptionFailure::Unknown {
+                                    error: err.to_string(),
+                                }
                             };
                             
                             // Get fallback models from settings (hybrid mode models)
                             let fallback_models = {
-                                let settings = get_settings(&ah);
                                 let mut models = Vec::new();
                                 if settings.hybrid_mode_enabled {
                                     if let Some(short_model) = &settings.hybrid_short_audio_model {
@@ -1517,14 +1533,30 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             tracker.fail_session(s, &err.to_string());
                         }
 
+                        // Get settings for error classification and fallback models
+                        let settings = get_settings(&ah);
+
                         // Classify the error for retry handling
-                        let failure_type = TranscriptionFailure::Unknown {
-                            error: err.to_string(),
+                        let failure_type = if err.to_string().contains("Model is not loaded") 
+                            || err.to_string().contains("failed to load")
+                            || err.to_string().contains("Timed out waiting for model") {
+                            TranscriptionFailure::ModelLoadFailure {
+                                model_id: settings.selected_model.clone(),
+                                error: err.to_string(),
+                            }
+                        } else if err.to_string().contains("timed out") {
+                            TranscriptionFailure::Timeout {
+                                model_id: settings.selected_model.clone(),
+                                duration_secs: 120,
+                            }
+                        } else {
+                            TranscriptionFailure::Unknown {
+                                error: err.to_string(),
+                            }
                         };
 
                         // Get fallback models from settings (hybrid mode models)
                         let fallback_models = {
-                            let settings = get_settings(&ah);
                             let mut models = Vec::new();
                             if settings.hybrid_mode_enabled {
                                 if let Some(short_model) = &settings.hybrid_short_audio_model {
