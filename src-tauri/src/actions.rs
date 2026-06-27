@@ -714,7 +714,9 @@ impl ShortcutAction for TranscribeAction {
                             if processed.final_text.is_empty() {
                                 // Transcription returned empty text - may indicate dead mic
                                 warn!("Transcription returned empty text - checking if USB watchdog should cycle");
-                                if rm.usb_watchdog.on_silent_transcription() {
+                                // Calculate duration from sample count (16000 Hz sample rate)
+                                let duration_secs = sample_count as f32 / 16000.0;
+                                if rm.usb_watchdog.on_silent_transcription(duration_secs) {
                                     // USB cycle was triggered - restart mic stream if needed
                                     if let Err(e) = rm.restart_microphone_if_needed() {
                                         error!("Failed to restart microphone after silent transcription USB cycle: {}", e);
@@ -1181,7 +1183,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             warn!("Router transcription returned empty text - skipping routing");
 
                             // Trigger USB watchdog check (same as normal transcription)
-                            if rm.usb_watchdog.on_silent_transcription() {
+                            // Calculate duration from sample count (16000 Hz sample rate)
+                            let duration_secs = sample_count as f32 / 16000.0;
+                            if rm.usb_watchdog.on_silent_transcription(duration_secs) {
                                 if let Err(e) = rm.restart_microphone_if_needed() {
                                     error!(
                                         "Failed to restart microphone after silent transcription USB cycle: {}",
@@ -1512,10 +1516,37 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         {
                             tracker.fail_session(s, &err.to_string());
                         }
-                        // Save entry with empty text so user can retry
-                        if wav_saved {
-                            if let Err(save_err) = hm.save_entry(
-                                file_name,
+
+                        // Classify the error for retry handling
+                        let failure_type = TranscriptionFailure::Unknown {
+                            error: err.to_string(),
+                        };
+
+                        // Get fallback models from settings (hybrid mode models)
+                        let fallback_models = {
+                            let settings = get_settings(&ah);
+                            let mut models = Vec::new();
+                            if settings.hybrid_mode_enabled {
+                                if let Some(short_model) = &settings.hybrid_short_audio_model {
+                                    if short_model != &settings.selected_model {
+                                        models.push(short_model.clone());
+                                    }
+                                }
+                                if let Some(long_model) = &settings.hybrid_long_audio_model {
+                                    if long_model != &settings.selected_model
+                                        && !models.contains(long_model)
+                                    {
+                                        models.push(long_model.clone());
+                                    }
+                                }
+                            }
+                            models
+                        };
+
+                        // Save entry with empty text so user can retry, capture ID for retry queue
+                        let history_entry_id = if wav_saved {
+                            match hm.save_entry(
+                                file_name.clone(),
                                 String::new(),
                                 false,
                                 None,
@@ -1523,9 +1554,46 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 None,
                                 true, // routed
                             ) {
-                                error!("Failed to save failed history entry: {}", save_err);
+                                Ok(entry) => {
+                                    info!("Saved history entry {} for failed router transcription", entry.id);
+                                    Some(entry.id)
+                                }
+                                Err(save_err) => {
+                                    error!("Failed to save failed history entry: {}", save_err);
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
+                        // Add to retry queue for automatic retry
+                        if wav_saved {
+                            if let Some(retry_queue) = ah.try_state::<Arc<TranscriptionRetryQueue>>() {
+                                let wav_path = hm.recordings_dir().join(&file_name);
+                                let model_id = {
+                                    let settings = get_settings(&ah);
+                                    settings.selected_model.clone()
+                                };
+
+                                if let Err(retry_err) = retry_queue.add_failed_transcription(
+                                    wav_path,
+                                    model_id,
+                                    fallback_models,
+                                    failure_type,
+                                    false, // post_process (router doesn't post-process)
+                                    None,  // post_process_prompt
+                                    history_entry_id,
+                                ) {
+                                    error!("Failed to add transcription to retry queue: {}", retry_err);
+                                } else {
+                                    info!("Added failed router transcription to retry queue for automatic retry");
+                                }
                             }
                         }
+
+                        // ── Notify user of failure with retry intent ──
+                        send_macos_notification("Handy Router", "Transcription failed. Will retry automatically.");
 
                         // ── Clean up overlay on transcription failure ──
                         utils::hide_recording_overlay(&ah);
