@@ -16,9 +16,11 @@ use cpal::{
 use crate::audio_toolkit::{
     audio::{AudioVisualiser, FrameResampler},
     constants,
+    noise_suppression::NoiseSuppressor,
     vad::{self, VadFrame},
     VoiceActivityDetector,
 };
+use crate::settings::NoiseSuppressionLevel;
 
 enum Cmd {
     Start,
@@ -102,6 +104,9 @@ pub struct AudioRecorder {
     cmd_tx: Option<mpsc::Sender<Cmd>>,
     worker_handle: Option<std::thread::JoinHandle<()>>,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
+    /// Optional noise suppressor that runs before VAD for improved
+    /// speech detection in noisy environments.
+    noise_suppressor: Option<Arc<Mutex<NoiseSuppressor>>>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     /// Callback invoked periodically during recording with accumulated audio samples.
     /// The callback receives a clone of the current audio buffer for streaming transcription.
@@ -131,6 +136,7 @@ impl AudioRecorder {
             cmd_tx: None,
             worker_handle: None,
             vad: None,
+            noise_suppressor: None,
             level_cb: None,
             streaming_cb: None,
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
@@ -142,6 +148,13 @@ impl AudioRecorder {
 
     pub fn with_vad(mut self, vad: Box<dyn VoiceActivityDetector>) -> Self {
         self.vad = Some(Arc::new(Mutex::new(vad)));
+        self
+    }
+
+    /// Add a noise suppressor to the pipeline. Noise suppression runs
+    /// before VAD to improve speech detection accuracy in noisy environments.
+    pub fn with_noise_suppressor(mut self, level: NoiseSuppressionLevel) -> Self {
+        self.noise_suppressor = Some(Arc::new(Mutex::new(NoiseSuppressor::new(level))));
         self
     }
 
@@ -203,6 +216,7 @@ impl AudioRecorder {
 
         let thread_device = device.clone();
         let vad = self.vad.clone();
+        let noise_suppressor = self.noise_suppressor.clone();
         // Move the optional level callback into the worker thread
         let level_cb = self.level_cb.clone();
         // Move the optional streaming callback into the worker thread
@@ -302,6 +316,7 @@ impl AudioRecorder {
                     run_consumer(
                         sample_rate,
                         vad,
+                        noise_suppressor,
                         sample_rx,
                         cmd_rx,
                         level_cb,
@@ -660,24 +675,43 @@ fn compute_rms(samples: &[f32]) -> f32 {
     (sum / samples.len() as f64).sqrt() as f32
 }
 
-/// Process a resampled audio frame through VAD and optionally append
-/// speech to the output buffer.  Returns the VAD classification so
-/// the caller can update the noise floor estimate.
+/// Process a resampled audio frame through noise suppression (optional) then VAD.
+/// Optionally appends speech to the output buffer. Returns the VAD classification
+/// so the caller can update the noise floor estimate.
 fn handle_frame(
     samples: &[f32],
     recording: bool,
     vad: &Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
+    noise_suppressor: &Option<Arc<Mutex<NoiseSuppressor>>>,
     out_buf: &mut Vec<f32>,
 ) -> FrameClass {
     if !recording {
         return FrameClass::NotRecording;
     }
 
+    // Apply noise suppression before VAD if enabled.
+    // This improves VAD accuracy in noisy environments by removing
+    // background noise that could trigger false speech detections.
+    let processed_samples: Vec<f32> = if let Some(ns) = noise_suppressor {
+        let mut ns_guard = ns.lock().unwrap();
+        // Noise suppressor processes 480-sample frames at 16kHz (30ms),
+        // which matches the VAD frame size.
+        ns_guard.process(samples)
+    } else {
+        samples.to_vec()
+    };
+
+    // Use the (possibly denoised) samples for VAD classification,
+    // but pass the ORIGINAL samples to VAD for speech detection.
+    // The denoised signal is what VAD sees for better accuracy,
+    // while the original signal is preserved for output quality.
     if let Some(vad_arc) = vad {
         let mut det = vad_arc.lock().unwrap();
-        match det.push_frame(samples).unwrap_or(VadFrame::Speech(samples)) {
-            VadFrame::Speech(buf) => {
-                out_buf.extend_from_slice(buf);
+        match det.push_frame(&processed_samples).unwrap_or(VadFrame::Speech(samples)) {
+            VadFrame::Speech(_) => {
+                // Use original samples for output quality — we don't want
+                // the noise suppressor's artifacts in the final transcription.
+                out_buf.extend_from_slice(samples);
                 FrameClass::Speech
             }
             VadFrame::Noise => FrameClass::Noise,
@@ -691,6 +725,7 @@ fn handle_frame(
 fn run_consumer(
     in_sample_rate: u32,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
+    noise_suppressor: Option<Arc<Mutex<NoiseSuppressor>>>,
     sample_rx: mpsc::Receiver<AudioChunk>,
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
@@ -786,6 +821,7 @@ fn run_consumer(
                                     frame,
                                     true, // force-record remaining frames
                                     &vad,
+                                    &noise_suppressor,
                                     &mut processed_samples,
                                 );
                             });
@@ -912,7 +948,7 @@ fn run_consumer(
                 }
             }
             
-            let class = handle_frame(frame, recording, &vad, &mut processed_samples);
+            let class = handle_frame(frame, recording, &vad, &noise_suppressor, &mut processed_samples);
 
             // Track consecutive speech frames for streaming transcription
             // Reset on noise, increment on speech to avoid false starts
@@ -976,7 +1012,7 @@ fn run_consumer(
             recording = false;
 
             frame_resampler.finish(&mut |frame: &[f32]| {
-                let _ = handle_frame(frame, true, &vad, &mut processed_samples);
+                let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
             });
 
             if let Some(ss) = smart_stop.take() {
@@ -1017,6 +1053,10 @@ fn run_consumer(
                     if let Some(v) = &vad {
                         v.lock().unwrap().reset();
                     }
+                    // Reset noise suppressor state for new recording
+                    if let Some(ns) = &noise_suppressor {
+                        ns.lock().unwrap().reset();
+                    }
                 }
                 Cmd::Stop(reply_tx) => {
                     // If a smart-stop is in progress, resolve it with
@@ -1024,7 +1064,7 @@ fn run_consumer(
                     // doesn’t hang forever on resp_rx.recv().
                     if let Some(ss) = smart_stop.take() {
                         frame_resampler.finish(&mut |frame: &[f32]| {
-                            let _ = handle_frame(frame, true, &vad, &mut processed_samples);
+                            let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
                         });
                         let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
                         log::debug!("Smart-stop: resolved by Cmd::Stop (cancel)");
@@ -1041,7 +1081,7 @@ fn run_consumer(
                         match sample_rx.recv_timeout(Duration::from_secs(2)) {
                             Ok(AudioChunk::Samples(remaining)) => {
                                 frame_resampler.push(&remaining, &mut |frame: &[f32]| {
-                                    let _ = handle_frame(frame, true, &vad, &mut processed_samples);
+                                    let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
                                 });
                             }
                             Ok(AudioChunk::EndOfStream) => break,
@@ -1053,7 +1093,7 @@ fn run_consumer(
                     }
 
                     frame_resampler.finish(&mut |frame: &[f32]| {
-                        let _ = handle_frame(frame, true, &vad, &mut processed_samples);
+                        let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
                     });
 
                     let _ = reply_tx.send(std::mem::take(&mut processed_samples));

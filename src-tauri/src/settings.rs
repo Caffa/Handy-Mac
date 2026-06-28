@@ -170,6 +170,30 @@ pub enum RecordingRetentionPeriod {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
 #[serde(rename_all = "snake_case")]
+pub enum NoiseSuppressionLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl Default for NoiseSuppressionLevel {
+    fn default() -> Self {
+        NoiseSuppressionLevel::Medium
+    }
+}
+
+impl NoiseSuppressionLevel {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            NoiseSuppressionLevel::Low => "Low",
+            NoiseSuppressionLevel::Medium => "Medium",
+            NoiseSuppressionLevel::High => "High",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
 pub enum VadSensitivity {
     VeryQuick,
     Quick,
@@ -598,6 +622,15 @@ pub struct AppSettings {
     /// Manual control only - user adjusts when they notice artifacts.
     #[serde(default)]
     pub repetition_suppression_level: u8,
+    /// Whether noise suppression is enabled before VAD processing.
+    /// Noise suppression removes background noise to improve VAD accuracy
+    /// in noisy environments. Disabled by default as it adds CPU overhead.
+    #[serde(default)]
+    pub noise_suppression_enabled: bool,
+    /// Noise suppression intensity level. Higher levels remove more noise
+    /// but may introduce subtle artifacts in speech.
+    #[serde(default)]
+    pub noise_suppression_level: NoiseSuppressionLevel,
 }
 
 fn default_model() -> String {
@@ -1063,6 +1096,8 @@ pub fn get_default_settings() -> AppSettings {
         convert_us_to_british: false,
         spelling_dictionary: SpellingDictionary::default(),
         repetition_suppression_level: 0,
+        noise_suppression_enabled: false,
+        noise_suppression_level: NoiseSuppressionLevel::default(),
     }
 }
 

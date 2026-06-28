@@ -12,6 +12,7 @@ import { VadSensitivity } from "../VadSensitivity";
 import { LiveCaptions } from "../LiveCaptions";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
 import { TranslateToEnglish } from "../TranslateToEnglish";
+import { NoiseSuppression } from "../NoiseSuppression";
 
 export const AccuracySettings: React.FC = () => {
   const { t } = useTranslation();
@@ -37,6 +38,7 @@ export const AccuracySettings: React.FC = () => {
 
       <SettingsGroup title={t("settings.accuracy.groups.voiceDetection")}>
         <VadSensitivity descriptionMode="tooltip" grouped />
+        <NoiseSuppression />
         <LiveCaptions descriptionMode="tooltip" grouped />
       </SettingsGroup>
 

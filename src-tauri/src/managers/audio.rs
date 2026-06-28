@@ -185,10 +185,12 @@ fn create_audio_recorder(
     let settings = get_settings(app_handle);
     let live_captions_enabled = settings.live_captions_enabled;
     let pre_buffer_ms = settings.pre_recording_buffer_ms;
+    let noise_suppression_enabled = settings.noise_suppression_enabled;
+    let noise_suppression_level = settings.noise_suppression_level;
 
     // Recorder with VAD plus a spectrum-level callback that forwards updates to
     // the frontend, and optionally a streaming transcription callback for live captions.
-    let recorder = AudioRecorder::new()
+    let mut recorder = AudioRecorder::new()
         .map_err(|e| anyhow::anyhow!("Failed to create AudioRecorder: {}", e))?
         .with_vad(Box::new(smoothed_vad))
         .with_level_callback({
@@ -197,6 +199,17 @@ fn create_audio_recorder(
                 utils::emit_levels(&app_handle, &levels);
             }
         });
+
+    // Add noise suppression before VAD if enabled.
+    // This improves speech detection accuracy in noisy environments
+    // by removing background noise before VAD processes the audio.
+    if noise_suppression_enabled {
+        info!(
+            "Noise suppression enabled (level: {:?})",
+            noise_suppression_level
+        );
+        recorder = recorder.with_noise_suppressor(noise_suppression_level);
+    }
 
     // Add streaming callback if enabled
     let recorder = if live_captions_enabled {
@@ -208,7 +221,7 @@ fn create_audio_recorder(
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     // Get the transcription manager from app state
-                    let tm = match app_handle.try_state::<Arc<TranscriptionManager>>() {
+                    let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
                         Some(tm) => tm,
                         None => {
                             debug!("TranscriptionManager not available for streaming");
@@ -217,16 +230,17 @@ fn create_audio_recorder(
                     };
 
                     // Check if streaming was cancelled (recording stopped)
-                    if tm.is_streaming_cancelled() {
+                    if tm.lock().unwrap().is_streaming_cancelled() {
                         debug!("Skipping streaming transcription - cancellation requested");
                         return;
                     }
 
                     // Transcribe the audio samples
-                    match tm.transcribe(samples) {
+                    let transcription_result = tm.lock().unwrap().transcribe(samples);
+                    match transcription_result {
                         Ok(mut result) if !result.text.is_empty() => {
                             // Check again after transcription in case it was cancelled mid-work
-                            if tm.is_streaming_cancelled() {
+                            if tm.lock().unwrap().is_streaming_cancelled() {
                                 debug!("Discarding streaming transcription result - cancelled");
                                 return;
                             }
@@ -237,9 +251,10 @@ fn create_audio_recorder(
                             // and repetition suppression.
                             let settings = get_settings(&app_handle);
                             let is_whisper = app_handle
-                                .try_state::<Arc<ModelManager>>()
+                                .try_state::<Arc<Mutex<ModelManager>>>()
                                 .map(|mm| {
-                                    mm.get_model_info(&result.model_id)
+                                    mm.lock().unwrap()
+                                        .get_model_info(&result.model_id)
                                         .map(|info| matches!(info.engine_type, EngineType::Whisper))
                                         .unwrap_or(false)
                                 })
@@ -472,13 +487,14 @@ impl AudioRecordingManager {
                     usb_watchdog.on_stream_alive_check(false);
 
                     // Restart the stream via the app handle
-                    if let Some(rm) = app_handle.try_state::<Arc<AudioRecordingManager>>() {
+                    if let Some(rm) = app_handle.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
+                        let rm_guard = rm.lock().unwrap();
                         // Stop the current stream
                         {
-                            let open = lock_with_log(&rm.is_open, "is_open");
+                            let open = lock_with_log(&rm_guard.is_open, "is_open");
                             if *open {
                                 drop(open);
-                                rm.stop_microphone_stream();
+                                rm_guard.stop_microphone_stream();
                             }
                         }
 
@@ -497,7 +513,7 @@ impl AudioRecordingManager {
                         );
 
                         // Try to restart
-                        if let Err(e) = rm.start_microphone_stream() {
+                        if let Err(e) = rm_guard.start_microphone_stream() {
                             error!("Liveness monitor failed to restart stream: {}", e);
                             // Emit failed event so frontend can recover from stuck state
                             usb_watchdog::emit_cycle_event_with_handle(
@@ -743,17 +759,18 @@ impl AudioRecordingManager {
         let bt_keep_alive = self.bt_keep_alive.clone();
         std::thread::spawn(move || {
             std::thread::sleep(STREAM_IDLE_TIMEOUT);
-            let rm = app.state::<Arc<AudioRecordingManager>>();
+            let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+            let rm_guard = rm.lock().unwrap();
             // Hold state lock across the check AND close to serialize against
             // try_start_recording, preventing a race where the stream is closed
             // under an active recording.
-            let state = lock_with_log(&rm.state, "state");
+            let state = lock_with_log(&rm_guard.state, "state");
             // Never close the stream if BT keep-alive is active
             if *lock_with_log(&bt_keep_alive, "bt_keep_alive") {
                 debug!("Skipping lazy close: BT keep-alive is active");
                 return;
             }
-            if rm.close_generation.load(Ordering::SeqCst) == gen
+            if rm_guard.close_generation.load(Ordering::SeqCst) == gen
                 && matches!(*state, RecordingState::Idle)
             {
                 // stop_microphone_stream does not acquire the state lock,
@@ -762,7 +779,7 @@ impl AudioRecordingManager {
                     "Closing idle microphone stream after {:?}",
                     STREAM_IDLE_TIMEOUT
                 );
-                rm.stop_microphone_stream();
+                rm_guard.stop_microphone_stream();
             }
         });
     }

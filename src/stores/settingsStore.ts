@@ -208,6 +208,10 @@ const settingUpdaters: {
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
   overlay_scale: (value) =>
     commands.changeOverlayScaleSetting(value as number),
+  noise_suppression_enabled: (value) =>
+    commands.changeNoiseSuppressionEnabledSetting(value as boolean),
+  noise_suppression_level: (value) =>
+    commands.changeNoiseSuppressionLevelSetting(value as string),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

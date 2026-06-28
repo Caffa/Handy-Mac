@@ -459,6 +459,19 @@
       "liveCaptions": {
         "label": "Live Captions",
         "description": "Show live captions below the volume bars during recording. Uses additional CPU."
+      },
+      "noiseSuppression": {
+        "label": "Noise Suppression",
+        "description": "Remove background noise before voice detection for improved accuracy in noisy environments. Increases CPU usage slightly.",
+        "levelTitle": "Suppression Level",
+        "levelDescription": "Higher levels remove more noise but may slightly affect speech quality.",
+        "levelPlaceholder": "Select level...",
+        "low": "Low",
+        "lowTooltip": "Subtle noise reduction. Minimal impact on speech quality. Good for mild background noise.",
+        "medium": "Medium",
+        "mediumTooltip": "Balanced noise reduction. Recommended for most noisy environments like cafes or offices.",
+        "high": "High",
+        "highTooltip": "Aggressive noise reduction. Best for very noisy environments but may introduce slight artifacts in speech."
       }
     },
     "postProcessing": {
@@ -652,6 +665,19 @@
       "liveCaptions": {
         "label": "Live Captions",
         "description": "Show live captions below the volume bars during recording. Uses additional CPU."
+      },
+      "noiseSuppression": {
+        "label": "Noise Suppression",
+        "description": "Remove background noise before voice detection for improved accuracy in noisy environments. Increases CPU usage slightly.",
+        "levelTitle": "Suppression Level",
+        "levelDescription": "Higher levels remove more noise but may slightly affect speech quality.",
+        "levelPlaceholder": "Select level...",
+        "low": "Low",
+        "lowTooltip": "Subtle noise reduction. Minimal impact on speech quality. Good for mild background noise.",
+        "medium": "Medium",
+        "mediumTooltip": "Balanced noise reduction. Recommended for most noisy environments like cafes or offices.",
+        "high": "High",
+        "highTooltip": "Aggressive noise reduction. Best for very noisy environments but may introduce slight artifacts in speech."
       },
       "clamshellMicrophone": {
         "title": "Clamshell Microphone",

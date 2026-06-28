@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod constants;
+pub mod noise_suppression;
 pub mod spelling_dictionaries;
 pub mod text;
 pub mod utils;
@@ -18,4 +19,5 @@ pub use text::{
     suppress_repeated_words,
 };
 pub use utils::get_cpal_host;
+pub use noise_suppression::{NoiseSuppressor, NOISE_SUPPRESSION_FRAME_SIZE};
 pub use vad::{trim_trailing_silence, SileroVad, VoiceActivityDetector};
