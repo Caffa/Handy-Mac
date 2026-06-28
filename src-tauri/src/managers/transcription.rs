@@ -1,7 +1,6 @@
 use crate::audio_toolkit::audio::AudioQualityMetrics;
 use crate::audio_toolkit::{
-    apply_advanced_custom_words, apply_custom_words, apply_word_replacements,
-    filter_transcription_output, suppress_repeated_words, trim_trailing_silence,
+    process_transcription_text, trim_trailing_silence,
 };
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
@@ -1016,87 +1015,45 @@ impl TranscriptionManager {
             WordCorrectionMode::Replacement => !settings.word_replacements.is_empty(),
         };
 
+        // Save raw text for logging before processing
+        let raw_text = result.text.clone();
+
         info!(
             "Word correction check: mode={:?}, has_words={}, is_whisper={}, num_replacements={}, raw_text='{}'",
             settings.word_correction_mode,
             has_words,
             is_whisper,
             settings.word_replacements.len(),
-            result.text
+            raw_text
         );
 
         // Save suppressed token count before result.text is consumed below
         let suppressed_token_count = result.suppressed_token_count;
 
-        let corrected_result = match settings.word_correction_mode {
-            // Replacement mode: ALWAYS apply word replacements, even for Whisper models.
-            // Unlike WordBias/Pronunciation which use initial_prompt as hints, word replacements
-            // are exact substitutions that should be guaranteed in the output.
-            WordCorrectionMode::Replacement if !settings.word_replacements.is_empty() => {
-                let before = result.text.clone();
-                let corrected = apply_word_replacements(&result.text, &settings.word_replacements);
-                if corrected != before {
-                    info!("Word replacement applied: '{}' -> '{}'", before, corrected);
-                } else {
-                    // Log first few replacements for debugging
-                    let sample: Vec<_> = settings.word_replacements.iter().take(3).collect();
-                    debug!(
-                        "No word replacement applied. Text: '{}', Sample replacements: {:?}",
-                        before,
-                        sample.iter().map(|r| format!("{}->{}", r.mistranslation, r.correction)).collect::<Vec<_>>()
-                    );
-                }
-                corrected
-            }
-            // WordBias and Pronunciation modes: skip for Whisper models (already passed as initial_prompt)
-            _ if has_words && !is_whisper => {
-                let before = result.text.clone();
-                let corrected = match settings.word_correction_mode {
-                    WordCorrectionMode::WordBias => apply_custom_words(
-                        &result.text,
-                        &settings.custom_words,
-                        settings.word_correction_threshold,
-                    ),
-                    WordCorrectionMode::Pronunciation => apply_advanced_custom_words(
-                        &result.text,
-                        &settings.advanced_custom_words,
-                        settings.word_correction_threshold,
-                    ),
-                    WordCorrectionMode::Replacement => {
-                        // This branch is unreachable due to the pattern above, but Rust needs it
-                        result.text.clone()
-                    }
-                };
-                if corrected != before {
-                    info!("Word correction applied: '{}' -> '{}'", before, corrected);
-                }
-                corrected
-            }
-            _ => result.text,
-        };
-
-        // Filter out filler words and hallucinations
-        let filtered_result = filter_transcription_output(
-            &corrected_result,
+        // Process transcription text through the full pipeline in a single call:
+        // 1. Word correction (custom words, pronunciation, or word replacements)
+        // 2. Filler word removal and hallucination cleanup
+        // 3. US → British spelling conversion (if enabled)
+        // 4. Repetition suppression
+        let final_result = process_transcription_text(
+            &result.text,
+            settings.word_correction_mode,
+            &settings.custom_words,
+            &settings.advanced_custom_words,
+            &settings.word_replacements,
+            settings.word_correction_threshold,
+            is_whisper,
             &settings.app_language,
             &settings.custom_filler_words,
-        );
-
-        // Apply US to British English spelling conversion if enabled
-        // Uses the selected dictionary (DWYL by default, excludes archaic spellings)
-        let british_result = if settings.convert_us_to_british {
-            use crate::audio_toolkit::spelling_dictionaries::convert_us_to_british_with_dict;
-            convert_us_to_british_with_dict(&filtered_result, settings.spelling_dictionary)
-        } else {
-            filtered_result
-        };
-
-        // Apply repetition suppression based on current level
-        // (protected words like pronouns, articles, and intensifiers are never removed)
-        let suppressed_result = suppress_repeated_words(
-            &british_result,
+            settings.convert_us_to_british,
+            settings.spelling_dictionary,
             settings.repetition_suppression_level,
         );
+
+        // Log if processing changed the text
+        if final_result != raw_text {
+            info!("Text processing applied: '{}' -> '{}'", raw_text, final_result);
+        }
 
         let et = std::time::Instant::now();
         let translation_note = if settings.translate_to_english {
@@ -1127,8 +1084,6 @@ impl TranscriptionManager {
                 }
             }
         }
-
-        let final_result = suppressed_result;
 
         if final_result.is_empty() {
             info!("Transcription result is empty");

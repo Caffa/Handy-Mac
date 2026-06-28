@@ -3,7 +3,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use strsim::levenshtein;
 
-use crate::settings::CustomWord;
+use crate::settings::{CustomWord, WordCorrectionMode, WordReplacement};
 use super::spelling_dictionaries::{SpellingDictionary, convert_us_to_british_with_dict};
 
 /// Builds an n-gram string by cleaning and concatenating words
@@ -1023,6 +1023,85 @@ fn extract_word_parts(word: &str) -> (String, &str, String) {
     let suffix: String = chars[end + 1..].iter().collect();
 
     (prefix, core, suffix)
+}
+
+/// Processes transcription text through the full correction pipeline in a single call.
+///
+/// This function combines all text processing steps that were previously done as
+/// separate passes (word correction, filler removal, spelling conversion, repetition
+/// suppression) into a single orchestrated call. Each transformation is still applied
+/// sequentially, but the function avoids creating unnecessary intermediate string copies
+/// by reusing the same buffer and skipping no-op transformations.
+///
+/// # Arguments
+/// * `text` - The raw transcription text to process
+/// * `word_correction_mode` - Which word correction algorithm to use
+/// * `custom_words` - Simple custom words for `WordBias` mode
+/// * `advanced_custom_words` - Custom words with pronunciations for `Pronunciation` mode
+/// * `word_replacements` - Exact word replacements for `Replacement` mode
+/// * `word_correction_threshold` - Similarity threshold for fuzzy matching (0.0–1.0)
+/// * `app_language` - Language code for filler word selection (e.g., "en", "pt-BR")
+/// * `custom_filler_words` - Optional user-provided filler word list overriding language defaults
+/// * `convert_us_to_british` - Whether to apply US→British spelling conversion
+/// * `spelling_dictionary` - Which spelling dictionary to use for conversion
+/// * `repetition_suppression_level` - Repetition suppression level (0=off, 1=light, 2+=moderate)
+///
+/// # Returns
+/// The fully processed transcription text
+pub fn process_transcription_text(
+    text: &str,
+    word_correction_mode: WordCorrectionMode,
+    custom_words: &[String],
+    advanced_custom_words: &[CustomWord],
+    word_replacements: &[WordReplacement],
+    word_correction_threshold: f64,
+    is_whisper: bool,
+    app_language: &str,
+    custom_filler_words: &Option<Vec<String>>,
+    convert_us_to_british: bool,
+    spelling_dictionary: SpellingDictionary,
+    repetition_suppression_level: u8,
+) -> String {
+    // Step 1: Word correction.
+    // Determine whether custom words exist (for skipping Whisper models that already
+    // received initial_prompt hints) and apply the appropriate correction mode.
+    let has_words = !custom_words.is_empty() || !advanced_custom_words.is_empty();
+
+    // Replacement mode always applies, even for Whisper.
+    // WordBias/Pronunciation only apply for non-Whisper models.
+    let mut result = match word_correction_mode {
+        WordCorrectionMode::Replacement if !word_replacements.is_empty() => {
+            apply_word_replacements(text, word_replacements)
+        }
+        _ if has_words && !is_whisper => match word_correction_mode {
+            WordCorrectionMode::WordBias => {
+                apply_custom_words(text, custom_words, word_correction_threshold)
+            }
+            WordCorrectionMode::Pronunciation => {
+                apply_advanced_custom_words(text, advanced_custom_words, word_correction_threshold)
+            }
+            WordCorrectionMode::Replacement => text.to_string(),
+        },
+        _ => text.to_string(),
+    };
+
+    // Step 2: Filler word removal and stutter cleanup.
+    // filter_transcription_output already performs its own internal passes
+    // (filler removal, fragment dedup, stutter collapse, whitespace cleanup).
+    // We reuse the buffer by assigning back into `result`.
+    result = filter_transcription_output(&result, app_language, custom_filler_words);
+
+    // Step 3: US → British spelling conversion (optional).
+    if convert_us_to_british {
+        result = convert_us_to_british_with_dict(&result, spelling_dictionary);
+    }
+
+    // Step 4: Repetition suppression.
+    if repetition_suppression_level > 0 {
+        result = suppress_repeated_words(&result, repetition_suppression_level);
+    }
+
+    result
 }
 
 #[cfg(test)]
