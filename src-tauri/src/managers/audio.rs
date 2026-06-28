@@ -3,10 +3,10 @@ use crate::audio_toolkit::{
     vad::SmoothedVad, AudioRecorder, SileroVad,
 };
 use crate::helpers::clamshell;
-use crate::managers::model::ModelManager;
+use crate::managers::model::{EngineType, ModelManager};
 use crate::managers::transcription::TranscriptionManager;
 use crate::portable;
-use crate::settings::{get_settings, AppSettings, EngineType, WordCorrectionMode};
+use crate::settings::{get_settings, AppSettings};
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
