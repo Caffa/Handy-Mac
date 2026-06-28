@@ -4,8 +4,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::fmt;
-use tauri::AppHandle;
+use std::sync::Arc;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 use crate::audio_toolkit::SpellingDictionary;
 
@@ -1223,13 +1226,57 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
+/// Write settings to disk using the debounced writer.
+///
+/// If a debounced writer is available in Tauri's managed state, the write is
+/// deferred by the debounce interval so that rapid successive calls (e.g. from
+/// a slider being dragged) are coalesced into a single disk flush. If the
+/// writer is not yet initialised (e.g. during startup), falls back to an
+/// immediate write.
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+    // Try to use the debounced writer. During app startup the writer may not
+    // yet be registered in Tauri state, so we fall back to an immediate write.
+    if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
+        let app_clone = app.clone(); // AppHandle is cheaply clonable (Arc internally)
+        let writer = writer.inner().clone(); // Clone the Arc<SettingsWriter> for 'static spawn
+        tokio::spawn(async move {
+            writer.write(app_clone, settings).await;
+        });
+    } else {
+        // Fallback: no debounce state yet (e.g. during initialisation)
+        write_settings_immediate(app, settings);
+    }
+}
+
+/// Write settings to disk immediately, bypassing the debounce timer.
+///
+/// This is used internally by the debounced writer's flush and during
+/// app startup when the writer isn't yet available. It can also be called
+/// directly when an immediate write is known to be necessary (e.g. migration).
+pub fn write_settings_immediate(app: &AppHandle, settings: AppSettings) {
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
         .expect("Failed to initialize store");
 
     store.set("settings", serde_json::to_value(&settings).unwrap());
     let _ = store.save(); // Persist to disk immediately
+}
+
+/// Flush any pending debounced settings to disk.
+///
+/// Should be called on app shutdown (via `RunEvent::ExitRequested`) to
+/// guarantee that the most recent settings value is persisted.
+pub fn flush_settings(app: &AppHandle) {
+    if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
+        let writer = writer.inner().clone();
+        // Use block_in_place so we can await the async flush from
+        // a synchronous context (the Tauri run callback is not async).
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                writer.flush(app).await;
+            })
+        });
+    }
 }
 
 pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
@@ -1256,7 +1303,120 @@ pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeri
     settings.recording_retention_period
 }
 
+// ---------------------------------------------------------------------------
+// Debounced settings writer
+// ---------------------------------------------------------------------------
+
+/// Default debounce interval in milliseconds.
+/// Multiple rapid settings changes within this window are coalesced into a
+/// single disk write, reducing I/O thrash when users adjust settings quickly
+/// (e.g. dragging a slider).
+pub const SETTINGS_DEBOUNCE_MS: u64 = 500;
+
+/// State for the debounced settings writer.
+///
+/// The writer batches writes so that rapid successive calls to
+/// [`write_settings`] only trigger one disk flush after the debounce window
+/// elapses.  A call to [`SettingsWriter::flush`] bypasses the timer and
+/// persists immediately — this is used on app shutdown to guarantee no
+/// settings are lost.
+pub struct SettingsWriter {
+    /// The most recent settings value that has not yet been flushed to disk.
+    pending: Mutex<Option<AppSettings>>,
+    /// Handle for the currently-scheduled debounce timer task.
+    timer: Mutex<Option<JoinHandle<()>>>,
+    /// Debounce interval. Configurable so tests can speed things up.
+    debounce_ms: u64,
+}
+
+impl SettingsWriter {
+    /// Create a new writer with the default debounce interval.
+    pub fn new() -> Self {
+        Self {
+            pending: Mutex::new(None),
+            timer: Mutex::new(None),
+            debounce_ms: SETTINGS_DEBOUNCE_MS,
+        }
+    }
+
+    /// Create a writer with a custom debounce interval (useful in tests).
+    #[allow(dead_code)]
+    pub fn with_debounce_ms(ms: u64) -> Self {
+        Self {
+            pending: Mutex::new(None),
+            timer: Mutex::new(None),
+            debounce_ms: ms,
+        }
+    }
+
+    /// Schedule a settings write.  If a write is already pending the new value
+    /// replaces it and the debounce timer is restarted.
+    pub async fn write(&self, app: AppHandle, settings: AppSettings) {
+        // Store the latest settings value.
+        {
+            let mut pending = self.pending.lock().await;
+            *pending = Some(settings);
+        }
+
+        // Cancel any existing timer.
+        {
+            let mut timer = self.timer.lock().await;
+            if let Some(handle) = timer.take() {
+                handle.abort();
+            }
+        }
+
+        // Spawn a debounce timer task. The task re-acquires the SettingsWriter
+        // from Tauri managed state (Arc<SettingsWriter>) so we don't need
+        // to pass self as an Arc.
+        let debounce_ms = self.debounce_ms;
+        let new_handle = tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(debounce_ms)).await;
+
+            // Re-acquire the SettingsWriter from app state
+            let writer = app.state::<Arc<SettingsWriter>>();
+            writer.flush_inner(&app).await;
+        });
+
+        // Store the timer handle.
+        {
+            let mut timer = self.timer.lock().await;
+            *timer = Some(new_handle);
+        }
+    }
+
+    /// Flush any pending settings to disk immediately.
+    ///
+    /// Called on app shutdown to guarantee that the most recent settings
+    /// value is persisted even if the debounce timer hasn't fired yet.
+    pub async fn flush(&self, app: &AppHandle) {
+        // Cancel any pending timer first.
+        {
+            let mut timer = self.timer.lock().await;
+            if let Some(handle) = timer.take() {
+                handle.abort();
+            }
+        }
+        self.flush_inner(app).await;
+    }
+
+    /// Internal flush: write the pending settings (if any) to the store.
+    async fn flush_inner(&self, app: &AppHandle) {
+        let maybe_settings = {
+            let mut pending = self.pending.lock().await;
+            pending.take()
+        };
+
+        if let Some(settings) = maybe_settings {
+            debug!("Flushing debounced settings to disk");
+            write_settings_immediate(app, settings);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use super::*;
 
