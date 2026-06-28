@@ -68,6 +68,7 @@ interface SettingsStore {
   // were called multiple times (useSettings() guards against this, but
   // storing the unlisten function is good practice for long-lived stores).
   _unlistenSettingsEvent?: () => void;
+  _unlistenDeviceChangeEvent?: () => void;
 }
 
 // Note: Default settings are now fetched from Rust via commands.getDefaultSettings()
@@ -645,6 +646,39 @@ export const useSettingsStore = create<SettingsStore>()(
         }
       });
       set({ _unlistenSettingsEvent: unlisten });
+
+      // Listen for device hot-plug events from the Rust backend.
+      // When devices are added/removed, refresh both input and output
+      // device lists so the UI stays in sync without manual refresh.
+      const unlistenDeviceChange = await listen<{
+        added_input: string[];
+        removed_input: string[];
+        current_input: string[];
+        added_output: string[];
+        removed_output: string[];
+        current_output: string[];
+      }>("device-list-changed", (event) => {
+        const {
+          added_input,
+          removed_input,
+          added_output,
+          removed_output,
+        } = event.payload;
+
+        if (
+          added_input.length > 0 ||
+          removed_input.length > 0 ||
+          added_output.length > 0 ||
+          removed_output.length > 0
+        ) {
+          // Re-fetch full device lists from the backend to keep
+          // the dropdowns accurate (including the "Default" entry
+          // and is_default flags that the event payload doesn't carry).
+          get().refreshAudioDevices();
+          get().refreshOutputDevices();
+        }
+      });
+      set({ _unlistenDeviceChangeEvent: unlistenDeviceChange });
     },
   })),
 );

@@ -1,14 +1,18 @@
 use crate::audio_toolkit::{
-    is_bluetooth_audio_active, list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad,
+    is_bluetooth_audio_active, list_input_devices, list_output_devices, process_transcription_text,
+    vad::SmoothedVad, AudioRecorder, SileroVad,
 };
 use crate::helpers::clamshell;
+use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::portable;
-use crate::settings::{get_settings, AppSettings};
+use crate::settings::{get_settings, AppSettings, EngineType, WordCorrectionMode};
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
 use log::{debug, error, info, warn};
+use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -147,6 +151,24 @@ pub enum MicrophoneMode {
     OnDemand,
 }
 
+/// Payload for the `device-list-changed` event emitted when audio
+/// devices are hot-plugged (added or removed).
+#[derive(Clone, Debug, Serialize, Deserialize, Type, tauri_specta::Event)]
+pub struct DeviceListChange {
+    /// Input devices that appeared since the last check.
+    pub added_input: Vec<String>,
+    /// Input devices that disappeared since the last check.
+    pub removed_input: Vec<String>,
+    /// Current list of all input device names.
+    pub current_input: Vec<String>,
+    /// Output devices that appeared since the last check.
+    pub added_output: Vec<String>,
+    /// Output devices that disappeared since the last check.
+    pub removed_output: Vec<String>,
+    /// Current list of all output device names.
+    pub current_output: Vec<String>,
+}
+
 /* ──────────────────────────────────────────────────────────────── */
 
 fn create_audio_recorder(
@@ -202,12 +224,54 @@ fn create_audio_recorder(
 
                     // Transcribe the audio samples
                     match tm.transcribe(samples) {
-                        Ok(result) if !result.text.is_empty() => {
+                        Ok(mut result) if !result.text.is_empty() => {
                             // Check again after transcription in case it was cancelled mid-work
                             if tm.is_streaming_cancelled() {
                                 debug!("Discarding streaming transcription result - cancelled");
                                 return;
                             }
+
+                            // Apply text post-processing to live captions so they
+                            // benefit from the same pipeline as final transcriptions:
+                            // word corrections, filler removal, spelling conversion,
+                            // and repetition suppression.
+                            let settings = get_settings(&app_handle);
+                            let is_whisper = app_handle
+                                .try_state::<Arc<ModelManager>>()
+                                .map(|mm| {
+                                    mm.get_model_info(&result.model_id)
+                                        .map(|info| matches!(info.engine_type, EngineType::Whisper))
+                                        .unwrap_or(false)
+                                })
+                                .unwrap_or(false);
+
+                            // Process each segment's text individually.
+                            // The top-level `result.text` is already processed by
+                            // TranscriptionManager::transcribe(), but segment texts
+                            // are raw from the engine. The frontend uses segment
+                            // texts for live caption display when available.
+                            if let Some(ref mut segments) = result.segments {
+                                for segment in segments.iter_mut() {
+                                    if segment.text.is_empty() {
+                                        continue;
+                                    }
+                                    segment.text = process_transcription_text(
+                                        &segment.text,
+                                        settings.word_correction_mode.clone(),
+                                        &settings.custom_words,
+                                        &settings.advanced_custom_words,
+                                        &settings.word_replacements,
+                                        settings.word_correction_threshold,
+                                        is_whisper,
+                                        &settings.app_language,
+                                        &settings.custom_filler_words,
+                                        settings.convert_us_to_british,
+                                        settings.spelling_dictionary,
+                                        settings.repetition_suppression_level,
+                                    );
+                                }
+                            }
+
                             // Emit partial transcription event with segments for frontend merge
                             if let Err(e) = app_handle.emit("partial-transcription", &result) {
                                 warn!("Failed to emit partial-transcription event: {}", e);
@@ -271,6 +335,14 @@ pub struct AudioRecordingManager {
     liveness_monitor: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
     /// Flag to signal liveness monitor to stop
     liveness_stop: Arc<AtomicBool>,
+    /// Background device hot-plug monitor thread handle
+    device_monitor: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Sender to signal the device monitor to stop
+    device_monitor_stop: Arc<Mutex<Option<std::sync::mpsc::Sender<()>>>>,
+    /// Previous input device names (for change detection)
+    prev_input_devices: Arc<Mutex<Vec<String>>>,
+    /// Previous output device names (for change detection)
+    prev_output_devices: Arc<Mutex<Vec<String>>>,
 }
 
 impl AudioRecordingManager {
@@ -316,6 +388,10 @@ impl AudioRecordingManager {
             pronunciation_recordings_dir,
             liveness_monitor: Arc::new(Mutex::new(None)),
             liveness_stop: Arc::new(AtomicBool::new(false)),
+            device_monitor: Arc::new(Mutex::new(None)),
+            device_monitor_stop: Arc::new(Mutex::new(None)),
+            prev_input_devices: Arc::new(Mutex::new(Vec::new())),
+            prev_output_devices: Arc::new(Mutex::new(Vec::new())),
         };
 
         // Check for Bluetooth output devices — if detected, keep the mic
@@ -332,6 +408,9 @@ impl AudioRecordingManager {
 
         // Start background liveness monitor to detect zombie streams after sleep/wake
         manager.start_liveness_monitor();
+
+        // Start background device hot-plug monitor
+        manager.start_device_monitor();
 
         Ok(manager)
     }
@@ -460,6 +539,158 @@ impl AudioRecordingManager {
         if let Some(handle) = lock_with_log(&self.liveness_monitor, "liveness_monitor").take() {
             let _ = handle.join();
         }
+    }
+
+    /* ---------- device hot-plug monitoring --------------------------------- */
+
+    /// Start a background thread that periodically polls for audio device
+    /// changes and emits `device-list-changed` events when devices are
+    /// added or removed. This enables the frontend to update its device
+    /// selectors without requiring a manual refresh.
+    fn start_device_monitor(&self) {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        *lock_with_log(&self.device_monitor_stop, "device_monitor_stop") = Some(tx);
+
+        let app_handle = self.app_handle.clone();
+        let prev_input = self.prev_input_devices.clone();
+        let prev_output = self.prev_output_devices.clone();
+
+        // Seed with the current device list so we don't emit a spurious
+        // "everything was added" event on the first poll.
+        let initial_input = list_input_devices()
+            .map(|devs| devs.iter().map(|d| d.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let initial_output = list_output_devices()
+            .map(|devs| devs.iter().map(|d| d.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        {
+            let mut guard = lock_with_log(&prev_input, "prev_input_devices");
+            *guard = initial_input;
+        }
+        {
+            let mut guard = lock_with_log(&prev_output, "prev_output_devices");
+            *guard = initial_output;
+        }
+
+        let handle = std::thread::Builder::new()
+            .name("device-monitor".into())
+            .spawn(move || {
+                loop {
+                    // Wait 2 seconds, or exit early if we receive a shutdown signal
+                    match rx.recv_timeout(Duration::from_secs(2)) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            debug!("Device monitor stopping");
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Timeout means 2 seconds elapsed — time to poll
+                        }
+                    }
+
+                    // Enumerate current devices
+                    let current_input: Vec<String> = match list_input_devices() {
+                        Ok(devs) => devs.iter().map(|d| d.name.clone()).collect(),
+                        Err(e) => {
+                            debug!("Device monitor: failed to list input devices: {}", e);
+                            continue;
+                        }
+                    };
+
+                    let current_output: Vec<String> = match list_output_devices() {
+                        Ok(devs) => devs.iter().map(|d| d.name.clone()).collect(),
+                        Err(e) => {
+                            debug!("Device monitor: failed to list output devices: {}", e);
+                            continue;
+                        }
+                    };
+
+                    let prev_input_guard = lock_with_log(&prev_input, "prev_input_devices");
+                    let prev_output_guard = lock_with_log(&prev_output, "prev_output_devices");
+
+                    let prev_input_set: std::collections::HashSet<_> =
+                        prev_input_guard.iter().cloned().collect();
+                    let prev_output_set: std::collections::HashSet<_> =
+                        prev_output_guard.iter().cloned().collect();
+                    let current_input_set: std::collections::HashSet<_> =
+                        current_input.iter().cloned().collect();
+                    let current_output_set: std::collections::HashSet<_> =
+                        current_output.iter().cloned().collect();
+
+                    let added_input: Vec<String> = current_input_set
+                        .difference(&prev_input_set)
+                        .cloned()
+                        .collect();
+                    let removed_input: Vec<String> = prev_input_set
+                        .difference(&current_input_set)
+                        .cloned()
+                        .collect();
+                    let added_output: Vec<String> = current_output_set
+                        .difference(&prev_output_set)
+                        .cloned()
+                        .collect();
+                    let removed_output: Vec<String> = prev_output_set
+                        .difference(&current_output_set)
+                        .cloned()
+                        .collect();
+
+                    drop(prev_input_guard);
+                    drop(prev_output_guard);
+
+                    // Only emit when something actually changed
+                    if !added_input.is_empty()
+                        || !removed_input.is_empty()
+                        || !added_output.is_empty()
+                        || !removed_output.is_empty()
+                    {
+                        info!(
+                            "Device change detected: +{} -{} input, +{} -{} output",
+                            added_input.len(),
+                            removed_input.len(),
+                            added_output.len(),
+                            removed_output.len(),
+                        );
+
+                        // Update stored device lists
+                        {
+                            let mut guard = lock_with_log(&prev_input, "prev_input_devices");
+                            *guard = current_input.clone();
+                        }
+                        {
+                            let mut guard = lock_with_log(&prev_output, "prev_output_devices");
+                            *guard = current_output.clone();
+                        }
+
+                        let payload = DeviceListChange {
+                            added_input,
+                            removed_input,
+                            current_input,
+                            added_output,
+                            removed_output,
+                            current_output,
+                        };
+
+                        if let Err(e) = app_handle.emit("device-list-changed", &payload) {
+                            warn!("Failed to emit device-list-changed event: {}", e);
+                        }
+                    }
+                }
+            })
+            .expect("Failed to spawn device monitor thread");
+
+        *lock_with_log(&self.device_monitor, "device_monitor") = Some(handle);
+        debug!("Device hot-plug monitor started");
+    }
+
+    /// Stop the background device monitor thread.
+    fn stop_device_monitor(&self) {
+        if let Some(tx) = lock_with_log(&self.device_monitor_stop, "device_monitor_stop").take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = lock_with_log(&self.device_monitor, "device_monitor").take() {
+            let _ = handle.join();
+        }
+        debug!("Device hot-plug monitor stopped");
     }
 
     /* ---------- helper methods --------------------------------------------- */
@@ -1290,5 +1521,16 @@ impl AudioRecordingManager {
         };
         
         (true, stream_alive)
+    }
+}
+
+impl Drop for AudioRecordingManager {
+    fn drop(&mut self) {
+        info!("AudioRecordingManager dropping — stopping background threads");
+        self.stop_device_monitor();
+        self.liveness_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = lock_with_log(&self.liveness_monitor, "liveness_monitor").take() {
+            let _ = handle.join();
+        }
     }
 }

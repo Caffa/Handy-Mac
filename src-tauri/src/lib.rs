@@ -54,6 +54,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
 use crate::settings::get_settings;
+use crate::settings::SettingsWriter;
 
 // Global atomic to store the file log level filter
 // We use u8 to store the log::LevelFilter as a number
@@ -189,6 +190,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(retry_worker.clone());
     app_handle.manage(Arc::new(session::SessionTracker::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
+    app_handle.manage(Arc::new(SettingsWriter::new()));
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -510,7 +512,7 @@ pub fn run(cli_args: CliArgs) {
             commands::confirm_routing,
             commands::open_path,
         ])
-        .events(collect_events![managers::history::HistoryUpdatePayload,]);
+        .events(collect_events![managers::history::HistoryUpdatePayload, managers::audio::DeviceListChange,]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
     specta_builder
@@ -818,6 +820,11 @@ pub fn run(cli_args: CliArgs) {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = &event {
                 show_main_window(app);
+            }
+            if let tauri::RunEvent::ExitRequested { .. } = &event {
+                // Flush any pending debounced settings writes so that no
+                // settings are lost when the app quits.
+                crate::settings::flush_settings(app);
             }
             let _ = (app, event); // suppress unused warnings on non-macOS
         });
