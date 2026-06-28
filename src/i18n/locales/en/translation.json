@@ -508,7 +508,11 @@
       "retranscribeError": "Failed to re-transcribe. Please try again.",
       "transcribing": "Transcribing...",
       "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon.",
-      "routed": "Routed"
+      "routed": "Routed",
+      "exportJson": "Export JSON",
+      "exportCsv": "Export CSV",
+      "exportSuccess": "History exported successfully!",
+      "exportError": "Failed to export history. Please try again."
     },
     "debug": {
       "title": "Debug",
@@ -575,9 +579,9 @@
       },
       "wordCorrectionMode": {
         "label": "Word Correction Mode",
-        "description": "Choose how custom words are matched: Fuzzy (word bias), Pronunciation (variants), or Exact (replacements)",
-        "wordBias": "Fuzzy Matching",
-        "pronunciation": "Pronunciation Variants",
+        "description": "Choose how custom words are matched: Prefer Custom Words (fuzzy bias), Match Pronunciations (sound-alike variants), or Exact Replacements (direct substitution)",
+        "wordBias": "Prefer Custom Words",
+        "pronunciation": "Match Pronunciations",
         "replacement": "Exact Replacements"
       },
       "historyLimit": {

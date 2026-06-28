@@ -382,9 +382,9 @@ pub struct WordReplacement {
 /// Word correction mode selection.
 ///
 /// Determines which word correction algorithm to apply:
-/// - `WordBias`: Simple word bias using fuzzy matching (Levenshtein + Soundex)
-/// - `Pronunciation`: Advanced matching with pronunciation variants
-/// - `Replacement`: Direct word-to-word substitution with exact matching
+/// - `WordBias` ("Prefer Custom Words"): Simple word bias using fuzzy matching (Levenshtein + Soundex)
+/// - `Pronunciation` ("Match Pronunciations"): Advanced matching with pronunciation variants
+/// - `Replacement` ("Exact Replacements"): Direct word-to-word substitution with exact matching
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WordCorrectionMode {
@@ -392,6 +392,17 @@ pub enum WordCorrectionMode {
     WordBias,
     Pronunciation,
     Replacement,
+}
+
+impl WordCorrectionMode {
+    /// Returns a user-friendly display name for the mode.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WordCorrectionMode::WordBias => "Prefer Custom Words",
+            WordCorrectionMode::Pronunciation => "Match Pronunciations",
+            WordCorrectionMode::Replacement => "Exact Replacements",
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Type)]
