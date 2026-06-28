@@ -75,6 +75,7 @@ interface SettingsStore {
   // storing the unlisten function is good practice for long-lived stores).
   _unlistenSettingsEvent?: () => void;
   _unlistenDeviceChangeEvent?: () => void;
+  _unlistenShortcutConflictEvent?: () => void;
 }
 
 // Note: Default settings are now fetched from Rust via commands.getDefaultSettings()
@@ -746,6 +747,33 @@ export const useSettingsStore = create<SettingsStore>()(
         }
       });
       set({ _unlistenDeviceChangeEvent: unlistenDeviceChange });
+
+      // Listen for shortcut conflict warnings from the Rust backend.
+      // These are non-blocking warnings — the shortcut is still registered,
+      // but the user should be informed about system shortcut conflicts.
+      const unlistenConflict = await listen<{
+        shortcut: string;
+        conflicts: Array<{ platform: string; name: string; reserved: boolean }>;
+      }>("shortcut-conflict-warning", (event) => {
+        const { shortcut, conflicts } = event.payload;
+        const conflictList = conflicts
+          .map((c) => {
+            const badge = c.reserved ? "⚠️" : "⚡";
+            return `${badge} ${c.name} (${c.platform})`;
+          })
+          .join("\n");
+        const isReserved = conflicts.some((c) => c.reserved);
+        const message = i18n.t("settings.general.shortcut.conflictWarning", {
+          shortcut,
+          conflictList,
+        });
+        if (isReserved) {
+          toast.error(message, { duration: 6000 });
+        } else {
+          toast.warning(message, { duration: 5000 });
+        }
+      });
+      set({ _unlistenShortcutConflictEvent: unlistenConflict });
     },
   })),
 );

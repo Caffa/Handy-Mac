@@ -12,12 +12,15 @@
 mod handler;
 pub mod handy_keys;
 mod tauri_impl;
+pub mod conflicts;
 
 use log::{error, info, warn};
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
+
+use conflicts::ConflictInfo;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
@@ -103,6 +106,16 @@ pub struct BindingResponse {
     error: Option<String>,
 }
 
+/// Check a shortcut for conflicts with platform-specific reserved shortcuts.
+///
+/// Returns a list of conflicts (may be empty). This does NOT block registration;
+/// it only provides information for the user to decide whether to proceed.
+#[tauri::command]
+#[specta::specta]
+pub fn check_shortcut_conflicts(binding: String) -> Vec<ConflictInfo> {
+    conflicts::detect_conflicts(&binding)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_binding(
@@ -170,6 +183,29 @@ pub fn change_binding(
     {
         warn!("change_binding validation error: {}", e);
         return Err(e);
+    }
+
+    // Check for platform-specific shortcut conflicts and emit warning if found
+    let conflicts = conflicts::detect_conflicts(&binding);
+    if !conflicts.is_empty() {
+        let conflict_names: Vec<String> = conflicts
+            .iter()
+            .map(|c| format!("{} ({})", c.name, c.platform))
+            .collect();
+        warn!(
+            "Shortcut '{}' conflicts with system shortcuts: {}",
+            binding,
+            conflict_names.join(", ")
+        );
+
+        // Emit warning event to frontend
+        let _ = app.emit(
+            "shortcut-conflict-warning",
+            serde_json::json!({
+                "shortcut": binding,
+                "conflicts": conflicts,
+            }),
+        );
     }
 
     // Create an updated binding
@@ -1381,6 +1417,36 @@ pub fn change_overlay_scale_setting(
     }
     let mut settings = settings::get_settings(&app);
     settings.overlay_scale = scale;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_noise_suppression_enabled_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.noise_suppression_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_noise_suppression_level_setting(
+    app: AppHandle,
+    level: String,
+) -> Result<(), String> {
+    let noise_level = match level.as_str() {
+        "low" => settings::NoiseSuppressionLevel::Low,
+        "medium" => settings::NoiseSuppressionLevel::Medium,
+        "high" => settings::NoiseSuppressionLevel::High,
+        _ => return Err(format!("Invalid noise suppression level: {}", level)),
+    };
+    let mut settings = settings::get_settings(&app);
+    settings.noise_suppression_level = noise_level;
     settings::write_settings(&app, settings);
     Ok(())
 }

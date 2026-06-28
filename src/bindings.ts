@@ -13,6 +13,14 @@ async changeBinding(id: string, binding: string) : Promise<Result<BindingRespons
     else return { status: "error", error: e  as any };
 }
 },
+async checkShortcutConflicts(binding: string) : Promise<ConflictInfo[]> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_shortcut_conflicts", { binding }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async resetBinding(id: string) : Promise<Result<BindingResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reset_binding", { id }) };
@@ -1447,6 +1455,8 @@ benchmarked_at: number;
  */
 failed?: boolean }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
+
+export type ConflictInfo = { platform: string; name: string; reserved: boolean }
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
 /**

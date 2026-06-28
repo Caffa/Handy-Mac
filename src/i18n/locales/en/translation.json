@@ -192,7 +192,8 @@
           "restore": "Failed to restore original shortcut",
           "set": "Failed to set shortcut: {{error}}",
           "reset": "Failed to reset shortcut to original value"
-        }
+        },
+        "conflictWarning": "Shortcut \"{{shortcut}}\" may conflict with system shortcuts:\n{{conflictList}}"
       },
       "language": {
         "title": "Language",
