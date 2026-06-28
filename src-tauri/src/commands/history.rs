@@ -183,3 +183,25 @@ pub async fn update_history_entry_metadata(
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn export_history_json(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+) -> Result<String, String> {
+    history_manager
+        .export_history_json()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn export_history_csv(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+) -> Result<String, String> {
+    history_manager
+        .export_history_csv()
+        .map_err(|e| e.to_string())
+}

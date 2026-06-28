@@ -6,10 +6,12 @@ import React, {
   useState,
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import {
   Check,
   Copy,
+  Download,
   FolderOpen,
   RotateCcw,
   Star,

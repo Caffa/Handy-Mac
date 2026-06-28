@@ -6,6 +6,7 @@ pub mod audio_toolkit;
 pub mod cli;
 mod clipboard;
 mod commands;
+pub mod errors;
 mod focus;
 mod health;
 mod helpers;
@@ -492,6 +493,8 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_recording_retention_period,
             commands::history::update_history_entry_tags,
             commands::history::update_history_entry_metadata,
+            commands::history::export_history_json,
+            commands::history::export_history_csv,
             commands::transcription_retry::get_retry_queue,
             commands::transcription_retry::retry_transcription,
             commands::transcription_retry::remove_from_retry_queue,

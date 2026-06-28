@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local, Utc};
+use csv::Writer;
 use log::{debug, error, info, warn};
 use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
@@ -376,16 +377,17 @@ impl HistoryManager {
             saved: row.get("saved")?,
             title: row.get("title")?,
             transcription_text: row.get("transcription_text")?,
-            post_processed_text: row.get("post_processed_text")?,
-            post_process_prompt: row.get("post_process_prompt")?,
-            post_process_requested: row.get("post_process_requested")?,
-            model_id: row.get("model_id")?,
-            routed: row.get("routed")?,
-            routing_result: row.get("routing_result")?,
-            tags: row.get("tags")?,
-            ground_truth: row.get("ground_truth")?,
-            quality: row.get("quality")?,
-            speech_speed: row.get("speech_speed")?,
+            // Handle optional columns that may not exist in older databases
+            post_processed_text: row.get("post_processed_text").unwrap_or(None),
+            post_process_prompt: row.get("post_process_prompt").unwrap_or(None),
+            post_process_requested: row.get("post_process_requested").unwrap_or(false),
+            model_id: row.get("model_id").unwrap_or(None),
+            routed: row.get("routed").unwrap_or(false),
+            routing_result: row.get("routing_result").unwrap_or(None),
+            tags: row.get("tags").unwrap_or(None),
+            ground_truth: row.get("ground_truth").unwrap_or(None),
+            quality: row.get("quality").unwrap_or(None),
+            speech_speed: row.get("speech_speed").unwrap_or(None),
         })
     }
 
@@ -1006,6 +1008,89 @@ impl HistoryManager {
         }
 
         Ok(())
+    }
+
+    /// Export all history entries as a JSON string.
+    /// Returns the JSON content so the caller can write it to a file.
+    pub fn export_history_json(&self) -> Result<String> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text,
+                    post_processed_text, post_process_prompt, post_process_requested,
+                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+             FROM transcription_history
+             ORDER BY id DESC",
+        )?;
+        let entries: Vec<HistoryEntry> = stmt
+            .query_map([], Self::map_history_entry)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let json = serde_json::to_string_pretty(&entries)?;
+        info!("Exported {} history entries as JSON", entries.len());
+        Ok(json)
+    }
+
+    /// Export all history entries as CSV.
+    /// Returns the CSV content so the caller can write it to a file.
+    pub fn export_history_csv(&self) -> Result<String> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text,
+                    post_processed_text, post_process_prompt, post_process_requested,
+                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+             FROM transcription_history
+             ORDER BY id DESC",
+        )?;
+        let entries: Vec<HistoryEntry> = stmt
+            .query_map([], Self::map_history_entry)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut wtr = Writer::from_writer(Vec::new());
+        // Write header
+        wtr.write_record([
+            "id",
+            "file_name",
+            "timestamp",
+            "saved",
+            "title",
+            "transcription_text",
+            "post_processed_text",
+            "post_process_prompt",
+            "post_process_requested",
+            "model_id",
+            "routed",
+            "routing_result",
+            "tags",
+            "ground_truth",
+            "quality",
+            "speech_speed",
+        ])?;
+
+        for entry in &entries {
+            wtr.write_record(&[
+                entry.id.to_string(),
+                entry.file_name.clone(),
+                entry.timestamp.to_string(),
+                entry.saved.to_string(),
+                entry.title.clone(),
+                entry.transcription_text.clone(),
+                entry.post_processed_text.clone().unwrap_or_default(),
+                entry.post_process_prompt.clone().unwrap_or_default(),
+                entry.post_process_requested.to_string(),
+                entry.model_id.clone().unwrap_or_default(),
+                entry.routed.to_string(),
+                entry.routing_result.clone().unwrap_or_default(),
+                entry.tags.clone().unwrap_or_default(),
+                entry.ground_truth.clone().unwrap_or_default(),
+                entry.quality.clone().unwrap_or_default(),
+                entry.speech_speed.clone().unwrap_or_default(),
+            ])?;
+        }
+
+        let csv_bytes = wtr.into_inner().map_err(|e| anyhow!("CSV write error: {}", e))?;
+        let csv_string = String::from_utf8(csv_bytes)?;
+        info!("Exported {} history entries as CSV", entries.len());
+        Ok(csv_string)
     }
 
     fn format_timestamp_title(&self, timestamp: i64) -> String {

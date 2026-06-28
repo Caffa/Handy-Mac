@@ -1096,9 +1096,25 @@ async updateHistoryEntryTags(id: number, tags: string | null) : Promise<Result<n
     else return { status: "error", error: e  as any };
 }
 },
-async updateHistoryEntryMetadata(id: number, groundTruth: string | null, quality: string | null, speechSpeed: string | null) : Promise<Result<null, string>> {
+ async updateHistoryEntryMetadata(id: number, groundTruth: string | null, quality: string | null, speechSpeed: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_history_entry_metadata", { id, groundTruth, quality, speechSpeed }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async exportHistoryJson() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_history_json") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async exportHistoryCsv() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_history_csv") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
