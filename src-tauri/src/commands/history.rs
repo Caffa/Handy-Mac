@@ -3,7 +3,7 @@ use crate::managers::{
     history::{HistoryManager, PaginatedHistory},
     transcription::TranscriptionManager,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -64,7 +64,7 @@ pub async fn delete_history_entry(
 pub async fn retry_history_entry_transcription(
     app: AppHandle,
     history_manager: State<'_, Arc<HistoryManager>>,
-    transcription_manager: State<'_, Arc<TranscriptionManager>>,
+    transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
     id: i64,
 ) -> Result<(), String> {
     let entry = history_manager
@@ -81,10 +81,10 @@ pub async fn retry_history_entry_transcription(
         return Err("Recording has no audio samples".to_string());
     }
 
-    transcription_manager.initiate_model_load();
+    transcription_manager.lock().unwrap().initiate_model_load();
 
     let tm = Arc::clone(&transcription_manager);
-    let transcription = tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples))
+    let transcription = tauri::async_runtime::spawn_blocking(move || tm.lock().unwrap().transcribe(samples))
         .await
         .map_err(|e| format!("Transcription task panicked: {}", e))?
         .map_err(|e| e.to_string())?;

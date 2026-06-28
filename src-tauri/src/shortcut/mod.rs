@@ -1251,9 +1251,9 @@ fn apply_and_reload_accelerator(app: &AppHandle, s: settings::AppSettings) {
     settings::write_settings(app, s);
     crate::managers::transcription::apply_accelerator_settings(app);
 
-    let tm = app.state::<std::sync::Arc<crate::managers::transcription::TranscriptionManager>>();
-    if tm.is_model_loaded() {
-        if let Err(e) = tm.unload_model() {
+    let tm = app.state::<std::sync::Arc<std::sync::Mutex<crate::managers::transcription::TranscriptionManager>>>();
+    if tm.lock().unwrap().is_model_loaded() {
+        if let Err(e) = tm.lock().unwrap().unload_model() {
             log::warn!("Failed to unload model after accelerator change: {e}");
         }
     }

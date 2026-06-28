@@ -152,7 +152,7 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
         None::<&str>,
     )
     .expect("failed to create copy last transcript item");
-    let model_loaded = app.state::<Arc<TranscriptionManager>>().is_model_loaded();
+    let model_loaded = app.state::<Arc<Mutex<TranscriptionManager>>>().lock().unwrap().is_model_loaded();
     let quit_i = MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator)
         .expect("failed to create quit item");
     let separator = || PredefinedMenuItem::separator(app).expect("failed to create separator");

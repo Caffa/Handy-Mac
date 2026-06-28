@@ -3,7 +3,7 @@ use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -289,8 +289,8 @@ fn start(
     };
     action.start(app, binding_id, hotkey_string);
     if app
-        .try_state::<Arc<AudioRecordingManager>>()
-        .map_or(false, |a| a.is_recording())
+        .try_state::<Arc<Mutex<AudioRecordingManager>>>()
+        .map_or(false, |a| a.lock().unwrap().is_recording())
     {
         set_stage(stage, Stage::Recording(binding_id.to_string()), active_use);
     } else {

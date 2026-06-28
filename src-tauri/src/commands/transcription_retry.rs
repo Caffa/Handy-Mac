@@ -4,17 +4,17 @@ use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::managers::transcription_retry::{RetryableTranscription, TranscriptionFailure, TranscriptionRetryQueue};
 use tauri::{AppHandle, Manager};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Get all pending retry entries.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_retry_queue(app: AppHandle) -> Result<Vec<RetryableTranscription>, String> {
     let queue = app
-        .state::<Arc<TranscriptionRetryQueue>>()
+        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
         .inner()
-        .clone();
-    
+        .lock()
+        .unwrap();
     Ok(queue.get_all_pending())
 }
 
@@ -22,13 +22,14 @@ pub async fn get_retry_queue(app: AppHandle) -> Result<Vec<RetryableTranscriptio
 #[tauri::command]
 #[specta::specta]
 pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(), String> {
-    let queue = app
-        .state::<Arc<TranscriptionRetryQueue>>()
+    let queue_guard = app
+        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
         .inner()
-        .clone();
+        .lock()
+        .unwrap();
     
     // Get the entry
-    let entries = queue.get_all_pending();
+    let entries = queue_guard.get_all_pending();
     let entry = entries
         .into_iter()
         .find(|e| e.id == entry_id)
@@ -39,13 +40,14 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
         .map_err(|e| format!("Failed to load audio: {}", e))?;
     
     // Get transcription manager
-    let tm = app
-        .state::<Arc<TranscriptionManager>>()
+    let tm_guard = app
+        .state::<Arc<Mutex<TranscriptionManager>>>()
         .inner()
-        .clone();
+        .lock()
+        .unwrap();
     
     // Try transcription
-    let result = tm.transcribe(audio_samples);
+    let result = tm_guard.transcribe(audio_samples);
     
     match result {
         Ok(transcription) => {
@@ -53,8 +55,7 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
             if let Some(history_id) = entry.history_entry_id {
                 let hm = app
                     .state::<Arc<HistoryManager>>()
-                    .inner()
-                    .clone();
+                    .inner();
                 
                 hm.update_transcription(
                     history_id,
@@ -67,7 +68,7 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
             }
             
             // Remove from retry queue
-            queue.mark_retry_complete(&entry_id)
+            queue_guard.mark_retry_complete(&entry_id)
                 .map_err(|e| format!("Failed to mark complete: {}", e))?;
             
             Ok(())
@@ -78,7 +79,7 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
                 error: e.to_string(),
             };
             
-            let can_retry = queue
+            let can_retry = queue_guard
                 .mark_retry_failed(&entry_id, failure)
                 .map_err(|e| format!("Failed to mark retry failed: {}", e))?;
             
@@ -96,9 +97,10 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
 #[specta::specta]
 pub async fn remove_from_retry_queue(app: AppHandle, entry_id: String) -> Result<bool, String> {
     let queue = app
-        .state::<Arc<TranscriptionRetryQueue>>()
+        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
         .inner()
-        .clone();
+        .lock()
+        .unwrap();
     
     queue
         .remove_entry(&entry_id)
@@ -110,9 +112,10 @@ pub async fn remove_from_retry_queue(app: AppHandle, entry_id: String) -> Result
 #[specta::specta]
 pub async fn clear_retry_queue(app: AppHandle) -> Result<(), String> {
     let queue = app
-        .state::<Arc<TranscriptionRetryQueue>>()
+        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
         .inner()
-        .clone();
+        .lock()
+        .unwrap();
     
     queue
         .clear_all()
@@ -124,9 +127,10 @@ pub async fn clear_retry_queue(app: AppHandle) -> Result<(), String> {
 #[specta::specta]
 pub async fn get_retry_queue_count(app: AppHandle) -> Result<usize, String> {
     let queue = app
-        .state::<Arc<TranscriptionRetryQueue>>()
+        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
         .inner()
-        .clone();
+        .lock()
+        .unwrap();
     
     Ok(queue.count())
 }

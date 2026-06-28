@@ -251,10 +251,9 @@ fn create_audio_recorder(
                             // and repetition suppression.
                             let settings = get_settings(&app_handle);
                             let is_whisper = app_handle
-                                .try_state::<Arc<Mutex<ModelManager>>>()
+                                .try_state::<Arc<ModelManager>>()
                                 .map(|mm| {
-                                    mm.lock().unwrap()
-                                        .get_model_info(&result.model_id)
+                                    mm.get_model_info(&result.model_id)
                                         .map(|info| matches!(info.engine_type, EngineType::Whisper))
                                         .unwrap_or(false)
                                 })

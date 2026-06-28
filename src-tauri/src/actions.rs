@@ -22,7 +22,7 @@ use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
@@ -446,17 +446,17 @@ impl ShortcutAction for TranscribeAction {
         }
 
         // Load model in the background
-        let tm = app.state::<Arc<TranscriptionManager>>();
-        let rm = app.state::<Arc<AudioRecordingManager>>();
+        let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+        let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
         
         // Clear any previous streaming cancellation flag when starting a new recording
-        tm.clear_streaming_cancel();
+        tm.lock().unwrap().clear_streaming_cancel();
 
         // Load ASR model and VAD model in parallel
-        tm.initiate_model_load();
+        tm.lock().unwrap().initiate_model_load();
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
-            if let Err(e) = rm_clone.preload_vad() {
+            if let Err(e) = rm_clone.lock().unwrap().preload_vad() {
                 debug!("VAD pre-load failed: {}", e);
             }
         });
@@ -480,10 +480,10 @@ impl ShortcutAction for TranscribeAction {
             // so we can always reuse this thread to ensure mute happens right after playback.
             std::thread::spawn(move || {
                 play_feedback_sound_blocking(&app_clone, SoundType::Start);
-                rm_clone.apply_mute();
+                rm_clone.lock().unwrap().apply_mute();
             });
 
-            if let Err(e) = rm.try_start_recording(&binding_id) {
+            if let Err(e) = rm.lock().unwrap().try_start_recording(&binding_id) {
                 debug!("Recording failed: {}", e);
                 recording_error = Some(e);
             }
@@ -492,7 +492,7 @@ impl ShortcutAction for TranscribeAction {
             // This allows the microphone to be activated before playing the sound
             debug!("On-demand mode: Starting recording first, then audio feedback");
             let recording_start_time = Instant::now();
-            match rm.try_start_recording(&binding_id) {
+            match rm.lock().unwrap().try_start_recording(&binding_id) {
                 Ok(()) => {
                     debug!("Recording started in {:?}", recording_start_time.elapsed());
                     // Small delay to ensure microphone stream is active
@@ -504,7 +504,7 @@ impl ShortcutAction for TranscribeAction {
                         // Helper handles disabled audio feedback by returning early, so we reuse it
                         // to keep mute sequencing consistent in every mode.
                         play_feedback_sound_blocking(&app_clone, SoundType::Start);
-                        rm_clone.apply_mute();
+                        rm_clone.lock().unwrap().apply_mute();
                     });
                 }
                 Err(e) => {
@@ -567,16 +567,16 @@ impl ShortcutAction for TranscribeAction {
         shortcut::unregister_cancel_shortcut(app);
 
         // Cancel any in-progress streaming transcription to prevent wasted work
-        let tm = app.state::<Arc<TranscriptionManager>>();
-        tm.cancel_streaming();
+        let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+        tm.lock().unwrap().cancel_streaming();
         debug!("Cancelled streaming transcription for final transcription");
 
         let stop_time = Instant::now();
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
 
         let ah = app.clone();
-        let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
-        let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
+        let rm = Arc::clone(&app.state::<Arc<Mutex<AudioRecordingManager>>>());
+        let tm = Arc::clone(&app.state::<Arc<Mutex<TranscriptionManager>>>());
         let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
 
         // Capture the current session ID for structured tracking in the async task
@@ -588,7 +588,7 @@ impl ShortcutAction for TranscribeAction {
         show_transcribing_overlay(app);
 
         // Unmute before playing audio feedback so the stop sound is audible
-        rm.remove_mute();
+        rm.lock().unwrap().remove_mute();
 
         // Play audio feedback for recording stop
         play_feedback_sound(app, SoundType::Stop);
@@ -604,7 +604,8 @@ impl ShortcutAction for TranscribeAction {
             );
 
             let stop_recording_time = Instant::now();
-            if let Some(samples) = rm.stop_recording(&binding_id) {
+            let samples = rm.lock().unwrap().stop_recording(&binding_id);
+            if let Some(samples) = samples {
                 debug!(
                     "Recording stopped and samples retrieved in {:?}, sample count: {}",
                     stop_recording_time.elapsed(),
@@ -628,7 +629,7 @@ impl ShortcutAction for TranscribeAction {
 
                     // Transcribe concurrently with WAV save
                     let transcription_time = Instant::now();
-                    let transcription_result = tm.transcribe(samples);
+                    let transcription_result = tm.lock().unwrap().transcribe(samples);
 
                     // ── Structured session tracking: advance to Transcribing phase ──
                     let model_id = transcription_result
@@ -724,9 +725,9 @@ impl ShortcutAction for TranscribeAction {
                                 warn!("Transcription returned empty text - checking if USB watchdog should cycle");
                                 // Calculate duration from sample count (16000 Hz sample rate)
                                 let duration_secs = sample_count as f32 / 16000.0;
-                                if rm.usb_watchdog.on_silent_transcription(duration_secs) {
+                                if rm.lock().unwrap().usb_watchdog.on_silent_transcription(duration_secs) {
                                     // USB cycle was triggered - restart mic stream if needed
-                                    if let Err(e) = rm.restart_microphone_if_needed() {
+                                    if let Err(e) = rm.lock().unwrap().restart_microphone_if_needed() {
                                         error!("Failed to restart microphone after silent transcription USB cycle: {}", e);
                                     }
                                 }
@@ -868,14 +869,14 @@ impl ShortcutAction for TranscribeAction {
                             
                             // Add to retry queue for automatic retry
                             if wav_saved {
-                                if let Some(retry_queue) = ah.try_state::<Arc<TranscriptionRetryQueue>>() {
+                                if let Some(retry_queue) = ah.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() {
                                     let wav_path = hm.recordings_dir().join(&file_name);
                                     let model_id = {
                                         let settings = get_settings(&ah);
                                         settings.selected_model.clone()
                                     };
                                     
-                                    if let Err(retry_err) = retry_queue.add_failed_transcription(
+                                    if let Err(retry_err) = retry_queue.lock().unwrap().add_failed_transcription(
                                         wav_path,
                                         model_id,
                                         fallback_models,
@@ -998,16 +999,16 @@ impl ShortcutAction for TranscribeWithRouterAction {
         }
 
         // Load model in the background
-        let tm = app.state::<Arc<TranscriptionManager>>();
-        let rm = app.state::<Arc<AudioRecordingManager>>();
+        let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+        let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
         
         // Clear any previous streaming cancellation flag when starting a new recording
-        tm.clear_streaming_cancel();
+        tm.lock().unwrap().clear_streaming_cancel();
         
-        tm.initiate_model_load();
+        tm.lock().unwrap().initiate_model_load();
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
-            if let Err(e) = rm_clone.preload_vad() {
+            if let Err(e) = rm_clone.lock().unwrap().preload_vad() {
                 debug!("VAD pre-load failed: {}", e);
             }
         });
@@ -1027,16 +1028,16 @@ impl ShortcutAction for TranscribeWithRouterAction {
             let app_clone = app.clone();
             std::thread::spawn(move || {
                 play_feedback_sound_blocking(&app_clone, SoundType::Start);
-                rm_clone.apply_mute();
+                rm_clone.lock().unwrap().apply_mute();
             });
 
-            if let Err(e) = rm.try_start_recording(&binding_id) {
+            if let Err(e) = rm.lock().unwrap().try_start_recording(&binding_id) {
                 debug!("Recording failed: {}", e);
                 recording_error = Some(e);
             }
         } else {
             debug!("On-demand mode: Starting recording first, then audio feedback");
-            match rm.try_start_recording(&binding_id) {
+            match rm.lock().unwrap().try_start_recording(&binding_id) {
                 Ok(()) => {
                     debug!("Recording started in {:?}", start_time.elapsed());
                     let app_clone = app.clone();
@@ -1044,7 +1045,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         play_feedback_sound_blocking(&app_clone, SoundType::Start);
-                        rm_clone.apply_mute();
+                        rm_clone.lock().unwrap().apply_mute();
                     });
                 }
                 Err(e) => {
@@ -1101,8 +1102,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
         shortcut::unregister_cancel_shortcut(app);
 
         // Cancel any in-progress streaming transcription to prevent wasted work
-        let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
-        tm.cancel_streaming();
+        let tm = Arc::clone(&app.state::<Arc<Mutex<TranscriptionManager>>>());
+        tm.lock().unwrap().cancel_streaming();
         debug!("Cancelled streaming transcription for router final transcription");
 
         let stop_time = Instant::now();
@@ -1112,8 +1113,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
         );
 
         let ah = app.clone();
-        let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
-        let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
+        let rm = Arc::clone(&app.state::<Arc<Mutex<AudioRecordingManager>>>());
+        let tm = Arc::clone(&app.state::<Arc<Mutex<TranscriptionManager>>>());
         let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
 
         let sid: Option<SessionId> = app
@@ -1129,7 +1130,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
         show_transcribing_overlay_with_mode(app, OverlayMode::Router);
 
         // Unmute before playing audio feedback
-        rm.remove_mute();
+        rm.lock().unwrap().remove_mute();
         play_feedback_sound(app, SoundType::Stop);
 
         let binding_id = binding_id.to_string(); // Clone for async task
@@ -1139,7 +1140,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
             debug!("Starting async router task for binding: {}", binding_id);
 
             let stop_recording_time = Instant::now();
-            if let Some(samples) = rm.stop_recording(&binding_id) {
+            let samples = rm.lock().unwrap().stop_recording(&binding_id);
+            if let Some(samples) = samples {
                 debug!("Recording stopped, sample count: {}", samples.len());
 
                 if samples.is_empty() {
@@ -1164,7 +1166,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                 // Transcribe
                 let transcription_time = Instant::now();
-                let transcription_result = tm.transcribe(samples);
+                let transcription_result = tm.lock().unwrap().transcribe(samples);
 
                 // ── Structured session tracking ──
                 let model_id = transcription_result
@@ -1229,8 +1231,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             // Trigger USB watchdog check (same as normal transcription)
                             // Calculate duration from sample count (16000 Hz sample rate)
                             let duration_secs = sample_count as f32 / 16000.0;
-                            if rm.usb_watchdog.on_silent_transcription(duration_secs) {
-                                if let Err(e) = rm.restart_microphone_if_needed() {
+                                if rm.lock().unwrap().usb_watchdog.on_silent_transcription(duration_secs) {
+                                    if let Err(e) = rm.lock().unwrap().restart_microphone_if_needed() {
                                     error!(
                                         "Failed to restart microphone after silent transcription USB cycle: {}",
                                         e
@@ -1629,14 +1631,14 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                         // Add to retry queue for automatic retry
                         if wav_saved {
-                            if let Some(retry_queue) = ah.try_state::<Arc<TranscriptionRetryQueue>>() {
+                            if let Some(retry_queue) = ah.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() {
                                 let wav_path = hm.recordings_dir().join(&file_name);
                                 let model_id = {
                                     let settings = get_settings(&ah);
                                     settings.selected_model.clone()
                                 };
 
-                                if let Err(retry_err) = retry_queue.add_failed_transcription(
+                                if let Err(retry_err) = retry_queue.lock().unwrap().add_failed_transcription(
                                     wav_path,
                                     model_id,
                                     fallback_models,

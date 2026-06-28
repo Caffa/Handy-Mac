@@ -8,7 +8,7 @@ use crate::usb_watchdog;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -193,15 +193,15 @@ pub fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), Str
     write_settings(&app, settings);
 
     // Update the audio manager mode
-    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
     let new_mode = if always_on {
         MicrophoneMode::AlwaysOn
     } else {
         MicrophoneMode::OnDemand
     };
 
-    rm.update_mode(new_mode)
-        .map_err(|e| format!("Failed to update microphone mode: {}", e))
+    let result = rm.lock().unwrap().update_mode(new_mode);
+    result.map_err(|e| format!("Failed to update microphone mode: {}", e))
 }
 
 #[tauri::command]
@@ -244,8 +244,8 @@ pub fn set_selected_microphone(app: AppHandle, device_name: String) -> Result<()
     write_settings(&app, settings);
 
     // Update the audio manager to use the new device
-    let rm = app.state::<Arc<AudioRecordingManager>>();
-    rm.update_selected_device()
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    rm.lock().unwrap().update_selected_device()
         .map_err(|e| format!("Failed to update selected device: {}", e))?;
 
     Ok(())
@@ -342,8 +342,9 @@ pub fn get_clamshell_microphone(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn is_recording(app: AppHandle) -> bool {
-    let audio_manager = app.state::<Arc<AudioRecordingManager>>();
-    audio_manager.is_recording()
+    let audio_manager = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let result = audio_manager.lock().unwrap().is_recording();
+    result
 }
 
 // ============================================================================
@@ -374,8 +375,8 @@ pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Res
     write_settings(&app, settings);
 
     // Update the runtime watchdog state
-    let rm = app.state::<Arc<AudioRecordingManager>>();
-    rm.usb_watchdog.update_config(enabled, device_name);
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    rm.lock().unwrap().usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
 }
@@ -393,8 +394,8 @@ pub fn change_usb_watchdog_device_name_setting(
     write_settings(&app, settings);
 
     // Update the runtime watchdog state
-    let rm = app.state::<Arc<AudioRecordingManager>>();
-    rm.usb_watchdog.update_config(enabled, device_name);
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    rm.lock().unwrap().usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
 }
@@ -418,8 +419,10 @@ pub fn change_usb_watchdog_cycle_on_wake_setting(
 #[tauri::command]
 #[specta::specta]
 pub fn trigger_usb_power_cycle(app: AppHandle) -> Result<bool, String> {
-    let rm = app.state::<Arc<AudioRecordingManager>>();
-    Ok(rm.usb_watchdog.force_power_cycle())
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let guard = rm.lock().unwrap();
+    let result = guard.usb_watchdog.force_power_cycle();
+    Ok(result)
 }
 
 /// Special binding ID used for pronunciation recordings to distinguish them
@@ -461,14 +464,14 @@ fn normalize_for_comparison(text: &str) -> String {
 #[tauri::command]
 #[specta::specta]
 pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
-    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
 
     // Don't interfere with an active transcription recording
-    if rm.is_recording() {
+    if rm.lock().unwrap().is_recording() {
         return Err("A recording is already in progress".to_string());
     }
 
-    rm.try_start_recording(PRONUNCIATION_BINDING_ID)
+    rm.lock().unwrap().try_start_recording(PRONUNCIATION_BINDING_ID)
         .map_err(|e| format!("Failed to start pronunciation recording: {}", e))?;
 
     info!("Pronunciation recording started");
@@ -481,14 +484,15 @@ pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub fn cancel_pronunciation_recording(app: AppHandle) -> Result<(), String> {
-    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
 
     // Stop recording and discard audio
-    let _ = rm.stop_recording(PRONUNCIATION_BINDING_ID);
+    let _ = rm.lock().unwrap().stop_recording(PRONUNCIATION_BINDING_ID);
 
     // Clear any pending pronunciation data
     {
-        let mut pending = rm.pending_pronunciation.lock().unwrap();
+        let rm_guard = rm.lock().unwrap();
+        let mut pending = rm_guard.pending_pronunciation.lock().unwrap();
         pending.clear();
     }
 
@@ -507,10 +511,12 @@ pub async fn stop_and_schedule_pronunciation(
     app: AppHandle,
     canonical_word: String,
 ) -> Result<String, String> {
-    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
 
     // Stop recording and get audio samples
     let samples = rm
+        .lock()
+        .unwrap()
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 
@@ -525,7 +531,8 @@ pub async fn stop_and_schedule_pronunciation(
 
     // Store the audio + word for deferred processing
     {
-        let mut pending = rm.pending_pronunciation.lock().unwrap();
+        let rm_guard = rm.lock().unwrap();
+        let mut pending = rm_guard.pending_pronunciation.lock().unwrap();
         pending.push_back((
             samples,
             canonical_word.clone(),
@@ -541,7 +548,8 @@ pub async fn stop_and_schedule_pronunciation(
 
     // Cancel any existing processing thread
     {
-        let mut thread_handle = rm.pronunciation_thread.lock().unwrap();
+        let rm_guard = rm.lock().unwrap();
+        let mut thread_handle = rm_guard.pronunciation_thread.lock().unwrap();
         if let Some(_handle) = thread_handle.take() {
             // We can't cancel a thread directly, but we can let it run and it will
             // check if new data is available
@@ -577,8 +585,9 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     // Poll until system is idle
     loop {
         // Check if pending data changed (cancellation)
-        let rm = app.state::<Arc<AudioRecordingManager>>();
-        let pending = rm.pending_pronunciation.lock().unwrap();
+        let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+        let rm_guard = rm.lock().unwrap();
+        let pending = rm_guard.pending_pronunciation.lock().unwrap();
         if !matches!(pending.front(), Some((_, w, _, _)) if w == canonical_word) {
             info!(
                 "Pronunciation data changed or cleared, skipping processing for '{}'",
@@ -610,8 +619,9 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     }
 
     // Now process with all models
-    let rm = app.state::<Arc<AudioRecordingManager>>();
-    let pending = rm.pending_pronunciation.lock().unwrap();
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let rm_guard = rm.lock().unwrap();
+    let pending = rm_guard.pending_pronunciation.lock().unwrap();
     let (samples, word) = match pending.front() {
         Some((s, w, _, _)) if w == canonical_word => (s.clone(), w.clone()),
         _ => {
@@ -675,8 +685,9 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
             }
 
             // Clear pending
-            let rm = app.state::<Arc<AudioRecordingManager>>();
-            let mut pending = rm.pending_pronunciation.lock().unwrap();
+            let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+            let rm_guard = rm.lock().unwrap();
+            let mut pending = rm_guard.pending_pronunciation.lock().unwrap();
             pending.pop_front();
         }
         Err(e) => {
@@ -696,8 +707,9 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     }
 
     // Clear the thread handle
-    let rm = app.state::<Arc<AudioRecordingManager>>();
-    let mut thread_handle = rm.pronunciation_thread.lock().unwrap();
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let rm_guard = rm.lock().unwrap();
+    let mut thread_handle = rm_guard.pronunciation_thread.lock().unwrap();
     *thread_handle = None;
 }
 
@@ -720,7 +732,7 @@ fn process_pronunciation_with_all_models(
     }
 
     let canonical_normalized = normalize_for_comparison(canonical_word);
-    let tm = app.state::<Arc<TranscriptionManager>>();
+    let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
     let tm = Arc::clone(&tm);
 
     let total_models = downloaded_models.len();
@@ -745,12 +757,14 @@ fn process_pronunciation_with_all_models(
 
         let transcription_result = thread::spawn(move || {
             // Load the specific model
-            if let Err(e) = tm_clone.load_model(&model_id_clone) {
+            if let Err(e) = tm_clone.lock().unwrap().load_model(&model_id_clone) {
                 return Err(format!("Failed to load model {}: {}", model_id_clone, e));
             }
 
             // Transcribe with this model
             tm_clone
+                .lock()
+                .unwrap()
                 .transcribe(samples_clone)
                 .map_err(|e| format!("Transcription failed: {}", e))
         })
@@ -808,10 +822,12 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
     app: AppHandle,
     canonical_word: String,
 ) -> Result<Vec<PronunciationResult>, String> {
-    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
 
     // Stop recording and get audio samples
     let samples = rm
+        .lock()
+        .unwrap()
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 
@@ -848,7 +864,7 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
     };
 
     let canonical_normalized = normalize_for_comparison(&canonical_word);
-    let tm = app.state::<Arc<TranscriptionManager>>();
+    let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
     let tm = Arc::clone(&tm);
 
     let total_models = downloaded_models.len();
@@ -882,12 +898,14 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
 
         let transcription_result = tauri::async_runtime::spawn_blocking(move || {
             // Load the specific model
-            if let Err(e) = tm_clone.load_model(&model_id_clone) {
+            if let Err(e) = tm_clone.lock().unwrap().load_model(&model_id_clone) {
                 return Err(format!("Failed to load model {}: {}", model_id_clone, e));
             }
 
             // Transcribe with this model
             tm_clone
+                .lock()
+                .unwrap()
                 .transcribe(samples_clone)
                 .map_err(|e| format!("Transcription failed with model {}: {}", model_id_clone, e))
         })
@@ -952,7 +970,7 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
         let original_model_clone = original_model.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || {
             info!("Restoring original model: {}", original_model_clone);
-            tm_restore.load_model(&original_model_clone)
+            tm_restore.lock().unwrap().load_model(&original_model_clone)
         })
         .await;
     }

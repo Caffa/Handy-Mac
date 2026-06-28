@@ -127,10 +127,8 @@ fn show_main_window(app: &AppHandle) {
 fn should_force_show_permissions_window(app: &AppHandle) -> bool {
     #[cfg(target_os = "windows")]
     {
-        let model_manager = app.state::<Arc<Mutex<ModelManager>>>();
+        let model_manager = app.state::<Arc<ModelManager>>();
         let has_downloaded_models = model_manager
-            .lock()
-            .unwrap()
             .get_available_models()
             .iter()
             .any(|model| model.is_downloaded);
@@ -167,16 +165,16 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     let recording_manager = Arc::new(Mutex::new(
         AudioRecordingManager::new(app_handle).expect("Failed to initialize recording manager"),
     ));
-    let model_manager = Arc::new(Mutex::new(
+    let model_manager = Arc::new(
         ModelManager::new(app_handle).expect("Failed to initialize model manager"),
-    ));
+    );
     let transcription_manager = Arc::new(Mutex::new(
         TranscriptionManager::new(app_handle, model_manager.clone())
             .expect("Failed to initialize transcription manager"),
     ));
-    let history_manager = Arc::new(Mutex::new(
+    let history_manager = Arc::new(
         HistoryManager::new(app_handle).expect("Failed to initialize history manager"),
-    ));
+    );
     let retry_queue = Arc::new(Mutex::new(
         TranscriptionRetryQueue::new(app_handle.clone())
             .expect("Failed to initialize transcription retry queue"),

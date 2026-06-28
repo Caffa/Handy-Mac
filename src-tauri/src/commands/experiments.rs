@@ -3,7 +3,7 @@ use crate::managers::history::{
     ExperimentGroup, HistoryManager, TranscriptionVariant,
 };
 use crate::managers::transcription::TranscriptionManager;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -148,7 +148,7 @@ pub struct GeneratedVariant {
 pub async fn generate_variants(
     _app: AppHandle,
     history_manager: State<'_, Arc<HistoryManager>>,
-    transcription_manager: State<'_, Arc<TranscriptionManager>>,
+    transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
     experiment_group_id: i64,
     models: Vec<String>,
 ) -> Result<Vec<GeneratedVariant>, String> {
@@ -177,11 +177,11 @@ pub async fn generate_variants(
 
     // Generate variants
     let mut variants = Vec::new();
-    let original_model_id = transcription_manager.get_current_model();
+    let original_model_id = transcription_manager.lock().unwrap().get_current_model();
 
     for model_id in &models {
         // Load model (synchronous call)
-        if let Err(e) = transcription_manager.load_model(model_id) {
+        if let Err(e) = transcription_manager.lock().unwrap().load_model(model_id) {
             log::warn!("Failed to load model {}: {}", model_id, e);
             continue;
         }
@@ -190,7 +190,7 @@ pub async fn generate_variants(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Transcribe with this model
-        match transcription_manager.transcribe_for_benchmark(audio_samples.clone()) {
+        match transcription_manager.lock().unwrap().transcribe_for_benchmark(audio_samples.clone()) {
             Ok(text) => {
                 variants.push(GeneratedVariant {
                     model_id: model_id.clone(),
@@ -206,7 +206,7 @@ pub async fn generate_variants(
 
     // Restore original model if it was set
     if let Some(original) = original_model_id {
-        if let Err(e) = transcription_manager.load_model(&original) {
+        if let Err(e) = transcription_manager.lock().unwrap().load_model(&original) {
             log::warn!("Failed to restore original model: {}", e);
         }
     }

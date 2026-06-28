@@ -523,8 +523,8 @@ impl UsbWatchdog {
                 info!("USB watchdog: grace period started after successful forced cycle");
 
                 if let Some(ah) = &app_handle {
-                    if let Some(rm) = ah.try_state::<Arc<AudioRecordingManager>>() {
-                        if let Err(e) = rm.restart_microphone_if_needed() {
+                    if let Some(rm) = ah.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
+                        if let Err(e) = rm.lock().unwrap().restart_microphone_if_needed() {
                             error!("Failed to restart microphone after forced USB cycle: {}", e);
                         }
                     }

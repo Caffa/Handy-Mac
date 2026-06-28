@@ -65,7 +65,7 @@ impl RetryWorker {
                 }
 
                 // Get the retry queue
-                let retry_queue = match app_handle.try_state::<Arc<TranscriptionRetryQueue>>() {
+                let retry_queue = match app_handle.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() {
                     Some(queue) => queue,
                     None => {
                         warn!("Retry queue not available");
@@ -74,7 +74,7 @@ impl RetryWorker {
                 };
 
                 // Get transcription manager
-                let tm = match app_handle.try_state::<Arc<TranscriptionManager>>() {
+                let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
                     Some(tm) => tm,
                     None => {
                         warn!("TranscriptionManager not available for retry worker");
@@ -83,7 +83,7 @@ impl RetryWorker {
                 };
 
                 // Check if there are pending retries
-                let pending_count = retry_queue.count();
+                let pending_count = retry_queue.lock().unwrap().count();
                 if pending_count == 0 {
                     debug!("No pending retries");
                     continue;
@@ -92,7 +92,7 @@ impl RetryWorker {
                 info!("Processing {} pending retry entries", pending_count);
 
                 // Get all pending entries
-                let entries = retry_queue.get_all_pending();
+                let entries = retry_queue.lock().unwrap().get_all_pending();
                 
                 for entry in entries {
                     // Check if entry is ready for retry
@@ -117,7 +117,7 @@ impl RetryWorker {
                             error!("Failed to load audio for retry {}: {}", entry.id, e);
                             
                             // Remove corrupted entry from queue
-                            if let Err(remove_err) = retry_queue.remove_entry(&entry.id) {
+                            if let Err(remove_err) = retry_queue.lock().unwrap().remove_entry(&entry.id) {
                                 error!("Failed to remove corrupted entry: {}", remove_err);
                             }
                             continue;
@@ -125,7 +125,7 @@ impl RetryWorker {
                     };
 
                     // Try transcription
-                    match tm.transcribe(audio_samples) {
+                    match tm.lock().unwrap().transcribe(audio_samples) {
                         Ok(transcription) if !transcription.text.is_empty() => {
                             info!(
                                 "Retry transcription succeeded for entry {} (model: {}): '{}'",
@@ -160,7 +160,7 @@ impl RetryWorker {
                             }
 
                             // Remove from retry queue on success
-                            if let Err(e) = retry_queue.mark_retry_complete(&entry.id) {
+                            if let Err(e) = retry_queue.lock().unwrap().mark_retry_complete(&entry.id) {
                                 error!("Failed to mark retry complete: {}", e);
                             }
                         }
@@ -169,7 +169,7 @@ impl RetryWorker {
                             warn!("Retry transcription returned empty text for entry {}", entry.id);
                             
                             // Don't retry silent audio
-                            if let Err(e) = retry_queue.remove_entry(&entry.id) {
+                            if let Err(e) = retry_queue.lock().unwrap().remove_entry(&entry.id) {
                                 error!("Failed to remove silent audio entry: {}", e);
                             }
                         }
@@ -181,11 +181,11 @@ impl RetryWorker {
                                 error: e.to_string(),
                             };
                             
-                            match retry_queue.mark_retry_failed(&entry.id, failure) {
+                            match retry_queue.lock().unwrap().mark_retry_failed(&entry.id, failure) {
                                 Ok(can_retry) => {
                                     if !can_retry {
                                         info!("Entry {} exhausted all retries, removing from queue", entry.id);
-                                        if let Err(remove_err) = retry_queue.remove_entry(&entry.id) {
+                                        if let Err(remove_err) = retry_queue.lock().unwrap().remove_entry(&entry.id) {
                                             error!("Failed to remove exhausted entry: {}", remove_err);
                                         }
                                     }

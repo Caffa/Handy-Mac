@@ -3,7 +3,7 @@ use crate::managers::transcription::TranscriptionManager;
 use crate::shortcut;
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
 // Re-export all utility modules for easy access
@@ -22,10 +22,10 @@ pub fn cancel_current_operation(app: &AppHandle) {
     shortcut::unregister_cancel_shortcut(app);
 
     // Cancel any ongoing recording
-    let audio_manager = app.state::<Arc<AudioRecordingManager>>();
-    let recording_was_active = audio_manager.is_recording();
+    let audio_manager = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let recording_was_active = audio_manager.lock().unwrap().is_recording();
     info!("Cancelling recording (was_active={})", recording_was_active);
-    audio_manager.cancel_recording();
+    audio_manager.lock().unwrap().cancel_recording();
 
     // Update tray icon and hide overlay
     info!("Updating UI state...");
@@ -33,8 +33,8 @@ pub fn cancel_current_operation(app: &AppHandle) {
     hide_recording_overlay(app);
 
     // Unload model if immediate unload is enabled
-    let tm = app.state::<Arc<TranscriptionManager>>();
-    tm.maybe_unload_immediately("cancellation");
+    let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+    tm.lock().unwrap().maybe_unload_immediately("cancellation");
 
     // Notify coordinator so it can keep lifecycle state coherent.
     if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {

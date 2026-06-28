@@ -3,8 +3,9 @@ use crate::managers::model::{
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
+use crate::managers::history::HistoryManager;
 use log::{info, warn};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
@@ -64,13 +65,15 @@ pub async fn download_model(
 pub async fn delete_model(
     app_handle: AppHandle,
     model_manager: State<'_, Arc<ModelManager>>,
-    transcription_manager: State<'_, Arc<TranscriptionManager>>,
+    transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
     model_id: String,
 ) -> Result<(), String> {
     // If deleting the active model, unload it and clear the setting
     let settings = get_settings(&app_handle);
     if settings.selected_model == model_id {
         transcription_manager
+            .lock()
+            .unwrap()
             .unload_model()
             .map_err(|e| format!("Failed to unload model: {}", e))?;
 
@@ -92,12 +95,14 @@ pub async fn delete_model(
 /// will be loaded on-demand during the next transcription).
 pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
     let model_manager = app.state::<Arc<ModelManager>>();
-    let transcription_manager = app.state::<Arc<TranscriptionManager>>();
+    let transcription_manager = app.state::<Arc<Mutex<TranscriptionManager>>>();
 
     // Atomically claim the loading slot — prevents concurrent model loads
     // from tray double-clicks or overlapping commands. The guard resets the
     // flag on drop (including early returns, errors, and panics).
     let _loading_guard = transcription_manager
+        .lock()
+        .unwrap()
         .try_start_loading()
         .ok_or_else(|| "Model load already in progress".to_string())?;
 
@@ -160,7 +165,7 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     }
 
     // Load the model. On failure, revert the persisted selection.
-    if let Err(e) = transcription_manager.load_model(model_id) {
+    if let Err(e) = transcription_manager.lock().unwrap().load_model(model_id) {
         let mut settings = get_settings(app);
         settings.selected_model = old_model;
         write_settings(app, settings);
@@ -175,7 +180,7 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
 pub async fn set_active_model(
     app_handle: AppHandle,
     _model_manager: State<'_, Arc<ModelManager>>,
-    _transcription_manager: State<'_, Arc<TranscriptionManager>>,
+    _transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
     model_id: String,
 ) -> Result<(), String> {
     switch_active_model(&app_handle, &model_id)
@@ -191,22 +196,22 @@ pub async fn get_current_model(app_handle: AppHandle) -> Result<String, String> 
 #[tauri::command]
 #[specta::specta]
 pub async fn get_transcription_model_status(
-    transcription_manager: State<'_, Arc<TranscriptionManager>>,
+    transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
 ) -> Result<Option<String>, String> {
-    Ok(transcription_manager.get_current_model())
+    Ok(transcription_manager.lock().unwrap().get_current_model())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn is_model_loading(
-    transcription_manager: State<'_, Arc<TranscriptionManager>>,
+    transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
 ) -> Result<bool, String> {
     // Returns true when a model is actively being loaded (not yet ready).
     // Previously this checked `current_model.is_none()` which was inverted —
     // it returned true when NO model was loaded (including after a model
     // finished loading and was ready to use), which is the opposite of what
     // the function name and UI consumers expect.
-    Ok(transcription_manager.is_model_loading())
+    Ok(transcription_manager.lock().unwrap().is_model_loading())
 }
 
 #[tauri::command]
@@ -244,7 +249,7 @@ pub async fn cancel_download(
 #[specta::specta]
 pub async fn can_benchmark_models(app_handle: AppHandle) -> Result<bool, String> {
     let model_manager = app_handle.state::<Arc<ModelManager>>();
-    let history_manager = app_handle.state::<Arc<crate::managers::history::HistoryManager>>();
+    let history_manager = app_handle.state::<Arc<HistoryManager>>();
 
     let has_downloaded = model_manager
         .get_available_models()
@@ -262,7 +267,7 @@ pub async fn can_benchmark_models(app_handle: AppHandle) -> Result<bool, String>
 #[tauri::command]
 #[specta::specta]
 pub async fn get_benchmark_clip_count(app_handle: AppHandle) -> Result<usize, String> {
-    let history_manager = app_handle.state::<Arc<crate::managers::history::HistoryManager>>();
+    let history_manager = app_handle.state::<Arc<HistoryManager>>();
     history_manager
         .get_history_count()
         .map_err(|e| e.to_string())
@@ -279,8 +284,8 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
     use crate::managers::transcription::TranscriptionManager;
 
     let model_manager = app_handle.state::<Arc<ModelManager>>();
-    let history_manager = app_handle.state::<Arc<crate::managers::history::HistoryManager>>();
-    let transcription_manager = app_handle.state::<Arc<TranscriptionManager>>();
+    let history_manager = app_handle.state::<Arc<HistoryManager>>();
+    let transcription_manager = app_handle.state::<Arc<Mutex<TranscriptionManager>>>();
 
     // Get downloaded models
     let models = model_manager.get_available_models();
@@ -395,7 +400,7 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
         );
 
         // Load the model
-        if let Err(e) = transcription_manager.load_model(&model.id) {
+        if let Err(e) = transcription_manager.lock().unwrap().load_model(&model.id) {
             warn!(
                 "Skipping model {} in benchmark: failed to load: {}",
                 model.id, e
@@ -427,7 +432,7 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
 
         for (clip_idx, clip) in audio_clips.iter().enumerate() {
             let start = std::time::Instant::now();
-            match transcription_manager.transcribe_for_benchmark(clip.clone()) {
+            match transcription_manager.lock().unwrap().transcribe_for_benchmark(clip.clone()) {
                 Ok(text) => {
                     // Check if transcription produced actual content (not empty/whitespace)
                     if text.trim().is_empty() {
@@ -485,7 +490,7 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
         }
 
         // Unload the model to free memory before loading the next one
-        let _ = transcription_manager.unload_model();
+        let _ = transcription_manager.lock().unwrap().unload_model();
     }
 
     // Update the model manager with all new scores (which triggers re-scoring across ALL models)

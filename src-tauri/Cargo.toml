@@ -53,6 +53,7 @@ anyhow = "1.0.95"
 thiserror = "2"
 rubato = "0.16.2"
 hound = "3.5.1"
+nnnoiseless = { version = "0.5.2", default-features = false }
 log = "0.4.25"
 env_filter = "0.1.0"
 tokio = "1.43.0"
