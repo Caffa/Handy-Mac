@@ -566,8 +566,8 @@ impl TranscriptionManager {
             }
         }
 
-        // Set transcribing flag for the duration of this transcription
-        self.is_transcribing.lock().unwrap();
+        // Set transcribing flag for the duration of this transcription.
+        // TranscribingGuard clears the flag and notifies waiters on drop.
         struct TranscribingGuard {
             flag: Arc<Mutex<bool>>,
             condvar: Arc<Condvar>,

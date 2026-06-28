@@ -1,7 +1,14 @@
 use anyhow::Result;
 use hound::{WavReader, WavSpec, WavWriter};
-use log::debug;
+use log::{debug, warn};
+use std::fs;
 use std::path::Path;
+
+/// Suffix used for temporary files during atomic writes.
+/// Files with this suffix are orphaned if the process crashes mid-write.
+/// HistoryManager cleans these up at startup.
+#[allow(dead_code)]
+pub const TEMP_FILE_SUFFIX: &str = ".wav.tmp";
 
 /// Audio quality metrics computed from raw PCM samples (f32, -1..1).
 ///
@@ -210,8 +217,14 @@ pub fn validate_wav_file<P: AsRef<Path>>(file_path: P) -> AudioValidationResult 
     validate_audio(&samples, 16000) // Standard sample rate for Handy
 }
 
-/// Save audio samples as a WAV file
+/// Save audio samples as a WAV file using atomic write-then-rename.
+///
+/// Writes to a temporary file (`.tmp` suffix) first, then atomically
+/// renames it to the final path. This prevents partial/corrupted WAV
+/// files if the process crashes mid-write. On failure, the temp file
+/// is cleaned up.
 pub fn save_wav_file<P: AsRef<Path>>(file_path: P, samples: &[f32]) -> Result<()> {
+    let file_path = file_path.as_ref();
     let spec = WavSpec {
         channels: 1,
         sample_rate: 16000,
@@ -219,15 +232,50 @@ pub fn save_wav_file<P: AsRef<Path>>(file_path: P, samples: &[f32]) -> Result<()
         sample_format: hound::SampleFormat::Int,
     };
 
-    let mut writer = WavWriter::create(file_path.as_ref(), spec)?;
+    // Write to a temporary file first for atomicity
+    let temp_path = file_path.with_extension("wav.tmp");
 
-    // Convert f32 samples to i16 for WAV
-    for sample in samples {
-        let sample_i16 = (sample * i16::MAX as f32) as i16;
-        writer.write_sample(sample_i16)?;
+    let write_result = (|| -> Result<()> {
+        let mut writer = WavWriter::create(&temp_path, spec)?;
+
+        // Convert f32 samples to i16 for WAV
+        for sample in samples {
+            let sample_i16 = (sample * i16::MAX as f32) as i16;
+            writer.write_sample(sample_i16)?;
+        }
+
+        writer.finalize()?;
+        Ok(())
+    })();
+
+    match write_result {
+        Ok(()) => {
+            // Atomic rename: on the same filesystem this is atomic,
+            // replacing any existing file or creating a new one.
+            if let Err(e) = fs::rename(&temp_path, file_path) {
+                // If rename fails (e.g., cross-filesystem), fall back to
+                // non-atomic write but still clean up the temp file.
+                warn!(
+                    "Atomic rename failed for {:?}: {}. Falling back to direct write.",
+                    file_path, e
+                );
+                let _ = fs::remove_file(&temp_path);
+                // Direct write as fallback
+                let mut writer = WavWriter::create(file_path, spec)?;
+                for sample in samples {
+                    let sample_i16 = (sample * i16::MAX as f32) as i16;
+                    writer.write_sample(sample_i16)?;
+                }
+                writer.finalize()?;
+            }
+            debug!("Saved WAV file: {:?}", file_path);
+        }
+        Err(e) => {
+            // Clean up the temp file on write failure
+            let _ = fs::remove_file(&temp_path);
+            return Err(e);
+        }
     }
 
-    writer.finalize()?;
-    debug!("Saved WAV file: {:?}", file_path.as_ref());
     Ok(())
 }

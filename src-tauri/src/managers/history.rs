@@ -177,6 +177,9 @@ impl HistoryManager {
         // Initialize database and run migrations synchronously
         manager.init_database()?;
 
+        // Clean up orphaned temp files from crashed atomic writes
+        manager.cleanup_orphaned_temp_files();
+
         Ok(manager)
     }
 
@@ -222,6 +225,45 @@ impl HistoryManager {
         self.verify_and_fix_schema(&conn)?;
 
         Ok(())
+    }
+
+    /// Clean up orphaned temporary files left by crashed atomic WAV writes.
+    /// These files have the `.tmp` suffix and are normally renamed to `.wav`
+    /// after successful writes. If the process crashes mid-write, they remain
+    /// in the recordings directory.
+    fn cleanup_orphaned_temp_files(&self) {
+        let entries = match fs::read_dir(&self.recordings_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!(
+                    "Failed to read recordings directory for temp file cleanup: {}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let mut cleaned = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".wav.tmp") {
+                    match fs::remove_file(&path) {
+                        Ok(()) => {
+                            debug!("Cleaned up orphaned temp file: {:?}", path);
+                            cleaned += 1;
+                        }
+                        Err(e) => {
+                            warn!("Failed to remove orphaned temp file {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if cleaned > 0 {
+            info!("Cleaned up {} orphaned temp file(s) from recordings directory", cleaned);
+        }
     }
 
     /// Migrate from tauri-plugin-sql's migration tracking to rusqlite_migration's.

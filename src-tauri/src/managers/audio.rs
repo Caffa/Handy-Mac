@@ -875,7 +875,9 @@ impl AudioRecordingManager {
         if recorder_opt.is_some() {
             // Close the old recorder to clean up resources
             if let Some(mut old_rec) = recorder_opt.take() {
-                let _ = old_rec.close();
+                if let Err(e) = old_rec.close() {
+                    warn!("Error closing old recorder during recreation: {}", e);
+                }
             }
         }
 
