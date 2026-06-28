@@ -815,6 +815,7 @@
     "reportIssue": "Report this issue on GitHub",
     "settingsLoadFailed": "Failed to load settings",
     "settingsLoadFailedDescription": "Your settings could not be loaded. This may happen if the settings file is corrupted.",
+    "settingsResetSuccess": "Settings reset to defaults",
     "resetToDefaults": "Reset to Defaults",
     "retry": "Retry",
     "recoverable": {

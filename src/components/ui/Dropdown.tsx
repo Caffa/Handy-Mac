@@ -5,6 +5,7 @@ export interface DropdownOption {
   value: string;
   label: string;
   disabled?: boolean;
+  tooltip?: string;
 }
 
 interface DropdownProps {
@@ -103,6 +104,7 @@ export const Dropdown: React.FC<DropdownProps> = ({
                 } ${option.disabled ? "opacity-50 cursor-not-allowed" : ""}`}
                 onClick={() => handleSelect(option.value)}
                 disabled={option.disabled}
+                title={option.tooltip}
               >
                 <span className="whitespace-normal break-words">{option.label}</span>
               </button>

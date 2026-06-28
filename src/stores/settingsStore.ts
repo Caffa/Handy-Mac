@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
+import i18n from "@/i18n";
 import type {
   AppSettings as Settings,
   AudioDevice,
@@ -14,6 +16,7 @@ interface SettingsStore {
   settings: Settings | null;
   defaultSettings: Settings | null;
   isLoading: boolean;
+  error: string | null;
   isUpdating: Record<string, boolean>;
   audioDevices: AudioDevice[];
   outputDevices: AudioDevice[];
@@ -29,6 +32,8 @@ interface SettingsStore {
   ) => Promise<void>;
   resetSetting: (key: keyof Settings) => Promise<void>;
   refreshSettings: () => Promise<void>;
+  retryLoadSettings: () => Promise<void>;
+  resetToDefaults: () => Promise<void>;
   refreshAudioDevices: () => Promise<void>;
   refreshOutputDevices: () => Promise<void>;
   updateBinding: (id: string, binding: string) => Promise<void>;
@@ -59,6 +64,7 @@ interface SettingsStore {
   setSettings: (settings: Settings | null) => void;
   setDefaultSettings: (defaultSettings: Settings | null) => void;
   setLoading: (loading: boolean) => void;
+  setError: (error: string | null) => void;
   setUpdating: (key: string, updating: boolean) => void;
   setAudioDevices: (devices: AudioDevice[]) => void;
   setOutputDevices: (devices: AudioDevice[]) => void;
@@ -208,6 +214,7 @@ export const useSettingsStore = create<SettingsStore>()(
     settings: null,
     defaultSettings: null,
     isLoading: true,
+    error: null,
     isUpdating: {},
     audioDevices: [],
     outputDevices: [],
@@ -218,6 +225,7 @@ export const useSettingsStore = create<SettingsStore>()(
     setSettings: (settings) => set({ settings }),
     setDefaultSettings: (defaultSettings) => set({ defaultSettings }),
     setLoading: (isLoading) => set({ isLoading }),
+    setError: (error) => set({ error }),
     setUpdating: (key, updating) =>
       set((state) => ({
         isUpdating: { ...state.isUpdating, [key]: updating },
@@ -245,14 +253,73 @@ export const useSettingsStore = create<SettingsStore>()(
               settings.selected_output_device ?? "Default",
             vad_sensitivity: settings.vad_sensitivity ?? "balanced",
           };
-          set({ settings: normalizedSettings, isLoading: false });
+          set({ settings: normalizedSettings, isLoading: false, error: null });
         } else {
           console.error("Failed to load settings:", result.error);
-          set({ isLoading: false });
+          const errorMessage = String(result.error);
+          set({ isLoading: false, error: errorMessage });
+          toast.error(i18n.t("errors.settingsLoadFailed"), {
+            description: i18n.t("errors.settingsLoadFailedDescription"),
+            action: {
+              label: i18n.t("errors.retry"),
+              onClick: () => get().retryLoadSettings(),
+            },
+          });
         }
       } catch (error) {
         console.error("Failed to load settings:", error);
-        set({ isLoading: false });
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        set({ isLoading: false, error: errorMessage });
+        toast.error(i18n.t("errors.settingsLoadFailed"), {
+          description: i18n.t("errors.settingsLoadFailedDescription"),
+          action: {
+            label: i18n.t("errors.retry"),
+            onClick: () => get().retryLoadSettings(),
+          },
+        });
+      }
+    },
+
+    // Retry loading settings after a failure
+    retryLoadSettings: async () => {
+      set({ isLoading: true, error: null });
+      await get().refreshSettings();
+    },
+
+    // Reset all settings to defaults and reload
+    resetToDefaults: async () => {
+      const { defaultSettings } = get();
+      if (!defaultSettings) {
+        toast.error(i18n.t("errors.settingsLoadFailed"), {
+          description: i18n.t("errors.settingsLoadFailedDescription"),
+        });
+        return;
+      }
+
+      try {
+        // Apply each default setting via the backend updaters
+        const updateEntries = Object.entries(settingUpdaters) as [
+          string,
+          (value: unknown) => Promise<unknown>,
+        ][];
+        for (const [key, updater] of updateEntries) {
+          const defaultValue = defaultSettings[key as keyof Settings];
+          if (defaultValue !== undefined) {
+            await updater(defaultValue);
+          }
+        }
+
+        set({ error: null });
+        await get().refreshSettings();
+        toast.success(i18n.t("errors.settingsResetSuccess"));
+      } catch (error) {
+        console.error("Failed to reset settings:", error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        set({ error: errorMessage });
+        toast.error(i18n.t("errors.settingsLoadFailed"), {
+          description: errorMessage,
+        });
       }
     },
 

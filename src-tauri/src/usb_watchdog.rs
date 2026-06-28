@@ -64,6 +64,10 @@ pub struct UsbWatchdog {
     consecutive_failures: AtomicU64,
     /// After how many consecutive failures to trigger a cycle (default 2)
     fail_threshold: AtomicU64,
+    /// Whether we're in a grace period after a successful USB cycle
+    /// During this time, we're more lenient about counting failures
+    /// (shared Arc so spawned threads can set it)
+    post_cycle_grace: Arc<AtomicBool>,
     /// AppHandle for emitting events to the frontend during power cycling
     app_handle: Option<tauri::AppHandle>,
 }
@@ -76,7 +80,8 @@ impl UsbWatchdog {
             cycling: Arc::new(AtomicBool::new(false)),
             last_cycle_epoch: AtomicU64::new(0),
             consecutive_failures: AtomicU64::new(0),
-            fail_threshold: AtomicU64::new(1),
+            fail_threshold: AtomicU64::new(2), // Require 2 consecutive failures before cycling
+            post_cycle_grace: Arc::new(AtomicBool::new(false)),
             app_handle,
         }
     }
@@ -112,6 +117,13 @@ impl UsbWatchdog {
             return false;
         }
 
+        // During grace period after a USB cycle, be more lenient
+        // Don't count failures for a short time after cycling
+        if self.post_cycle_grace.load(Ordering::SeqCst) {
+            debug!("USB watchdog: in post-cycle grace period, not counting failure");
+            return false;
+        }
+
         let failures = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
         let threshold = self.fail_threshold.load(Ordering::SeqCst);
         debug!(
@@ -136,6 +148,8 @@ impl UsbWatchdog {
                 prev
             );
         }
+        // Clear the grace period - we have a working mic now
+        self.post_cycle_grace.store(false, Ordering::SeqCst);
     }
 
     /// Called to report whether the microphone stream is currently alive.
@@ -149,20 +163,32 @@ impl UsbWatchdog {
 
     /// Called when a recording finishes. If the sample count is zero, it
     /// counts as a failure and may trigger a power cycle.
-    pub fn on_recording_finished(&self, sample_count: usize) -> bool {
+    /// 
+    /// Parameters:
+    /// - `sample_count`: Number of audio samples captured
+    /// - `duration_secs`: Duration of the recording in seconds
+    /// 
+    /// Returns true if a USB power cycle was triggered.
+    pub fn on_recording_finished(&self, sample_count: usize, duration_secs: f32) -> bool {
         if sample_count > 0 {
             self.on_mic_open_succeeded();
             return false;
         }
 
+        // Zero samples always indicates a problem, regardless of duration
         warn!("USB watchdog: recording finished with 0 samples - treating as dead stream");
         self.on_mic_open_failed()
     }
 
     /// Called when a transcription returns empty text despite having audio samples.
     /// This may indicate the microphone is capturing silence/noise instead of actual audio.
+    /// 
+    /// Parameters:
+    /// - `duration_secs`: Duration of the recording in seconds. Short recordings (< 10s)
+    ///   are less likely to indicate a dead mic (user may have stopped early).
+    /// 
     /// Returns true if a USB power cycle was triggered.
-    pub fn on_silent_transcription(&self) -> bool {
+    pub fn on_silent_transcription(&self, duration_secs: f32) -> bool {
         if !self.enabled.load(Ordering::SeqCst) {
             debug!("USB watchdog disabled, skipping silent transcription handler");
             return false;
@@ -173,11 +199,29 @@ impl UsbWatchdog {
             return false;
         }
 
+        // During grace period after a USB cycle, be more lenient
+        if self.post_cycle_grace.load(Ordering::SeqCst) {
+            debug!("USB watchdog: in post-cycle grace period, not counting silent transcription as failure");
+            return false;
+        }
+
+        // Short recordings (< 10 seconds) are less likely to indicate a dead mic.
+        // The user may have started recording and stopped quickly without speaking.
+        // Only count as a failure if the recording was at least 10 seconds.
+        const MIN_DURATION_SECS: f32 = 10.0;
+        if duration_secs < MIN_DURATION_SECS {
+            debug!(
+                "USB watchdog: silent transcription ignored (duration {:.1}s < {:.1}s threshold)",
+                duration_secs, MIN_DURATION_SECS
+            );
+            return false;
+        }
+
         let failures = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
         let threshold = self.fail_threshold.load(Ordering::SeqCst);
         info!(
-            "USB watchdog: silent transcription detected (failure #{}, threshold: {})",
-            failures, threshold
+            "USB watchdog: silent transcription detected (failure #{}, threshold: {}, duration: {:.1}s)",
+            failures, threshold, duration_secs
         );
 
         if failures < threshold {
@@ -191,8 +235,13 @@ impl UsbWatchdog {
 
     /// Called when a recording had very low audio levels (near silence).
     /// This indicates the microphone may be dead or muted.
+    /// 
+    /// Parameters:
+    /// - `duration_secs`: Duration of the recording in seconds. Short recordings (< 10s)
+    ///   are less likely to indicate a dead mic (user may have stopped early).
+    /// 
     /// Returns true if a USB power cycle was triggered.
-    pub fn on_low_audio_level(&self) -> bool {
+    pub fn on_low_audio_level(&self, duration_secs: f32) -> bool {
         if !self.enabled.load(Ordering::SeqCst) {
             debug!("USB watchdog disabled, skipping low audio level handler");
             return false;
@@ -203,7 +252,28 @@ impl UsbWatchdog {
             return false;
         }
 
-        warn!("USB watchdog: recording had very low audio level - treating as potential dead mic");
+        // During grace period after a USB cycle, be more lenient
+        if self.post_cycle_grace.load(Ordering::SeqCst) {
+            debug!("USB watchdog: in post-cycle grace period, not counting low audio level as failure");
+            return false;
+        }
+
+        // Short recordings (< 10 seconds) are less likely to indicate a dead mic.
+        // The user may have started recording and stopped quickly without speaking.
+        // Only count as a failure if the recording was at least 10 seconds.
+        const MIN_DURATION_SECS: f32 = 10.0;
+        if duration_secs < MIN_DURATION_SECS {
+            debug!(
+                "USB watchdog: low audio level ignored (duration {:.1}s < {:.1}s threshold)",
+                duration_secs, MIN_DURATION_SECS
+            );
+            return false;
+        }
+
+        warn!(
+            "USB watchdog: recording had very low audio level (duration: {:.1}s) - treating as potential dead mic",
+            duration_secs
+        );
         self.on_mic_open_failed()
     }
 
@@ -317,7 +387,12 @@ impl UsbWatchdog {
         self.cycling.store(false, Ordering::SeqCst);
 
         if cycle_succeeded {
+            // Set a grace period after successful USB cycle to prevent
+            // false positives from the mic still recovering
+            self.post_cycle_grace.store(true, Ordering::SeqCst);
             self.emit_cycle_event("usb-power-cycle-finished", &device_name);
+            info!("USB watchdog: grace period started after successful cycle");
+            // Grace period will be cleared when mic opens successfully (on_mic_open_succeeded)
             true
         } else {
             false
@@ -370,6 +445,7 @@ impl UsbWatchdog {
         let port = device.port.clone();
         let name = device_name.clone();
         let cycling = self.cycling.clone();
+        let post_cycle_grace = self.post_cycle_grace.clone();
         let app_handle = self.app_handle.clone();
 
         std::thread::spawn(move || {
@@ -441,7 +517,10 @@ impl UsbWatchdog {
             cycling.store(false, Ordering::SeqCst);
 
             if cycle_succeeded {
+                // Set grace period after successful forced cycle
+                post_cycle_grace.store(true, Ordering::SeqCst);
                 emit_cycle_event_with_handle(&app_handle, "usb-power-cycle-finished", &name);
+                info!("USB watchdog: grace period started after successful forced cycle");
 
                 if let Some(ah) = &app_handle {
                     if let Some(rm) = ah.try_state::<Arc<AudioRecordingManager>>() {

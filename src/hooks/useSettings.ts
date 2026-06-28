@@ -6,6 +6,7 @@ interface UseSettingsReturn {
   // State
   settings: Settings | null;
   isLoading: boolean;
+  error: string | null;
   isUpdating: (key: string) => boolean;
   audioDevices: AudioDevice[];
   outputDevices: AudioDevice[];
@@ -19,6 +20,8 @@ interface UseSettingsReturn {
   ) => Promise<void>;
   resetSetting: (key: keyof Settings) => Promise<void>;
   refreshSettings: () => Promise<void>;
+  retryLoadSettings: () => Promise<void>;
+  resetToDefaults: () => Promise<void>;
   refreshAudioDevices: () => Promise<void>;
   refreshOutputDevices: () => Promise<void>;
 
@@ -48,14 +51,15 @@ export const useSettings = (): UseSettingsReturn => {
 
   // Initialize on first mount
   useEffect(() => {
-    if (store.isLoading) {
+    if (store.isLoading && !store.error) {
       store.initialize();
     }
-  }, [store.initialize, store.isLoading]);
+  }, [store.initialize, store.isLoading, store.error]);
 
   return {
     settings: store.settings,
     isLoading: store.isLoading,
+    error: store.error,
     isUpdating: store.isUpdatingKey,
     audioDevices: store.audioDevices,
     outputDevices: store.outputDevices,
@@ -64,6 +68,8 @@ export const useSettings = (): UseSettingsReturn => {
     updateSetting: store.updateSetting,
     resetSetting: store.resetSetting,
     refreshSettings: store.refreshSettings,
+    retryLoadSettings: store.retryLoadSettings,
+    resetToDefaults: store.resetToDefaults,
     refreshAudioDevices: store.refreshAudioDevices,
     refreshOutputDevices: store.refreshOutputDevices,
     updateBinding: store.updateBinding,

@@ -1027,12 +1027,20 @@ impl AudioRecordingManager {
         if let Some(rec) = lock_with_log(&self.recorder, "recorder").as_mut() {
             // If still recording, stop first and reset state.
             if *lock_with_log(&self.is_recording, "is_recording") {
-                let _ = rec.stop();
+                if let Err(e) = rec.stop() {
+                    warn!("Error stopping recorder during stream shutdown: {}", e);
+                    // Continue with close — the recorder may be in an inconsistent
+                    // state, but we still want to release resources.
+                }
                 *lock_with_log(&self.is_recording, "is_recording") = false;
             }
-            // Also ensure state is reset to Idle (is_recording() checks state, not flag)
+            // Reset state to Idle regardless of stop outcome
             *lock_with_log(&self.state, "state") = RecordingState::Idle;
-            let _ = rec.close();
+            if let Err(e) = rec.close() {
+                warn!("Error closing recorder during stream shutdown: {}", e);
+                // State is already reset — the recorder will be recreated on
+                // the next start_microphone_stream() call if needed.
+            }
         }
 
         *open_flag = false;
@@ -1458,7 +1466,9 @@ impl AudioRecordingManager {
             drop(state);
 
             if let Some(rec) = lock_with_log(&self.recorder, "recorder").as_ref() {
-                let _ = rec.stop(); // Discard the result
+                if let Err(e) = rec.stop() {
+                    warn!("Error stopping recorder during cancel: {}", e);
+                }
             }
 
             *lock_with_log(&self.is_recording, "is_recording") = false;

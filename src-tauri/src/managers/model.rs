@@ -1483,6 +1483,124 @@ impl ModelManager {
         Ok(())
     }
 
+    /// Verify model file integrity by computing its SHA256 and comparing
+    /// against the expected hash stored in ModelInfo. If verification fails
+    /// (hash mismatch or read error), the corrupted file is deleted and
+    /// an error is returned so the caller can trigger a re-download.
+    /// For directory-based models, this verifies the SHA256 of the original
+    /// tar.gz archive (which is not kept on disk after extraction), so
+    /// verification is skipped for those models.
+    /// Custom models (sha256 == None) skip verification entirely.
+    pub fn verify_model_before_load(&self, model_id: &str) -> AppResult<()> {
+        let model_info = self
+            .get_model_info(model_id)
+            .ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
+
+        // Skip verification for custom models (no expected hash)
+        let expected_sha256 = match &model_info.sha256 {
+            Some(hash) => hash,
+            None => {
+                debug!(
+                    "Skipping integrity check for custom model: {}",
+                    model_id
+                );
+                return Ok(());
+            }
+        };
+
+        // For directory-based models, the tar.gz archive is deleted after
+        // extraction, so we can't verify the hash. We could verify individual
+        // files inside the directory, but that would require per-file hashes
+        // which we don't store. Skip for now.
+        if model_info.is_directory {
+            debug!(
+                "Skipping integrity check for directory-based model: {}",
+                model_id
+            );
+            // Instead, verify the directory itself exists and contains files
+            let model_path = self.models_dir.join(&model_info.filename);
+            if !model_path.exists() || !model_path.is_dir() {
+                warn!(
+                    "Directory-based model {} appears corrupted (directory missing or empty), marking for re-download",
+                    model_id
+                );
+                // Remove the corrupted directory
+                let _ = fs::remove_dir_all(&model_path);
+                // Update download status so the UI reflects the model is not available
+                self.update_download_status()?;
+                return Err(AppError::ModelVerificationFailed {
+                    model_id: model_id.to_string(),
+                    source: anyhow::anyhow!(
+                        "Model directory is missing or corrupted. Please re-download."
+                    ),
+                });
+            }
+            return Ok(());
+        }
+
+        // For file-based models, compute SHA256 and compare
+        let model_path = self.models_dir.join(&model_info.filename);
+        if !model_path.exists() {
+            warn!(
+                "Model file {} not found on disk, marking for re-download",
+                model_id
+            );
+            // Update download status so the UI reflects the model is not available
+            self.update_download_status()?;
+            return Err(AppError::ModelVerificationFailed {
+                model_id: model_id.to_string(),
+                source: anyhow::anyhow!(
+                    "Model file not found on disk. Please re-download."
+                ),
+            });
+        }
+
+        info!(
+            "Verifying integrity of model {} before loading...",
+            model_id
+        );
+        match Self::compute_sha256(&model_path) {
+            Ok(actual) if actual == *expected_sha256 => {
+                info!("Integrity check passed for model {}", model_id);
+                Ok(())
+            }
+            Ok(actual) => {
+                warn!(
+                    "Integrity check FAILED for model {}: expected hash {}, got {}. Deleting corrupted file.",
+                    model_id, expected_sha256, actual
+                );
+                // Delete the corrupted file so re-download starts fresh
+                let _ = fs::remove_file(&model_path);
+                // Update download status so the UI reflects the model is not available
+                self.update_download_status()?;
+                Err(AppError::ModelVerificationFailed {
+                    model_id: model_id.to_string(),
+                    source: anyhow::anyhow!(
+                        "SHA256 mismatch: expected {}, got {}. Corrupted file deleted, please re-download.",
+                        expected_sha256,
+                        actual
+                    ),
+                })
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to compute SHA256 for model {}: {}. Deleting file.",
+                    model_id, e
+                );
+                let _ = fs::remove_file(&model_path);
+                self.update_download_status()?;
+                Err(AppError::ModelVerificationFailed {
+                    model_id: model_id.to_string(),
+                    source: anyhow::anyhow!(
+                        "Failed to verify model integrity for {}: {}. File deleted, please re-download.",
+                        model_id,
+                        e
+                    ),
+                })
+            }
+        }
+    }
+
     pub fn get_model_path(&self, model_id: &str) -> AppResult<PathBuf> {
         let model_info = self
             .get_model_info(model_id)

@@ -41,22 +41,27 @@ export const VadSensitivity: React.FC<VadSensitivityProps> = React.memo(
       {
         value: "very_quick",
         label: t("settings.advanced.vadSensitivity.veryQuick"),
+        tooltip: t("settings.advanced.vadSensitivity.veryQuickTooltip"),
       },
       {
         value: "quick",
         label: t("settings.advanced.vadSensitivity.quick"),
+        tooltip: t("settings.advanced.vadSensitivity.quickTooltip"),
       },
       {
         value: "balanced",
         label: t("settings.advanced.vadSensitivity.balanced"),
+        tooltip: t("settings.advanced.vadSensitivity.balancedTooltip"),
       },
       {
         value: "relaxed",
         label: t("settings.advanced.vadSensitivity.relaxed"),
+        tooltip: t("settings.advanced.vadSensitivity.relaxedTooltip"),
       },
       {
         value: "very_relaxed",
         label: t("settings.advanced.vadSensitivity.veryRelaxed"),
+        tooltip: t("settings.advanced.vadSensitivity.veryRelaxedTooltip"),
       },
     ];
 

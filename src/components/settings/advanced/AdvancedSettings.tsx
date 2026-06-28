@@ -2,8 +2,6 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 import { ShowOverlay } from "../ShowOverlay";
 import { ModelUnloadTimeoutSetting } from "../ModelUnloadTimeout";
-import { CustomWords } from "../CustomWords";
-import { CustomFillerWords } from "../CustomFillerWords";
 import { SettingsGroup } from "../../ui/SettingsGroup";
 import { StartHidden } from "../StartHidden";
 import { AutostartToggle } from "../AutostartToggle";
@@ -23,21 +21,13 @@ import { AccelerationSelector } from "../AccelerationSelector";
 import { LazyStreamClose } from "../LazyStreamClose";
 import { HybridMode } from "../HybridMode";
 import { ToggleSwitch } from "../../ui/ToggleSwitch";
-import { WordCorrectionThreshold } from "../WordCorrectionThreshold";
-import { AdvancedCustomWords } from "../AdvancedCustomWords";
-import { WordReplacements } from "../WordReplacements";
-import { WordCorrectionModeSelector } from "../WordCorrectionModeSelector";
 import { VerificationMode } from "../VerificationMode";
-import { ConvertUsToBritish } from "../ConvertUsToBritish";
-import { VadSensitivity } from "../VadSensitivity";
-import { LiveCaptions } from "../LiveCaptions";
 import { OverlayScale } from "../OverlayScale";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
   const { getSetting, updateSetting, isUpdating } = useSettings();
   const experimentalEnabled = getSetting("experimental_enabled") || false;
-  const wordCorrectionMode = getSetting("word_correction_mode") || "word_bias";
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
@@ -46,6 +36,7 @@ export const AdvancedSettings: React.FC = () => {
         <AutostartToggle descriptionMode="tooltip" grouped={true} />
         <ShowTrayIcon descriptionMode="tooltip" grouped={true} />
         <ShowOverlay descriptionMode="tooltip" grouped={true} />
+        <OverlayScale descriptionMode="tooltip" grouped={true} />
         <ModelUnloadTimeoutSetting descriptionMode="tooltip" grouped={true} />
         <ExperimentalToggle descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
@@ -55,40 +46,7 @@ export const AdvancedSettings: React.FC = () => {
         <TypingToolSetting descriptionMode="tooltip" grouped={true} />
         <ClipboardHandlingSetting descriptionMode="tooltip" grouped={true} />
         <AutoSubmit descriptionMode="tooltip" grouped={true} />
-      </SettingsGroup>
-
-      <SettingsGroup title={t("settings.advanced.groups.transcription")}>
-        <WordCorrectionModeSelector descriptionMode="tooltip" grouped />
-        {wordCorrectionMode === "word_bias" ? (
-          <>
-            <CustomWords descriptionMode="tooltip" grouped />
-            <CustomFillerWords descriptionMode="tooltip" grouped />
-            <WordCorrectionThreshold descriptionMode="tooltip" grouped />
-          </>
-        ) : wordCorrectionMode === "pronunciation" ? (
-          <AdvancedCustomWords descriptionMode="tooltip" grouped />
-        ) : (
-          <WordReplacements descriptionMode="tooltip" grouped />
-        )}
         <AppendTrailingSpace descriptionMode="tooltip" grouped={true} />
-        <ConvertUsToBritish descriptionMode="tooltip" grouped={true} />
-        <HybridMode descriptionMode="tooltip" grouped={true} />
-        <ToggleSwitch
-          checked={getSetting("adaptive_parakeet_thresholds") ?? false}
-          onChange={(checked) =>
-            updateSetting("adaptive_parakeet_thresholds", checked)
-          }
-          disabled={isUpdating("adaptive_parakeet_thresholds")}
-          isUpdating={isUpdating("adaptive_parakeet_thresholds")}
-          label={t("settings.advanced.adaptiveThresholds.label")}
-          description={t("settings.advanced.adaptiveThresholds.description")}
-          descriptionMode="tooltip"
-          grouped={true}
-        />
-        <VerificationMode descriptionMode="tooltip" grouped={true} />
-        <VadSensitivity descriptionMode="tooltip" grouped={true} />
-        <LiveCaptions descriptionMode="tooltip" grouped={true} />
-        <OverlayScale descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.history")}>
@@ -108,6 +66,20 @@ export const AdvancedSettings: React.FC = () => {
           />
           <AccelerationSelector descriptionMode="tooltip" grouped={true} />
           <LazyStreamClose descriptionMode="tooltip" grouped={true} />
+          <HybridMode descriptionMode="tooltip" grouped={true} />
+          <ToggleSwitch
+            checked={getSetting("adaptive_parakeet_thresholds") ?? false}
+            onChange={(checked) =>
+              updateSetting("adaptive_parakeet_thresholds", checked)
+            }
+            disabled={isUpdating("adaptive_parakeet_thresholds")}
+            isUpdating={isUpdating("adaptive_parakeet_thresholds")}
+            label={t("settings.advanced.adaptiveThresholds.label")}
+            description={t("settings.advanced.adaptiveThresholds.description")}
+            descriptionMode="tooltip"
+            grouped={true}
+          />
+          <VerificationMode descriptionMode="tooltip" grouped={true} />
         </SettingsGroup>
       )}
     </div>

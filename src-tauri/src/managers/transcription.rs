@@ -123,7 +123,8 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
-            is_transcribing: Arc::new(AtomicBool::new(false)),
+            is_transcribing: Arc::new(Mutex::new(false)),
+            transcribing_condvar: Arc::new(Condvar::new()),
             cancel_streaming: Arc::new(AtomicBool::new(false)),
         };
 
@@ -545,29 +546,47 @@ impl TranscriptionManager {
         // Wait for any in-progress transcription to complete.
         // This prevents race conditions between streaming transcription (running
         // every 2.5s during recording) and the final transcription (after recording stops).
-        // We use a spin-wait with yield to avoid blocking the thread indefinitely.
-        let wait_start = std::time::Instant::now();
-        let max_wait = Duration::from_secs(30);
-        while self.is_transcribing.load(Ordering::Relaxed) {
-            if wait_start.elapsed() > max_wait {
-                warn!("Timed out waiting for previous transcription to complete");
-                return Err(AppError::TranscriptionBusy);
+        // Uses Condvar wait_timeout for efficient synchronization — the waiting
+        // thread sleeps instead of busy-looping, waking immediately when notified.
+        {
+            let mut is_transcribing = self.is_transcribing.lock().unwrap();
+            let max_wait = Duration::from_secs(30);
+            let wait_deadline = std::time::Instant::now() + max_wait;
+            while *is_transcribing {
+                let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    warn!("Timed out waiting for previous transcription to complete");
+                    return Err(AppError::TranscriptionBusy);
+                }
+                let result = self
+                    .transcribing_condvar
+                    .wait_timeout(is_transcribing, remaining)
+                    .unwrap();
+                is_transcribing = result.0;
             }
-            std::thread::yield_now();
         }
 
         // Set transcribing flag for the duration of this transcription
-        self.is_transcribing.store(true, Ordering::Relaxed);
+        self.is_transcribing.lock().unwrap();
         struct TranscribingGuard {
-            flag: Arc<AtomicBool>,
+            flag: Arc<Mutex<bool>>,
+            condvar: Arc<Condvar>,
         }
         impl Drop for TranscribingGuard {
             fn drop(&mut self) {
-                self.flag.store(false, Ordering::Relaxed);
+                let mut flag = self.flag.lock().unwrap();
+                *flag = false;
+                self.condvar.notify_all();
             }
+        }
+        // Mark as transcribing and create the guard that clears it on drop
+        {
+            let mut flag = self.is_transcribing.lock().unwrap();
+            *flag = true;
         }
         let _guard = TranscribingGuard {
             flag: self.is_transcribing.clone(),
+            condvar: self.transcribing_condvar.clone(),
         };
 
         // Update last activity timestamp

@@ -38,7 +38,7 @@ const OVERLAY_WINDOW_WIDTH_BASE: f64 = 800.0;
 /// Minimum window height for the recording pill (just the pill, no preview).
 const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 100.0;
 /// Visible pill height used for position calculations.
-const OVERLAY_PILL_HEIGHT: f64 = 36.0;
+const OVERLAY_PILL_HEIGHT: f64 = 50.0;
 /// Maximum percentage of screen height to use for the overlay window.
 const OVERLAY_MAX_SCREEN_RATIO: f64 = 0.85;
 /// Window height for live captions mode (taller to show multi-line text)

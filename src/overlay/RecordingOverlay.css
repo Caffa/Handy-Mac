@@ -1,13 +1,13 @@
 .recording-overlay {
   --overlay-scale: 1;
-  height: calc(45px * var(--overlay-scale));
-  width: calc(172px * var(--overlay-scale));
+  height: calc(60px * var(--overlay-scale));
+  width: calc(230px * var(--overlay-scale));
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  padding: calc(6px * var(--overlay-scale));
+  padding: calc(8px * var(--overlay-scale));
   background: #000000cc;
-  border-radius: calc(22.5px * var(--overlay-scale));
+  border-radius: calc(30px * var(--overlay-scale));
   opacity: 0;
   transition:
     opacity 300ms ease-out,
@@ -24,7 +24,7 @@
 .overlay-left {
   display: flex;
   align-items: center;
-  padding-left: 6px;
+  padding-left: 8px;
 }
 
 .overlay-middle {
@@ -37,7 +37,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding-right: 4px;
+  padding-right: 6px;
 }
 
 .bars-container {
@@ -46,7 +46,7 @@
   justify-content: center;
   gap: 3px;
   padding-bottom: 0px;
-  height: 30px;
+  height: 40px;
   overflow: hidden;
   /* Bars are visual-only, allow clicks to pass through */
   pointer-events: none;
@@ -94,19 +94,19 @@
 }
 
 .bar {
-  width: 6px;
+  width: 8px;
   background: #ffe5ee;
-  max-height: 25px;
+  max-height: 35px;
   border-radius: 2px;
   transition: height 80ms linear;
-  min-height: 5px;
+  min-height: 7px;
 }
 
 /* Live captions displayed below the pill during recording */
 .live-captions-box {
   --overlay-scale: 1;
   position: fixed;
-  top: calc(53px * var(--overlay-scale));
+  top: calc(70px * var(--overlay-scale));
   left: 50%;
   transform: translateX(-50%);
   min-width: calc(600px * var(--overlay-scale));
@@ -116,8 +116,7 @@
   background: #000000cc;
   border-radius: calc(12px * var(--overlay-scale));
   padding: calc(8px * var(--overlay-scale)) calc(12px * var(--overlay-scale));
-  opacity: 0;
-  transition: opacity 300ms ease-out;
+  opacity: 1;
   z-index: 9998;
   font-size: calc(18px * var(--overlay-scale));
   font-weight: 500;
@@ -129,7 +128,7 @@
   overflow-wrap: break-word;
   text-align: center;
   line-height: 1.4;
-  animation: pulse-opacity 1.5s ease-in-out infinite;
+  opacity: 1;
   display: block;
 }
 
@@ -139,16 +138,6 @@
 
 .live-captions-box.routing-mode {
   background: #1e3a5fcc;
-}
-
-@keyframes pulse-opacity {
-  0%,
-  100% {
-    opacity: 0.8;
-  }
-  50% {
-    opacity: 0.5;
-  }
 }
 
 .recording-overlay.fade-in {
@@ -285,8 +274,8 @@
 }
 
 .cancel-button {
-  width: 30px;
-  height: 30px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: transparent;
   display: flex;
@@ -330,7 +319,7 @@
 /* ── Transcription preview for routing mode ── */
 .transcription-preview {
   position: fixed;
-  top: 60px; /* Below the overlay pill */
+  top: 75px; /* Below the overlay pill */
   left: 50%;
   transform: translateX(-50%);
   width: 516px; /* 3x the visualizer width (172px) */
@@ -563,7 +552,7 @@
 /* Fade-out animation for transcription preview dismissal */
 .transcription-preview.fade-out {
   opacity: 0;
-  transition: opacity 300ms ease-out;
+  transition: opacity 100ms ease-out;
   pointer-events: none;
 }
 

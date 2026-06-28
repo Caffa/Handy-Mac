@@ -156,7 +156,12 @@ const ModelCard: React.FC<ModelCardProps> = ({
               {displayName}
             </h3>
             {showRecommended && model.is_recommended && (
-              <Badge variant="primary">{t("onboarding.recommended")}</Badge>
+              <Badge 
+                variant="primary"
+                title={t("modelSelector.recommendedTooltip")}
+              >
+                {t("onboarding.recommended")}
+              </Badge>
             )}
             {status === "active" && (
               <Badge variant="primary">
@@ -164,16 +169,30 @@ const ModelCard: React.FC<ModelCardProps> = ({
                 {t("modelSelector.active")}
               </Badge>
             )}
+            {status === "available" && (
+              <Badge 
+                variant="secondary"
+                title={t("modelSelector.downloaded")}
+              >
+                {t("modelSelector.downloaded")}
+              </Badge>
+            )}
             {model.is_custom && (
               <Badge variant="secondary">{t("modelSelector.custom")}</Badge>
             )}
             {hybridRole === "short" && (
-              <Badge variant="success">
+              <Badge 
+                variant="success"
+                title={t("settings.advanced.hybridMode.shortBadgeTooltip")}
+              >
                 {t("settings.advanced.hybridMode.shortBadge")}
               </Badge>
             )}
             {hybridRole === "long" && (
-              <Badge variant="primary">
+              <Badge 
+                variant="primary"
+                title={t("settings.advanced.hybridMode.longBadgeTooltip")}
+              >
                 {t("settings.advanced.hybridMode.longBadge")}
               </Badge>
             )}
@@ -192,10 +211,16 @@ const ModelCard: React.FC<ModelCardProps> = ({
           <div className="hidden sm:flex items-center ms-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <p className="text-xs text-text/60 w-24 text-end">
+                <p 
+                  className="text-xs text-text/60 w-24 text-end cursor-help"
+                  title={t("modelSelector.accuracyTooltip")}
+                >
                   {t("onboarding.modelCard.accuracy")}
                 </p>
-                <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+                <div 
+                  className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden cursor-help"
+                  title={t("modelSelector.accuracyTooltip")}
+                >
                   <div
                     className="h-full bg-logo-primary rounded-full"
                     style={{ width: `${model.accuracy_score * 100}%` }}
@@ -203,7 +228,10 @@ const ModelCard: React.FC<ModelCardProps> = ({
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <p className="text-xs text-text/60 w-24 text-end">
+                <p 
+                  className="text-xs text-text/60 w-24 text-end cursor-help"
+                  title={t("modelSelector.speedTooltip")}
+                >
                   {t("onboarding.modelCard.speed")}
                 </p>
                 {model.dynamic_score?.failed ? (
@@ -213,7 +241,10 @@ const ModelCard: React.FC<ModelCardProps> = ({
                   </span>
                 ) : (
                   <>
-                    <div className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
+                    <div 
+                      className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden cursor-help"
+                      title={t("modelSelector.speedTooltip")}
+                    >
                       <div
                         className={`h-full rounded-full ${model.dynamic_score ? "bg-green-500" : "bg-logo-primary"}`}
                         style={{

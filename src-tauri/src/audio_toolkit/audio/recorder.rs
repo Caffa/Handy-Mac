@@ -708,10 +708,15 @@ fn run_consumer(
 
     let mut processed_samples = Vec::<f32>::new();
     let mut recording = false;
-    
+
     // Streaming transcription: invoke callback every ~2.5 seconds
     const STREAMING_INTERVAL_MS: u64 = 2500;
     let mut streaming_last_invoked: Option<std::time::Instant> = None;
+
+    // Track consecutive speech frames before starting streaming transcription
+    // This prevents false starts where VAD briefly flags noise as speech
+    const MIN_SPEECH_FRAMES_BEFORE_STREAMING: usize = 3; // ~90ms at 30ms per frame
+    let mut consecutive_speech_frames: usize = 0;
 
     // Running estimate of background noise level, built from the RMS of
     // frames that VAD classifies as Noise during an active recording.
@@ -845,12 +850,14 @@ fn run_consumer(
         // ---------- streaming transcription callback ----------------------- //
         // Invoke the streaming callback periodically during active recording
         // to enable real-time partial transcription display.
-        if recording && streaming_cb.is_some() {
+        // We wait for several consecutive speech frames before starting to
+        // avoid false starts where VAD briefly flags noise as speech.
+        if recording && streaming_cb.is_some() && consecutive_speech_frames >= MIN_SPEECH_FRAMES_BEFORE_STREAMING {
             let should_invoke = match streaming_last_invoked {
                 None => true, // First time: invoke after collecting some audio
                 Some(last) => last.elapsed().as_millis() as u64 >= STREAMING_INTERVAL_MS,
             };
-            
+
             if should_invoke {
                 if let Some(cb) = &streaming_cb {
                     // Clone the current buffer for the callback
@@ -906,6 +913,20 @@ fn run_consumer(
             }
             
             let class = handle_frame(frame, recording, &vad, &mut processed_samples);
+
+            // Track consecutive speech frames for streaming transcription
+            // Reset on noise, increment on speech to avoid false starts
+            if recording {
+                match class {
+                    FrameClass::Speech => {
+                        consecutive_speech_frames = consecutive_speech_frames.saturating_add(1);
+                    }
+                    FrameClass::Noise => {
+                        consecutive_speech_frames = 0;
+                    }
+                    FrameClass::NotRecording => {}
+                }
+            }
 
             // Update the running noise floor from VAD-noise frames while
             // recording (but NOT during smart-stop – those frames are
@@ -992,6 +1013,7 @@ fn run_consumer(
                     visualizer.reset();
                     max_level.store(0, Ordering::Relaxed); // Reset max level for new recording
                     streaming_last_invoked = None; // Reset streaming timer for new recording
+                    consecutive_speech_frames = 0; // Reset speech frame counter for new recording
                     if let Some(v) = &vad {
                         v.lock().unwrap().reset();
                     }
