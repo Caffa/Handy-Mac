@@ -542,8 +542,16 @@ impl ShortcutAction for TranscribeAction {
                     "recording-error",
                     RecordingErrorEvent {
                         error_type: error_type.to_string(),
-                        detail: Some(err),
+                        detail: Some(err.clone()),
                     },
+                );
+
+                // Emit a recoverable error for the error dialog system
+                crate::error_events::emit_audio_device_error(
+                    app,
+                    error_type,
+                    &err,
+                    error_type == "microphone_permission_denied",
                 );
             }
         }
@@ -885,6 +893,18 @@ impl ShortcutAction for TranscribeAction {
                             
                             utils::hide_recording_overlay(&ah);
                             change_tray_icon(&ah, TrayIconState::Idle);
+                            
+                            // Emit a recoverable transcription error for the error dialog system
+                            let model_id_for_error = {
+                                let settings = get_settings(&ah);
+                                settings.selected_model.clone()
+                            };
+                            crate::error_events::emit_transcription_error(
+                                &ah,
+                                &err.to_string(),
+                                Some(&model_id_for_error),
+                                true, // Transcription errors are generally retriable
+                            );
                         }
                     }
                 }
@@ -1056,8 +1076,16 @@ impl ShortcutAction for TranscribeWithRouterAction {
                     "recording-error",
                     RecordingErrorEvent {
                         error_type: error_type.to_string(),
-                        detail: Some(err),
+                        detail: Some(err.clone()),
                     },
+                );
+
+                // Emit a recoverable error for the error dialog system
+                crate::error_events::emit_audio_device_error(
+                    app,
+                    error_type,
+                    &err,
+                    error_type == "microphone_permission_denied",
                 );
             }
         }
@@ -1630,6 +1658,18 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         // ── Clean up overlay on transcription failure ──
                         utils::hide_recording_overlay(&ah);
                         change_tray_icon(&ah, TrayIconState::Idle);
+
+                        // Emit a recoverable transcription error for the error dialog system
+                        let router_model_id = {
+                            let settings = get_settings(&ah);
+                            settings.selected_model.clone()
+                        };
+                        crate::error_events::emit_transcription_error(
+                            &ah,
+                            &err.to_string(),
+                            Some(&router_model_id),
+                            true,
+                        );
                     }
                 }
             } else {

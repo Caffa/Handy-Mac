@@ -6,6 +6,7 @@ pub mod audio_toolkit;
 pub mod cli;
 mod clipboard;
 mod commands;
+pub mod error_events;
 pub mod errors;
 mod focus;
 mod health;

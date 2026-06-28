@@ -11,6 +11,7 @@
   "sidebar": {
     "general": "General",
     "models": "Models",
+    "accuracy": "Accuracy",
     "advanced": "Advanced",
     "postProcessing": "Post Process",
     "history": "History",
@@ -123,6 +124,7 @@
   "modelSelector": {
     "custom": "Custom",
     "active": "Active",
+    "downloaded": "Downloaded",
     "switching": "Switching...",
     "noModelsAvailable": "No models available",
     "verifying": "Verifying {{modelName}}...",
@@ -142,6 +144,9 @@
     "downloadSpeed": "{{speed}} MB/s",
     "cancel": "Cancel",
     "cancelDownload": "Cancel download",
+    "accuracyTooltip": "Estimated transcription quality based on model size and training data. Higher is better.",
+    "speedTooltip": "Relative processing speed. Higher is faster. Green bars show measured speed from your benchmark.",
+    "recommendedTooltip": "Best model for most users. Good balance of speed and accuracy.",
     "capabilities": {
       "languageSelection": "Supports multiple input languages",
       "singleLanguage": "Supports this language only",
@@ -261,6 +266,14 @@
         "description": "Adjust the volume of audio feedback sounds"
       }
     },
+    "accuracy": {
+      "title": "Accuracy",
+      "groups": {
+        "wordCorrection": "Word Correction",
+        "voiceDetection": "Voice Detection",
+        "language": "Language"
+      }
+    },
     "advanced": {
       "title": "Advanced",
       "groups": {
@@ -288,9 +301,14 @@
       },
       "hybridMode": {
         "label": "Hybrid Mode",
-        "description": "Automatically pick the best model based on audio length. Short recordings use a fast, hallucination-resistant model; long recordings use a more accurate model.",
+        "labelTooltip": "Automatically switch between two models based on recording length. Useful for users who alternate between quick voice commands and longer dictations.",
+        "description": "Uses a fast model for short recordings and a more accurate model for longer ones. Assign models as SHORT or LONG in the Models tab.",
+        "descriptionDetail": "Short recordings use a fast model that resists hallucinations. Long recordings use an accurate model optimized for sustained speech. Set the threshold below.",
+        "currentAssignment": "Currently assigned: {{shortModel}} for short, {{longModel}} for long",
+        "noAssignment": "No models assigned yet. Go to the Models tab to assign SHORT and LONG models.",
         "thresholdLabel": "Length Threshold",
         "thresholdDescription": "Audio shorter than this uses the short audio model; longer audio uses the long audio model.",
+        "thresholdTooltip": "Example: Set to 3s to use the SHORT model for quick commands under 3 seconds, and the LONG model for longer dictations.",
         "assignHint": "Assign models as SHORT or LONG in the Models section above. Each role uses a different model based on recording length.",
         "thresholdValue": "{{seconds}}s",
         "shortAudioModelLabel": "Short Audio Model",
@@ -299,7 +317,14 @@
         "longAudioModelDescription": "Model used for recordings at or above the threshold. Whisper models work well for longer audio.",
         "modelPlaceholder": "Use default model...",
         "shortBadge": "SHORT",
-        "longBadge": "LONG"
+        "shortBadgeTooltip": "Best for short recordings: fast response, no hallucinations. Ideal for voice commands and quick phrases.",
+        "longBadge": "LONG",
+        "longBadgeTooltip": "Best for longer recordings: higher accuracy for sustained speech. Ideal for dictation and meetings.",
+        "modelSpeedHint": {
+          "fast": "Fast model — ideal for SHORT role",
+          "medium": "Balanced speed — can work for either role",
+          "slow": "Accurate but slow — ideal for LONG role"
+        }
       },
       "acceleration": {
         "whisper": {
@@ -417,12 +442,17 @@
       },
       "vadSensitivity": {
         "title": "Voice Detection Sensitivity",
-        "description": "Adjust how sensitive the voice activity detection is. Higher sensitivity detects speech more aggressively, while lower sensitivity requires clearer speech.",
+        "description": "Controls when the app starts and stops recording based on voice activity. Higher sensitivity catches speech earlier but may pick up background noise.",
         "veryQuick": "Very Quick",
+        "veryQuickTooltip": "Maximum sensitivity. Starts recording at the slightest sound. Best for quiet environments but may pick up background noise.",
         "quick": "Quick",
+        "quickTooltip": "High sensitivity. Good for normal environments where you want to capture everything, including soft speech.",
         "balanced": "Balanced (recommended)",
+        "balancedTooltip": "Recommended for most users. Good balance between catching speech and ignoring background noise.",
         "relaxed": "Relaxed",
+        "relaxedTooltip": "Lower sensitivity. Requires clearer speech to trigger. Good for noisy environments to avoid false starts.",
         "veryRelaxed": "Very Relaxed",
+        "veryRelaxedTooltip": "Minimum sensitivity. Only triggers on clear, loud speech. Best for very noisy environments or if you speak deliberately.",
         "placeholder": "Select sensitivity..."
       },
       "liveCaptions": {
@@ -605,12 +635,17 @@
       },
       "vadSensitivity": {
         "title": "Voice Detection Sensitivity",
-        "description": "Adjust how sensitive the voice activity detection is. Higher sensitivity detects speech more aggressively, while lower sensitivity requires clearer speech.",
+        "description": "Controls when the app starts and stops recording based on voice activity. Higher sensitivity catches speech earlier but may pick up background noise.",
         "veryQuick": "Very Quick",
+        "veryQuickTooltip": "Maximum sensitivity. Starts recording at the slightest sound. Best for quiet environments but may pick up background noise.",
         "quick": "Quick",
+        "quickTooltip": "High sensitivity. Good for normal environments where you want to capture everything, including soft speech.",
         "balanced": "Balanced (recommended)",
+        "balancedTooltip": "Recommended for most users. Good balance between catching speech and ignoring background noise.",
         "relaxed": "Relaxed",
+        "relaxedTooltip": "Lower sensitivity. Requires clearer speech to trigger. Good for noisy environments to avoid false starts.",
         "veryRelaxed": "Very Relaxed",
+        "veryRelaxedTooltip": "Minimum sensitivity. Only triggers on clear, loud speech. Best for very noisy environments or if you speak deliberately.",
         "placeholder": "Select sensitivity..."
       },
       "liveCaptions": {
@@ -770,7 +805,42 @@
     "modelLoadFailed": "Failed to load model: {{model}}",
     "modelLoadFailedUnknown": "unknown model",
     "pasteFailedTitle": "Failed to Paste Text",
-    "pasteFailed": "Text could not be pasted into the active application."
+    "pasteFailed": "Text could not be pasted into the active application. Try clicking a text field first, or change the Paste Method in Advanced → Output Settings.",
+    "pasteFailedDetail": "If this keeps happening, try using 'Clipboard' paste method instead of 'Direct' typing.",
+    "componentErrorTitle": "Something went wrong",
+    "componentErrorDescription": "An unexpected error occurred. The app will continue running, but this section may not work correctly.",
+    "viewDetails": "View error details",
+    "tryAgain": "Try Again",
+    "reloadApp": "Reload App",
+    "reportIssue": "Report this issue on GitHub",
+    "settingsLoadFailed": "Failed to load settings",
+    "settingsLoadFailedDescription": "Your settings could not be loaded. This may happen if the settings file is corrupted.",
+    "resetToDefaults": "Reset to Defaults",
+    "retry": "Retry",
+    "recoverable": {
+      "modelDownloadFailed": "Failed to download {{model}}. Please check your internet connection and try again.",
+      "modelLoadFailed": "Failed to load {{model}}. This may be a temporary issue.",
+      "transcriptionFailed": "Transcription failed. The audio has been saved and will be retried automatically.",
+      "microphonePermissionDenied": "Microphone access is required for transcription. Please grant permission in your system settings.",
+      "noInputDevice": "No microphone was detected. Please connect a microphone and try again.",
+      "audioDeviceError": "An audio device error occurred. Please check your microphone connection."
+    }
+  },
+  "errorDialog": {
+    "titles": {
+      "modelDownload": "Download Failed",
+      "modelLoad": "Model Load Failed",
+      "transcription": "Transcription Failed",
+      "audioDevice": "Audio Device Error",
+      "generic": "Something Went Wrong"
+    },
+    "dismiss": "Dismiss",
+    "retry": "Retry",
+    "retrying": "Retrying...",
+    "retryCount": "Attempt {{count}} of {{max}}",
+    "showDetails": "Show Details",
+    "hideDetails": "Hide Details",
+    "needsUserAction": "This requires your action before retrying."
   },
   "appLanguage": {
     "title": "Application Language",

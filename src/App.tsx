@@ -17,6 +17,8 @@ import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
 import { commands } from "@/bindings";
 import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
+import { ErrorBoundary, SettingsErrorBoundary } from "./components/ErrorBoundary";
+import { ErrorDialog } from "./components/ui/ErrorDialog";
 
 type OnboardingStep = "accessibility" | "model" | "done";
 
@@ -240,11 +242,19 @@ function App() {
   }
 
   if (onboardingStep === "accessibility") {
-    return <AccessibilityOnboarding onComplete={handleAccessibilityComplete} />;
+    return (
+      <ErrorBoundary section="Onboarding">
+        <AccessibilityOnboarding onComplete={handleAccessibilityComplete} />
+      </ErrorBoundary>
+    );
   }
 
   if (onboardingStep === "model") {
-    return <Onboarding onModelSelected={handleModelSelected} />;
+    return (
+      <ErrorBoundary section="Model Selection">
+        <Onboarding onModelSelected={handleModelSelected} />
+      </ErrorBoundary>
+    );
   }
 
   return (
@@ -264,24 +274,33 @@ function App() {
           },
         }}
       />
+      <ErrorDialog />
       {/* Main content area that takes remaining space */}
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar
-          activeSection={currentSection}
-          onSectionChange={setCurrentSection}
-        />
+        <ErrorBoundary section="Sidebar">
+          <Sidebar
+            activeSection={currentSection}
+            onSectionChange={setCurrentSection}
+          />
+        </ErrorBoundary>
         {/* Scrollable content area */}
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             <div className="flex flex-col items-center p-4 gap-4">
-              <AccessibilityPermissions />
-              {renderSettingsContent(currentSection)}
+              <ErrorBoundary section="Accessibility Permissions">
+                <AccessibilityPermissions />
+              </ErrorBoundary>
+              <SettingsErrorBoundary section={currentSection}>
+                {renderSettingsContent(currentSection)}
+              </SettingsErrorBoundary>
             </div>
           </div>
         </div>
       </div>
       {/* Fixed footer at bottom */}
-      <Footer />
+      <ErrorBoundary section="Footer">
+        <Footer />
+      </ErrorBoundary>
     </div>
   );
 }

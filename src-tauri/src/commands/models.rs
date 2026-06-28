@@ -41,6 +41,19 @@ pub async fn download_model(
             "model-download-failed",
             serde_json::json!({ "model_id": &model_id, "error": error }),
         );
+
+        // Emit a recoverable error for the error dialog system
+        let model_name = model_manager
+            .get_model_info(&model_id)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| model_id.clone());
+        crate::error_events::emit_model_download_error(
+            &app_handle,
+            &model_id,
+            &model_name,
+            error,
+            true, // Downloads are always retriable
+        );
     }
 
     result

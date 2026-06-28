@@ -99,7 +99,12 @@ pub struct TranscriptionManager {
     /// When streaming transcription is enabled, partial transcriptions run
     /// every 2.5s during recording. When recording stops, the final transcription
     /// must wait for any in-progress streaming transcription to complete.
-    is_transcribing: Arc<AtomicBool>,
+    /// Uses Mutex + Condvar instead of AtomicBool spin-wait for efficient
+    /// synchronization — waiting threads sleep instead of busy-looping.
+    is_transcribing: Arc<Mutex<bool>>,
+    /// Condvar paired with is_transcribing. Notify_all when transcription
+    /// completes so waiting threads wake immediately without polling.
+    transcribing_condvar: Arc<Condvar>,
     /// Flag to cancel streaming transcription when recording stops.
     /// When set, the streaming callback should skip transcription and return early.
     /// This prevents wasted work when the user stops recording mid-streaming-transcription.
@@ -336,6 +341,31 @@ impl TranscriptionManager {
             return Err(AppError::ModelNotDownloaded(model_id.to_string()));
         }
 
+        // Verify model file integrity before loading. If the file is corrupted
+        // (SHA256 mismatch) or missing, it will be deleted and an error returned
+        // so the caller can trigger a re-download.
+        if let Err(e) = self.model_manager.verify_model_before_load(model_id) {
+            let error_msg = format!("Model integrity check failed: {}", e);
+            warn!("{}", error_msg);
+            let _ = self.app_handle.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "loading_failed".to_string(),
+                    model_id: Some(model_id.to_string()),
+                    model_name: Some(model_info.name.clone()),
+                    error: Some(error_msg.clone()),
+                },
+            );
+            crate::error_events::emit_model_load_error(
+                &self.app_handle,
+                model_id,
+                &model_info.name,
+                &error_msg,
+                true, // Integrity failures are retriable (re-download should fix)
+            );
+            return Err(e);
+        }
+
         let model_path = self.model_manager.get_model_path(model_id)?;
 
         // Create appropriate engine based on model type
@@ -348,6 +378,14 @@ impl TranscriptionManager {
                     model_name: Some(model_info.name.clone()),
                     error: Some(error_msg.to_string()),
                 },
+            );
+            // Also emit a recoverable error for the error dialog system
+            crate::error_events::emit_model_load_error(
+                &self.app_handle,
+                model_id,
+                &model_info.name,
+                error_msg,
+                true, // Model load failures are generally retriable
             );
         };
 
