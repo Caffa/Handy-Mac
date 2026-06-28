@@ -1,3 +1,4 @@
+use crate::errors::{AppError, AppResult};
 use crate::settings::{get_settings, write_settings};
 use anyhow::Result;
 use flate2::read::GzDecoder;
@@ -139,10 +140,10 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
-    pub fn new(app_handle: &AppHandle) -> Result<Self> {
+    pub fn new(app_handle: &AppHandle) -> AppResult<Self> {
         // Create models directory in app data
         let models_dir = crate::portable::app_data_dir(app_handle)
-            .map_err(|e| anyhow::anyhow!("Failed to get app data dir: {}", e))?
+            .map_err(|e| AppError::path_resolution(format!("Failed to get app data dir: {}", e)))?
             .join("models");
 
         if !models_dir.exists() {
@@ -742,7 +743,7 @@ impl ModelManager {
     /// Migrate GigaAM from the old single-file format (giga-am-v3.int8.onnx)
     /// to the new directory format (giga-am-v3-int8/model.int8.onnx + vocab.txt).
     /// This was required by the transcribe-rs 0.3.x upgrade.
-    fn migrate_gigaam_to_directory(&self) -> Result<()> {
+    fn migrate_gigaam_to_directory(&self) -> AppResult<()> {
         let old_file = self.models_dir.join("giga-am-v3.int8.onnx");
         let new_dir = self.models_dir.join("giga-am-v3-int8");
 
@@ -759,7 +760,7 @@ impl ModelManager {
                 "resources/models/gigaam_vocab.txt",
                 tauri::path::BaseDirectory::Resource,
             )
-            .map_err(|e| anyhow::anyhow!("Failed to resolve GigaAM vocab path: {}", e))?;
+            .map_err(|e| AppError::path_resolution(format!("Failed to resolve GigaAM vocab path: {}", e)))?;
 
         info!(
             "Resolved vocab path: {:?} (exists: {})",
@@ -1003,7 +1004,7 @@ impl ModelManager {
     /// On mismatch or read error the partial file is deleted and an error is returned,
     /// so the next download attempt always starts from a clean state.
     /// When `expected_sha256` is `None` (custom user models) verification is skipped.
-    fn verify_sha256(path: &Path, expected_sha256: Option<&str>, model_id: &str) -> Result<()> {
+    fn verify_sha256(path: &Path, expected_sha256: Option<&str>, model_id: &str) -> AppResult<()> {
         let Some(expected) = expected_sha256 else {
             return Ok(());
         };
@@ -1018,18 +1019,25 @@ impl ModelManager {
                     model_id, expected, actual
                 );
                 let _ = fs::remove_file(path);
-                Err(anyhow::anyhow!(
-                    "Download verification failed for model {}: file is corrupt. Please retry.",
-                    model_id
-                ))
+                Err(AppError::ModelVerificationFailed {
+                    model_id: model_id.to_string(),
+                    source: anyhow::anyhow!(
+                        "SHA256 mismatch: expected {}, got {}. File is corrupt, please retry.",
+                        expected,
+                        actual
+                    ),
+                })
             }
             Err(e) => {
                 let _ = fs::remove_file(path);
-                Err(anyhow::anyhow!(
-                    "Failed to verify download for model {}: {}. Please retry.",
-                    model_id,
-                    e
-                ))
+                Err(AppError::ModelVerificationFailed {
+                    model_id: model_id.to_string(),
+                    source: anyhow::anyhow!(
+                        "Failed to verify download for model {}: {}. Please retry.",
+                        model_id,
+                        e
+                    ),
+                })
             }
         }
     }
@@ -1049,18 +1057,22 @@ impl ModelManager {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    pub async fn download_model(&self, model_id: &str) -> Result<()> {
+    pub async fn download_model(&self, model_id: &str) -> AppResult<()> {
         let model_info = {
             let models = self.available_models.lock().unwrap();
             models.get(model_id).cloned()
         };
 
         let model_info =
-            model_info.ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
+            model_info.ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
 
         let url = model_info
             .url
-            .ok_or_else(|| anyhow::anyhow!("No download URL for model"))?;
+            .ok_or_else(|| AppError::ModelDownloadFailed {
+                model_id: model_id.to_string(),
+                message: "No download URL for model".to_string(),
+                source: anyhow::anyhow!("No download URL available"),
+            })?;
         let model_path = self.models_dir.join(&model_info.filename);
         let partial_path = self
             .models_dir
@@ -1142,9 +1154,10 @@ impl ModelManager {
         if !response.status().is_success()
             && response.status() != reqwest::StatusCode::PARTIAL_CONTENT
         {
-            return Err(anyhow::anyhow!(
-                "Failed to download model: HTTP {}",
-                response.status()
+            return Err(AppError::model_download(
+                model_id,
+                format!("HTTP {}", response.status()),
+                anyhow::anyhow!("HTTP {}", response.status()),
             ));
         }
 
@@ -1196,7 +1209,7 @@ impl ModelManager {
                 // Keep partial file for resume functionality.
                 // Guard (DownloadCleanup) handles is_downloading + cancel_flags cleanup on drop.
                 // Return Err so the success path (which sets is_downloaded = true) is NOT reached.
-                return Err(anyhow::anyhow!("Download cancelled for: {}", model_id));
+                return Err(AppError::ModelDownloadCancelled(model_id.to_string()));
             }
 
             let chunk = chunk?;
@@ -1247,10 +1260,17 @@ impl ModelManager {
             if actual_size != total_size {
                 // Download is incomplete/corrupted - delete partial and return error
                 let _ = fs::remove_file(&partial_path);
-                return Err(anyhow::anyhow!(
-                    "Download incomplete: expected {} bytes, got {} bytes",
-                    total_size,
-                    actual_size
+                return Err(AppError::model_download(
+                    model_id,
+                    format!(
+                        "Download incomplete: expected {} bytes, got {} bytes",
+                        total_size, actual_size
+                    ),
+                    anyhow::anyhow!(
+                        "Download incomplete: expected {} bytes, got {} bytes",
+                        total_size,
+                        actual_size
+                    ),
                 ));
             }
         }
@@ -1267,7 +1287,10 @@ impl ModelManager {
             Self::verify_sha256(&verify_path, verify_expected.as_deref(), &verify_model_id)
         })
         .await
-        .map_err(|e| anyhow::anyhow!("SHA256 task panicked: {}", e))?;
+        .map_err(|e| AppError::ModelVerificationFailed {
+            model_id: model_id.to_string(),
+            source: anyhow::anyhow!("SHA256 task panicked: {}", e),
+        })?;
         verify_result?;
         let _ = self
             .app_handle
@@ -1321,10 +1344,10 @@ impl ModelManager {
                     "model-extraction-failed",
                     &serde_json::json!({
                         "model_id": model_id,
-                        "error": error_msg
+                        "error": &error_msg
                     }),
                 );
-                anyhow::anyhow!(error_msg)
+                AppError::model_extraction(model_id, error_msg, anyhow::anyhow!("extraction failed"))
             })?;
 
             // Find the actual extracted directory (archive might have a nested structure)
@@ -1390,7 +1413,7 @@ impl ModelManager {
         Ok(())
     }
 
-    pub fn delete_model(&self, model_id: &str) -> Result<()> {
+    pub fn delete_model(&self, model_id: &str) -> AppResult<()> {
         debug!("ModelManager: delete_model called for: {}", model_id);
 
         let model_info = {
@@ -1399,7 +1422,7 @@ impl ModelManager {
         };
 
         let model_info =
-            model_info.ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
+            model_info.ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
 
         debug!("ModelManager: Found model info: {:?}", model_info);
 
@@ -1439,7 +1462,7 @@ impl ModelManager {
         }
 
         if !deleted_something {
-            return Err(anyhow::anyhow!("No model files found to delete"));
+            return Err(AppError::ModelNoFilesToDelete);
         }
 
         // Custom models should be removed from the list entirely since they
@@ -1460,21 +1483,18 @@ impl ModelManager {
         Ok(())
     }
 
-    pub fn get_model_path(&self, model_id: &str) -> Result<PathBuf> {
+    pub fn get_model_path(&self, model_id: &str) -> AppResult<PathBuf> {
         let model_info = self
             .get_model_info(model_id)
-            .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
+            .ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
 
         if !model_info.is_downloaded {
-            return Err(anyhow::anyhow!("Model not available: {}", model_id));
+            return Err(AppError::ModelNotDownloaded(model_id.to_string()));
         }
 
         // Ensure we don't return partial files/directories
         if model_info.is_downloading {
-            return Err(anyhow::anyhow!(
-                "Model is currently downloading: {}",
-                model_id
-            ));
+            return Err(AppError::ModelCurrentlyDownloading(model_id.to_string()));
         }
 
         let model_path = self.models_dir.join(&model_info.filename);
@@ -1487,25 +1507,25 @@ impl ModelManager {
             if model_path.exists() && model_path.is_dir() && !partial_path.exists() {
                 Ok(model_path)
             } else {
-                Err(anyhow::anyhow!(
-                    "Complete model directory not found: {}",
-                    model_id
-                ))
+                Err(AppError::ModelPathNotFound {
+                    kind: "directory".to_string(),
+                    model_id: model_id.to_string(),
+                })
             }
         } else {
             // For file-based models (existing logic)
             if model_path.exists() && !partial_path.exists() {
                 Ok(model_path)
             } else {
-                Err(anyhow::anyhow!(
-                    "Complete model file not found: {}",
-                    model_id
-                ))
+                Err(AppError::ModelPathNotFound {
+                    kind: "file".to_string(),
+                    model_id: model_id.to_string(),
+                })
             }
         }
     }
 
-    pub fn cancel_download(&self, model_id: &str) -> Result<()> {
+    pub fn cancel_download(&self, model_id: &str) -> AppResult<()> {
         debug!("ModelManager: cancel_download called for: {}", model_id);
 
         // Set the cancellation flag to stop the download loop.
