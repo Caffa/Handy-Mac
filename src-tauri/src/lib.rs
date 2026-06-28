@@ -515,7 +515,7 @@ pub fn run(cli_args: CliArgs) {
             commands::confirm_routing,
             commands::open_path,
         ])
-        .events(collect_events![managers::history::HistoryUpdatePayload, managers::audio::DeviceListChange,]);
+        .events(collect_events![managers::history::HistoryUpdate, managers::audio::DeviceListChanged,]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
     specta_builder

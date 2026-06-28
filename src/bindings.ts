@@ -1314,9 +1314,9 @@ async openPath(path: string) : Promise<Result<null, string>> {
 
 
 export const events = __makeEvents__<{
-historyUpdatePayload: HistoryUpdatePayload
+historyUpdate: HistoryUpdate
 }>({
-historyUpdatePayload: "history-update-payload"
+historyUpdate: "history-update"
 })
 
 /** user-defined constants **/
@@ -1496,7 +1496,7 @@ quality: string | null;
  * User's assessment of speech speed.
  */
 speech_speed: string | null }
-export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
+export type HistoryUpdate = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
  */

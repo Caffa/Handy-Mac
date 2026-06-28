@@ -107,7 +107,7 @@ pub struct PaginatedHistory {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type, tauri_specta::Event)]
 #[serde(tag = "action")]
-pub enum HistoryUpdatePayload {
+pub enum HistoryUpdate {
     #[serde(rename = "added")]
     Added { entry: HistoryEntry },
     #[serde(rename = "updated")]
@@ -462,7 +462,7 @@ impl HistoryManager {
         self.cleanup_old_entries()?;
 
         // Emit typed event for real-time frontend updates
-        if let Err(e) = (HistoryUpdatePayload::Added {
+        if let Err(e) = (HistoryUpdate::Added {
             entry: entry.clone(),
         })
         .emit(&self.app_handle)
@@ -513,7 +513,7 @@ impl HistoryManager {
 
         debug!("Updated transcription for history entry {}", id);
 
-        if let Err(e) = (HistoryUpdatePayload::Updated {
+        if let Err(e) = (HistoryUpdate::Updated {
             entry: entry.clone(),
         })
         .emit(&self.app_handle)
@@ -552,7 +552,7 @@ impl HistoryManager {
 
         debug!("Updated routing result for history entry {}", id);
 
-        if let Err(e) = (HistoryUpdatePayload::Updated {
+        if let Err(e) = (HistoryUpdate::Updated {
             entry: entry.clone(),
         })
         .emit(&self.app_handle)
@@ -824,7 +824,7 @@ impl HistoryManager {
         debug!("Toggled saved status for entry {}: {}", id, new_saved);
 
         // Emit history updated event
-        if let Err(e) = (HistoryUpdatePayload::Toggled { id }).emit(&self.app_handle) {
+        if let Err(e) = (HistoryUpdate::Toggled { id }).emit(&self.app_handle) {
             error!("Failed to emit history-updated event: {}", e);
         }
 
@@ -846,7 +846,7 @@ impl HistoryManager {
         // Get the updated entry to emit
         let entry = self.get_entry_by_id(id).await?;
         if let Some(entry) = entry {
-            if let Err(e) = (HistoryUpdatePayload::Updated { entry }).emit(&self.app_handle) {
+            if let Err(e) = (HistoryUpdate::Updated { entry }).emit(&self.app_handle) {
                 error!("Failed to emit history-updated event: {}", e);
             }
         }
@@ -894,7 +894,7 @@ impl HistoryManager {
         // Get the updated entry to emit
         let entry = self.get_entry_by_id(id).await?;
         if let Some(entry) = entry {
-            if let Err(e) = (HistoryUpdatePayload::Updated { entry }).emit(&self.app_handle) {
+            if let Err(e) = (HistoryUpdate::Updated { entry }).emit(&self.app_handle) {
                 error!("Failed to emit history-updated event: {}", e);
             }
         }
@@ -1003,7 +1003,7 @@ impl HistoryManager {
         debug!("Deleted history entry with id: {}", id);
 
         // Emit history updated event
-        if let Err(e) = (HistoryUpdatePayload::Deleted { id }).emit(&self.app_handle) {
+        if let Err(e) = (HistoryUpdate::Deleted { id }).emit(&self.app_handle) {
             error!("Failed to emit history-updated event: {}", e);
         }
 

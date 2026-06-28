@@ -25,7 +25,7 @@ import {
   commands,
   events,
   type HistoryEntry,
-  type HistoryUpdatePayload,
+  type HistoryUpdate,
 } from "@/bindings";
 import { useOsType } from "@/hooks/useOsType";
 import { formatDateTime } from "@/utils/dateFormat";
@@ -210,8 +210,8 @@ export const HistorySettings: React.FC = () => {
 
   // Listen for new entries added from the transcription pipeline
   useEffect(() => {
-    const unlisten = events.historyUpdatePayload.listen((event) => {
-      const payload: HistoryUpdatePayload = event.payload;
+    const unlisten = events.historyUpdate.listen((event) => {
+      const payload: HistoryUpdate = event.payload;
       if (payload.action === "added") {
         setEntries((prev) => [payload.entry, ...prev]);
       } else if (payload.action === "updated") {

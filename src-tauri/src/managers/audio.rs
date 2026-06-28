@@ -154,7 +154,7 @@ pub enum MicrophoneMode {
 /// Payload for the `device-list-changed` event emitted when audio
 /// devices are hot-plugged (added or removed).
 #[derive(Clone, Debug, Serialize, Deserialize, Type, tauri_specta::Event)]
-pub struct DeviceListChange {
+pub struct DeviceListChanged {
     /// Input devices that appeared since the last check.
     pub added_input: Vec<String>,
     /// Input devices that disappeared since the last check.
@@ -661,7 +661,7 @@ impl AudioRecordingManager {
                             *guard = current_output.clone();
                         }
 
-                        let payload = DeviceListChange {
+                        let payload = DeviceListChanged {
                             added_input,
                             removed_input,
                             current_input,
