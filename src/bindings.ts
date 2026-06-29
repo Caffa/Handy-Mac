@@ -14,12 +14,7 @@ async changeBinding(id: string, binding: string) : Promise<Result<BindingRespons
 }
 },
 async checkShortcutConflicts(binding: string) : Promise<ConflictInfo[]> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("check_shortcut_conflicts", { binding }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
+    return await TAURI_INVOKE("check_shortcut_conflicts", { binding });
 },
 async resetBinding(id: string) : Promise<Result<BindingResponse, string>> {
     try {
@@ -529,6 +524,22 @@ async changeLiveCaptionsEnabledSetting(enabled: boolean) : Promise<Result<null, 
 async changeOverlayScaleSetting(scale: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_overlay_scale_setting", { scale }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeNoiseSuppressionEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_noise_suppression_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeNoiseSuppressionLevelSetting(level: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_noise_suppression_level_setting", { level }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1380,11 +1391,21 @@ overlay_scale?: number;
  * Applies common spelling conversions like: color → colour, analyze → analyse, etc.
  */
 convert_us_to_british?: boolean; 
+ /**
+  * Repetition suppression level (0-3): 0=off, 1=light, 2=moderate, 3=aggressive.
+  * Manual control only - user adjusts when they notice artifacts.
+  */
+repetition_suppression_level?: number; 
 /**
- * Repetition suppression level (0-3): 0=off, 1=light, 2=moderate, 3=aggressive.
- * Manual control only - user adjusts when they notice artifacts.
+ * Enable noise suppression before VAD for better speech detection in noisy environments.
+ * When enabled, background noise is removed before voice activity detection.
  */
-repetition_suppression_level?: number }
+noise_suppression_enabled?: boolean; 
+/**
+ * Noise suppression level: "low", "medium", or "high".
+ * Higher levels remove more noise but may affect speech quality.
+ */
+noise_suppression_level?: NoiseSuppressionLevel }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1524,6 +1545,7 @@ export type ModelInfo = { id: string; name: string; description: string; filenam
 export type ModelLoadStat = { model_id: string; avg_load_ms: number; load_count: number }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
+export type NoiseSuppressionLevel = "Low" | "Medium" | "High"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }

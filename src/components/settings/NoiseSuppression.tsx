@@ -8,9 +8,9 @@ import type { NoiseSuppressionLevel as NoiseSuppressionLevelType } from "../../b
 
 // Valid noise suppression level values for runtime validation
 const VALID_LEVELS: NoiseSuppressionLevelType[] = [
-  "low",
-  "medium",
-  "high",
+  "Low",
+  "Medium",
+  "High",
 ];
 
 // Validate and normalize noise suppression level value
@@ -23,7 +23,7 @@ const validateNoiseSuppressionLevel = (
   ) {
     return value as NoiseSuppressionLevelType;
   }
-  return "medium";
+  return "Medium";
 };
 
 export const NoiseSuppression: React.FC = React.memo(() => {
@@ -37,17 +37,17 @@ export const NoiseSuppression: React.FC = React.memo(() => {
 
   const levelOptions = [
     {
-      value: "low",
+      value: "Low",
       label: t("settings.advanced.noiseSuppression.low"),
       tooltip: t("settings.advanced.noiseSuppression.lowTooltip"),
     },
     {
-      value: "medium",
+      value: "Medium",
       label: t("settings.advanced.noiseSuppression.medium"),
       tooltip: t("settings.advanced.noiseSuppression.mediumTooltip"),
     },
     {
-      value: "high",
+      value: "High",
       label: t("settings.advanced.noiseSuppression.high"),
       tooltip: t("settings.advanced.noiseSuppression.highTooltip"),
     },
