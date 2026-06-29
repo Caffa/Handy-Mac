@@ -999,6 +999,7 @@ pub fn convert_us_to_british(text: &str) -> String {
 }
 
 /// Extracts leading punctuation, core word, and trailing punctuation from a word.
+#[allow(dead_code)]
 fn extract_word_parts(word: &str) -> (String, &str, String) {
     let chars: Vec<char> = word.chars().collect();
 

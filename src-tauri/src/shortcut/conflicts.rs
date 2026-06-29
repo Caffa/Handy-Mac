@@ -82,6 +82,7 @@ const WINDOWS_RESERVED: &[ReservedShortcut] = &[
 ];
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 const WINDOWS_RESERVED: &[ReservedShortcut] = &[];
 
 // ── Linux reserved shortcuts ───────────────────────────────────────────
@@ -110,6 +111,7 @@ const LINUX_RESERVED: &[ReservedShortcut] = &[
 ];
 
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 const LINUX_RESERVED: &[ReservedShortcut] = &[];
 
 /// Normalize a shortcut string for comparison.
@@ -213,6 +215,7 @@ pub fn detect_conflicts(shortcut: &str) -> Vec<ConflictInfo> {
 ///
 /// Returns conflicts from all platforms, regardless of the current OS.
 /// Useful for showing the user what would happen on other platforms.
+#[allow(dead_code)]
 pub fn detect_conflicts_all_platforms(shortcut: &str) -> Vec<ConflictInfo> {
     let normalized = normalize_shortcut(shortcut);
     let mut conflicts = Vec::new();

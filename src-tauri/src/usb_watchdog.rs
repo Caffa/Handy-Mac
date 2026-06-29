@@ -169,7 +169,7 @@ impl UsbWatchdog {
     /// - `duration_secs`: Duration of the recording in seconds
     /// 
     /// Returns true if a USB power cycle was triggered.
-    pub fn on_recording_finished(&self, sample_count: usize, duration_secs: f32) -> bool {
+    pub fn on_recording_finished(&self, sample_count: usize, _duration_secs: f32) -> bool {
         if sample_count > 0 {
             self.on_mic_open_succeeded();
             return false;

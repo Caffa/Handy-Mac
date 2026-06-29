@@ -200,6 +200,7 @@ impl RetryableTranscription {
     
     /// Get the next model to try.
     /// Returns None if all models have been tried.
+    #[allow(dead_code)]
     pub fn get_next_model(&self) -> Option<String> {
         let models = std::iter::once(self.model_id.clone())
             .chain(self.fallback_models.clone())
@@ -233,6 +234,7 @@ impl RetryableTranscription {
     }
     
     /// Mark this entry as successfully completed.
+    #[allow(dead_code)]
     pub fn mark_completed(&mut self) {
         self.last_failure = None;
         self.next_retry_at = None;
@@ -245,7 +247,7 @@ impl RetryableTranscription {
 pub struct TranscriptionRetryQueue {
     pending: Arc<Mutex<VecDeque<RetryableTranscription>>>,
     queue_file_path: PathBuf,
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
 }
 
 impl TranscriptionRetryQueue {
@@ -261,7 +263,7 @@ impl TranscriptionRetryQueue {
         let queue = Self {
             pending: Arc::new(Mutex::new(VecDeque::new())),
             queue_file_path,
-            app_handle,
+            _app_handle: app_handle,
         };
         
         // Load existing queue from disk
@@ -322,6 +324,7 @@ impl TranscriptionRetryQueue {
     
     /// Get the next entry ready for retry.
     /// Returns None if no entries are ready.
+    #[allow(dead_code)]
     pub fn get_next_retry(&self) -> Option<RetryableTranscription> {
         let mut pending = self.pending.lock().unwrap();
         
@@ -505,6 +508,7 @@ impl TranscriptionRetryQueue {
     
     /// Process all pending retries that are ready.
     /// This should be called periodically or after app startup.
+    #[allow(dead_code)]
     pub fn process_pending_retries<F>(&self, mut process_fn: F) -> Result<Vec<String>>
     where
         F: FnMut(RetryableTranscription) -> Result<()>,

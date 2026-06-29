@@ -661,6 +661,7 @@ fn default_overlay_scale() -> f64 {
     1.0
 }
 
+#[allow(dead_code)]
 fn default_convert_us_to_british() -> bool {
     false
 }

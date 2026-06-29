@@ -300,6 +300,7 @@ impl WhisperEngine {
 /// Inserts a single space between segments unless the accumulated text
 /// already ends with whitespace. This mirrors the logic used during
 /// Whisper inference when building `full_text` from individual segments.
+#[allow(dead_code)]
 fn concatenate_segments(segments: &[&str]) -> String {
     let mut result = String::new();
     for text in segments {

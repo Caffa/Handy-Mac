@@ -279,6 +279,7 @@ impl TranscriptionManager {
 
     /// Check if streaming cancellation has been requested.
     /// Streaming callbacks should check this and abort early if true.
+    #[allow(dead_code)]
     pub fn is_streaming_cancelled(&self) -> bool {
         self.cancel_streaming.load(Ordering::Acquire)
     }

@@ -126,6 +126,7 @@ pub async fn get_complete_experiments(
 }
 
 /// Variant configuration for experiment generation
+#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct VariantConfig {
     pub model_id: String,
