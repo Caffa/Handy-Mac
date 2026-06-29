@@ -218,10 +218,13 @@ fn create_audio_recorder(
         // and acquiring the TranscriptionManager mutex just to check an
         // AtomicBool creates unnecessary lock contention. By sharing the
         // Arc<AtomicBool> directly, we can check cancellation without any lock.
-        let cancel_flag = {
-            let tm_state = app_handle.state::<Arc<Mutex<TranscriptionManager>>>();
-            let flag = tm_state.lock().unwrap().streaming_cancel_flag();
-            flag
+        // Use try_state to avoid panicking if TranscriptionManager isn't initialized yet.
+        let cancel_flag = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
+            Some(tm_state) => tm_state.lock().unwrap().streaming_cancel_flag(),
+            None => {
+                info!("TranscriptionManager not available yet, skipping streaming callback setup");
+                return Ok(recorder);
+            }
         };
 
         recorder.with_streaming_callback({
