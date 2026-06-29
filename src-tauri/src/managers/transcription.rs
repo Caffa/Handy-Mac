@@ -283,6 +283,14 @@ impl TranscriptionManager {
         self.cancel_streaming.load(Ordering::Acquire)
     }
 
+    /// Get a clone of the streaming cancel flag.
+    /// This allows checking cancellation without acquiring the TranscriptionManager
+    /// mutex, which is critical for the streaming callback to avoid lock contention
+    /// on the audio thread. The Arc<AtomicBool> can be cloned and shared cheaply.
+    pub fn streaming_cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel_streaming)
+    }
+
     fn now_ms() -> u64 {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)

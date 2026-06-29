@@ -17,6 +17,14 @@ pub use crate::tray::*;
 pub fn cancel_current_operation(app: &AppHandle) {
     info!("Initiating operation cancellation...");
 
+    // CRITICAL: Cancel streaming transcription FIRST (uses AtomicBool, no lock needed).
+    // This must happen before any other operations to stop live captions immediately,
+    // preventing wasted GPU work on partial audio that will be discarded anyway.
+    if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
+        tm.lock().unwrap().cancel_streaming();
+        info!("Streaming transcription cancelled");
+    }
+
     // Unregister the cancel shortcut asynchronously
     info!("Unregistering cancel shortcut...");
     shortcut::unregister_cancel_shortcut(app);
@@ -33,8 +41,9 @@ pub fn cancel_current_operation(app: &AppHandle) {
     hide_recording_overlay(app);
 
     // Unload model if immediate unload is enabled
-    let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
-    tm.lock().unwrap().maybe_unload_immediately("cancellation");
+    if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
+        tm.lock().unwrap().maybe_unload_immediately("cancellation");
+    }
 
     // Notify coordinator so it can keep lifecycle state coherent.
     if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {

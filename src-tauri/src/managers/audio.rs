@@ -213,13 +213,41 @@ fn create_audio_recorder(
 
     // Add streaming callback if enabled
     let recorder = if live_captions_enabled {
+        // Clone the cancel flag Arc for non-locking cancellation checks.
+        // This is critical: the streaming callback runs on the audio thread,
+        // and acquiring the TranscriptionManager mutex just to check an
+        // AtomicBool creates unnecessary lock contention. By sharing the
+        // Arc<AtomicBool> directly, we can check cancellation without any lock.
+        let cancel_flag = {
+            let tm_state = app_handle.state::<Arc<Mutex<TranscriptionManager>>>();
+            let flag = tm_state.lock().unwrap().streaming_cancel_flag();
+            flag
+        };
+
         recorder.with_streaming_callback({
             let app_handle = app_handle.clone();
+            let cancel_flag = cancel_flag.clone();
             move |samples| {
+                // Check cancellation WITHOUT lock (atomic load).
+                // This avoids acquiring the TranscriptionManager mutex on
+                // every streaming callback, which would cause lock contention
+                // with the main transcription path.
+                if cancel_flag.load(Ordering::Acquire) {
+                    debug!("Skipping streaming transcription - cancellation requested");
+                    return;
+                }
+
                 // This callback runs in the audio thread, so we need to spawn
                 // a blocking task to avoid blocking audio capture.
                 let app_handle = app_handle.clone();
+                let cancel_flag = cancel_flag.clone();
                 tauri::async_runtime::spawn_blocking(move || {
+                    // Re-check cancellation after acquiring blocking thread
+                    if cancel_flag.load(Ordering::Acquire) {
+                        debug!("Skipping streaming transcription (blocking) - cancellation requested");
+                        return;
+                    }
+
                     // Get the transcription manager from app state
                     let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
                         Some(tm) => tm,
@@ -229,18 +257,13 @@ fn create_audio_recorder(
                         }
                     };
 
-                    // Check if streaming was cancelled (recording stopped)
-                    if tm.lock().unwrap().is_streaming_cancelled() {
-                        debug!("Skipping streaming transcription - cancellation requested");
-                        return;
-                    }
-
                     // Transcribe the audio samples
                     let transcription_result = tm.lock().unwrap().transcribe(samples);
                     match transcription_result {
                         Ok(mut result) if !result.text.is_empty() => {
                             // Check again after transcription in case it was cancelled mid-work
-                            if tm.lock().unwrap().is_streaming_cancelled() {
+                            // Using the Arc<AtomicBool> to avoid lock contention
+                            if cancel_flag.load(Ordering::Acquire) {
                                 debug!("Discarding streaming transcription result - cancelled");
                                 return;
                             }
