@@ -35,10 +35,10 @@ pub fn cancel_current_operation(app: &AppHandle) {
     info!("Cancelling recording (was_active={})", recording_was_active);
     audio_manager.lock().unwrap().cancel_recording();
 
-    // Update tray icon and hide overlay
+    // Update tray icon and force-hide overlay (bypass state check for cancel)
     info!("Updating UI state...");
     change_tray_icon(app, crate::tray::TrayIconState::Idle);
-    hide_recording_overlay(app);
+    force_hide_recording_overlay(app);
 
     // Unload model if immediate unload is enabled
     if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {

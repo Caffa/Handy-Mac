@@ -461,7 +461,14 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
             update_gtk_layer_shell_anchors(&overlay_window);
         }
 
-        if let Some((x, y, window_height)) = calculate_overlay_position(app_handle) {
+        // Get monitor for position calculation
+        if let Some(monitor) = get_monitor_with_cursor(app_handle) {
+            let scale = monitor.scale_factor();
+            let monitor_x = monitor.position().x as f64 / scale;
+            let monitor_y = monitor.position().y as f64 / scale;
+            let monitor_width = monitor.size().width as f64 / scale;
+            let monitor_height = monitor.size().height as f64 / scale;
+            
             // Get the overlay scale setting (1.0 = normal, 2.0 = double size)
             let overlay_scale = settings::get_settings(app_handle).overlay_scale;
             
@@ -471,7 +478,9 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
             // During processing, the window is click-through at the OS level.
             // During recording, we only show the visualizer pill (minimal height).
             let actual_height = match mode {
-                OverlayMode::Router if state == "confirming" || state == "processing" => window_height,
+                OverlayMode::Router if state == "confirming" || state == "processing" => {
+                    calculate_overlay_window_height(monitor_height) * overlay_scale
+                },
                 OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
                     if state == "recording" && settings::get_settings(app_handle).live_captions_enabled {
                         OVERLAY_LIVE_CAPTIONS_HEIGHT * overlay_scale
@@ -483,6 +492,26 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
             
             // Scale the window width based on overlay_scale
             let actual_width = OVERLAY_WINDOW_WIDTH_BASE * overlay_scale;
+
+            // Center the window which is wider than the pill
+            let x = monitor_x + (monitor_width - OVERLAY_WINDOW_WIDTH) / 2.0;
+            
+            // Calculate Y position based on actual window height to prevent jumping
+            let settings = settings::get_settings(app_handle);
+            let y = match settings.overlay_position {
+                OverlayPosition::Top => {
+                    monitor_y + OVERLAY_TOP_OFFSET
+                }
+                OverlayPosition::Bottom | OverlayPosition::None => {
+                    // Position so the visible pill sits at the same screen position
+                    // regardless of the transparent window height
+                    let window_extra = actual_height - OVERLAY_PILL_HEIGHT * overlay_scale;
+                    monitor_y + monitor_height
+                        - OVERLAY_PILL_HEIGHT * overlay_scale
+                        - OVERLAY_BOTTOM_OFFSET
+                        - window_extra / 2.0
+                }
+            };
 
             #[cfg(target_os = "macos")]
             {
@@ -526,15 +555,35 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
     }
 }
 
-/// Hides the recording overlay window with fade-out animation
+/// Hides the recording overlay window with fade-out animation.
+/// Emits `force: false` so the frontend respects the state check (won't hide
+/// if a new recording is already active).
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         // Emit event to trigger fade-out animation
-        let _ = overlay_window.emit("hide-overlay", ());
+        // force: false means the frontend will check state before hiding
+        let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": false }));
         // Hide the window after a short delay to allow animation to complete
         // Must run hide() on main thread on macOS to avoid crash
+        let window_for_thread = overlay_window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let window_for_main = window_for_thread.clone();
+            let _ = window_for_thread.run_on_main_thread(move || {
+                let _ = window_for_main.hide();
+            });
+        });
+    }
+}
+
+/// Force hide the recording overlay, bypassing state checks.
+/// Used for cancel operation where the overlay must close regardless of state.
+pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
+    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
+        // Emit force: true to bypass the frontend state check for cancel
+        let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": true }));
         let window_for_thread = overlay_window.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));

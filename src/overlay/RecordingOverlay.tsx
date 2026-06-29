@@ -656,10 +656,17 @@ const RecordingOverlay: React.FC = () => {
       });
 
       // Listen for hide-overlay event from Rust
-      const unlistenHide = await listen("hide-overlay", () => {
+      const unlistenHide = await listen<{ force?: boolean }>("hide-overlay", (event) => {
+        const { force } = event.payload || {};
+
         // ============================================================================
-        // BUGFIX (2026-06-17): Router Filing Race Condition — Hide Overlay Event
+        // BUGFIX (2026-06-29): Cancel Operation Support
         // ============================================================================
+        // When force: true (from cancel operation), always hide regardless of state.
+        // When force: false/undefined (from normal completion), check state to avoid
+        // hiding during a new recording that started after the hide was triggered.
+        //
+        // Original BUGFIX (2026-06-17): Router Filing Race Condition — Hide Overlay Event
         // PROBLEM: When router finishes filing and user has already started a new
         // transcription, the hide-overlay event would hide the overlay mid-recording.
         //
@@ -668,12 +675,23 @@ const RecordingOverlay: React.FC = () => {
         // the event still arrives at frontend with stale state assumption.
         //
         // FIX: Check current state before hiding. If recording/transcribing/processing/
-        // confirming, keep overlay visible. This mirrors the fix in the router-result
-        // timeout handler (lines 414-441).
+        // confirming, keep overlay visible — unless force: true (cancel).
         //
         // See learning-log.md "Router Filing Race Condition" for full documentation.
         // ============================================================================
         setState((current) => {
+          // If forced (cancel), always hide
+          if (force) {
+            setIsVisible(false);
+            setTranscriptionPreview("");
+            setStreamingText("");
+            setStreamingSegments([]);
+            setRouterResult(null);
+            setIsEditing(false);
+            setCountdown(0);
+            return current; // Return unchanged state, setIsVisible handles visibility
+          }
+
           // Don't hide if a new recording/transcription is active
           if (
             current === "recording" ||
