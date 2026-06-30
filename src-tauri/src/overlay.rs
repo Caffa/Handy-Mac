@@ -496,20 +496,25 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
             // Center the window which is wider than the pill
             let x = monitor_x + (monitor_width - OVERLAY_WINDOW_WIDTH) / 2.0;
             
-            // Calculate Y position based on actual window height to prevent jumping
+            // Calculate Y position so the pillbox stays fixed on screen.
+            // The pillbox is at the top of the window (CSS: margin: 4px auto auto),
+            // height ~50px. The window may be taller (for live captions, router mode, etc),
+            // with extra space below the pillbox.
+            // We need to position the window so the pillbox stays at a fixed screen position.
             let settings = settings::get_settings(app_handle);
             let y = match settings.overlay_position {
                 OverlayPosition::Top => {
                     monitor_y + OVERLAY_TOP_OFFSET
                 }
                 OverlayPosition::Bottom | OverlayPosition::None => {
-                    // Position so the visible pill sits at the same screen position
-                    // regardless of the transparent window height
-                    let window_extra = actual_height - OVERLAY_PILL_HEIGHT * overlay_scale;
+                    // Pillbox should be at: monitor_bottom - OVERLAY_BOTTOM_OFFSET - PILL_HEIGHT
+                    // Window top (y) = pillbox_position - PILL_MARGIN_TOP
+                    let pill_height = OVERLAY_PILL_HEIGHT * overlay_scale;
+                    let pill_margin = 4.0 * overlay_scale;
                     monitor_y + monitor_height
-                        - OVERLAY_PILL_HEIGHT * overlay_scale
                         - OVERLAY_BOTTOM_OFFSET
-                        - window_extra / 2.0
+                        - pill_height
+                        - pill_margin
                 }
             };
 

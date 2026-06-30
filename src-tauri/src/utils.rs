@@ -3,6 +3,7 @@ use crate::managers::transcription::TranscriptionManager;
 use crate::shortcut;
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
@@ -20,9 +21,16 @@ pub fn cancel_current_operation(app: &AppHandle) {
     // CRITICAL: Cancel streaming transcription FIRST (uses AtomicBool, no lock needed).
     // This must happen before any other operations to stop live captions immediately,
     // preventing wasted GPU work on partial audio that will be discarded anyway.
-    if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-        tm.lock().unwrap().cancel_streaming();
-        info!("Streaming transcription cancelled");
+    // IMPORTANT: Use the streaming_cancel_flag managed separately in app state
+    // instead of tm.lock().cancel_streaming() to avoid blocking.
+    // The streaming callback holds the TM lock during transcription (seconds),
+    // and this cancel handler would block waiting for that lock, freezing the UI.
+    // By using the Arc<AtomicBool> directly, we can cancel without waiting.
+    if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
+        cancel_flag.store(true, Ordering::Release);
+        info!("Streaming transcription cancelled via Arc<AtomicBool>");
+    } else {
+        warn!("Streaming cancel flag not available in app state");
     }
 
     // Unregister the cancel shortcut asynchronously

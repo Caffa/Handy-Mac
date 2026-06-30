@@ -22,6 +22,7 @@ use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Manager;
@@ -572,12 +573,17 @@ impl ShortcutAction for TranscribeAction {
         // Unregister the cancel shortcut when transcription stops
         shortcut::unregister_cancel_shortcut(app);
 
-        // Cancel any in-progress streaming transcription to prevent wasted work
-        if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-            tm.lock().unwrap().cancel_streaming();
-            debug!("Cancelled streaming transcription for final transcription");
+        // Cancel any in-progress streaming transcription to prevent wasted work.
+        // IMPORTANT: Use the streaming_cancel_flag managed separately in app state
+        // instead of tm.lock().cancel_streaming() to avoid blocking.
+        // The streaming callback holds the TM lock during transcription (seconds),
+        // and this stop handler would block waiting for that lock, freezing the UI.
+        // By using the Arc<AtomicBool> directly, we can cancel without waiting.
+        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
+            cancel_flag.store(true, Ordering::Release);
+            debug!("Cancelled streaming transcription via Arc<AtomicBool>");
         } else {
-            warn!("TranscriptionManager not available, skipping streaming cancellation");
+            warn!("Streaming cancel flag not available in app state");
         }
 
         let stop_time = Instant::now();
@@ -1128,12 +1134,17 @@ impl ShortcutAction for TranscribeWithRouterAction {
         // Unregister cancel shortcut
         shortcut::unregister_cancel_shortcut(app);
 
-        // Cancel any in-progress streaming transcription to prevent wasted work
-        if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-            Arc::clone(&tm).lock().unwrap().cancel_streaming();
-            debug!("Cancelled streaming transcription for router final transcription");
+        // Cancel any in-progress streaming transcription to prevent wasted work.
+        // IMPORTANT: Use the streaming_cancel_flag managed separately in app state
+        // instead of tm.lock().cancel_streaming() to avoid blocking.
+        // The streaming callback holds the TM lock during transcription (seconds),
+        // and this stop handler would block waiting for that lock, freezing the UI.
+        // By using the Arc<AtomicBool> directly, we can cancel without waiting.
+        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
+            cancel_flag.store(true, Ordering::Release);
+            debug!("Cancelled streaming transcription via Arc<AtomicBool>");
         } else {
-            warn!("TranscriptionManager not available, skipping streaming cancellation");
+            warn!("Streaming cancel flag not available in app state");
         }
 
         let stop_time = Instant::now();

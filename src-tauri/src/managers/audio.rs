@@ -514,6 +514,10 @@ impl AudioRecordingManager {
                     // Restart the stream via the app handle
                     if let Some(rm) = app_handle.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
                         let rm_guard = rm.lock().unwrap();
+                        
+                        // Check if user was actively recording before showing overlay
+                        let was_recording = rm_guard.is_recording();
+
                         // Stop the current stream
                         {
                             let open = lock_with_log(&rm_guard.is_open, "is_open");
@@ -523,30 +527,38 @@ impl AudioRecordingManager {
                             }
                         }
 
-                        // Show USB-cycling overlay so user knows recovery is happening
-                        utils::show_usb_cycling_overlay(&app_handle);
-                        crate::tray::change_tray_icon(
-                            &app_handle,
-                            crate::tray::TrayIconState::Recording,
-                        );
-                        
-                        // Emit stage event so the overlay shows progress dots and elapsed time
-                        usb_watchdog::emit_stage_event_with_handle(
-                            &Some(app_handle.clone()),
-                            "recovering",
-                            "Recovering microphone stream...",
-                        );
+                        // Only show USB-cycling overlay if user was actively recording.
+                        // If the stream died during sleep/wake while not recording,
+                        // silently recover in the background without showing the visualizer.
+                        if was_recording {
+                            utils::show_usb_cycling_overlay(&app_handle);
+                            crate::tray::change_tray_icon(
+                                &app_handle,
+                                crate::tray::TrayIconState::Recording,
+                            );
+                            
+                            // Emit stage event so the overlay shows progress dots and elapsed time
+                            usb_watchdog::emit_stage_event_with_handle(
+                                &Some(app_handle.clone()),
+                                "recovering",
+                                "Recovering microphone stream...",
+                            );
+                        }
 
                         // Try to restart
                         if let Err(e) = rm_guard.start_microphone_stream() {
                             error!("Liveness monitor failed to restart stream: {}", e);
-                            // Emit failed event so frontend can recover from stuck state
-                            usb_watchdog::emit_cycle_event_with_handle(
-                                &Some(app_handle.clone()),
-                                "usb-power-cycle-failed",
-                                &format!("Stream restart failed: {}", e),
-                            );
-                            utils::hide_recording_overlay(&app_handle);
+                            
+                            if was_recording {
+                                // Emit failed event so frontend can recover from stuck state
+                                usb_watchdog::emit_cycle_event_with_handle(
+                                    &Some(app_handle.clone()),
+                                    "usb-power-cycle-failed",
+                                    &format!("Stream restart failed: {}", e),
+                                );
+                                utils::hide_recording_overlay(&app_handle);
+                            }
+                            
                             crate::tray::change_tray_icon(
                                 &app_handle,
                                 crate::tray::TrayIconState::Idle,
@@ -557,12 +569,15 @@ impl AudioRecordingManager {
                                 crate::tray::TrayIconState::Idle,
                             );
                             info!("Liveness monitor: stream restarted successfully");
-                            // Emit finished event so frontend clears the USB cycling state
-                            usb_watchdog::emit_cycle_event_with_handle(
-                                &Some(app_handle.clone()),
-                                "usb-power-cycle-finished",
-                                "Stream recovered successfully",
-                            );
+                            
+                            if was_recording {
+                                // Emit finished event so frontend clears the USB cycling state
+                                usb_watchdog::emit_cycle_event_with_handle(
+                                    &Some(app_handle.clone()),
+                                    "usb-power-cycle-finished",
+                                    "Stream recovered successfully",
+                                );
+                            }
                         }
                     }
                 }
