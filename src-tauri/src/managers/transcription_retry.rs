@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
-use crate::mutex_util::lock_mutex;
 
 /// Classification of transcription failure types.
 /// Different failures require different retry strategies.
@@ -313,7 +313,7 @@ impl TranscriptionRetryQueue {
         }
         
         {
-            let mut pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+            let mut pending = self.pending.lock();
             pending.push_back(entry);
         }
         
@@ -328,7 +328,7 @@ impl TranscriptionRetryQueue {
     /// Returns None if no entries are ready.
     #[allow(dead_code)]
     pub fn get_next_retry(&self) -> Option<RetryableTranscription> {
-        let mut pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+        let mut pending = self.pending.lock();
         
         for entry in pending.iter_mut() {
             if entry.is_ready() {
@@ -344,7 +344,7 @@ impl TranscriptionRetryQueue {
     /// Removes the entry from the queue.
     pub fn mark_retry_complete(&self, entry_id: &str) -> Result<()> {
         {
-            let mut pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+            let mut pending = self.pending.lock();
             pending.retain(|e| e.id != entry_id);
         }
         
@@ -363,7 +363,7 @@ impl TranscriptionRetryQueue {
         failure: TranscriptionFailure,
     ) -> Result<bool> {
         let can_retry = {
-            let mut pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+            let mut pending = self.pending.lock();
             
             if let Some(entry) = pending.iter_mut().find(|e| e.id == entry_id) {
                 entry.is_processing = false;
@@ -408,14 +408,14 @@ impl TranscriptionRetryQueue {
     
     /// Get all pending retry entries (for UI display).
     pub fn get_all_pending(&self) -> Vec<RetryableTranscription> {
-        let pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+        let pending = self.pending.lock();
         pending.iter().cloned().collect()
     }
     
     /// Remove a specific entry from the queue.
     pub fn remove_entry(&self, entry_id: &str) -> Result<bool> {
         let removed = {
-            let mut pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+            let mut pending = self.pending.lock();
             let initial_len = pending.len();
             pending.retain(|e| e.id != entry_id);
             pending.len() < initial_len
@@ -432,7 +432,7 @@ impl TranscriptionRetryQueue {
     /// Clear all pending retry entries.
     pub fn clear_all(&self) -> Result<()> {
         {
-            let mut pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+            let mut pending = self.pending.lock();
             pending.clear();
         }
         
@@ -445,13 +445,13 @@ impl TranscriptionRetryQueue {
     
     /// Get the count of pending retries.
     pub fn count(&self) -> usize {
-        let pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+        let pending = self.pending.lock();
         pending.len()
     }
     
     /// Persist the queue to disk.
     fn save_to_disk(&self) -> Result<()> {
-        let pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+        let pending = self.pending.lock();
         let entries: Vec<_> = pending.iter().collect();
         
         if let Err(e) = std::fs::write(
@@ -494,7 +494,7 @@ impl TranscriptionRetryQueue {
         };
         
         {
-            let mut pending = lock_mutex(&self.pending, "TranscriptionRetryQueue::pending");
+            let mut pending = self.pending.lock();
             for entry in entries {
                 // Reset processing flag (in case app crashed during processing)
                 let mut entry = entry;

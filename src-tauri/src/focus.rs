@@ -15,7 +15,7 @@
 //! heap, causing `nanov2_guard_corruption_detected` / SIGABRT.
 
 use log::{info, warn};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::{AppHandle, Manager};
 
 /// A saved reference to the previously frontmost macOS application.
@@ -57,14 +57,8 @@ pub fn save_frontmost_app(app: &AppHandle) {
             );
         }
         if let Some(state) = app.try_state::<SavedFrontmostApp>() {
-            match state.0.lock() {
-                Ok(mut guard) => {
-                    *guard = saved;
-                }
-                Err(e) => {
-                    warn!("SavedFrontmostApp mutex poisoned: {:?}", e);
-                }
-            }
+            let mut guard = state.0.lock();
+            *guard = saved;
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -86,13 +80,7 @@ pub fn restore_frontmost_app(app: &AppHandle) -> bool {
         let saved_info = {
             let state = app.try_state::<SavedFrontmostApp>();
             match state {
-                Some(s) => match s.0.lock() {
-                    Ok(mut guard) => guard.take(),
-                    Err(e) => {
-                        warn!("SavedFrontmostApp mutex poisoned: {:?}", e);
-                        None
-                    }
-                },
+                Some(s) => s.0.lock().take(),
                 None => None,
             }
         };

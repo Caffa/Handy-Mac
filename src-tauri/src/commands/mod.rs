@@ -5,7 +5,6 @@ pub mod models;
 pub mod transcription;
 pub mod transcription_retry;
 
-use crate::mutex_util::lock_mutex;
 use crate::settings::{get_settings, write_settings, AppSettings, LogLevel};
 use crate::utils::cancel_current_operation;
 use tauri::{AppHandle, Manager};
@@ -209,7 +208,7 @@ pub struct PendingRouting {
 
 /// Thread-safe container for pending routing confirmation.
 /// Allows the frontend to trigger confirmation after the countdown/edit phase.
-pub type PendingRoutingState = std::sync::Arc<std::sync::Mutex<Option<PendingRouting>>>;
+pub type PendingRoutingState = std::sync::Arc<parking_lot::Mutex<Option<PendingRouting>>>;
 
 /// Confirm routing with edited text.
 /// Called by the frontend when the user confirms the transcription
@@ -220,7 +219,7 @@ pub fn confirm_routing(app: AppHandle, text: String) -> Result<(), String> {
     // Get the pending routing state and send the confirmation
     if let Some(state) = app.try_state::<PendingRoutingState>() {
         // Try to take the sender out of the Mutex
-        let pending_opt = lock_mutex(&state, "PendingRoutingState").take();
+        let pending_opt = state.lock().take();
         if let Some(pending) = pending_opt {
             if let Err(_) = pending.confirm_tx.send(text) {
                 log::warn!("Failed to send routing confirmation - receiver already dropped");

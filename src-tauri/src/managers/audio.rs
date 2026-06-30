@@ -5,7 +5,6 @@ use crate::audio_toolkit::{
 use crate::helpers::clamshell;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::managers::transcription::TranscriptionManager;
-use crate::mutex_util::lock_mutex;
 use crate::portable;
 use crate::settings::{get_settings, AppSettings};
 use crate::usb_watchdog;
@@ -17,7 +16,8 @@ use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
@@ -205,7 +205,7 @@ fn create_audio_recorder(
         // Arc<AtomicBool> directly, we can check cancellation without any lock.
         // Use try_state to avoid panicking if TranscriptionManager isn't initialized yet.
         let cancel_flag = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-            Some(tm_state) => lock_mutex(&tm_state, "TranscriptionManager").streaming_cancel_flag(),
+            Some(tm_state) => tm_state.lock().streaming_cancel_flag(),
             None => {
                 info!("TranscriptionManager not available yet, skipping streaming callback setup");
                 return Ok(recorder);
@@ -246,7 +246,7 @@ fn create_audio_recorder(
                     };
 
                     // Transcribe the audio samples
-                    let transcription_result = lock_mutex(&tm, "TranscriptionManager").transcribe(samples);
+                    let transcription_result = tm.lock().transcribe(samples);
                     match transcription_result {
                         Ok(mut result) if !result.text.is_empty() => {
                             // Check again after transcription in case it was cancelled mid-work
@@ -465,7 +465,7 @@ impl AudioRecordingManager {
 
                 // Only monitor in always-on mode
                 let is_always_on = {
-                    let guard = lock_mutex(&mode, "mode");
+                    let guard = mode.lock();
                     matches!(*guard, MicrophoneMode::AlwaysOn)
                 };
 
@@ -481,7 +481,7 @@ impl AudioRecordingManager {
 
                 // Check if stream is alive (has received audio recently)
                 let stream_alive = {
-                    let recorder_guard = lock_mutex(&recorder, "recorder");
+                    let recorder_guard = recorder.lock();
                     recorder_guard.as_ref().map_or(false, |r| {
                         r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
                     })
@@ -498,7 +498,7 @@ impl AudioRecordingManager {
 
                     // Restart the stream via the app handle
                     if let Some(rm) = app_handle.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
-                        let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
+                        let rm_guard = rm.lock();
                         
                         // Check if user was actively recording before showing overlay
                         let was_recording = rm_guard.is_recording();
@@ -565,7 +565,7 @@ impl AudioRecordingManager {
             }
         });
 
-        *lock_mutex(&self.liveness_monitor, "liveness_monitor") = Some(handle);
+        *self.liveness_monitor.lock() = Some(handle);
         debug!("Liveness monitor started");
     }
 
@@ -573,7 +573,7 @@ impl AudioRecordingManager {
     #[allow(dead_code)]
     fn stop_liveness_monitor(&self) {
         self.liveness_stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = lock_mutex(&self.liveness_monitor, "liveness_monitor").take() {
+        if let Some(handle) = self.liveness_monitor.lock().take() {
             let _ = handle.join();
         }
     }
@@ -586,7 +586,7 @@ impl AudioRecordingManager {
     /// selectors without requiring a manual refresh.
     fn start_device_monitor(&self) {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        *lock_mutex(&self.device_monitor_stop, "device_monitor_stop") = Some(tx);
+        *self.device_monitor_stop.lock() = Some(tx);
 
         let app_handle = self.app_handle.clone();
         let prev_input = self.prev_input_devices.clone();
@@ -602,11 +602,11 @@ impl AudioRecordingManager {
             .unwrap_or_default();
 
         {
-            let mut guard = lock_mutex(&prev_input, "prev_input_devices");
+            let mut guard = prev_input.lock();
             *guard = initial_input;
         }
         {
-            let mut guard = lock_mutex(&prev_output, "prev_output_devices");
+            let mut guard = prev_output.lock();
             *guard = initial_output;
         }
 
@@ -642,8 +642,8 @@ impl AudioRecordingManager {
                         }
                     };
 
-                    let prev_input_guard = lock_mutex(&prev_input, "prev_input_devices");
-                    let prev_output_guard = lock_mutex(&prev_output, "prev_output_devices");
+                    let prev_input_guard = prev_input.lock();
+                    let prev_output_guard = prev_output.lock();
 
                     let prev_input_set: std::collections::HashSet<_> =
                         prev_input_guard.iter().cloned().collect();
@@ -690,11 +690,11 @@ impl AudioRecordingManager {
 
                         // Update stored device lists
                         {
-                            let mut guard = lock_mutex(&prev_input, "prev_input_devices");
+                            let mut guard = prev_input.lock();
                             *guard = current_input.clone();
                         }
                         {
-                            let mut guard = lock_mutex(&prev_output, "prev_output_devices");
+                            let mut guard = prev_output.lock();
                             *guard = current_output.clone();
                         }
 
@@ -715,16 +715,16 @@ impl AudioRecordingManager {
             })
             .expect("Failed to spawn device monitor thread");
 
-        *lock_mutex(&self.device_monitor, "device_monitor") = Some(handle);
+        *self.device_monitor.lock() = Some(handle);
         debug!("Device hot-plug monitor started");
     }
 
     /// Stop the background device monitor thread.
     fn stop_device_monitor(&self) {
-        if let Some(tx) = lock_mutex(&self.device_monitor_stop, "device_monitor_stop").take() {
+        if let Some(tx) = self.device_monitor_stop.lock().take() {
             let _ = tx.send(());
         }
-        if let Some(handle) = lock_mutex(&self.device_monitor, "device_monitor").take() {
+        if let Some(handle) = self.device_monitor.lock().take() {
             let _ = handle.join();
         }
         debug!("Device hot-plug monitor stopped");
@@ -784,11 +784,11 @@ impl AudioRecordingManager {
                 debug!("AudioRecordingManager not available for lazy close");
                 return;
             };
-            let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
+            let rm_guard = rm.lock();
             // Hold state lock across the check AND close to serialize against
             // try_start_recording, preventing a race where the stream is closed
             // under an active recording.
-            let state = lock_mutex(&rm_guard.state, "state");
+            let state = rm_guard.state.lock();
             // Never close the stream if BT keep-alive is active
             if bt_keep_alive.load(Ordering::Acquire) {
                 debug!("Skipping lazy close: BT keep-alive is active");
@@ -830,7 +830,7 @@ impl AudioRecordingManager {
     }
 
     pub fn preload_vad(&self) -> Result<(), anyhow::Error> {
-        let mut recorder_opt = lock_mutex(&self.recorder, "recorder");
+        let mut recorder_opt = self.recorder.lock();
         if recorder_opt.is_none() {
             let settings = get_settings(&self.app_handle);
             let vad_threshold = settings.vad_sensitivity.threshold();
@@ -909,7 +909,7 @@ impl AudioRecordingManager {
         info!("Recreating AudioRecorder to discard stale device handles");
 
         // Take the old recorder and drop it (this stops any existing stream)
-        let mut recorder_opt = lock_mutex(&self.recorder, "recorder");
+        let mut recorder_opt = self.recorder.lock();
         if recorder_opt.is_some() {
             // Close the old recorder to clean up resources
             if let Some(mut old_rec) = recorder_opt.take() {
@@ -969,7 +969,7 @@ impl AudioRecordingManager {
 
             // Get the currently open device name
             let current_device_name = {
-                let recorder_guard = lock_mutex(&self.recorder, "recorder");
+                let recorder_guard = self.recorder.lock();
                 recorder_guard.as_ref().and_then(|r| r.device_name())
             };
 
@@ -1033,7 +1033,7 @@ impl AudioRecordingManager {
         // Ensure VAD is loaded if it wasn't for whatever reason
         self.preload_vad()?;
 
-        let mut recorder_opt = lock_mutex(&self.recorder, "recorder");
+        let mut recorder_opt = self.recorder.lock();
         if let Some(rec) = recorder_opt.as_mut() {
             rec.open(selected_device)
                 .map_err(|e| anyhow::anyhow!("Failed to open recorder: {}", e))?;
@@ -1061,7 +1061,7 @@ impl AudioRecordingManager {
             set_mute(false);
         }
 
-        if let Some(rec) = lock_mutex(&self.recorder, "recorder").as_mut() {
+        if let Some(rec) = self.recorder.lock().as_mut() {
             // If still recording, stop first and reset state.
             if self.is_recording.load(Ordering::Acquire) {
                 if let Err(e) = rec.stop() {
@@ -1072,7 +1072,7 @@ impl AudioRecordingManager {
                 self.is_recording.store(false, Ordering::Release);
             }
             // Reset state to Idle regardless of stop outcome
-            *lock_mutex(&self.state, "state") = RecordingState::Idle;
+            *self.state.lock() = RecordingState::Idle;
             if let Err(e) = rec.close() {
                 warn!("Error closing recorder during stream shutdown: {}", e);
                 // State is already reset — the recorder will be recreated on
@@ -1087,14 +1087,14 @@ impl AudioRecordingManager {
     /* ---------- mode switching --------------------------------------------- */
 
     pub fn update_mode(&self, new_mode: MicrophoneMode) -> Result<(), anyhow::Error> {
-        let cur_mode = lock_mutex(&self.mode, "mode").clone();
+        let cur_mode = self.mode.lock().clone();
 
         match (cur_mode, &new_mode) {
             (MicrophoneMode::AlwaysOn, MicrophoneMode::OnDemand) => {
                 // Don't close the stream if BT keep-alive is active
                 if self.bt_keep_alive.load(Ordering::Acquire) {
                     info!("BT keep-alive active: keeping mic stream open despite mode switch to OnDemand");
-                } else if matches!(*lock_mutex(&self.state, "state"), RecordingState::Idle) {
+                } else if matches!(*self.state.lock(), RecordingState::Idle) {
                     self.close_generation.fetch_add(1, Ordering::SeqCst);
                     self.stop_microphone_stream();
                 }
@@ -1109,7 +1109,7 @@ impl AudioRecordingManager {
             _ => {}
         }
 
-        *lock_mutex(&self.mode, "mode") = new_mode;
+        *self.mode.lock() = new_mode;
         Ok(())
     }
 
@@ -1122,7 +1122,7 @@ impl AudioRecordingManager {
     pub fn try_start_recording(&self, binding_id: &str) -> Result<(), String> {
         // Quick check under lock — just verify we're in Idle state.
         {
-            let state = lock_mutex(&self.state, "state");
+            let state = self.state.lock();
             if !matches!(*state, RecordingState::Idle) {
                 return Err("Already recording".to_string());
             }
@@ -1131,7 +1131,7 @@ impl AudioRecordingManager {
         // below, after the potentially-slow liveness check.
 
         let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
-        let is_always_on = matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::AlwaysOn);
+        let is_always_on = matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn);
 
         // In on-demand mode (or when BT keep-alive is active), ensure the stream is open.
         // In always-on mode, check if the stream is alive and restart if needed.
@@ -1161,7 +1161,7 @@ impl AudioRecordingManager {
                 };
 
                 let current_device_name = {
-                    let recorder_guard = lock_mutex(&self.recorder, "recorder");
+                    let recorder_guard = self.recorder.lock();
                     recorder_guard.as_ref().and_then(|r| r.device_name())
                 };
 
@@ -1194,7 +1194,7 @@ impl AudioRecordingManager {
                     true
                 } else {
                     // Stream is open with correct device, check if it's alive
-                    let stream_alive = lock_mutex(&self.recorder, "recorder")
+                    let stream_alive = self.recorder.lock()
                         .as_ref()
                         .map_or(false, |r| {
                             r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
@@ -1264,9 +1264,9 @@ impl AudioRecordingManager {
         }
 
         // Re-acquire the state lock for the actual state transition.
-        let mut state = lock_mutex(&self.state, "state");
+        let mut state = self.state.lock();
         if let RecordingState::Idle = *state {
-            if let Some(rec) = lock_mutex(&self.recorder, "recorder").as_ref() {
+            if let Some(rec) = self.recorder.lock().as_ref() {
                 if rec.start().is_ok() {
                     self.is_recording.store(true, Ordering::Release);
                     *state = RecordingState::Recording {
@@ -1291,7 +1291,7 @@ impl AudioRecordingManager {
             // Re-evaluate BT keep-alive after device change
             self.refresh_bluetooth_keep_alive();
             if self.bt_keep_alive.load(Ordering::Acquire)
-                || matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::AlwaysOn)
+                || matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn)
             {
                 self.start_microphone_stream()?;
             }
@@ -1319,7 +1319,7 @@ impl AudioRecordingManager {
             info!("Bluetooth output device no longer detected — disabling mic stream keep-alive");
             self.bt_keep_alive.store(false, Ordering::Release);
             // Close the stream if we're in OnDemand mode and not recording
-            if matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::OnDemand)
+            if matches!(*self.mode.lock(), MicrophoneMode::OnDemand)
                 && !self.is_recording()
             {
                 self.close_generation.fetch_add(1, Ordering::SeqCst);
@@ -1329,7 +1329,7 @@ impl AudioRecordingManager {
     }
 
     pub fn stop_recording(&self, binding_id: &str) -> Option<Vec<f32>> {
-        let state = lock_mutex(&self.state, "state");
+        let state = self.state.lock();
 
         match *state {
             RecordingState::Recording {
@@ -1356,7 +1356,7 @@ impl AudioRecordingManager {
                         "Smart-stop: starting volume-aware buffer (max {}ms)",
                         settings.extra_recording_buffer_ms
                     );
-                    if let Some(rec) = lock_mutex(&self.recorder, "recorder").as_ref() {
+                    if let Some(rec) = self.recorder.lock().as_ref() {
                         match rec.smart_stop(settings.extra_recording_buffer_ms) {
                             Ok(buf) => buf,
                             Err(e) => {
@@ -1369,7 +1369,7 @@ impl AudioRecordingManager {
                         Vec::new()
                     }
                 } else {
-                    if let Some(rec) = lock_mutex(&self.recorder, "recorder").as_ref() {
+                    if let Some(rec) = self.recorder.lock().as_ref() {
                         match rec.stop() {
                             Ok(buf) => buf,
                             Err(e) => {
@@ -1385,7 +1385,7 @@ impl AudioRecordingManager {
 
                 // Now transition to Idle after the buffer is complete.
                 {
-                    let mut state = lock_mutex(&self.state, "state");
+                    let mut state = self.state.lock();
                     *state = RecordingState::Idle;
                 }
 
@@ -1397,7 +1397,7 @@ impl AudioRecordingManager {
                 // low audio is a failure condition - we want to count it as a failure
                 // and potentially trigger USB cycling. The next successful recording will
                 // reset the failure counter via on_recording_finished() -> on_mic_open_succeeded().
-                let max_level = lock_mutex(&self.recorder, "recorder")
+                let max_level = self.recorder.lock()
                     .as_ref()
                     .map(|r| r.get_max_level())
                     .unwrap_or(0.0);
@@ -1436,7 +1436,7 @@ impl AudioRecordingManager {
                 // When a Bluetooth output device is active, we keep the stream
                 // alive permanently to prevent the A2DP↔HFP profile switch that
                 // causes audio dropouts on BT headphones.
-                if matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::OnDemand) {
+                if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) {
                     let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
                     if bt_keep_alive {
                         debug!("BT keep-alive active: keeping mic stream open");
@@ -1471,7 +1471,7 @@ impl AudioRecordingManager {
     }
     pub fn is_recording(&self) -> bool {
         matches!(
-            *lock_mutex(&self.state, "state"),
+            *self.state.lock(),
             RecordingState::Recording { .. }
         )
     }
@@ -1483,7 +1483,7 @@ impl AudioRecordingManager {
 
     /// Check if always-on microphone mode is enabled
     pub fn is_always_on(&self) -> bool {
-        matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::AlwaysOn)
+        matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn)
     }
 
     /// Check if Bluetooth keep-alive is active
@@ -1493,13 +1493,13 @@ impl AudioRecordingManager {
 
     /// Cancel any ongoing recording without returning audio samples
     pub fn cancel_recording(&self) {
-        let mut state = lock_mutex(&self.state, "state");
+        let mut state = self.state.lock();
 
         if let RecordingState::Recording { .. } = *state {
             *state = RecordingState::Idle;
             drop(state);
 
-            if let Some(rec) = lock_mutex(&self.recorder, "recorder").as_ref() {
+            if let Some(rec) = self.recorder.lock().as_ref() {
                 if let Err(e) = rec.stop() {
                     warn!("Error stopping recorder during cancel: {}", e);
                 }
@@ -1511,7 +1511,7 @@ impl AudioRecordingManager {
 
             // When a Bluetooth output device is active, we keep the stream
             // alive permanently to prevent the A2DP↔HFP profile switch.
-            if matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::OnDemand) {
+            if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) {
                 let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
                 if bt_keep_alive {
                     debug!("BT keep-alive active: keeping mic stream open");
@@ -1529,7 +1529,7 @@ impl AudioRecordingManager {
     /// volume bars not moving" issue.
     /// Returns Ok(()) if the stream was restarted or wasn't needed, Err if restart failed.
     pub fn restart_microphone_if_needed(&self) -> Result<(), anyhow::Error> {
-        let is_always_on = matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::AlwaysOn);
+        let is_always_on = matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn);
         let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
 
         if is_always_on || bt_keep_alive {
@@ -1558,7 +1558,7 @@ impl AudioRecordingManager {
         }
         
         let stream_alive = {
-            let recorder_guard = lock_mutex(&self.recorder, "recorder");
+            let recorder_guard = self.recorder.lock();
             recorder_guard.as_ref().map_or(false, |r| {
                 r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
             })
@@ -1573,7 +1573,7 @@ impl Drop for AudioRecordingManager {
         info!("AudioRecordingManager dropping — stopping background threads");
         self.stop_device_monitor();
         self.liveness_stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = lock_mutex(&self.liveness_monitor, "liveness_monitor").take() {
+        if let Some(handle) = self.liveness_monitor.lock().take() {
             let _ = handle.join();
         }
     }

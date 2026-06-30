@@ -1,10 +1,10 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
-use crate::mutex_util::lock_mutex;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -291,7 +291,7 @@ fn start(
     action.start(app, binding_id, hotkey_string);
     if app
         .try_state::<Arc<Mutex<AudioRecordingManager>>>()
-        .map_or(false, |a| lock_mutex(&a, "AudioRecordingManager").is_recording())
+        .map_or(false, |a| a.lock().is_recording())
     {
         set_stage(stage, Stage::Recording(binding_id.to_string()), active_use);
     } else {

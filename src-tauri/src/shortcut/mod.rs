@@ -23,7 +23,6 @@ use tauri_plugin_autostart::ManagerExt;
 use conflicts::ConflictInfo;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use crate::mutex_util::lock_mutex;
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
     self, get_settings, AutoSubmitKey, ClipboardHandling, CustomWord, KeyboardImplementation,
@@ -797,34 +796,27 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
     //
     // Hold the outer Mutex for the entire stop/recreate/start sequence to
     // prevent TOCTOU races with the liveness monitor and other threads.
-    if let Some(rm) = app.try_state::<std::sync::Arc<std::sync::Mutex<crate::managers::audio::AudioRecordingManager>>>() {
-        match rm.lock() {
-            Ok(rm_guard) => {
-                if rm_guard.is_stream_open() {
-                    // Stop the current stream
-                    rm_guard.stop_microphone_stream();
+    if let Some(rm) = app.try_state::<std::sync::Arc<parking_lot::Mutex<crate::managers::audio::AudioRecordingManager>>>() {
+        let rm_guard = rm.lock();
+        if rm_guard.is_stream_open() {
+            // Stop the current stream
+            rm_guard.stop_microphone_stream();
 
-                    // Recreate the recorder with the new setting
-                    if let Err(e) = rm_guard.recreate_recorder() {
-                        error!("Failed to recreate recorder after pre-recording buffer change: {}", e);
-                        return Err(format!("Failed to apply pre-recording buffer setting: {}", e));
-                    }
+            // Recreate the recorder with the new setting
+            if let Err(e) = rm_guard.recreate_recorder() {
+                error!("Failed to recreate recorder after pre-recording buffer change: {}", e);
+                return Err(format!("Failed to apply pre-recording buffer setting: {}", e));
+            }
 
-                    // Restart the stream if in always-on mode or BT keep-alive
-                    if rm_guard.is_always_on() || rm_guard.is_bt_keep_alive() {
-                        if let Err(e) = rm_guard.start_microphone_stream() {
-                            error!("Failed to restart microphone stream after pre-recording buffer change: {}", e);
-                            return Err(format!("Failed to restart microphone stream: {}", e));
-                        }
-                    }
-
-                    info!("Recreated recorder with pre-recording buffer: {}ms", ms);
+            // Restart the stream if in always-on mode or BT keep-alive
+            if rm_guard.is_always_on() || rm_guard.is_bt_keep_alive() {
+                if let Err(e) = rm_guard.start_microphone_stream() {
+                    error!("Failed to restart microphone stream after pre-recording buffer change: {}", e);
+                    return Err(format!("Failed to restart microphone stream: {}", e));
                 }
             }
-            Err(poisoned) => {
-                error!("AudioRecordingManager mutex was poisoned: {:?}", poisoned);
-                return Err("AudioRecordingManager mutex was poisoned - app may be in an inconsistent state".to_string());
-            }
+
+            info!("Recreated recorder with pre-recording buffer: {}ms", ms);
         }
     } else {
         log::warn!("AudioRecordingManager not initialized, skipping pre-recording buffer recreation");
@@ -1265,12 +1257,12 @@ fn apply_and_reload_accelerator(app: &AppHandle, s: settings::AppSettings) {
     settings::write_settings(app, s);
     crate::managers::transcription::apply_accelerator_settings(app);
 
-    let Some(tm) = app.try_state::<std::sync::Arc<std::sync::Mutex<crate::managers::transcription::TranscriptionManager>>>() else {
+    let Some(tm) = app.try_state::<std::sync::Arc<parking_lot::Mutex<crate::managers::transcription::TranscriptionManager>>>() else {
         log::warn!("TranscriptionManager not initialized, skipping model unload after accelerator change");
         return;
     };
-    if lock_mutex(&tm, "TranscriptionManager").is_model_loaded() {
-        if let Err(e) = lock_mutex(&tm, "TranscriptionManager").unload_model() {
+    if tm.lock().is_model_loaded() {
+        if let Err(e) = tm.lock().unload_model() {
             log::warn!("Failed to unload model after accelerator change: {e}");
         }
     }

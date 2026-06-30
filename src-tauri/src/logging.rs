@@ -16,7 +16,7 @@ use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Unique identifier for a recording→transcription session.
 /// Generated from a timestamp so it's human-sortable and unique per session.
@@ -270,13 +270,7 @@ pub fn emit(event: AppEvent) {
 
     // Write to the dedicated JSONL file
     if let Some(logger) = STRUCTURED_LOGGER.get() {
-        let mut guard = match logger.lock() {
-            Ok(g) => g,
-            Err(e) => {
-                log::error!("Structured logger mutex poisoned: {e}");
-                return;
-            }
-        };
+        let mut guard = logger.lock();
 
         if let Some(ref mut writer) = *guard {
             let line = serde_json::json!({
@@ -343,10 +337,9 @@ pub fn install_panic_hook() {
 
         // Force-flush both log files so crash is captured before process dies
         if let Some(logger) = STRUCTURED_LOGGER.get() {
-            if let Ok(guard) = logger.lock() {
-                if let Some(ref writer) = *guard {
-                    let _ = writer.file.sync_all();
-                }
+            let guard = logger.lock();
+            if let Some(ref writer) = *guard {
+                let _ = writer.file.sync_all();
             }
         }
         log::logger().flush();

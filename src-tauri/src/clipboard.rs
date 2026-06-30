@@ -619,10 +619,7 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
         .ok_or("Enigo state not initialized")?;
 
     info!("Acquiring Enigo lock...");
-    let mut enigo = enigo_state.0.lock().map_err(|e| {
-        error!("Enigo mutex poisoned: {:?}", e);
-        format!("Failed to lock Enigo: {}", e)
-    })?;
+    let mut enigo = enigo_state.0.lock();
     info!("Enigo lock acquired");
 
     // Perform the paste operation

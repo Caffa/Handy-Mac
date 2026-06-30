@@ -3,10 +3,11 @@ use std::{
     io::Error,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc,
     },
     time::{Duration, Instant},
 };
+use parking_lot::Mutex;
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -20,7 +21,6 @@ use crate::audio_toolkit::{
     vad::{self, VadFrame},
     VoiceActivityDetector,
 };
-use crate::mutex_util::lock_mutex;
 use crate::settings::NoiseSuppressionLevel;
 
 enum Cmd {
@@ -694,7 +694,7 @@ fn handle_frame(
     // This improves VAD accuracy in noisy environments by removing
     // background noise that could trigger false speech detections.
     let processed_samples: Vec<f32> = if let Some(ns) = noise_suppressor {
-        let mut ns_guard = lock_mutex(ns, "NoiseSuppressor");
+        let mut ns_guard = ns.lock();
         // Noise suppressor processes 480-sample frames at 16kHz (30ms),
         // which matches the VAD frame size.
         ns_guard.process(samples)
@@ -707,7 +707,7 @@ fn handle_frame(
     // The denoised signal is what VAD sees for better accuracy,
     // while the original signal is preserved for output quality.
     if let Some(vad_arc) = vad {
-        let mut det = lock_mutex(vad_arc, "VadDetector");
+        let mut det = vad_arc.lock();
         match det.push_frame(&processed_samples).unwrap_or(VadFrame::Speech(samples)) {
             VadFrame::Speech(_) => {
                 // Use original samples for output quality — we don't want
@@ -1052,11 +1052,11 @@ fn run_consumer(
                     streaming_last_invoked = None; // Reset streaming timer for new recording
                     consecutive_speech_frames = 0; // Reset speech frame counter for new recording
                     if let Some(v) = &vad {
-                        lock_mutex(v, "VadDetector").reset();
+                        v.lock().reset();
                     }
                     // Reset noise suppressor state for new recording
                     if let Some(ns) = &noise_suppressor {
-                        lock_mutex(ns, "NoiseSuppressor").reset();
+                        ns.lock().reset();
                     }
                 }
                 Cmd::Stop(reply_tx) => {

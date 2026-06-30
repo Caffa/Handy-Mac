@@ -8,6 +8,7 @@ mod clipboard;
 mod commands;
 pub mod error_events;
 pub mod errors;
+mod emergency_save;
 mod focus;
 mod health;
 mod helpers;
@@ -164,6 +165,26 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     logging::install_panic_hook();
 
     // Initialize the managers (wrapped in Arc<Mutex<T>> for consistent state access)
+    let history_manager = Arc::new(
+        HistoryManager::new(app_handle).expect("Failed to initialize history manager"),
+    );
+    
+    // Initialize emergency backup system to prevent recording loss
+    // This must happen BEFORE AudioRecordingManager starts recording
+    let backup_dir = history_manager.recordings_dir();
+    emergency_save::init_emergency_backup(&backup_dir);
+    
+    // Check for and recover any orphaned recordings from previous crashes
+    let recovered = emergency_save::EmergencyBackup::recover_orphaned_recordings(&backup_dir);
+    if !recovered.is_empty() {
+        log::warn!(
+            "Recovered {} orphaned recording(s) from previous session. They are in: {:?}",
+            recovered.len(),
+            backup_dir
+        );
+        // TODO: Emit event to frontend to notify user about recovered recordings
+    }
+    
     let recording_manager = Arc::new(Mutex::new(
         AudioRecordingManager::new(app_handle).expect("Failed to initialize recording manager"),
     ));
@@ -174,9 +195,6 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         TranscriptionManager::new(app_handle, model_manager.clone())
             .expect("Failed to initialize transcription manager"),
     ));
-    let history_manager = Arc::new(
-        HistoryManager::new(app_handle).expect("Failed to initialize history manager"),
-    );
     let retry_queue = Arc::new(Mutex::new(
         TranscriptionRetryQueue::new(app_handle.clone())
             .expect("Failed to initialize transcription retry queue"),
@@ -711,39 +729,70 @@ pub fn run(cli_args: CliArgs) {
             // 2. Otherwise, no instance is running, exit with error
             
             if cli_args.is_active_use {
-                // Check for result file from running instance
-                if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-active-use-result") {
-                    let lines: Vec<&str> = content.lines().collect();
-                    if lines.len() >= 2 {
-                        // Line 0: status string, Line 1: exit code
-                        println!("{}", lines[0]);
-                        if let Ok(code) = lines[1].parse::<i32>() {
-                            // Clean up temp file
-                            let _ = std::fs::remove_file("/tmp/handy-is-active-use-result");
-                            std::process::exit(code);
+                // Wait for result file from running instance (with timeout)
+                // The single-instance plugin forwards args to the running instance,
+                // which writes the result to /tmp/handy-is-active-use-result
+                // We need to poll for the file since the callback is async
+                let start = std::time::Instant::now();
+                let timeout = std::time::Duration::from_secs(5);
+                
+                loop {
+                    if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-active-use-result") {
+                        let lines: Vec<&str> = content.lines().collect();
+                        if lines.len() >= 2 {
+                            // Line 0: status string, Line 1: exit code
+                            println!("{}", lines[0]);
+                            if let Ok(code) = lines[1].parse::<i32>() {
+                                // Clean up temp file
+                                let _ = std::fs::remove_file("/tmp/handy-is-active-use-result");
+                                std::process::exit(code);
+                            }
                         }
                     }
+                    
+                    // Check timeout
+                    if start.elapsed() > timeout {
+                        break;
+                    }
+                    
+                    // Wait a bit before retrying
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                // No result file = no running instance
+                
+                // Timeout or no result file = no running instance
                 eprintln!("error: Handy is not running");
                 std::process::exit(2);
             }
             
             if cli_args.is_recording {
-                // Check for result file from running instance
-                if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-recording-result") {
-                    let lines: Vec<&str> = content.lines().collect();
-                    if lines.len() >= 2 {
-                        // Line 0: status string, Line 1: exit code
-                        println!("{}", lines[0]);
-                        if let Ok(code) = lines[1].parse::<i32>() {
-                            // Clean up temp file
-                            let _ = std::fs::remove_file("/tmp/handy-is-recording-result");
-                            std::process::exit(code);
+                // Wait for result file from running instance (with timeout)
+                let start = std::time::Instant::now();
+                let timeout = std::time::Duration::from_secs(5);
+                
+                loop {
+                    if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-recording-result") {
+                        let lines: Vec<&str> = content.lines().collect();
+                        if lines.len() >= 2 {
+                            // Line 0: status string, Line 1: exit code
+                            println!("{}", lines[0]);
+                            if let Ok(code) = lines[1].parse::<i32>() {
+                                // Clean up temp file
+                                let _ = std::fs::remove_file("/tmp/handy-is-recording-result");
+                                std::process::exit(code);
+                            }
                         }
                     }
+                    
+                    // Check timeout
+                    if start.elapsed() > timeout {
+                        break;
+                    }
+                    
+                    // Wait a bit before retrying
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                // No result file = no running instance
+                
+                // Timeout or no result file = no running instance
                 eprintln!("error: Handy is not running");
                 std::process::exit(2);
             }

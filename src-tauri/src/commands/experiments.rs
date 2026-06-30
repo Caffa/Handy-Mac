@@ -3,8 +3,8 @@ use crate::managers::history::{
     ExperimentGroup, HistoryManager, TranscriptionVariant,
 };
 use crate::managers::transcription::TranscriptionManager;
-use crate::mutex_util::lock_mutex;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -179,11 +179,11 @@ pub async fn generate_variants(
 
     // Generate variants
     let mut variants = Vec::new();
-    let original_model_id = lock_mutex(&transcription_manager, "TranscriptionManager").get_current_model();
+    let original_model_id = transcription_manager.lock().get_current_model();
 
     for model_id in &models {
         // Load model (synchronous call)
-        if let Err(e) = lock_mutex(&transcription_manager, "TranscriptionManager").load_model(model_id) {
+        if let Err(e) = transcription_manager.lock().load_model(model_id) {
             log::warn!("Failed to load model {}: {}", model_id, e);
             continue;
         }
@@ -192,7 +192,7 @@ pub async fn generate_variants(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Transcribe with this model
-        match lock_mutex(&transcription_manager, "TranscriptionManager").transcribe_for_benchmark(audio_samples.clone()) {
+        match transcription_manager.lock().transcribe_for_benchmark(audio_samples.clone()) {
             Ok(text) => {
                 variants.push(GeneratedVariant {
                     model_id: model_id.clone(),
@@ -208,7 +208,7 @@ pub async fn generate_variants(
 
     // Restore original model if it was set
     if let Some(original) = original_model_id {
-        if let Err(e) = lock_mutex(&transcription_manager, "TranscriptionManager").load_model(&original) {
+        if let Err(e) = transcription_manager.lock().load_model(&original) {
             log::warn!("Failed to restore original model: {}", e);
         }
     }

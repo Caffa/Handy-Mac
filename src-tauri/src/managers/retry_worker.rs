@@ -6,10 +6,10 @@
 use crate::managers::transcription::TranscriptionManager;
 use crate::managers::transcription_retry::TranscriptionRetryQueue;
 use crate::audio_toolkit::audio::read_wav_samples;
-use crate::mutex_util::lock_mutex;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -43,7 +43,7 @@ impl RetryWorker {
 
     /// Start the background worker.
     pub fn start(&self, app_handle: AppHandle) {
-        if lock_mutex(&self.handle, "RetryWorker::handle").is_some() {
+        if self.handle.lock().is_some() {
             warn!("Retry worker already running");
             return;
         }
@@ -84,7 +84,7 @@ impl RetryWorker {
                 };
 
                 // Check if there are pending retries
-                let pending_count = lock_mutex(&retry_queue, "TranscriptionRetryQueue").count();
+                let pending_count = retry_queue.lock().count();
                 if pending_count == 0 {
                     debug!("No pending retries");
                     continue;
@@ -93,7 +93,7 @@ impl RetryWorker {
                 info!("Processing {} pending retry entries", pending_count);
 
                 // Get all pending entries
-                let entries = lock_mutex(&retry_queue, "TranscriptionRetryQueue").get_all_pending();
+                let entries = retry_queue.lock().get_all_pending();
                 
                 for entry in entries {
                     // Check if entry is ready for retry
@@ -118,7 +118,7 @@ impl RetryWorker {
                             error!("Failed to load audio for retry {}: {}", entry.id, e);
                             
                             // Remove corrupted entry from queue
-                            if let Err(remove_err) = lock_mutex(&retry_queue, "TranscriptionRetryQueue").remove_entry(&entry.id) {
+                            if let Err(remove_err) = retry_queue.lock().remove_entry(&entry.id) {
                                 error!("Failed to remove corrupted entry: {}", remove_err);
                             }
                             continue;
@@ -126,7 +126,7 @@ impl RetryWorker {
                     };
 
                     // Try transcription
-                    match lock_mutex(&tm, "TranscriptionManager").transcribe(audio_samples) {
+                    match tm.lock().transcribe(audio_samples) {
                         Ok(transcription) if !transcription.text.is_empty() => {
                             info!(
                                 "Retry transcription succeeded for entry {} (model: {}): '{}'",
@@ -161,7 +161,7 @@ impl RetryWorker {
                             }
 
                             // Remove from retry queue on success
-                            if let Err(e) = lock_mutex(&retry_queue, "TranscriptionRetryQueue").mark_retry_complete(&entry.id) {
+                            if let Err(e) = retry_queue.lock().mark_retry_complete(&entry.id) {
                                 error!("Failed to mark retry complete: {}", e);
                             }
                         }
@@ -170,7 +170,7 @@ impl RetryWorker {
                             warn!("Retry transcription returned empty text for entry {}", entry.id);
                             
                             // Don't retry silent audio
-                            if let Err(e) = lock_mutex(&retry_queue, "TranscriptionRetryQueue").remove_entry(&entry.id) {
+                            if let Err(e) = retry_queue.lock().remove_entry(&entry.id) {
                                 error!("Failed to remove silent audio entry: {}", e);
                             }
                         }
@@ -182,11 +182,11 @@ impl RetryWorker {
                                 error: e.to_string(),
                             };
                             
-                            match lock_mutex(&retry_queue, "TranscriptionRetryQueue").mark_retry_failed(&entry.id, failure) {
+                            match retry_queue.lock().mark_retry_failed(&entry.id, failure) {
                                 Ok(can_retry) => {
                                     if !can_retry {
                                         info!("Entry {} exhausted all retries, removing from queue", entry.id);
-                                        if let Err(remove_err) = lock_mutex(&retry_queue, "TranscriptionRetryQueue").remove_entry(&entry.id) {
+                                        if let Err(remove_err) = retry_queue.lock().remove_entry(&entry.id) {
                                             error!("Failed to remove exhausted entry: {}", remove_err);
                                         }
                                     }
@@ -205,14 +205,14 @@ impl RetryWorker {
             info!("Retry worker thread stopped");
         });
 
-        *lock_mutex(&self.handle, "RetryWorker::handle") = Some(handle);
+        *self.handle.lock() = Some(handle);
     }
 
     /// Stop the background worker.
     pub fn stop(&self) {
         self.stop_signal.store(true, Ordering::Relaxed);
         
-        if let Some(handle) = lock_mutex(&self.handle, "RetryWorker::handle").take() {
+        if let Some(handle) = self.handle.lock().take() {
             if let Err(e) = handle.join() {
                 warn!("Failed to join retry worker thread: {:?}", e);
             }
