@@ -793,20 +793,24 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
     // Recreate the recorder if the stream is open to apply the new setting.
     // The pre-recording buffer is only read when the recorder is created,
     // so we need to recreate it for the change to take effect.
-    if let Some(rm) = app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>() {
-        if rm.is_stream_open() {
+    //
+    // Hold the outer Mutex for the entire stop/recreate/start sequence to
+    // prevent TOCTOU races with the liveness monitor and other threads.
+    if let Some(rm) = app.try_state::<std::sync::Arc<std::sync::Mutex<crate::managers::audio::AudioRecordingManager>>>() {
+        let rm_guard = rm.lock().unwrap();
+        if rm_guard.is_stream_open() {
             // Stop the current stream
-            rm.stop_microphone_stream();
+            rm_guard.stop_microphone_stream();
 
             // Recreate the recorder with the new setting
-            if let Err(e) = rm.recreate_recorder() {
+            if let Err(e) = rm_guard.recreate_recorder() {
                 error!("Failed to recreate recorder after pre-recording buffer change: {}", e);
                 return Err(format!("Failed to apply pre-recording buffer setting: {}", e));
             }
 
             // Restart the stream if in always-on mode or BT keep-alive
-            if rm.is_always_on() || rm.is_bt_keep_alive() {
-                if let Err(e) = rm.start_microphone_stream() {
+            if rm_guard.is_always_on() || rm_guard.is_bt_keep_alive() {
+                if let Err(e) = rm_guard.start_microphone_stream() {
                     error!("Failed to restart microphone stream after pre-recording buffer change: {}", e);
                     return Err(format!("Failed to restart microphone stream: {}", e));
                 }
@@ -814,6 +818,8 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
 
             info!("Recreated recorder with pre-recording buffer: {}ms", ms);
         }
+    } else {
+        log::warn!("AudioRecordingManager not initialized, skipping pre-recording buffer recreation");
     }
 
     Ok(())
