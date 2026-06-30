@@ -590,7 +590,7 @@ pub fn run(cli_args: CliArgs) {
                 crate::utils::cancel_current_operation(app);
             } else if args.iter().any(|a| a == "--is-active-use") {
                 // Query active use state: recording, transcribing, or processing.
-                // Exit codes: 0 = active use, 1 = idle, 2 = error
+                // Prints status to stdout; the CLI caller handles its own exit code.
                 //
                 // "Active use" means Handy is in use and should not be quit:
                 // - Recording (user is speaking, audio being captured)
@@ -630,11 +630,12 @@ pub fn run(cli_args: CliArgs) {
                 // Output simple result for scripts
                 println!("{}", if is_active { "active-use" } else { "idle" });
                 
-                // Exit code indicates if Handy is in active use
-                std::process::exit(if is_active { 0 } else { 1 });
+                // Do NOT call std::process::exit() here — this callback runs
+                // inside the RUNNING instance. Exiting would kill Handy.
+                // The CLI (second) instance exits in the setup block instead.
             } else if args.iter().any(|a| a == "--is-recording") {
-                // Query recording state and print to stdout
-                // Exit codes: 0 = recording (active session), 1 = not recording, 2 = error
+                // Query recording state and print to stdout.
+                // The CLI caller handles its own exit code.
                 //
                 // NOTE: This flag checks ONLY audio recording state. For scripts that need
                 // to wait for Handy to be fully idle (including processing/transcription),
@@ -654,12 +655,13 @@ pub fn run(cli_args: CliArgs) {
                     // Output simple result for scripts
                     println!("{}", if is_recording { "recording" } else { "not-recording" });
                     
-                    // Exit code indicates if there's an ACTIVE RECORDING SESSION
-                    // (not just always-on mode, which doesn't need to wait)
-                    std::process::exit(if is_recording { 0 } else { 1 });
+                    // Do NOT call std::process::exit() here — this callback runs
+                    // inside the RUNNING instance. Exiting would kill Handy.
+                    // The CLI (second) instance exits in the setup block instead.
                 } else {
                     eprintln!("error: AudioRecordingManager not initialized");
-                    std::process::exit(2);
+                    // Do NOT call std::process::exit() here — this callback runs
+                    // inside the RUNNING instance. Exiting would kill Handy.
                 }
             } else {
                 show_main_window(app);
