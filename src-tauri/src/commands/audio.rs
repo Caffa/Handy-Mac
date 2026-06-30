@@ -193,7 +193,9 @@ pub fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), Str
     write_settings(&app, settings);
 
     // Update the audio manager mode
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
     let new_mode = if always_on {
         MicrophoneMode::AlwaysOn
     } else {
@@ -244,7 +246,9 @@ pub fn set_selected_microphone(app: AppHandle, device_name: String) -> Result<()
     write_settings(&app, settings);
 
     // Update the audio manager to use the new device
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
     rm.lock().unwrap().update_selected_device()
         .map_err(|e| format!("Failed to update selected device: {}", e))?;
 
@@ -342,7 +346,9 @@ pub fn get_clamshell_microphone(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn is_recording(app: AppHandle) -> bool {
-    let audio_manager = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(audio_manager) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return false;
+    };
     let result = audio_manager.lock().unwrap().is_recording();
     result
 }
@@ -375,7 +381,9 @@ pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Res
     write_settings(&app, settings);
 
     // Update the runtime watchdog state
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
     rm.lock().unwrap().usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
@@ -394,7 +402,9 @@ pub fn change_usb_watchdog_device_name_setting(
     write_settings(&app, settings);
 
     // Update the runtime watchdog state
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
     rm.lock().unwrap().usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
@@ -419,7 +429,9 @@ pub fn change_usb_watchdog_cycle_on_wake_setting(
 #[tauri::command]
 #[specta::specta]
 pub fn trigger_usb_power_cycle(app: AppHandle) -> Result<bool, String> {
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
     let guard = rm.lock().unwrap();
     let result = guard.usb_watchdog.force_power_cycle();
     Ok(result)
@@ -464,7 +476,9 @@ fn normalize_for_comparison(text: &str) -> String {
 #[tauri::command]
 #[specta::specta]
 pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
 
     // Don't interfere with an active transcription recording
     if rm.lock().unwrap().is_recording() {
@@ -484,7 +498,9 @@ pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub fn cancel_pronunciation_recording(app: AppHandle) -> Result<(), String> {
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
 
     // Stop recording and discard audio
     let _ = rm.lock().unwrap().stop_recording(PRONUNCIATION_BINDING_ID);
@@ -511,7 +527,9 @@ pub async fn stop_and_schedule_pronunciation(
     app: AppHandle,
     canonical_word: String,
 ) -> Result<String, String> {
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
 
     // Stop recording and get audio samples
     let samples = rm
@@ -585,7 +603,10 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     // Poll until system is idle
     loop {
         // Check if pending data changed (cancellation)
-        let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+        let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+            warn!("AudioRecordingManager not available, aborting pronunciation processing");
+            return;
+        };
         let rm_guard = rm.lock().unwrap();
         let pending = rm_guard.pending_pronunciation.lock().unwrap();
         if !matches!(pending.front(), Some((_, w, _, _)) if w == canonical_word) {
@@ -619,7 +640,10 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     }
 
     // Now process with all models
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        warn!("AudioRecordingManager not available, aborting pronunciation processing");
+        return;
+    };
     let rm_guard = rm.lock().unwrap();
     let pending = rm_guard.pending_pronunciation.lock().unwrap();
     let (samples, word) = match pending.front() {
@@ -685,7 +709,10 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
             }
 
             // Clear pending
-            let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+            let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+                warn!("AudioRecordingManager not available, cannot clear pending pronunciation");
+                return;
+            };
             let rm_guard = rm.lock().unwrap();
             let mut pending = rm_guard.pending_pronunciation.lock().unwrap();
             pending.pop_front();
@@ -707,7 +734,10 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
     }
 
     // Clear the thread handle
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        warn!("AudioRecordingManager not available, cannot clear pronunciation thread handle");
+        return;
+    };
     let rm_guard = rm.lock().unwrap();
     let mut thread_handle = rm_guard.pronunciation_thread.lock().unwrap();
     *thread_handle = None;
@@ -719,7 +749,9 @@ fn process_pronunciation_with_all_models(
     canonical_word: &str,
     samples: Vec<f32>,
 ) -> Result<Vec<PronunciationResult>, String> {
-    let mm = app.state::<Arc<ModelManager>>();
+    let Some(mm) = app.try_state::<Arc<ModelManager>>() else {
+        return Err("ModelManager not available".to_string());
+    };
     let downloaded_models: Vec<(String, String)> = mm
         .get_available_models()
         .into_iter()
@@ -825,7 +857,9 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
     app: AppHandle,
     canonical_word: String,
 ) -> Result<Vec<PronunciationResult>, String> {
-    let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+    let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+        return Err("AudioRecordingManager not available".to_string());
+    };
 
     // Stop recording and get audio samples
     let samples = rm
@@ -846,7 +880,9 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
     );
 
     // Get all downloaded models
-    let mm = app.state::<Arc<ModelManager>>();
+    let Some(mm) = app.try_state::<Arc<ModelManager>>() else {
+        return Err("ModelManager not available".to_string());
+    };
     let downloaded_models: Vec<(String, String)> = mm
         .get_available_models()
         .into_iter()

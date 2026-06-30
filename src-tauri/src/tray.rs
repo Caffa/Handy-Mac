@@ -78,7 +78,10 @@ pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
         }
     };
 
-    let tray = app.state::<TrayIcon>();
+    let Some(tray) = app.try_state::<TrayIcon>() else {
+        warn!("TrayIcon not available for icon change");
+        return;
+    };
     let theme = get_current_theme(app);
 
     let icon_path = get_icon_path(theme, icon.clone());
@@ -158,7 +161,10 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
     let separator = || PredefinedMenuItem::separator(app).expect("failed to create separator");
 
     // Build model submenu — label is the active model name
-    let model_manager = app.state::<Arc<ModelManager>>();
+    let Some(model_manager) = app.try_state::<Arc<ModelManager>>() else {
+        warn!("ModelManager not available for tray menu");
+        return;
+    };
     let models = model_manager.get_available_models();
     let current_model_id = &settings.selected_model;
 
@@ -236,7 +242,10 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
         .expect("failed to create menu"),
     };
 
-    let tray = app.state::<TrayIcon>();
+    let Some(tray) = app.try_state::<TrayIcon>() else {
+        warn!("TrayIcon not available");
+        return;
+    };
     let _ = tray.set_menu(Some(menu));
     let _ = tray.set_icon_as_template(true);
     let _ = tray.set_tooltip(Some(version_label));
@@ -274,7 +283,10 @@ pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
         }
     };
 
-    let tray = app.state::<TrayIcon>();
+    let Some(tray) = app.try_state::<TrayIcon>() else {
+        warn!("TrayIcon not available");
+        return;
+    };
     if let Err(e) = tray.set_visible(visible) {
         error!("Failed to set tray visibility: {}", e);
     } else {
@@ -283,7 +295,10 @@ pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
 }
 
 pub fn copy_last_transcript(app: &AppHandle) {
-    let history_manager = app.state::<Arc<HistoryManager>>();
+    let Some(history_manager) = app.try_state::<Arc<HistoryManager>>() else {
+        warn!("HistoryManager not available, cannot copy last transcript");
+        return;
+    };
     let entry = match history_manager.get_latest_completed_entry() {
         Ok(Some(entry)) => entry,
         Ok(None) => {

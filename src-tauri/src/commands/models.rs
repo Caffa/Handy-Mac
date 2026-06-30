@@ -94,7 +94,10 @@ pub async fn delete_model(
 /// unless the unload timeout is set to "Immediately" (in which case the model
 /// will be loaded on-demand during the next transcription).
 pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
-    let model_manager = app.state::<Arc<ModelManager>>();
+    let Some(model_manager) = app.try_state::<Arc<ModelManager>>() else {
+        warn!("ModelManager not available, cannot switch model");
+        return Err("ModelManager not available".to_string());
+    };
     let Some(transcription_manager) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
         warn!("TranscriptionManager not available, cannot switch model");
         return Err("TranscriptionManager not available".to_string());
@@ -251,8 +254,12 @@ pub async fn cancel_download(
 #[tauri::command]
 #[specta::specta]
 pub async fn can_benchmark_models(app_handle: AppHandle) -> Result<bool, String> {
-    let model_manager = app_handle.state::<Arc<ModelManager>>();
-    let history_manager = app_handle.state::<Arc<HistoryManager>>();
+    let Some(model_manager) = app_handle.try_state::<Arc<ModelManager>>() else {
+        return Err("ModelManager not available".to_string());
+    };
+    let Some(history_manager) = app_handle.try_state::<Arc<HistoryManager>>() else {
+        return Err("HistoryManager not available".to_string());
+    };
 
     let has_downloaded = model_manager
         .get_available_models()
@@ -270,7 +277,9 @@ pub async fn can_benchmark_models(app_handle: AppHandle) -> Result<bool, String>
 #[tauri::command]
 #[specta::specta]
 pub async fn get_benchmark_clip_count(app_handle: AppHandle) -> Result<usize, String> {
-    let history_manager = app_handle.state::<Arc<HistoryManager>>();
+    let Some(history_manager) = app_handle.try_state::<Arc<HistoryManager>>() else {
+        return Err("HistoryManager not available".to_string());
+    };
     history_manager
         .get_history_count()
         .map_err(|e| e.to_string())
@@ -286,8 +295,12 @@ pub async fn get_benchmark_clip_count(app_handle: AppHandle) -> Result<usize, St
 pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, String> {
     use crate::managers::transcription::TranscriptionManager;
 
-    let model_manager = app_handle.state::<Arc<ModelManager>>();
-    let history_manager = app_handle.state::<Arc<HistoryManager>>();
+    let Some(model_manager) = app_handle.try_state::<Arc<ModelManager>>() else {
+        return Err("ModelManager not available".to_string());
+    };
+    let Some(history_manager) = app_handle.try_state::<Arc<HistoryManager>>() else {
+        return Err("HistoryManager not available".to_string());
+    };
     let Some(transcription_manager) = app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
         warn!("TranscriptionManager not available, cannot benchmark models");
         return Err("TranscriptionManager not available".to_string());

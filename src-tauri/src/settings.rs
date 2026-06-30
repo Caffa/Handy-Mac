@@ -1421,7 +1421,10 @@ impl SettingsWriter {
             tokio::time::sleep(tokio::time::Duration::from_millis(debounce_ms)).await;
 
             // Re-acquire the SettingsWriter from app state
-            let writer = app.state::<Arc<SettingsWriter>>();
+            let Some(writer) = app.try_state::<Arc<SettingsWriter>>() else {
+                warn!("SettingsWriter not available, skipping debounced flush");
+                return;
+            };
             writer.flush_inner(&app).await;
         });
 

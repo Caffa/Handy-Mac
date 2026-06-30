@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex};
 #[tauri::command]
 #[specta::specta]
 pub async fn get_retry_queue(app: AppHandle) -> Result<Vec<RetryableTranscription>, String> {
-    let queue = app
-        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
+    let Some(queue_state) = app.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() else {
+        return Err("TranscriptionRetryQueue not available".to_string());
+    };
+    let queue = queue_state
         .inner()
         .lock()
         .unwrap();
@@ -22,8 +24,10 @@ pub async fn get_retry_queue(app: AppHandle) -> Result<Vec<RetryableTranscriptio
 #[tauri::command]
 #[specta::specta]
 pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(), String> {
-    let queue_guard = app
-        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
+    let Some(queue_state) = app.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() else {
+        return Err("TranscriptionRetryQueue not available".to_string());
+    };
+    let queue_guard = queue_state
         .inner()
         .lock()
         .unwrap();
@@ -54,9 +58,10 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
         Ok(transcription) => {
             // Success - update history if we have an entry
             if let Some(history_id) = entry.history_entry_id {
-                let hm = app
-                    .state::<Arc<HistoryManager>>()
-                    .inner();
+                let Some(hm_state) = app.try_state::<Arc<HistoryManager>>() else {
+                    return Err("HistoryManager not available".to_string());
+                };
+                let hm = hm_state.inner();
                 
                 hm.update_transcription(
                     history_id,
@@ -97,8 +102,10 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
 #[tauri::command]
 #[specta::specta]
 pub async fn remove_from_retry_queue(app: AppHandle, entry_id: String) -> Result<bool, String> {
-    let queue = app
-        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
+    let Some(queue_state) = app.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() else {
+        return Err("TranscriptionRetryQueue not available".to_string());
+    };
+    let queue = queue_state
         .inner()
         .lock()
         .unwrap();
@@ -112,8 +119,10 @@ pub async fn remove_from_retry_queue(app: AppHandle, entry_id: String) -> Result
 #[tauri::command]
 #[specta::specta]
 pub async fn clear_retry_queue(app: AppHandle) -> Result<(), String> {
-    let queue = app
-        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
+    let Some(queue_state) = app.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() else {
+        return Err("TranscriptionRetryQueue not available".to_string());
+    };
+    let queue = queue_state
         .inner()
         .lock()
         .unwrap();
@@ -127,8 +136,10 @@ pub async fn clear_retry_queue(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_retry_queue_count(app: AppHandle) -> Result<usize, String> {
-    let queue = app
-        .state::<Arc<Mutex<TranscriptionRetryQueue>>>()
+    let Some(queue_state) = app.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() else {
+        return Err("TranscriptionRetryQueue not available".to_string());
+    };
+    let queue = queue_state
         .inner()
         .lock()
         .unwrap();
