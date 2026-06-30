@@ -732,7 +732,10 @@ fn process_pronunciation_with_all_models(
     }
 
     let canonical_normalized = normalize_for_comparison(canonical_word);
-    let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+    let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+        warn!("TranscriptionManager not available, cannot check pronunciation");
+        return Err("TranscriptionManager not available".to_string());
+    };
     let tm = Arc::clone(&tm);
 
     let total_models = downloaded_models.len();
@@ -864,7 +867,10 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
     };
 
     let canonical_normalized = normalize_for_comparison(&canonical_word);
-    let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+    let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+        warn!("TranscriptionManager not available, cannot run pronunciation check");
+        return Err("TranscriptionManager not available".to_string());
+    };
     let tm = Arc::clone(&tm);
 
     let total_models = downloaded_models.len();

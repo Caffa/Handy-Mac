@@ -41,7 +41,8 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
     
     // Get transcription manager
     let tm_guard = app
-        .state::<Arc<Mutex<TranscriptionManager>>>()
+        .try_state::<Arc<Mutex<TranscriptionManager>>>()
+        .ok_or_else(|| "TranscriptionManager not available".to_string())?
         .inner()
         .lock()
         .unwrap();

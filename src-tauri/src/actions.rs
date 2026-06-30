@@ -446,7 +446,10 @@ impl ShortcutAction for TranscribeAction {
         }
 
         // Load model in the background
-        let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+        let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+            warn!("TranscriptionManager not available, skipping recording start");
+            return;
+        };
         let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
         
         // Clear any previous streaming cancellation flag when starting a new recording
@@ -567,16 +570,23 @@ impl ShortcutAction for TranscribeAction {
         shortcut::unregister_cancel_shortcut(app);
 
         // Cancel any in-progress streaming transcription to prevent wasted work
-        let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
-        tm.lock().unwrap().cancel_streaming();
-        debug!("Cancelled streaming transcription for final transcription");
+        if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
+            tm.lock().unwrap().cancel_streaming();
+            debug!("Cancelled streaming transcription for final transcription");
+        } else {
+            warn!("TranscriptionManager not available, skipping streaming cancellation");
+        }
 
         let stop_time = Instant::now();
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
 
         let ah = app.clone();
         let rm = Arc::clone(&app.state::<Arc<Mutex<AudioRecordingManager>>>());
-        let tm = Arc::clone(&app.state::<Arc<Mutex<TranscriptionManager>>>());
+        let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+            warn!("TranscriptionManager not available, cannot stop transcription");
+            return;
+        };
+        let tm = Arc::clone(&tm);
         let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
 
         // Capture the current session ID for structured tracking in the async task
@@ -999,7 +1009,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
         }
 
         // Load model in the background
-        let tm = app.state::<Arc<Mutex<TranscriptionManager>>>();
+        let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+            warn!("TranscriptionManager not available, skipping router recording start");
+            return;
+        };
         let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
         
         // Clear any previous streaming cancellation flag when starting a new recording
@@ -1102,9 +1115,12 @@ impl ShortcutAction for TranscribeWithRouterAction {
         shortcut::unregister_cancel_shortcut(app);
 
         // Cancel any in-progress streaming transcription to prevent wasted work
-        let tm = Arc::clone(&app.state::<Arc<Mutex<TranscriptionManager>>>());
-        tm.lock().unwrap().cancel_streaming();
-        debug!("Cancelled streaming transcription for router final transcription");
+        if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
+            Arc::clone(&tm).lock().unwrap().cancel_streaming();
+            debug!("Cancelled streaming transcription for router final transcription");
+        } else {
+            warn!("TranscriptionManager not available, skipping streaming cancellation");
+        }
 
         let stop_time = Instant::now();
         debug!(
@@ -1114,7 +1130,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
         let ah = app.clone();
         let rm = Arc::clone(&app.state::<Arc<Mutex<AudioRecordingManager>>>());
-        let tm = Arc::clone(&app.state::<Arc<Mutex<TranscriptionManager>>>());
+        let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+            warn!("TranscriptionManager not available, cannot stop router transcription");
+            return;
+        };
+        let tm = Arc::clone(&tm);
         let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
 
         let sid: Option<SessionId> = app

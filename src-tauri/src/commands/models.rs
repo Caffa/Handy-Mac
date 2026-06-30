@@ -95,7 +95,10 @@ pub async fn delete_model(
 /// will be loaded on-demand during the next transcription).
 pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
     let model_manager = app.state::<Arc<ModelManager>>();
-    let transcription_manager = app.state::<Arc<Mutex<TranscriptionManager>>>();
+    let Some(transcription_manager) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+        warn!("TranscriptionManager not available, cannot switch model");
+        return Err("TranscriptionManager not available".to_string());
+    };
 
     // Atomically claim the loading slot — prevents concurrent model loads
     // from tray double-clicks or overlapping commands. The guard resets the
@@ -285,7 +288,10 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
 
     let model_manager = app_handle.state::<Arc<ModelManager>>();
     let history_manager = app_handle.state::<Arc<HistoryManager>>();
-    let transcription_manager = app_handle.state::<Arc<Mutex<TranscriptionManager>>>();
+    let Some(transcription_manager) = app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+        warn!("TranscriptionManager not available, cannot benchmark models");
+        return Err("TranscriptionManager not available".to_string());
+    };
 
     // Get downloaded models
     let models = model_manager.get_available_models();

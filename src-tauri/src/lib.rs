@@ -253,7 +253,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                 tray::copy_last_transcript(app);
             }
             "unload_model" => {
-                let transcription_manager = app.state::<Arc<Mutex<TranscriptionManager>>>();
+                let Some(transcription_manager) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+                    log::warn!("TranscriptionManager not available, skipping model unload");
+                    return;
+                };
                 let tm = transcription_manager.lock().unwrap();
                 if !tm.is_model_loaded() {
                     log::warn!("No model is currently loaded.");
