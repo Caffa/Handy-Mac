@@ -335,9 +335,9 @@ pub struct AudioRecordingManager {
     app_handle: tauri::AppHandle,
 
     recorder: Arc<Mutex<Option<AudioRecorder>>>,
-    is_open: Arc<Mutex<bool>>,
-    is_recording: Arc<Mutex<bool>>,
-    did_mute: Arc<Mutex<bool>>,
+    is_open: Arc<AtomicBool>,
+    is_recording: Arc<AtomicBool>,
+    did_mute: Arc<AtomicBool>,
     close_generation: Arc<AtomicU64>,
     pub usb_watchdog: Arc<UsbWatchdog>,
     /// When a Bluetooth output device is detected, we keep the mic stream
@@ -346,7 +346,7 @@ pub struct AudioRecordingManager {
     /// switching the BT headset between A2DP (stereo) and HFP/SCO (mono)
     /// profiles every time the stream opens/closes, which causes audio
     /// dropouts on the headphones.
-    bt_keep_alive: Arc<Mutex<bool>>,
+    bt_keep_alive: Arc<AtomicBool>,
     /// Queue of pronunciation recordings awaiting idle-time processing.
     /// Each entry is `(audio_samples, canonical_word, recording_id, file_path)`.
     /// New recordings are pushed to the back; the worker pops from the front.
@@ -402,12 +402,12 @@ impl AudioRecordingManager {
             app_handle: app.clone(),
 
             recorder: Arc::new(Mutex::new(None)),
-            is_open: Arc::new(Mutex::new(false)),
-            is_recording: Arc::new(Mutex::new(false)),
-            did_mute: Arc::new(Mutex::new(false)),
+            is_open: Arc::new(AtomicBool::new(false)),
+            is_recording: Arc::new(AtomicBool::new(false)),
+            did_mute: Arc::new(AtomicBool::new(false)),
             close_generation: Arc::new(AtomicU64::new(0)),
             usb_watchdog: usb_watchdog.clone(),
-            bt_keep_alive: Arc::new(Mutex::new(false)),
+            bt_keep_alive: Arc::new(AtomicBool::new(false)),
             pending_pronunciation: Arc::new(Mutex::new(VecDeque::new())),
             pronunciation_thread: Arc::new(Mutex::new(None)),
             pronunciation_recordings_dir,
@@ -425,7 +425,7 @@ impl AudioRecordingManager {
         let bt_active = manager.is_bluetooth_output_active();
         if bt_active {
             info!("Bluetooth output device detected at startup — enabling mic stream keep-alive to prevent audio dropouts");
-            *lock_mutex(&manager.bt_keep_alive, "bt_keep_alive") = true;
+            manager.bt_keep_alive.store(true, Ordering::Release);
             manager.start_microphone_stream()?;
         } else if matches!(mode, MicrophoneMode::AlwaysOn) {
             manager.start_microphone_stream()?;
@@ -474,7 +474,7 @@ impl AudioRecordingManager {
                 }
 
                 // Check if stream is open
-                let stream_open = *lock_mutex(&is_open, "is_open");
+                let stream_open = is_open.load(Ordering::Acquire);
                 if !stream_open {
                     continue;
                 }
@@ -504,12 +504,8 @@ impl AudioRecordingManager {
                         let was_recording = rm_guard.is_recording();
 
                         // Stop the current stream
-                        {
-                            let open = lock_mutex(&rm_guard.is_open, "is_open");
-                            if *open {
-                                drop(open);
-                                rm_guard.stop_microphone_stream();
-                            }
+                        if rm_guard.is_open.load(Ordering::Acquire) {
+                            rm_guard.stop_microphone_stream();
                         }
 
                         // Only show USB-cycling overlay if user was actively recording.
@@ -794,7 +790,7 @@ impl AudioRecordingManager {
             // under an active recording.
             let state = lock_mutex(&rm_guard.state, "state");
             // Never close the stream if BT keep-alive is active
-            if *lock_mutex(&bt_keep_alive, "bt_keep_alive") {
+            if bt_keep_alive.load(Ordering::Acquire) {
                 debug!("Skipping lazy close: BT keep-alive is active");
                 return;
             }
@@ -817,21 +813,18 @@ impl AudioRecordingManager {
     /// Applies mute if mute_while_recording is enabled and stream is open
     pub fn apply_mute(&self) {
         let settings = get_settings(&self.app_handle);
-        let mut did_mute_guard = lock_mutex(&self.did_mute, "did_mute");
 
-        if settings.mute_while_recording && *lock_mutex(&self.is_open, "is_open") {
+        if settings.mute_while_recording && self.is_open.load(Ordering::Acquire) {
             set_mute(true);
-            *did_mute_guard = true;
+            self.did_mute.store(true, Ordering::Release);
             debug!("Mute applied");
         }
     }
 
     /// Removes mute if it was applied
     pub fn remove_mute(&self) {
-        let mut did_mute_guard = lock_mutex(&self.did_mute, "did_mute");
-        if *did_mute_guard {
+        if self.did_mute.swap(false, Ordering::AcqRel) {
             set_mute(false);
-            *did_mute_guard = false;
             debug!("Mute removed");
         }
     }
@@ -951,15 +944,14 @@ impl AudioRecordingManager {
         drop(recorder_opt);
 
         // Reset the is_open flag since we just recreated the recorder
-        *lock_mutex(&self.is_open, "is_open") = false;
+        self.is_open.store(false, Ordering::Release);
 
         info!("AudioRecorder recreated successfully");
         Ok(())
     }
 
     fn start_microphone_stream_inner(&self) -> Result<(), anyhow::Error> {
-        let mut open_flag = lock_mutex(&self.is_open, "is_open");
-        if *open_flag {
+        if self.is_open.load(Ordering::Acquire) {
             // Stream is already open, but check if the device has changed.
             // This can happen after USB cycling where the stream was opened
             // with a fallback device (e.g., webcam) and now the configured
@@ -1003,12 +995,14 @@ impl AudioRecordingManager {
                     "Device changed from {:?} to {:?}, reopening stream",
                     current_device_name, configured_device_name
                 );
-                drop(open_flag); // Release lock before stopping
                 self.stop_microphone_stream();
                 // Recreate recorder to get fresh visualizer with correct sample rate
                 self.recreate_recorder()?;
-                // Re-acquire lock
-                open_flag = lock_mutex(&self.is_open, "is_open");
+                // Re-check is_open after recreation
+                if self.is_open.load(Ordering::Acquire) {
+                    debug!("Microphone stream already active after device change");
+                    return Ok(());
+                }
             } else {
                 debug!("Microphone stream already active");
                 return Ok(());
@@ -1018,8 +1012,7 @@ impl AudioRecordingManager {
         let start_time = Instant::now();
 
         // Don't mute immediately - caller will handle muting after audio feedback
-        let mut did_mute_guard = lock_mutex(&self.did_mute, "did_mute");
-        *did_mute_guard = false;
+        self.did_mute.store(false, Ordering::Release);
 
         // Get the selected device from settings, considering clamshell mode
         let settings = get_settings(&self.app_handle);
@@ -1046,7 +1039,7 @@ impl AudioRecordingManager {
                 .map_err(|e| anyhow::anyhow!("Failed to open recorder: {}", e))?;
         }
 
-        *open_flag = true;
+        self.is_open.store(true, Ordering::Release);
         // This timing covers through cpal's stream.play() returning — i.e. the
         // point cpal surfaces as "stream running." It does NOT guarantee the
         // host audio device is producing samples yet; the first input callback
@@ -1060,26 +1053,23 @@ impl AudioRecordingManager {
     }
 
     pub fn stop_microphone_stream(&self) {
-        let mut open_flag = lock_mutex(&self.is_open, "is_open");
-        if !*open_flag {
+        if !self.is_open.load(Ordering::Acquire) {
             return;
         }
 
-        let mut did_mute_guard = lock_mutex(&self.did_mute, "did_mute");
-        if *did_mute_guard {
+        if self.did_mute.swap(false, Ordering::AcqRel) {
             set_mute(false);
         }
-        *did_mute_guard = false;
 
         if let Some(rec) = lock_mutex(&self.recorder, "recorder").as_mut() {
             // If still recording, stop first and reset state.
-            if *lock_mutex(&self.is_recording, "is_recording") {
+            if self.is_recording.load(Ordering::Acquire) {
                 if let Err(e) = rec.stop() {
                     warn!("Error stopping recorder during stream shutdown: {}", e);
                     // Continue with close — the recorder may be in an inconsistent
                     // state, but we still want to release resources.
                 }
-                *lock_mutex(&self.is_recording, "is_recording") = false;
+                self.is_recording.store(false, Ordering::Release);
             }
             // Reset state to Idle regardless of stop outcome
             *lock_mutex(&self.state, "state") = RecordingState::Idle;
@@ -1090,7 +1080,7 @@ impl AudioRecordingManager {
             }
         }
 
-        *open_flag = false;
+        self.is_open.store(false, Ordering::Release);
         debug!("Microphone stream stopped");
     }
 
@@ -1102,7 +1092,7 @@ impl AudioRecordingManager {
         match (cur_mode, &new_mode) {
             (MicrophoneMode::AlwaysOn, MicrophoneMode::OnDemand) => {
                 // Don't close the stream if BT keep-alive is active
-                if *lock_mutex(&self.bt_keep_alive, "bt_keep_alive") {
+                if self.bt_keep_alive.load(Ordering::Acquire) {
                     info!("BT keep-alive active: keeping mic stream open despite mode switch to OnDemand");
                 } else if matches!(*lock_mutex(&self.state, "state"), RecordingState::Idle) {
                     self.close_generation.fetch_add(1, Ordering::SeqCst);
@@ -1111,7 +1101,7 @@ impl AudioRecordingManager {
             }
             (MicrophoneMode::OnDemand, MicrophoneMode::AlwaysOn) => {
                 // Stream may already be open from BT keep-alive
-                if !*lock_mutex(&self.is_open, "is_open") {
+                if !self.is_open.load(Ordering::Acquire) {
                     self.close_generation.fetch_add(1, Ordering::SeqCst);
                     self.start_microphone_stream()?;
                 }
@@ -1140,7 +1130,7 @@ impl AudioRecordingManager {
         // State lock is released here. The actual state transition happens
         // below, after the potentially-slow liveness check.
 
-        let bt_keep_alive = *lock_mutex(&self.bt_keep_alive, "bt_keep_alive");
+        let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
         let is_always_on = matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::AlwaysOn);
 
         // In on-demand mode (or when BT keep-alive is active), ensure the stream is open.
@@ -1151,7 +1141,7 @@ impl AudioRecordingManager {
         // now configured device has returned).
         let need_stream_open = if is_always_on || bt_keep_alive {
             // Always-on mode: check if stream is alive AND if device is correct
-            let is_open = *lock_mutex(&self.is_open, "is_open");
+            let is_open = self.is_open.load(Ordering::Acquire);
 
             if !is_open {
                 // Stream is not open at all — need to restart it
@@ -1242,7 +1232,7 @@ impl AudioRecordingManager {
             self.close_generation.fetch_add(1, Ordering::SeqCst);
 
             // Stop the stream if it's open (to clean up any stale state)
-            if *lock_mutex(&self.is_open, "is_open") {
+            if self.is_open.load(Ordering::Acquire) {
                 self.stop_microphone_stream();
             }
 
@@ -1278,7 +1268,7 @@ impl AudioRecordingManager {
         if let RecordingState::Idle = *state {
             if let Some(rec) = lock_mutex(&self.recorder, "recorder").as_ref() {
                 if rec.start().is_ok() {
-                    *lock_mutex(&self.is_recording, "is_recording") = true;
+                    self.is_recording.store(true, Ordering::Release);
                     *state = RecordingState::Recording {
                         binding_id: binding_id.to_string(),
                         start_time: Instant::now(),
@@ -1295,12 +1285,12 @@ impl AudioRecordingManager {
 
     pub fn update_selected_device(&self) -> Result<(), anyhow::Error> {
         // If currently open, restart the microphone stream to use the new device
-        if *lock_mutex(&self.is_open, "is_open") {
+        if self.is_open.load(Ordering::Acquire) {
             self.close_generation.fetch_add(1, Ordering::SeqCst);
             self.stop_microphone_stream();
             // Re-evaluate BT keep-alive after device change
             self.refresh_bluetooth_keep_alive();
-            if *lock_mutex(&self.bt_keep_alive, "bt_keep_alive")
+            if self.bt_keep_alive.load(Ordering::Acquire)
                 || matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::AlwaysOn)
             {
                 self.start_microphone_stream()?;
@@ -1315,22 +1305,19 @@ impl AudioRecordingManager {
     /// the stream if we're in OnDemand mode and not recording.
     pub fn refresh_bluetooth_keep_alive(&self) {
         let bt_active = self.is_bluetooth_output_active();
-        let mut bt_keep_alive = lock_mutex(&self.bt_keep_alive, "bt_keep_alive");
 
-        if bt_active && !*bt_keep_alive {
+        if bt_active && !self.bt_keep_alive.load(Ordering::Acquire) {
             info!("Bluetooth output device detected — enabling mic stream keep-alive to prevent audio dropouts");
-            *bt_keep_alive = true;
-            drop(bt_keep_alive);
+            self.bt_keep_alive.store(true, Ordering::Release);
             // Open the mic stream if not already open
-            if !*lock_mutex(&self.is_open, "is_open") {
+            if !self.is_open.load(Ordering::Acquire) {
                 if let Err(e) = self.start_microphone_stream() {
                     error!("Failed to open mic stream for BT keep-alive: {}", e);
                 }
             }
-        } else if !bt_active && *bt_keep_alive {
+        } else if !bt_active && self.bt_keep_alive.load(Ordering::Acquire) {
             info!("Bluetooth output device no longer detected — disabling mic stream keep-alive");
-            *bt_keep_alive = false;
-            drop(bt_keep_alive);
+            self.bt_keep_alive.store(false, Ordering::Release);
             // Close the stream if we're in OnDemand mode and not recording
             if matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::OnDemand)
                 && !self.is_recording()
@@ -1402,7 +1389,7 @@ impl AudioRecordingManager {
                     *state = RecordingState::Idle;
                 }
 
-                *lock_mutex(&self.is_recording, "is_recording") = false;
+                self.is_recording.store(false, Ordering::Release);
 
                 // Check for very low audio levels (potential dead/muted mic)
                 // This detects cases where the mic "works" but captures only silence.
@@ -1450,7 +1437,7 @@ impl AudioRecordingManager {
                 // alive permanently to prevent the A2DP↔HFP profile switch that
                 // causes audio dropouts on BT headphones.
                 if matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::OnDemand) {
-                    let bt_keep_alive = *lock_mutex(&self.bt_keep_alive, "bt_keep_alive");
+                    let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
                     if bt_keep_alive {
                         debug!("BT keep-alive active: keeping mic stream open");
                     } else if get_settings(&self.app_handle).lazy_stream_close {
@@ -1491,7 +1478,7 @@ impl AudioRecordingManager {
 
     /// Check if the microphone stream is open (always-on mode or BT keep-alive)
     pub fn is_stream_open(&self) -> bool {
-        *lock_mutex(&self.is_open, "is_open")
+        self.is_open.load(Ordering::Acquire)
     }
 
     /// Check if always-on microphone mode is enabled
@@ -1501,7 +1488,7 @@ impl AudioRecordingManager {
 
     /// Check if Bluetooth keep-alive is active
     pub fn is_bt_keep_alive(&self) -> bool {
-        *lock_mutex(&self.bt_keep_alive, "bt_keep_alive")
+        self.bt_keep_alive.load(Ordering::Acquire)
     }
 
     /// Cancel any ongoing recording without returning audio samples
@@ -1518,14 +1505,14 @@ impl AudioRecordingManager {
                 }
             }
 
-            *lock_mutex(&self.is_recording, "is_recording") = false;
+            self.is_recording.store(false, Ordering::Release);
 
             // In on-demand mode, decide whether to close the mic stream.
 
             // When a Bluetooth output device is active, we keep the stream
             // alive permanently to prevent the A2DP↔HFP profile switch.
             if matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::OnDemand) {
-                let bt_keep_alive = *lock_mutex(&self.bt_keep_alive, "bt_keep_alive");
+                let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
                 if bt_keep_alive {
                     debug!("BT keep-alive active: keeping mic stream open");
                 } else if get_settings(&self.app_handle).lazy_stream_close {
@@ -1543,12 +1530,12 @@ impl AudioRecordingManager {
     /// Returns Ok(()) if the stream was restarted or wasn't needed, Err if restart failed.
     pub fn restart_microphone_if_needed(&self) -> Result<(), anyhow::Error> {
         let is_always_on = matches!(*lock_mutex(&self.mode, "mode"), MicrophoneMode::AlwaysOn);
-        let bt_keep_alive = *lock_mutex(&self.bt_keep_alive, "bt_keep_alive");
+        let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
 
         if is_always_on || bt_keep_alive {
             info!("Restarting microphone stream after USB power cycle");
             // Stop the current stream if open
-            if *lock_mutex(&self.is_open, "is_open") {
+            if self.is_open.load(Ordering::Acquire) {
                 self.stop_microphone_stream();
             }
             // Recreate the recorder to discard stale CPAL handles
@@ -1565,7 +1552,7 @@ impl AudioRecordingManager {
     /// Returns (is_open, is_alive).
     /// This is useful for diagnostics and recovery checks.
     pub fn check_stream_health(&self) -> (bool, bool) {
-        let is_open = *lock_mutex(&self.is_open, "is_open");
+        let is_open = self.is_open.load(Ordering::Acquire);
         if !is_open {
             return (false, false);
         }
