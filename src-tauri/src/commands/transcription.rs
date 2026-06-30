@@ -1,9 +1,9 @@
 use crate::managers::transcription::TranscriptionManager;
-use crate::mutex_util::lock_mutex;
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
 use serde::Serialize;
 use specta::Type;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 #[derive(Serialize, Type)]
@@ -34,7 +34,7 @@ pub fn set_repetition_suppression_level(app: AppHandle, level: u8) {
 pub fn get_model_load_status(
     transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
 ) -> Result<ModelLoadStatus, String> {
-    let tm = lock_mutex(&transcription_manager, "TranscriptionManager");
+    let tm = transcription_manager.lock();
     Ok(ModelLoadStatus {
         is_loaded: tm.is_model_loaded(),
         current_model: tm.get_current_model(),
@@ -48,7 +48,6 @@ pub fn unload_model_manually(
 ) -> Result<(), String> {
     transcription_manager
         .lock()
-        .unwrap()
         .unload_model()
         .map_err(|e| format!("Failed to unload model: {}", e))
 }

@@ -34,7 +34,8 @@ use specta::Type;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -231,7 +232,6 @@ impl HandyKeysState {
         let (tx, rx) = mpsc::channel();
         self.command_sender
             .lock()
-            .map_err(|_| "Failed to lock command_sender")?
             .send(ManagerCommand::Register {
                 binding_id: binding.id.clone(),
                 hotkey_string: binding.current_binding.clone(),
@@ -248,7 +248,6 @@ impl HandyKeysState {
         let (tx, rx) = mpsc::channel();
         self.command_sender
             .lock()
-            .map_err(|_| "Failed to lock command_sender")?
             .send(ManagerCommand::Unregister {
                 binding_id: binding.id.clone(),
                 response: tx,
@@ -270,17 +269,11 @@ impl HandyKeysState {
             .map_err(|e| format!("Failed to create keyboard listener: {}", e))?;
 
         {
-            let mut recording = self
-                .recording_listener
-                .lock()
-                .map_err(|_| "Failed to lock recording_listener")?;
+            let mut recording = self.recording_listener.lock();
             *recording = Some(listener);
         }
         {
-            let mut binding = self
-                .recording_binding_id
-                .lock()
-                .map_err(|_| "Failed to lock recording_binding_id")?;
+            let mut binding = self.recording_binding_id.lock();
             *binding = Some(binding_id);
         }
 
@@ -306,8 +299,8 @@ impl HandyKeysState {
                     Some(s) => s,
                     None => break,
                 };
-                let listener = state.recording_listener.lock().ok();
-                listener.as_ref().and_then(|l| l.as_ref()?.try_recv())
+                let listener = state.recording_listener.lock();
+                listener.as_ref().and_then(|l| l.try_recv())
             };
 
             if let Some(key_event) = event {
@@ -340,17 +333,11 @@ impl HandyKeysState {
         self.recording_running.store(false, Ordering::SeqCst);
 
         {
-            let mut recording = self
-                .recording_listener
-                .lock()
-                .map_err(|_| "Failed to lock recording_listener")?;
+            let mut recording = self.recording_listener.lock();
             *recording = None;
         }
         {
-            let mut binding = self
-                .recording_binding_id
-                .lock()
-                .map_err(|_| "Failed to lock recording_binding_id")?;
+            let mut binding = self.recording_binding_id.lock();
             *binding = None;
         }
 
@@ -366,12 +353,14 @@ impl Drop for HandyKeysState {
         self.is_recording.store(false, Ordering::SeqCst);
 
         // Send shutdown command
-        if let Ok(sender) = self.command_sender.lock() {
+        {
+            let sender = self.command_sender.lock();
             let _ = sender.send(ManagerCommand::Shutdown);
         }
 
         // Wait for the manager thread to finish
-        if let Ok(mut handle) = self.thread_handle.lock() {
+        {
+            let mut handle = self.thread_handle.lock();
             if let Some(h) = handle.take() {
                 let _ = h.join();
             }

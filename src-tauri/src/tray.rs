@@ -1,11 +1,11 @@
 use crate::managers::history::{HistoryEntry, HistoryManager};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
-use crate::mutex_util::lock_mutex;
 use crate::settings;
 use crate::tray_i18n::get_tray_translations;
 use log::{error, info, warn};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIcon;
@@ -71,13 +71,7 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
 pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
     // Acquire the global tray lock to prevent concurrent RefCell borrows
     // This prevents the "RefCell already borrowed" panic from tray-icon
-    let _guard = match TRAY_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("TRAY_LOCK mutex poisoned, recovering");
-            poisoned.into_inner()
-        }
-    };
+    let _guard = TRAY_LOCK.lock();
 
     let Some(tray) = app.try_state::<TrayIcon>() else {
         warn!("TrayIcon not available for icon change");
@@ -156,7 +150,7 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
         None::<&str>,
     )
     .expect("failed to create copy last transcript item");
-    let model_loaded = app.try_state::<Arc<Mutex<TranscriptionManager>>>().map(|tm| lock_mutex(&tm, "TranscriptionManager").is_model_loaded()).unwrap_or(false);
+    let model_loaded = app.try_state::<Arc<Mutex<TranscriptionManager>>>().map(|tm| tm.lock().is_model_loaded()).unwrap_or(false);
     let quit_i = MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator)
         .expect("failed to create quit item");
     let separator = || PredefinedMenuItem::separator(app).expect("failed to create separator");
@@ -256,13 +250,7 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
 /// concurrent RefCell borrows that would cause panics.
 pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
     // Acquire the global tray lock to prevent concurrent RefCell borrows
-    let _guard = match TRAY_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("TRAY_LOCK mutex poisoned in update_tray_menu, recovering");
-            poisoned.into_inner()
-        }
-    };
+    let _guard = TRAY_LOCK.lock();
 
     update_tray_menu_internal(app, state, locale);
 }
@@ -276,13 +264,7 @@ fn last_transcript_text(entry: &HistoryEntry) -> &str {
 
 pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
     // Acquire the global tray lock to prevent concurrent RefCell borrows
-    let _guard = match TRAY_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("TRAY_LOCK mutex poisoned, recovering");
-            poisoned.into_inner()
-        }
-    };
+    let _guard = TRAY_LOCK.lock();
 
     let Some(tray) = app.try_state::<TrayIcon>() else {
         warn!("TrayIcon not available");

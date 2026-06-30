@@ -2,11 +2,11 @@ use crate::managers::model::{
     BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager,
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
-use crate::mutex_util::lock_mutex;
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
 use crate::managers::history::HistoryManager;
 use log::{info, warn};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
@@ -74,7 +74,6 @@ pub async fn delete_model(
     if settings.selected_model == model_id {
         transcription_manager
             .lock()
-            .unwrap()
             .unload_model()
             .map_err(|e| format!("Failed to unload model: {}", e))?;
 
@@ -109,7 +108,6 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     // flag on drop (including early returns, errors, and panics).
     let _loading_guard = transcription_manager
         .lock()
-        .unwrap()
         .try_start_loading()
         .ok_or_else(|| "Model load already in progress".to_string())?;
 
@@ -172,7 +170,7 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     }
 
     // Load the model. On failure, revert the persisted selection.
-    if let Err(e) = lock_mutex(&transcription_manager, "TranscriptionManager").load_model(model_id) {
+    if let Err(e) = transcription_manager.lock().load_model(model_id) {
         let mut settings = get_settings(app);
         settings.selected_model = old_model;
         write_settings(app, settings);
@@ -205,7 +203,7 @@ pub async fn get_current_model(app_handle: AppHandle) -> Result<String, String> 
 pub async fn get_transcription_model_status(
     transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
 ) -> Result<Option<String>, String> {
-    Ok(lock_mutex(&transcription_manager, "TranscriptionManager").get_current_model())
+    Ok(transcription_manager.lock().get_current_model())
 }
 
 #[tauri::command]
@@ -218,7 +216,7 @@ pub async fn is_model_loading(
     // it returned true when NO model was loaded (including after a model
     // finished loading and was ready to use), which is the opposite of what
     // the function name and UI consumers expect.
-    Ok(lock_mutex(&transcription_manager, "TranscriptionManager").is_model_loading())
+    Ok(transcription_manager.lock().is_model_loading())
 }
 
 #[tauri::command]
@@ -420,7 +418,7 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
         );
 
         // Load the model
-        if let Err(e) = lock_mutex(&transcription_manager, "TranscriptionManager").load_model(&model.id) {
+        if let Err(e) = transcription_manager.lock().load_model(&model.id) {
             warn!(
                 "Skipping model {} in benchmark: failed to load: {}",
                 model.id, e
@@ -452,7 +450,7 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
 
         for (clip_idx, clip) in audio_clips.iter().enumerate() {
             let start = std::time::Instant::now();
-            match lock_mutex(&transcription_manager, "TranscriptionManager").transcribe_for_benchmark(clip.clone()) {
+            match transcription_manager.lock().transcribe_for_benchmark(clip.clone()) {
                 Ok(text) => {
                     // Check if transcription produced actual content (not empty/whitespace)
                     if text.trim().is_empty() {
@@ -510,7 +508,7 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
         }
 
         // Unload the model to free memory before loading the next one
-        let _ = lock_mutex(&transcription_manager, "TranscriptionManager").unload_model();
+        let _ = transcription_manager.lock().unload_model();
     }
 
     // Update the model manager with all new scores (which triggers re-scoring across ALL models)

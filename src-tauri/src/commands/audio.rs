@@ -3,13 +3,13 @@ use crate::audio_toolkit::audio::{list_input_devices, list_output_devices};
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
-use crate::mutex_util::lock_mutex;
 use crate::settings::{get_settings, write_settings};
 use crate::usb_watchdog;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -203,7 +203,7 @@ pub fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), Str
         MicrophoneMode::OnDemand
     };
 
-    let result = lock_mutex(&rm, "AudioRecordingManager").update_mode(new_mode);
+    let result = rm.lock().update_mode(new_mode);
     result.map_err(|e| format!("Failed to update microphone mode: {}", e))
 }
 
@@ -250,7 +250,7 @@ pub fn set_selected_microphone(app: AppHandle, device_name: String) -> Result<()
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
         return Err("AudioRecordingManager not available".to_string());
     };
-    lock_mutex(&rm, "AudioRecordingManager").update_selected_device()
+    rm.lock().update_selected_device()
         .map_err(|e| format!("Failed to update selected device: {}", e))?;
 
     Ok(())
@@ -350,7 +350,7 @@ pub fn is_recording(app: AppHandle) -> bool {
     let Some(audio_manager) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
         return false;
     };
-    let result = lock_mutex(&audio_manager, "AudioRecordingManager").is_recording();
+    let result = audio_manager.lock().is_recording();
     result
 }
 
@@ -385,7 +385,7 @@ pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Res
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
         return Err("AudioRecordingManager not available".to_string());
     };
-    lock_mutex(&rm, "AudioRecordingManager").usb_watchdog.update_config(enabled, device_name);
+    rm.lock().usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
 }
@@ -406,7 +406,7 @@ pub fn change_usb_watchdog_device_name_setting(
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
         return Err("AudioRecordingManager not available".to_string());
     };
-    lock_mutex(&rm, "AudioRecordingManager").usb_watchdog.update_config(enabled, device_name);
+    rm.lock().usb_watchdog.update_config(enabled, device_name);
 
     Ok(())
 }
@@ -433,7 +433,7 @@ pub fn trigger_usb_power_cycle(app: AppHandle) -> Result<bool, String> {
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
         return Err("AudioRecordingManager not available".to_string());
     };
-    let guard = lock_mutex(&rm, "AudioRecordingManager");
+    let guard = rm.lock();
     let result = guard.usb_watchdog.force_power_cycle();
     Ok(result)
 }
@@ -482,11 +482,11 @@ pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
     };
 
     // Don't interfere with an active transcription recording
-    if lock_mutex(&rm, "AudioRecordingManager").is_recording() {
+    if rm.lock().is_recording() {
         return Err("A recording is already in progress".to_string());
     }
 
-    lock_mutex(&rm, "AudioRecordingManager").try_start_recording(PRONUNCIATION_BINDING_ID)
+    rm.lock().try_start_recording(PRONUNCIATION_BINDING_ID)
         .map_err(|e| format!("Failed to start pronunciation recording: {}", e))?;
 
     info!("Pronunciation recording started");
@@ -504,12 +504,12 @@ pub fn cancel_pronunciation_recording(app: AppHandle) -> Result<(), String> {
     };
 
     // Stop recording and discard audio
-    let _ = lock_mutex(&rm, "AudioRecordingManager").stop_recording(PRONUNCIATION_BINDING_ID);
+    let _ = rm.lock().stop_recording(PRONUNCIATION_BINDING_ID);
 
     // Clear any pending pronunciation data
     {
-        let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
-        let mut pending = lock_mutex(&rm_guard.pending_pronunciation, "pending_pronunciation");
+        let rm_guard = rm.lock();
+        let mut pending = rm_guard.pending_pronunciation.lock();
         pending.clear();
     }
 
@@ -535,7 +535,6 @@ pub async fn stop_and_schedule_pronunciation(
     // Stop recording and get audio samples
     let samples = rm
         .lock()
-        .unwrap()
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 
@@ -550,8 +549,8 @@ pub async fn stop_and_schedule_pronunciation(
 
     // Store the audio + word for deferred processing
     {
-        let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
-        let mut pending = lock_mutex(&rm_guard.pending_pronunciation, "pending_pronunciation");
+        let rm_guard = rm.lock();
+        let mut pending = rm_guard.pending_pronunciation.lock();
         pending.push_back((
             samples,
             canonical_word.clone(),
@@ -567,8 +566,8 @@ pub async fn stop_and_schedule_pronunciation(
 
     // Cancel any existing processing thread
     {
-        let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
-        let mut thread_handle = lock_mutex(&rm_guard.pronunciation_thread, "pronunciation_thread");
+        let rm_guard = rm.lock();
+        let mut thread_handle = rm_guard.pronunciation_thread.lock();
         if let Some(_handle) = thread_handle.take() {
             // We can't cancel a thread directly, but we can let it run and it will
             // check if new data is available
@@ -608,8 +607,8 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
             warn!("AudioRecordingManager not available, aborting pronunciation processing");
             return;
         };
-        let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
-        let pending = lock_mutex(&rm_guard.pending_pronunciation, "pending_pronunciation");
+        let rm_guard = rm.lock();
+        let pending = rm_guard.pending_pronunciation.lock();
         if !matches!(pending.front(), Some((_, w, _, _)) if w == canonical_word) {
             info!(
                 "Pronunciation data changed or cleared, skipping processing for '{}'",
@@ -645,8 +644,8 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
         warn!("AudioRecordingManager not available, aborting pronunciation processing");
         return;
     };
-    let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
-    let pending = lock_mutex(&rm_guard.pending_pronunciation, "pending_pronunciation");
+    let rm_guard = rm.lock();
+    let pending = rm_guard.pending_pronunciation.lock();
     let (samples, word) = match pending.front() {
         Some((s, w, _, _)) if w == canonical_word => (s.clone(), w.clone()),
         _ => {
@@ -714,8 +713,8 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
                 warn!("AudioRecordingManager not available, cannot clear pending pronunciation");
                 return;
             };
-            let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
-            let mut pending = lock_mutex(&rm_guard.pending_pronunciation, "pending_pronunciation");
+            let rm_guard = rm.lock();
+            let mut pending = rm_guard.pending_pronunciation.lock();
             pending.pop_front();
         }
         Err(e) => {
@@ -739,8 +738,8 @@ fn process_pronunciation_deferred(app: &AppHandle, canonical_word: &str) {
         warn!("AudioRecordingManager not available, cannot clear pronunciation thread handle");
         return;
     };
-    let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
-    let mut thread_handle = lock_mutex(&rm_guard.pronunciation_thread, "pronunciation_thread");
+    let rm_guard = rm.lock();
+    let mut thread_handle = rm_guard.pronunciation_thread.lock();
     *thread_handle = None;
 }
 
@@ -793,14 +792,13 @@ fn process_pronunciation_with_all_models(
 
         let transcription_result = thread::spawn(move || {
             // Load the specific model
-            if let Err(e) = lock_mutex(&tm_clone, "TranscriptionManager").load_model(&model_id_clone) {
+            if let Err(e) = tm_clone.lock().load_model(&model_id_clone) {
                 return Err(format!("Failed to load model {}: {}", model_id_clone, e));
             }
 
             // Transcribe with this model
             tm_clone
                 .lock()
-                .unwrap()
                 .transcribe(samples_clone)
                 .map_err(|e| format!("Transcription failed: {}", e))
         })
@@ -865,7 +863,6 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
     // Stop recording and get audio samples
     let samples = rm
         .lock()
-        .unwrap()
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 
@@ -941,14 +938,13 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
 
         let transcription_result = tauri::async_runtime::spawn_blocking(move || {
             // Load the specific model
-            if let Err(e) = lock_mutex(&tm_clone, "TranscriptionManager").load_model(&model_id_clone) {
+            if let Err(e) = tm_clone.lock().load_model(&model_id_clone) {
                 return Err(format!("Failed to load model {}: {}", model_id_clone, e));
             }
 
             // Transcribe with this model
             tm_clone
                 .lock()
-                .unwrap()
                 .transcribe(samples_clone)
                 .map_err(|e| format!("Transcription failed with model {}: {}", model_id_clone, e))
         })
@@ -1013,7 +1009,7 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
         let original_model_clone = original_model.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || {
             info!("Restoring original model: {}", original_model_clone);
-            lock_mutex(&tm_restore, "TranscriptionManager").load_model(&original_model_clone)
+            tm_restore.lock().load_model(&original_model_clone)
         })
         .await;
     }

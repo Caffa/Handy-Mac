@@ -1,6 +1,6 @@
 use enigo::{Enigo, Key, Keyboard, Mouse, Settings};
 use log::{error, info};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::{AppHandle, Manager};
 
 /// Wrapper for Enigo to store in Tauri's managed state.
@@ -27,20 +27,11 @@ impl EnigoState {
 /// Returns None if the state is not available or if getting the location fails.
 pub fn get_cursor_position(app_handle: &AppHandle) -> Option<(i32, i32)> {
     let enigo_state = app_handle.try_state::<EnigoState>()?;
-    let guard = enigo_state.0.lock();
-    match guard {
-        Ok(enigo) => match enigo.location() {
-            Ok(loc) => Some(loc),
-            Err(e) => {
-                error!("Failed to get cursor position: {}", e);
-                None
-            }
-        },
+    let enigo = enigo_state.0.lock();
+    match enigo.location() {
+        Ok(loc) => Some(loc),
         Err(e) => {
-            error!(
-                "Enigo mutex poisoned while getting cursor position: {:?}",
-                e
-            );
+            error!("Failed to get cursor position: {}", e);
             None
         }
     }

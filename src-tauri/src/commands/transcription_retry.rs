@@ -4,7 +4,8 @@ use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::managers::transcription_retry::{RetryableTranscription, TranscriptionFailure, TranscriptionRetryQueue};
 use tauri::{AppHandle, Manager};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 /// Get all pending retry entries.
 #[tauri::command]
@@ -15,8 +16,7 @@ pub async fn get_retry_queue(app: AppHandle) -> Result<Vec<RetryableTranscriptio
     };
     let queue = queue_state
         .inner()
-        .lock()
-        .unwrap();
+        .lock();
     Ok(queue.get_all_pending())
 }
 
@@ -29,8 +29,7 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
     };
     let queue_guard = queue_state
         .inner()
-        .lock()
-        .unwrap();
+        .lock();
     
     // Get the entry
     let entries = queue_guard.get_all_pending();
@@ -48,8 +47,7 @@ pub async fn retry_transcription(app: AppHandle, entry_id: String) -> Result<(),
         .try_state::<Arc<Mutex<TranscriptionManager>>>()
         .ok_or_else(|| "TranscriptionManager not available".to_string())?
         .inner()
-        .lock()
-        .unwrap();
+        .lock();
     
     // Try transcription
     let result = tm_guard.transcribe(audio_samples);
@@ -107,8 +105,7 @@ pub async fn remove_from_retry_queue(app: AppHandle, entry_id: String) -> Result
     };
     let queue = queue_state
         .inner()
-        .lock()
-        .unwrap();
+        .lock();
     
     queue
         .remove_entry(&entry_id)
@@ -124,8 +121,7 @@ pub async fn clear_retry_queue(app: AppHandle) -> Result<(), String> {
     };
     let queue = queue_state
         .inner()
-        .lock()
-        .unwrap();
+        .lock();
     
     queue
         .clear_all()
@@ -141,8 +137,7 @@ pub async fn get_retry_queue_count(app: AppHandle) -> Result<usize, String> {
     };
     let queue = queue_state
         .inner()
-        .lock()
-        .unwrap();
+        .lock();
     
     Ok(queue.count())
 }
