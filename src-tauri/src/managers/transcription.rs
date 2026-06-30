@@ -5,6 +5,7 @@ use crate::audio_toolkit::{
 use crate::errors::{AppError, AppResult};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
+use crate::mutex_util::lock_mutex;
 use crate::settings::{
     get_settings, ModelUnloadTimeout, OrtAcceleratorSetting, WhisperAcceleratorSetting,
     WordCorrectionMode,
@@ -78,7 +79,7 @@ pub struct LoadingGuard {
 
 impl Drop for LoadingGuard {
     fn drop(&mut self) {
-        let mut is_loading = self.is_loading.lock().unwrap();
+        let mut is_loading = lock_mutex(&self.is_loading, "LoadingGuard::is_loading");
         *is_loading = false;
         self.loading_condvar.notify_all();
     }
@@ -157,7 +158,7 @@ impl TranscriptionManager {
                     // model is never unloaded mid-session.
                     let is_recording = app_handle_cloned
                         .try_state::<Arc<Mutex<AudioRecordingManager>>>()
-                        .map_or(false, |a| a.lock().unwrap().is_recording());
+                        .map_or(false, |a| lock_mutex(&a, "AudioRecordingManager").is_recording());
                     if is_recording {
                         manager_cloned.touch_activity();
                         continue;
@@ -196,7 +197,7 @@ impl TranscriptionManager {
                 }
                 debug!("Idle watcher thread shutting down gracefully");
             });
-            *manager.watcher_handle.lock().unwrap() = Some(handle);
+            *lock_mutex(&manager.watcher_handle, "watcher_handle") = Some(handle);
         }
 
         Ok(manager)
@@ -204,10 +205,7 @@ impl TranscriptionManager {
 
     /// Lock the engine mutex, recovering from poison if a previous transcription panicked.
     fn lock_engine(&self) -> MutexGuard<'_, Option<LoadedEngine>> {
-        self.engine.lock().unwrap_or_else(|poisoned| {
-            warn!("Engine mutex was poisoned by a previous panic, recovering");
-            poisoned.into_inner()
-        })
+        lock_mutex(&self.engine, "TranscriptionManager::engine")
     }
 
     pub fn is_model_loaded(&self) -> bool {
@@ -220,7 +218,7 @@ impl TranscriptionManager {
     /// clear the flag and wake waiters. Returns `None` if a load is already in
     /// progress.
     pub fn try_start_loading(&self) -> Option<LoadingGuard> {
-        let mut is_loading = self.is_loading.lock().unwrap();
+        let mut is_loading = lock_mutex(&self.is_loading, "TranscriptionManager::is_loading");
         if *is_loading {
             return None;
         }
@@ -241,7 +239,7 @@ impl TranscriptionManager {
             *engine = None;
         }
         {
-            let mut current_model = self.current_model_id.lock().unwrap();
+            let mut current_model = lock_mutex(&self.current_model_id, "TranscriptionManager::current_model_id");
             *current_model = None;
         }
 
@@ -485,7 +483,7 @@ impl TranscriptionManager {
             *engine = Some(loaded_engine);
         }
         {
-            let mut current_model = self.current_model_id.lock().unwrap();
+            let mut current_model = lock_mutex(&self.current_model_id, "TranscriptionManager::current_model_id");
             *current_model = Some(model_id.to_string());
         }
 
@@ -532,13 +530,13 @@ impl TranscriptionManager {
     }
 
     pub fn get_current_model(&self) -> Option<String> {
-        let current_model = self.current_model_id.lock().unwrap();
+        let current_model = lock_mutex(&self.current_model_id, "TranscriptionManager::current_model_id");
         current_model.clone()
     }
 
     /// Returns true if a model is currently being loaded in the background.
     pub fn is_model_loading(&self) -> bool {
-        let is_loading = self.is_loading.lock().unwrap();
+        let is_loading = lock_mutex(&self.is_loading, "TranscriptionManager::is_loading");
         *is_loading
     }
 
@@ -558,7 +556,7 @@ impl TranscriptionManager {
         // Uses Condvar wait_timeout for efficient synchronization — the waiting
         // thread sleeps instead of busy-looping, waking immediately when notified.
         {
-            let mut is_transcribing = self.is_transcribing.lock().unwrap();
+            let mut is_transcribing = lock_mutex(&self.is_transcribing, "TranscriptionManager::is_transcribing");
             let max_wait = Duration::from_secs(30);
             let wait_deadline = std::time::Instant::now() + max_wait;
             while *is_transcribing {
@@ -583,14 +581,14 @@ impl TranscriptionManager {
         }
         impl Drop for TranscribingGuard {
             fn drop(&mut self) {
-                let mut flag = self.flag.lock().unwrap();
+                let mut flag = lock_mutex(&self.flag, "TranscribingGuard::flag");
                 *flag = false;
                 self.condvar.notify_all();
             }
         }
         // Mark as transcribing and create the guard that clears it on drop
         {
-            let mut flag = self.is_transcribing.lock().unwrap();
+            let mut flag = lock_mutex(&self.is_transcribing, "TranscriptionManager::is_transcribing");
             *flag = true;
         }
         let _guard = TranscribingGuard {
@@ -610,7 +608,7 @@ impl TranscriptionManager {
             // If the model is loading, wait for it to complete (with timeout).
             // A previous bug caused hangs when the loading thread panicked without
             // resetting the is_loading flag, blocking transcribe() forever.
-            let mut is_loading = self.is_loading.lock().unwrap();
+            let mut is_loading = lock_mutex(&self.is_loading, "TranscriptionManager::is_loading");
             let wait_deadline = std::time::Instant::now() + Duration::from_secs(120);
             while *is_loading {
                 let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
@@ -671,7 +669,7 @@ impl TranscriptionManager {
         // IMPORTANT: We load the model BEFORE taking the engine out of the mutex
         // to avoid a race where load_model() writes a new engine but the old engine
         // is put back at the end of transcription, overwriting the new one.
-        let current_loaded = self.current_model_id.lock().unwrap().clone();
+        let current_loaded = lock_mutex(&self.current_model_id, "TranscriptionManager::current_model_id").clone();
         if effective_model_id != current_loaded.clone().unwrap_or_default() {
             debug!(
                 "Loading effective model '{}' for transcription (currently loaded: {:?})",
@@ -1064,10 +1062,10 @@ impl TranscriptionManager {
 
                     // Clear the model ID so it will be reloaded on next attempt
                     {
-                        let mut current_model = self
-                            .current_model_id
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
+                        let mut current_model = lock_mutex(
+                            &self.current_model_id,
+                            "TranscriptionManager::current_model_id",
+                        );
                         *current_model = None;
                     }
 
@@ -1202,7 +1200,7 @@ impl TranscriptionManager {
 
         // Wait for model to be loaded (if loading)
         {
-            let is_loading = self.is_loading.lock().unwrap();
+            let is_loading = lock_mutex(&self.is_loading, "TranscriptionManager::is_loading");
             if *is_loading {
                 return Err(AppError::Transcription {
                     message: "Model is still loading".to_string(),
@@ -1311,10 +1309,10 @@ impl TranscriptionManager {
                     warn!("Benchmark engine panicked: {}", panic_msg);
                     // Clear model ID
                     {
-                        let mut current_model = self
-                            .current_model_id
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
+                        let mut current_model = lock_mutex(
+                            &self.current_model_id,
+                            "TranscriptionManager::current_model_id",
+                        );
                         *current_model = None;
                     }
                     return Err(AppError::TranscriptionPanic(format!(
@@ -1439,7 +1437,7 @@ impl Drop for TranscriptionManager {
         self.shutdown_signal.store(true, Ordering::Relaxed);
 
         // Wait for the thread to finish gracefully
-        if let Some(handle) = self.watcher_handle.lock().unwrap().take() {
+        if let Some(handle) = lock_mutex(&self.watcher_handle, "TranscriptionManager::watcher_handle").take() {
             if let Err(e) = handle.join() {
                 warn!("Failed to join idle watcher thread: {:?}", e);
             } else {

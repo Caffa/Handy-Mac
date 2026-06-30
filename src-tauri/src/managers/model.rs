@@ -1,4 +1,5 @@
 use crate::errors::{AppError, AppResult};
+use crate::mutex_util::lock_mutex;
 use crate::settings::{get_settings, write_settings};
 use anyhow::Result;
 use flate2::read::GzDecoder;
@@ -122,12 +123,12 @@ impl<'a> Drop for DownloadCleanup<'a> {
             return;
         }
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
             if let Some(model) = models.get_mut(self.model_id.as_str()) {
                 model.is_downloading = false;
             }
         }
-        self.cancel_flags.lock().unwrap().remove(&self.model_id);
+        lock_mutex(&self.cancel_flags, "ModelManager::cancel_flags").remove(&self.model_id);
     }
 }
 
@@ -762,12 +763,12 @@ impl ModelManager {
     }
 
     pub fn get_available_models(&self) -> Vec<ModelInfo> {
-        let models = self.available_models.lock().unwrap();
+        let models = lock_mutex(&self.available_models, "ModelManager::available_models");
         models.values().cloned().collect()
     }
 
     pub fn get_model_info(&self, model_id: &str) -> Option<ModelInfo> {
-        let models = self.available_models.lock().unwrap();
+        let models = lock_mutex(&self.available_models, "ModelManager::available_models");
         models.get(model_id).cloned()
     }
 
@@ -843,7 +844,7 @@ impl ModelManager {
     }
 
     fn update_download_status(&self) -> Result<()> {
-        let mut models = self.available_models.lock().unwrap();
+        let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
 
         for model in models.values_mut() {
             if model.is_directory {
@@ -857,7 +858,7 @@ impl ModelManager {
                 // Clean up any leftover .extracting directories from interrupted extractions
                 // But only if this model is NOT currently being extracted
                 let is_currently_extracting = {
-                    let extracting = self.extracting_models.lock().unwrap();
+                    let extracting = lock_mutex(&self.extracting_models, "ModelManager::extracting_models");
                     extracting.contains(&model.id)
                 };
                 if extracting_path.exists() && !is_currently_extracting {
@@ -900,7 +901,7 @@ impl ModelManager {
         // Clear stale selection: selected model is set but doesn't exist
         // in available_models (e.g. deleted custom model file)
         if !settings.selected_model.is_empty() {
-            let models = self.available_models.lock().unwrap();
+            let models = lock_mutex(&self.available_models, "ModelManager::available_models");
             let exists = models.contains_key(&settings.selected_model);
             drop(models);
 
@@ -917,7 +918,7 @@ impl ModelManager {
         // If no model is selected, pick the first downloaded one
         if settings.selected_model.is_empty() {
             // Find the first available (downloaded) model
-            let models = self.available_models.lock().unwrap();
+            let models = lock_mutex(&self.available_models, "ModelManager::available_models");
             if let Some(available_model) = models.values().find(|model| model.is_downloaded) {
                 info!(
                     "Auto-selecting model: {} ({})",
@@ -1117,7 +1118,7 @@ impl ModelManager {
 
     pub async fn download_model(&self, model_id: &str) -> AppResult<()> {
         let model_info = {
-            let models = self.available_models.lock().unwrap();
+            let models = lock_mutex(&self.available_models, "ModelManager::available_models");
             models.get(model_id).cloned()
         };
 
@@ -1158,7 +1159,7 @@ impl ModelManager {
 
         // Mark as downloading
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
             if let Some(model) = models.get_mut(model_id) {
                 model.is_downloading = true;
             }
@@ -1167,7 +1168,7 @@ impl ModelManager {
         // Create cancellation flag for this download
         let cancel_flag = Arc::new(AtomicBool::new(false));
         {
-            let mut flags = self.cancel_flags.lock().unwrap();
+            let mut flags = lock_mutex(&self.cancel_flags, "ModelManager::cancel_flags");
             flags.insert(model_id.to_string(), cancel_flag.clone());
         }
 
@@ -1358,7 +1359,7 @@ impl ModelManager {
         if model_info.is_directory {
             // Track that this model is being extracted
             {
-                let mut extracting = self.extracting_models.lock().unwrap();
+                let mut extracting = lock_mutex(&self.extracting_models, "ModelManager::extracting_models");
                 extracting.insert(model_id.to_string());
             }
 
@@ -1395,7 +1396,7 @@ impl ModelManager {
                 let _ = fs::remove_file(&partial_path);
                 // Remove from extracting set
                 {
-                    let mut extracting = self.extracting_models.lock().unwrap();
+                    let mut extracting = lock_mutex(&self.extracting_models, "ModelManager::extracting_models");
                     extracting.remove(model_id);
                 }
                 let _ = self.app_handle.emit(
@@ -1434,7 +1435,7 @@ impl ModelManager {
             info!("Successfully extracted archive for model: {}", model_id);
             // Remove from extracting set
             {
-                let mut extracting = self.extracting_models.lock().unwrap();
+                let mut extracting = lock_mutex(&self.extracting_models, "ModelManager::extracting_models");
                 extracting.remove(model_id);
             }
             // Emit extraction completed event
@@ -1451,14 +1452,14 @@ impl ModelManager {
         // additionally sets is_downloaded = true.
         cleanup.disarmed = true;
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
             if let Some(model) = models.get_mut(model_id) {
                 model.is_downloading = false;
                 model.is_downloaded = true;
                 model.partial_size = 0;
             }
         }
-        self.cancel_flags.lock().unwrap().remove(model_id);
+        lock_mutex(&self.cancel_flags, "ModelManager::cancel_flags").remove(model_id);
 
         // Emit completion event
         let _ = self.app_handle.emit("model-download-complete", model_id);
@@ -1475,7 +1476,7 @@ impl ModelManager {
         debug!("ModelManager: delete_model called for: {}", model_id);
 
         let model_info = {
-            let models = self.available_models.lock().unwrap();
+            let models = lock_mutex(&self.available_models, "ModelManager::available_models");
             models.get(model_id).cloned()
         };
 
@@ -1526,7 +1527,7 @@ impl ModelManager {
         // Custom models should be removed from the list entirely since they
         // have no download URL and can't be re-downloaded
         if model_info.is_custom {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
             models.remove(model_id);
             debug!("ModelManager: removed custom model from available models");
         } else {
@@ -1711,7 +1712,7 @@ impl ModelManager {
         // be running and emitting progress events. The guard's Drop will handle
         // cleanup once the download loop exits.
         {
-            let flags = self.cancel_flags.lock().unwrap();
+            let flags = lock_mutex(&self.cancel_flags, "ModelManager::cancel_flags");
             if let Some(flag) = flags.get(model_id) {
                 flag.store(true, Ordering::Relaxed);
                 info!("Cancellation flag set for: {}", model_id);
@@ -1731,7 +1732,7 @@ impl ModelManager {
     /// Update the dynamic_score for a specific model and persist all scores.
     #[allow(dead_code)]
     pub fn set_benchmark_score(&self, score: BenchmarkScore) {
-        let mut models = self.available_models.lock().unwrap();
+        let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
         if let Some(model) = models.get_mut(&score.model_id) {
             model.dynamic_score = Some(score.clone());
         }
@@ -1746,7 +1747,7 @@ impl ModelManager {
     /// so the relative ranking is always consistent.
     pub fn set_benchmark_scores(&self, scores: Vec<BenchmarkScore>) {
         // First pass: update the new scores into models
-        let mut models = self.available_models.lock().unwrap();
+        let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
         for score in &scores {
             if let Some(model) = models.get_mut(&score.model_id) {
                 model.dynamic_score = Some(score.clone());
@@ -1797,7 +1798,7 @@ impl ModelManager {
 
     /// Get the set of model IDs that already have benchmark data (non-failed).
     pub fn get_benchmarked_model_ids(&self) -> HashSet<String> {
-        let models = self.available_models.lock().unwrap();
+        let models = lock_mutex(&self.available_models, "ModelManager::available_models");
         models
             .values()
             .filter_map(|m| {
@@ -1815,7 +1816,7 @@ impl ModelManager {
     /// Clear the benchmark data for a specific model.
     #[allow(dead_code)]
     pub fn clear_benchmark_score(&self, model_id: &str) {
-        let mut models = self.available_models.lock().unwrap();
+        let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
         if let Some(model) = models.get_mut(model_id) {
             model.dynamic_score = None;
         }
@@ -1826,7 +1827,7 @@ impl ModelManager {
     /// Clear all benchmark data and re-score remaining models.
     #[allow(dead_code)]
     pub fn clear_all_benchmark_scores(&self) {
-        let mut models = self.available_models.lock().unwrap();
+        let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
         for model in models.values_mut() {
             model.dynamic_score = None;
         }
@@ -1844,7 +1845,7 @@ impl ModelManager {
         if let Some(store) = store {
             if let Some(value) = store.get("scores") {
                 if let Ok(scores) = serde_json::from_value::<Vec<BenchmarkScore>>(value.clone()) {
-                    let mut models = self.available_models.lock().unwrap();
+                    let mut models = lock_mutex(&self.available_models, "ModelManager::available_models");
                     for score in scores {
                         // Backward compat: old scores lack `failed` field, default to false
                         if score.failed {
@@ -1862,7 +1863,7 @@ impl ModelManager {
 
     fn persist_benchmark_scores(&self) {
         use tauri::Manager;
-        let models = self.available_models.lock().unwrap();
+        let models = lock_mutex(&self.available_models, "ModelManager::available_models");
         let scores: Vec<BenchmarkScore> = models
             .values()
             .filter_map(|m| m.dynamic_score.clone())

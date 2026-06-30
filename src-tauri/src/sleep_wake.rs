@@ -13,6 +13,8 @@ use log::{debug, error, info, warn};
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
+#[cfg(target_os = "macos")]
+use crate::mutex_util::lock_mutex;
 
 /// Start listening for macOS wake-from-sleep events.
 #[cfg(target_os = "macos")]
@@ -110,7 +112,7 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
 
         match recording_manager {
             Some(rm) => {
-                let rm_guard = rm.lock().unwrap();
+                let rm_guard = lock_mutex(&rm, "AudioRecordingManager");
                 // Check stream health using the public method
                 let (is_open, is_alive) = rm_guard.check_stream_health();
                 

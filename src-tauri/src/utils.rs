@@ -1,5 +1,6 @@
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::transcription::TranscriptionManager;
+use crate::mutex_util::lock_mutex;
 use crate::shortcut;
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
@@ -42,9 +43,9 @@ pub fn cancel_current_operation(app: &AppHandle) {
         warn!("AudioRecordingManager not available for cancellation");
         return;
     };
-    let recording_was_active = audio_manager.lock().unwrap().is_recording();
+    let recording_was_active = lock_mutex(&audio_manager, "AudioRecordingManager").is_recording();
     info!("Cancelling recording (was_active={})", recording_was_active);
-    audio_manager.lock().unwrap().cancel_recording();
+    lock_mutex(&audio_manager, "AudioRecordingManager").cancel_recording();
 
     // Update tray icon and force-hide overlay (bypass state check for cancel)
     info!("Updating UI state...");
@@ -53,7 +54,7 @@ pub fn cancel_current_operation(app: &AppHandle) {
 
     // Unload model if immediate unload is enabled
     if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-        tm.lock().unwrap().maybe_unload_immediately("cancellation");
+        lock_mutex(&tm, "TranscriptionManager").maybe_unload_immediately("cancellation");
     }
 
     // Notify coordinator so it can keep lifecycle state coherent.

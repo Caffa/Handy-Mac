@@ -20,6 +20,7 @@ use crate::audio_toolkit::{
     vad::{self, VadFrame},
     VoiceActivityDetector,
 };
+use crate::mutex_util::lock_mutex;
 use crate::settings::NoiseSuppressionLevel;
 
 enum Cmd {
@@ -693,7 +694,7 @@ fn handle_frame(
     // This improves VAD accuracy in noisy environments by removing
     // background noise that could trigger false speech detections.
     let processed_samples: Vec<f32> = if let Some(ns) = noise_suppressor {
-        let mut ns_guard = ns.lock().unwrap();
+        let mut ns_guard = lock_mutex(ns, "NoiseSuppressor");
         // Noise suppressor processes 480-sample frames at 16kHz (30ms),
         // which matches the VAD frame size.
         ns_guard.process(samples)
@@ -706,7 +707,7 @@ fn handle_frame(
     // The denoised signal is what VAD sees for better accuracy,
     // while the original signal is preserved for output quality.
     if let Some(vad_arc) = vad {
-        let mut det = vad_arc.lock().unwrap();
+        let mut det = lock_mutex(vad_arc, "VadDetector");
         match det.push_frame(&processed_samples).unwrap_or(VadFrame::Speech(samples)) {
             VadFrame::Speech(_) => {
                 // Use original samples for output quality — we don't want
@@ -1051,11 +1052,11 @@ fn run_consumer(
                     streaming_last_invoked = None; // Reset streaming timer for new recording
                     consecutive_speech_frames = 0; // Reset speech frame counter for new recording
                     if let Some(v) = &vad {
-                        v.lock().unwrap().reset();
+                        lock_mutex(v, "VadDetector").reset();
                     }
                     // Reset noise suppressor state for new recording
                     if let Some(ns) = &noise_suppressor {
-                        ns.lock().unwrap().reset();
+                        lock_mutex(ns, "NoiseSuppressor").reset();
                     }
                 }
                 Cmd::Stop(reply_tx) => {

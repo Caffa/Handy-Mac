@@ -11,6 +11,7 @@
 //! a Tauri command (Phase 2).
 
 use crate::logging::{self, AppEvent, SessionId};
+use crate::mutex_util::lock_mutex;
 use log::{debug, info};
 use serde::Serialize;
 use specta::Type;
@@ -99,7 +100,7 @@ impl SessionTracker {
 
         // Finalise any previous session that wasn't explicitly ended (guard
         // against leaked sessions from crashes).
-        if let Some(prev) = self.current.lock().unwrap().take() {
+        if let Some(prev) = lock_mutex(&self.current, "SessionTracker::current").take() {
             log::warn!(
                 "Session {} was still active when new session {} started; finalising as failed",
                 prev.id,
@@ -134,7 +135,7 @@ impl SessionTracker {
             always_on,
         });
 
-        *self.current.lock().unwrap() = Some(session);
+        *lock_mutex(&self.current, "SessionTracker::current") = Some(session);
         debug!("Session {} started (mic: {})", sid, mic_device);
         sid
     }
@@ -148,7 +149,7 @@ impl SessionTracker {
         sample_count: usize,
         recording_duration_ms: u64,
     ) {
-        let mut guard = self.current.lock().unwrap();
+        let mut guard = lock_mutex(&self.current, "SessionTracker::current");
         if let Some(ref mut session) = *guard {
             if session.id != *sid {
                 log::warn!(
@@ -185,7 +186,7 @@ impl SessionTracker {
         text_length: usize,
         transcription_duration_ms: u64,
     ) {
-        let mut guard = self.current.lock().unwrap();
+        let mut guard = lock_mutex(&self.current, "SessionTracker::current");
         if let Some(ref mut session) = *guard {
             if session.id != *sid {
                 return;
@@ -212,11 +213,11 @@ impl SessionTracker {
 
     /// Mark the session as done (text pasted successfully).
     pub fn finish_session(&self, sid: &SessionId, paste_duration_ms: u64) {
-        let session = self.current.lock().unwrap().take();
+        let session = lock_mutex(&self.current, "SessionTracker::current").take();
         if let Some(session) = session {
             if session.id != *sid {
                 // Put it back
-                *self.current.lock().unwrap() = Some(session);
+                *lock_mutex(&self.current, "SessionTracker::current") = Some(session);
                 return;
             }
             logging::emit(AppEvent::PasteSucceeded {
@@ -229,11 +230,11 @@ impl SessionTracker {
 
     /// Mark the session as failed — e.g. transcription error or paste failure.
     pub fn fail_session(&self, sid: &SessionId, error: &str) {
-        let session = self.current.lock().unwrap().take();
+        let session = lock_mutex(&self.current, "SessionTracker::current").take();
         if let Some(mut session) = session {
             if session.id != *sid {
                 // Put it back — different session
-                *self.current.lock().unwrap() = Some(session);
+                *lock_mutex(&self.current, "SessionTracker::current") = Some(session);
                 return;
             }
             session.errors.push(error.to_string());
@@ -272,7 +273,7 @@ impl SessionTracker {
     /// Record a post-processing failure.
     #[allow(dead_code)]
     pub fn post_process_failed(&self, sid: &SessionId, provider: &str, error: &str) {
-        let mut guard = self.current.lock().unwrap();
+        let mut guard = lock_mutex(&self.current, "SessionTracker::current");
         if let Some(ref mut session) = *guard {
             if session.id != *sid {
                 return;
@@ -289,7 +290,7 @@ impl SessionTracker {
     /// Mark that post-processing was requested for this session.
     #[allow(dead_code)]
     pub fn set_post_process(&self, sid: &SessionId, provider: &str) {
-        let mut guard = self.current.lock().unwrap();
+        let mut guard = lock_mutex(&self.current, "SessionTracker::current");
         if let Some(ref mut session) = *guard {
             if session.id != *sid {
                 return;
@@ -305,7 +306,7 @@ impl SessionTracker {
     /// Record a post-processing completion.
     #[allow(dead_code)]
     pub fn post_process_completed(&self, sid: &SessionId, provider: &str, duration_ms: u64) {
-        let mut guard = self.current.lock().unwrap();
+        let mut guard = lock_mutex(&self.current, "SessionTracker::current");
         if let Some(ref mut session) = *guard {
             if session.id != *sid {
                 return;
@@ -326,7 +327,7 @@ impl SessionTracker {
 
     /// Get the last N session summaries.
     pub fn get_recent_sessions(&self, limit: usize) -> Vec<SessionSummary> {
-        let history = self.history.lock().unwrap();
+        let history = lock_mutex(&self.history, "SessionTracker::history");
         history.iter().rev().take(limit).cloned().collect()
     }
 
@@ -334,7 +335,7 @@ impl SessionTracker {
     /// Useful for correlating events in the async transcription pipeline
     /// without needing to pass the ID through every function.
     pub fn current_session_id(&self) -> Option<SessionId> {
-        let guard = self.current.lock().unwrap();
+        let guard = lock_mutex(&self.current, "SessionTracker::current");
         guard.as_ref().map(|s| s.id.clone())
     }
 
@@ -368,7 +369,7 @@ impl SessionTracker {
             summary.id, summary.success, duration_ms
         );
 
-        let mut history = self.history.lock().unwrap();
+        let mut history = lock_mutex(&self.history, "SessionTracker::history");
         if history.len() >= SESSION_HISTORY_CAP {
             history.remove(0);
         }

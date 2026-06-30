@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
+use crate::mutex_util::lock_mutex;
 use crate::settings::get_settings;
 use crate::transcription_coordinator::is_transcribe_binding;
 use crate::TranscriptionCoordinator;
@@ -58,7 +59,7 @@ pub fn handle_shortcut_event(
             warn!("AudioRecordingManager not initialized for cancel shortcut");
             return;
         };
-        if audio_manager.lock().unwrap().is_recording() && is_pressed {
+        if lock_mutex(&audio_manager, "AudioRecordingManager").is_recording() && is_pressed {
             action.start(app, binding_id, hotkey_string);
         }
         return;

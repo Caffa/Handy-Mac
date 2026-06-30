@@ -14,6 +14,7 @@ mod helpers;
 mod input;
 mod llm_client;
 mod logging;
+pub mod mutex_util;
 mod managers;
 mod overlay;
 pub mod portable;
@@ -40,6 +41,7 @@ use managers::model::ModelManager;
 use managers::retry_worker::RetryWorker;
 use managers::transcription::TranscriptionManager;
 use managers::transcription_retry::TranscriptionRetryQueue;
+use mutex_util::lock_mutex;
 
 #[cfg(unix)]
 use signal_hook::consts::{SIGUSR1, SIGUSR2};
@@ -187,7 +189,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // Add managers to Tauri's managed state
     app_handle.manage(recording_manager.clone());
     {
-        let rm = recording_manager.lock().unwrap();
+        let rm = lock_mutex(&recording_manager, "AudioRecordingManager");
         app_handle.manage(rm.usb_watchdog.clone());
     }
     app_handle.manage(model_manager.clone());
@@ -197,7 +199,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // 2. Stop handler tries to call cancel_streaming() which needs TM lock
     // By storing the Arc<AtomicBool> separately, stop can cancel without waiting.
     let streaming_cancel_flag = {
-        let tm = transcription_manager.lock().unwrap();
+        let tm = lock_mutex(&transcription_manager, "TranscriptionManager");
         tm.streaming_cancel_flag()
     };
     app_handle.manage(streaming_cancel_flag);
@@ -267,7 +269,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                     log::warn!("TranscriptionManager not available, skipping model unload");
                     return;
                 };
-                let tm = transcription_manager.lock().unwrap();
+                let tm = lock_mutex(&transcription_manager, "TranscriptionManager");
                 if !tm.is_model_loaded() {
                     log::warn!("No model is currently loaded.");
                     return;
@@ -618,16 +620,16 @@ pub fn run(cli_args: CliArgs) {
                     let audio = app.try_state::<Arc<Mutex<AudioRecordingManager>>>();
                     (
                         coord.as_ref().map_or(false, |c| c.is_active_use()),
-                        audio.as_ref().map_or(false, |a| a.lock().unwrap().is_recording()),
+                        audio.as_ref().map_or(false, |a| lock_mutex(a, "AudioRecordingManager").is_recording()),
                     )
                 };
                 let is_active = is_coord_active || is_audio_recording;
                 
                 // Also check audio state for debugging
                 let is_open = app.try_state::<Arc<Mutex<AudioRecordingManager>>>()
-                    .map_or(false, |a| a.lock().unwrap().is_stream_open());
+                    .map_or(false, |a| lock_mutex(&a, "AudioRecordingManager").is_stream_open());
                 let is_always_on = app.try_state::<Arc<Mutex<AudioRecordingManager>>>()
-                    .map_or(false, |a| a.lock().unwrap().is_always_on());
+                    .map_or(false, |a| lock_mutex(&a, "AudioRecordingManager").is_always_on());
                 
                 // Print detailed status for debugging
                 eprintln!("Handy active use status:");
@@ -655,7 +657,7 @@ pub fn run(cli_args: CliArgs) {
                 // to wait for Handy to be fully idle (including processing/transcription),
                 // use --is-active-use instead.
                 if let Some(audio_manager) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
-                    let audio = audio_manager.lock().unwrap();
+                    let audio = lock_mutex(&audio_manager, "AudioRecordingManager");
                     let is_recording = audio.is_recording();
                     let is_open = audio.is_stream_open();
                     let is_always_on = audio.is_always_on();
@@ -804,14 +806,14 @@ pub fn run(cli_args: CliArgs) {
                 if let Some(transcription_manager) =
                     app_handle_for_model_load.try_state::<Arc<Mutex<TranscriptionManager>>>()
                 {
-                    let _ = transcription_manager.lock().unwrap().initiate_model_load();
+                    let _ = lock_mutex(&transcription_manager, "TranscriptionManager").initiate_model_load();
                 }
             });
 
             // Start the retry worker to process failed transcriptions in the background.
             // Checks every 60 seconds for pending retries.
             if let Some(retry_worker) = app_handle.try_state::<Arc<Mutex<RetryWorker>>>() {
-                retry_worker.lock().unwrap().start(app_handle.clone());
+                lock_mutex(&retry_worker, "RetryWorker").start(app_handle.clone());
             }
 
             // Install uhubctl if missing (macOS only, via Homebrew) so the

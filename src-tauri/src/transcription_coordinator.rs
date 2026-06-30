@@ -1,5 +1,6 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
+use crate::mutex_util::lock_mutex;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -290,7 +291,7 @@ fn start(
     action.start(app, binding_id, hotkey_string);
     if app
         .try_state::<Arc<Mutex<AudioRecordingManager>>>()
-        .map_or(false, |a| a.lock().unwrap().is_recording())
+        .map_or(false, |a| lock_mutex(&a, "AudioRecordingManager").is_recording())
     {
         set_stage(stage, Stage::Recording(binding_id.to_string()), active_use);
     } else {

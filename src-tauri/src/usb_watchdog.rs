@@ -15,6 +15,7 @@
 //! to handle encoding issues (e.g. RØDE vs R?DE).
 
 use crate::managers::audio::AudioRecordingManager;
+use crate::mutex_util::lock_mutex;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -89,7 +90,7 @@ impl UsbWatchdog {
     /// Update configuration at runtime
     pub fn update_config(&self, enabled: bool, device_name: String) {
         self.enabled.store(enabled, Ordering::SeqCst);
-        *self.device_name.lock().unwrap() = device_name;
+        *lock_mutex(&self.device_name, "UsbWatchdog::device_name") = device_name;
         debug!("USB watchdog config updated: enabled={}", enabled);
     }
 
@@ -293,7 +294,7 @@ impl UsbWatchdog {
             return false;
         }
 
-        let device_name = self.device_name.lock().unwrap().clone();
+        let device_name = lock_mutex(&self.device_name, "UsbWatchdog::device_name").clone();
         if device_name.is_empty() {
             warn!("USB watchdog: device name not configured, skipping");
             self.cycling.store(false, Ordering::SeqCst);
@@ -405,7 +406,7 @@ impl UsbWatchdog {
             return false;
         }
 
-        let device_name = self.device_name.lock().unwrap().clone();
+        let device_name = lock_mutex(&self.device_name, "UsbWatchdog::device_name").clone();
         if device_name.is_empty() {
             warn!("USB watchdog: device name not configured");
             self.cycling.store(false, Ordering::SeqCst);
@@ -524,7 +525,7 @@ impl UsbWatchdog {
 
                 if let Some(ah) = &app_handle {
                     if let Some(rm) = ah.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
-                        if let Err(e) = rm.lock().unwrap().restart_microphone_if_needed() {
+                        if let Err(e) = lock_mutex(&rm, "AudioRecordingManager").restart_microphone_if_needed() {
                             error!("Failed to restart microphone after forced USB cycle: {}", e);
                         }
                     }

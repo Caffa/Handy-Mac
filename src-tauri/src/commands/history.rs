@@ -3,6 +3,7 @@ use crate::managers::{
     history::{HistoryManager, PaginatedHistory},
     transcription::TranscriptionManager,
 };
+use crate::mutex_util::lock_mutex;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
@@ -81,10 +82,10 @@ pub async fn retry_history_entry_transcription(
         return Err("Recording has no audio samples".to_string());
     }
 
-    transcription_manager.lock().unwrap().initiate_model_load();
+    lock_mutex(&transcription_manager, "TranscriptionManager").initiate_model_load();
 
     let tm = Arc::clone(&transcription_manager);
-    let transcription = tauri::async_runtime::spawn_blocking(move || tm.lock().unwrap().transcribe(samples))
+    let transcription = tauri::async_runtime::spawn_blocking(move || lock_mutex(&tm, "TranscriptionManager").transcribe(samples))
         .await
         .map_err(|e| format!("Transcription task panicked: {}", e))?
         .map_err(|e| e.to_string())?;

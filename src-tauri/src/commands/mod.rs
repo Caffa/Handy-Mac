@@ -5,6 +5,7 @@ pub mod models;
 pub mod transcription;
 pub mod transcription_retry;
 
+use crate::mutex_util::lock_mutex;
 use crate::settings::{get_settings, write_settings, AppSettings, LogLevel};
 use crate::utils::cancel_current_operation;
 use tauri::{AppHandle, Manager};
@@ -219,7 +220,7 @@ pub fn confirm_routing(app: AppHandle, text: String) -> Result<(), String> {
     // Get the pending routing state and send the confirmation
     if let Some(state) = app.try_state::<PendingRoutingState>() {
         // Try to take the sender out of the Mutex
-        let pending_opt = state.lock().unwrap().take();
+        let pending_opt = lock_mutex(&state, "PendingRoutingState").take();
         if let Some(pending) = pending_opt {
             if let Err(_) = pending.confirm_tx.send(text) {
                 log::warn!("Failed to send routing confirmation - receiver already dropped");

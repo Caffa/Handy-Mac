@@ -23,6 +23,7 @@ use tauri_plugin_autostart::ManagerExt;
 use conflicts::ConflictInfo;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use crate::mutex_util::lock_mutex;
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
     self, get_settings, AutoSubmitKey, ClipboardHandling, CustomWord, KeyboardImplementation,
@@ -1268,8 +1269,8 @@ fn apply_and_reload_accelerator(app: &AppHandle, s: settings::AppSettings) {
         log::warn!("TranscriptionManager not initialized, skipping model unload after accelerator change");
         return;
     };
-    if tm.lock().unwrap().is_model_loaded() {
-        if let Err(e) = tm.lock().unwrap().unload_model() {
+    if lock_mutex(&tm, "TranscriptionManager").is_model_loaded() {
+        if let Err(e) = lock_mutex(&tm, "TranscriptionManager").unload_model() {
             log::warn!("Failed to unload model after accelerator change: {e}");
         }
     }

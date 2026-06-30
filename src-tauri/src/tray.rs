@@ -1,6 +1,7 @@
 use crate::managers::history::{HistoryEntry, HistoryManager};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
+use crate::mutex_util::lock_mutex;
 use crate::settings;
 use crate::tray_i18n::get_tray_translations;
 use log::{error, info, warn};
@@ -155,7 +156,7 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
         None::<&str>,
     )
     .expect("failed to create copy last transcript item");
-    let model_loaded = app.try_state::<Arc<Mutex<TranscriptionManager>>>().map(|tm| tm.lock().unwrap().is_model_loaded()).unwrap_or(false);
+    let model_loaded = app.try_state::<Arc<Mutex<TranscriptionManager>>>().map(|tm| lock_mutex(&tm, "TranscriptionManager").is_model_loaded()).unwrap_or(false);
     let quit_i = MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator)
         .expect("failed to create quit item");
     let separator = || PredefinedMenuItem::separator(app).expect("failed to create separator");
