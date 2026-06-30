@@ -191,6 +191,16 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         app_handle.manage(rm.usb_watchdog.clone());
     }
     app_handle.manage(model_manager.clone());
+    // Store the streaming cancel flag separately so it can be accessed without
+    // acquiring the TranscriptionManager mutex. This prevents blocking when:
+    // 1. Streaming callback holds TM lock during transcription (seconds)
+    // 2. Stop handler tries to call cancel_streaming() which needs TM lock
+    // By storing the Arc<AtomicBool> separately, stop can cancel without waiting.
+    let streaming_cancel_flag = {
+        let tm = transcription_manager.lock().unwrap();
+        tm.streaming_cancel_flag()
+    };
+    app_handle.manage(streaming_cancel_flag);
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(retry_queue.clone());
@@ -590,7 +600,7 @@ pub fn run(cli_args: CliArgs) {
                 crate::utils::cancel_current_operation(app);
             } else if args.iter().any(|a| a == "--is-active-use") {
                 // Query active use state: recording, transcribing, or processing.
-                // Prints status to stdout; the CLI caller handles its own exit code.
+                // Writes result to a temp file for the CLI instance to read.
                 //
                 // "Active use" means Handy is in use and should not be quit:
                 // - Recording (user is speaking, audio being captured)
@@ -627,15 +637,19 @@ pub fn run(cli_args: CliArgs) {
                 eprintln!("  Mic stream: {}", if is_open { "open" } else { "closed" });
                 eprintln!("  Always-on mode: {}", if is_always_on { "yes" } else { "no" });
                 
-                // Output simple result for scripts
-                println!("{}", if is_active { "active-use" } else { "idle" });
+                // Write result to temp file for CLI instance to read
+                // The CLI instance will read this file and exit with the correct code
+                if let Ok(mut file) = std::fs::File::create("/tmp/handy-is-active-use-result") {
+                    use std::io::Write;
+                    let _ = writeln!(file, "{}", if is_active { "active-use" } else { "idle" });
+                    let _ = writeln!(file, "{}", if is_active { "0" } else { "1" });
+                }
                 
                 // Do NOT call std::process::exit() here — this callback runs
                 // inside the RUNNING instance. Exiting would kill Handy.
-                // The CLI (second) instance exits in the setup block instead.
             } else if args.iter().any(|a| a == "--is-recording") {
-                // Query recording state and print to stdout.
-                // The CLI caller handles its own exit code.
+                // Query recording state and write to temp file for CLI instance.
+                // The CLI caller will read the file and exit with the correct code.
                 //
                 // NOTE: This flag checks ONLY audio recording state. For scripts that need
                 // to wait for Handy to be fully idle (including processing/transcription),
@@ -652,16 +666,23 @@ pub fn run(cli_args: CliArgs) {
                     eprintln!("  Mic stream: {}", if is_open { "open" } else { "closed" });
                     eprintln!("  Always-on mode: {}", if is_always_on { "yes" } else { "no" });
                     
-                    // Output simple result for scripts
-                    println!("{}", if is_recording { "recording" } else { "not-recording" });
+                    // Write result to temp file for CLI instance to read
+                    if let Ok(mut file) = std::fs::File::create("/tmp/handy-is-recording-result") {
+                        use std::io::Write;
+                        let _ = writeln!(file, "{}", if is_recording { "recording" } else { "not-recording" });
+                        let _ = writeln!(file, "{}", if is_recording { "0" } else { "1" });
+                    }
                     
                     // Do NOT call std::process::exit() here — this callback runs
                     // inside the RUNNING instance. Exiting would kill Handy.
-                    // The CLI (second) instance exits in the setup block instead.
                 } else {
                     eprintln!("error: AudioRecordingManager not initialized");
-                    // Do NOT call std::process::exit() here — this callback runs
-                    // inside the RUNNING instance. Exiting would kill Handy.
+                    // Write error to temp file
+                    if let Ok(mut file) = std::fs::File::create("/tmp/handy-is-recording-result") {
+                        use std::io::Write;
+                        let _ = writeln!(file, "error");
+                        let _ = writeln!(file, "2");
+                    }
                 }
             } else {
                 show_main_window(app);
@@ -683,9 +704,44 @@ pub fn run(cli_args: CliArgs) {
         .manage(cli_args.clone())
         .setup(move |app| {
             // Query-only flags (sent to running instance, or no instance running)
-            // If we reach this point, single-instance plugin didn't forward to another instance,
-            // which means no other instance was running. For query flags, exit immediately.
-            if cli_args.is_active_use || cli_args.is_recording {
+            // If we reach this point, we need to check:
+            // 1. If a running instance wrote a result file, read it and exit with that code
+            // 2. Otherwise, no instance is running, exit with error
+            
+            if cli_args.is_active_use {
+                // Check for result file from running instance
+                if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-active-use-result") {
+                    let lines: Vec<&str> = content.lines().collect();
+                    if lines.len() >= 2 {
+                        // Line 0: status string, Line 1: exit code
+                        println!("{}", lines[0]);
+                        if let Ok(code) = lines[1].parse::<i32>() {
+                            // Clean up temp file
+                            let _ = std::fs::remove_file("/tmp/handy-is-active-use-result");
+                            std::process::exit(code);
+                        }
+                    }
+                }
+                // No result file = no running instance
+                eprintln!("error: Handy is not running");
+                std::process::exit(2);
+            }
+            
+            if cli_args.is_recording {
+                // Check for result file from running instance
+                if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-recording-result") {
+                    let lines: Vec<&str> = content.lines().collect();
+                    if lines.len() >= 2 {
+                        // Line 0: status string, Line 1: exit code
+                        println!("{}", lines[0]);
+                        if let Ok(code) = lines[1].parse::<i32>() {
+                            // Clean up temp file
+                            let _ = std::fs::remove_file("/tmp/handy-is-recording-result");
+                            std::process::exit(code);
+                        }
+                    }
+                }
+                // No result file = no running instance
                 eprintln!("error: Handy is not running");
                 std::process::exit(2);
             }
