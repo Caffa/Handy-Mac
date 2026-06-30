@@ -98,7 +98,7 @@
   background: #ffe5ee;
   max-height: 35px;
   border-radius: 2px;
-  transition: height 80ms linear;
+  transition: height 50ms linear;
   min-height: 7px;
 }
 

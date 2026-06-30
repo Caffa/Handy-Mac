@@ -784,7 +784,10 @@ impl AudioRecordingManager {
         let bt_keep_alive = self.bt_keep_alive.clone();
         std::thread::spawn(move || {
             std::thread::sleep(STREAM_IDLE_TIMEOUT);
-            let rm = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+            let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+                debug!("AudioRecordingManager not available for lazy close");
+                return;
+            };
             let rm_guard = rm.lock().unwrap();
             // Hold state lock across the check AND close to serialize against
             // try_start_recording, preventing a race where the stream is closed

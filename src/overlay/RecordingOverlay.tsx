@@ -23,7 +23,8 @@ type OverlayAction = "transcribe" | "post_process" | "router";
 
 // If no mic-level event arrives within this many milliseconds,
 // start decaying the bars to zero to avoid a frozen visualizer.
-const LEVEL_TIMEOUT_MS = 500;
+// Reduced from 500ms to 300ms for more responsive visual feedback.
+const LEVEL_TIMEOUT_MS = 300;
 
 // Safety timeout for USB cycling state. If the Rust backend never
 // emits a "finished" or "failed" event (e.g. event delivery failure,
@@ -246,15 +247,16 @@ const RecordingOverlay: React.FC = () => {
     decayTimerRef.current = setInterval(() => {
       const elapsed = Date.now() - lastLevelTimeRef.current;
       if (elapsed > LEVEL_TIMEOUT_MS) {
-        // Exponential decay toward zero — faster the longer we've waited
-        const decayFactor = Math.max(0.5, 1 - elapsed / 2000);
+        // Faster exponential decay toward zero for responsive visual feedback
+        // The longer we wait, the faster we decay
+        const decayFactor = Math.max(0.3, 1 - elapsed / 1000);
         setLevels((prev) => {
           const newLevels = prev.map((v) => v * decayFactor);
           // Snap to zero when very small
           return newLevels.map((v) => (v < 0.01 ? 0 : v));
         });
       }
-    }, 80); // roughly matches the bar transition speed
+    }, 60); // Faster timer for more responsive visual feedback
 
     return () => {
       if (decayTimerRef.current) {
@@ -720,15 +722,32 @@ const RecordingOverlay: React.FC = () => {
         lastLevelTimeRef.current = Date.now();
         const newLevels = event.payload as number[];
 
-        // Apply smoothing to reduce jitter
-        // Use faster convergence when previous value is near zero (cold start after USB cycling)
-        // This prevents the visualizer from appearing "dampened" after USB cycling
+        // Apply minimal smoothing for responsiveness
+        // Faster convergence when previous value is near zero (cold start)
+        // Auto-boost when target is significantly higher than prev (bars barely moving)
         const smoothed = smoothedLevelsRef.current.map((prev, i) => {
           const target = newLevels[i] || 0;
-          // Cold start: if prev is near zero, use faster convergence to reach true level quickly
-          // Normal smoothing: 70% prev + 30% target
-          // Cold start smoothing: 30% prev + 70% target (inverts the ratio for fast recovery)
-          const alpha = prev < 0.05 ? 0.7 : 0.3;
+
+          // Calculate how much the bar is moving
+          const delta = Math.abs(target - prev);
+          const avgLevel = (prev + target) / 2;
+
+          // Auto-adjustment: if bars are barely moving (low delta relative to avg level),
+          // use even faster convergence to snap them into action
+          const isBarelyMoving = delta < 0.02 && avgLevel > 0.05;
+
+          // Cold start: if prev is near zero, use fastest convergence
+          // Barely moving: use fast convergence to snap into action
+          // Normal smoothing: 40% prev + 60% target (more responsive than old 70/30)
+          let alpha: number;
+          if (prev < 0.05) {
+            alpha = 0.8; // Cold start: fastest convergence
+          } else if (isBarelyMoving) {
+            alpha = 0.7; // Barely moving: fast convergence to auto-adjust
+          } else {
+            alpha = 0.6; // Normal: responsive smoothing
+          }
+
           return prev * (1 - alpha) + target * alpha;
         });
 

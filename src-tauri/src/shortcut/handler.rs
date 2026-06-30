@@ -54,7 +54,10 @@ pub fn handle_shortcut_event(
 
     // Cancel binding: only fires when recording and key is pressed
     if binding_id == "cancel" {
-        let audio_manager = app.state::<Arc<Mutex<AudioRecordingManager>>>();
+        let Some(audio_manager) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+            warn!("AudioRecordingManager not initialized for cancel shortcut");
+            return;
+        };
         if audio_manager.lock().unwrap().is_recording() && is_pressed {
             action.start(app, binding_id, hotkey_string);
         }

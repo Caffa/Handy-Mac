@@ -146,9 +146,9 @@ impl AudioVisualiser {
             }
         }
 
-        // Apply light smoothing to reduce jitter
+        // Apply minimal smoothing to reduce jitter while maintaining responsiveness
         for i in 1..buckets.len() - 1 {
-            buckets[i] = buckets[i] * 0.7 + buckets[i - 1] * 0.15 + buckets[i + 1] * 0.15;
+            buckets[i] = buckets[i] * 0.85 + buckets[i - 1] * 0.075 + buckets[i + 1] * 0.075;
         }
 
         // Clear processed samples from buffer
