@@ -119,14 +119,14 @@ pub fn open_app_data_dir(app: AppHandle) -> Result<(), String> {
 /// Called by the frontend when the user selects Apple Intelligence provider.
 #[specta::specta]
 #[tauri::command]
-pub fn check_apple_intelligence_available() -> bool {
+pub fn check_apple_intelligence_available() -> Result<bool, String> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        crate::apple_intelligence::check_apple_intelligence_availability()
+        Ok(crate::apple_intelligence::check_apple_intelligence_availability())
     }
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
-        false
+        Ok(false)
     }
 }
 

@@ -63,11 +63,11 @@ fn custom_sound_exists(app: &AppHandle, sound_type: &str) -> bool {
 
 #[tauri::command]
 #[specta::specta]
-pub fn check_custom_sounds(app: AppHandle) -> CustomSounds {
-    CustomSounds {
+pub fn check_custom_sounds(app: AppHandle) -> Result<CustomSounds, String> {
+    Ok(CustomSounds {
         start: custom_sound_exists(&app, "start"),
         stop: custom_sound_exists(&app, "stop"),
-    }
+    })
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
@@ -148,21 +148,21 @@ fn get_windows_microphone_permission_status_impl() -> WindowsMicrophonePermissio
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_windows_microphone_permission_status() -> WindowsMicrophonePermissionStatus {
+pub fn get_windows_microphone_permission_status() -> Result<WindowsMicrophonePermissionStatus, String> {
     #[cfg(target_os = "windows")]
     {
-        get_windows_microphone_permission_status_impl()
+        Ok(get_windows_microphone_permission_status_impl())
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        WindowsMicrophonePermissionStatus {
+        Ok(WindowsMicrophonePermissionStatus {
             supported: false,
             overall_access: PermissionAccess::Unknown,
             device_access: PermissionAccess::Unknown,
             app_access: PermissionAccess::Unknown,
             desktop_app_access: PermissionAccess::Unknown,
-        }
+        })
     }
 }
 
@@ -346,12 +346,12 @@ pub fn get_clamshell_microphone(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn is_recording(app: AppHandle) -> bool {
+pub fn is_recording(app: AppHandle) -> Result<bool, String> {
     let Some(audio_manager) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
-        return false;
+        return Ok(false);
     };
     let result = audio_manager.lock().is_recording();
-    result
+    Ok(result)
 }
 
 // ============================================================================
@@ -361,15 +361,15 @@ pub fn is_recording(app: AppHandle) -> bool {
 /// Check if uhubctl is available on the system
 #[tauri::command]
 #[specta::specta]
-pub fn is_usb_watchdog_available() -> bool {
-    usb_watchdog::is_uhubctl_available()
+pub fn is_usb_watchdog_available() -> Result<bool, String> {
+    Ok(usb_watchdog::is_uhubctl_available())
 }
 
 /// List all USB devices connected to hubs visible to uhubctl
 #[tauri::command]
 #[specta::specta]
-pub fn list_usb_devices() -> Vec<usb_watchdog::UsbDevice> {
-    usb_watchdog::list_usb_devices()
+pub fn list_usb_devices() -> Result<Vec<usb_watchdog::UsbDevice>, String> {
+    Ok(usb_watchdog::list_usb_devices())
 }
 
 /// Enable or disable the USB watchdog
