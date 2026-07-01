@@ -12,8 +12,9 @@ use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 #[specta::specta]
-pub fn cancel_operation(app: AppHandle) {
+pub fn cancel_operation(app: AppHandle) -> Result<(), String> {
     cancel_current_operation(&app);
+    Ok(())
 }
 
 #[tauri::command]

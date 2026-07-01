@@ -1005,7 +1005,7 @@ pub fn change_post_process_base_url_setting(
 
     let provider = settings
         .post_process_provider_mut(&provider_id)
-        .expect("Provider looked up above must exist");
+        .ok_or_else(|| format!("Provider '{}' not found after initial lookup", provider_id))?;
 
     if provider.id != "custom" {
         return Err(format!(
@@ -1319,10 +1319,10 @@ pub fn change_whisper_gpu_device(app: AppHandle, device: i32) -> Result<(), Stri
 /// stays responsive — see also the startup pre-warm in `lib.rs`.
 #[tauri::command]
 #[specta::specta]
-pub async fn get_available_accelerators() -> crate::managers::transcription::AvailableAccelerators {
+pub async fn get_available_accelerators() -> Result<crate::managers::transcription::AvailableAccelerators, String> {
     tauri::async_runtime::spawn_blocking(crate::managers::transcription::get_available_accelerators)
         .await
-        .expect("get_available_accelerators panicked")
+        .map_err(|e| format!("get_available_accelerators task failed: {}", e))
 }
 
 // ── Hybrid Mode Settings ──────────────────────────────────────────
