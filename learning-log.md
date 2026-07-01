@@ -180,6 +180,58 @@ On macOS, `NSPanel.orderFrontRegardless` activates the owning application regard
 
 On macOS, showing an NSPanel with `orderFrontRegardless` can activate the parent application, stealing focus from the user's target app. For any app that simulates keystrokes (like Cmd+V paste), you MUST restore the previous frontmost application before sending the keystroke, or the keystroke will go to the wrong app. The `NSWorkspace.frontmostApplication` / `NSRunningApplication.activateWithOptions` APIs provide a reliable way to save and restore application focus.
 
+## Pre-Recording Buffer Slider Crash (2026-07-01)
+
+### Problem
+
+- Moving the pre-recording buffer slider in Handy settings causes the app to crash
+- The slider calls `change_pre_recording_buffer_setting` which triggers a stop/recreate/start cycle of the audio recorder
+- Crash type: `SIGABRT` (abort() called) — Rust panic in main thread
+
+### Root Cause
+
+The `recreate_recorder()` method in `src-tauri/src/managers/audio.rs` used `.expect("VAD path should be valid UTF-8")` on line 937, which would **panic** if the VAD model path contained non-UTF-8 characters. Since this was called while holding a `parking_lot::Mutex`, a panic here would abort the entire process.
+
+### Crash Log Analysis
+
+- **Exception**: `EXC_CRASH`, signal `SIGABRT` (abort trap 6)
+- **ASI**: `abort() called`
+- **Thread**: Main thread (triggered)
+- **Location**: `src-tauri/src/managers/audio.rs` line 937 during `recreate_recorder()` call chain
+
+### Fixes (implemented 2026-07-01)
+
+1. **Replaced `.expect()` with `.ok_or_else()`** in `audio.rs`:
+   ```rust
+   // Before (line 937):
+   vad_path.to_str().expect("VAD path should be valid UTF-8")
+   
+   // After:
+   vad_path.to_str().ok_or_else(|| 
+     anyhow::anyhow!("VAD path is not valid UTF-8: {:?}", vad_path)
+   )?
+   ```
+
+2. **Moved `is_open` flag reset before recorder teardown** in `recreate_recorder()`:
+   - Set `is_open.store(false, ...)` **before** taking the recorder lock
+   - Prevents race where concurrent operations could use a recorder mid-teardown
+
+3. **Added recovery path on recreation failure** in `shortcut/mod.rs`:
+   - If `recreate_recorder()` fails for always-on/BT keep-alive modes, attempt to restart the microphone stream
+   - Prevents leaving the app in a dead state with no mic stream
+
+4. **Added trace logging** for debugging:
+   - `info!("Closing old recorder before recreation")`
+   - `info!("Applying pre-recording buffer change ({}ms): stopping stream, recreating recorder", ms)`
+
+### Key Insight
+
+When calling methods that acquire Mutexes during UI-triggered operations (like settings changes), **always use `.ok_or()` / `.map_err()` / `?` instead of `.expect()` / `.unwrap()`**. A panic under a Mutex will abort the entire process on most platforms because the Mutex is poisoned and cannot be safely recovered. The `?` operator propagates errors to the caller, allowing the frontend to display a toast notification instead of crashing the app.
+
+**Files changed:**
+- `src-tauri/src/managers/audio.rs` — Fixed `recreate_recorder()` panic point and is_open flag ordering
+- `src-tauri/src/shortcut/mod.rs` — Added error recovery and logging to `change_pre_recording_buffer_setting`
+
 ## Git Caution (2026-05-23)
 
 ### Problem
@@ -342,3 +394,77 @@ The 2026-06-15 fix addressed the **router-result timeout race** (frontend 5-seco
 ### Key Insight
 
 Event-based UI updates must **defensively check current state at event-handler time**, not trust the state that existed when the event was emitted. The emission time and handling time are different — the user may have started a new action in between. For overlays, this means the `hide-overlay` event handler must check if recording/transcription is still active before hiding, just like the router-result timeout handler does.
+
+## Visualizer Positioning Bug — Center Screen After Router (2026-07-01)
+
+### Problem
+
+- When Handy finishes routing (filing a note) and the user immediately starts a new transcription, the visualizer appears in the CENTER of the screen instead of at the configured position (top or bottom)
+- On subsequent transcription rounds, the position is correct
+- This is a recurring bug that happens specifically in the router → new transcription transition
+
+### Root Cause
+
+The bug is caused by **silent failure in monitor detection** combined with a **timing race on macOS**:
+
+1. **Silent Failure in `position_overlay_fixed()` (overlay.rs:476)**:
+   ```rust
+   if let Some(monitor) = get_monitor_with_cursor(app_handle) {
+       // ... positioning logic ...
+   }
+   // NO ELSE BRANCH! If monitor detection fails, window is shown unpositioned
+   ```
+   When `get_monitor_with_cursor()` returns `None`, the function exits without setting any position. The window is then shown at its previous/default position (center of screen).
+
+2. **Multiple Failure Points in `get_monitor_with_cursor()` (overlay.rs:170-198)**:
+   - `input::get_cursor_position()` may return `None` (cursor position unavailable)
+   - `app_handle.available_monitors()` may fail
+   - No monitor may contain the cursor
+   - `primary_monitor()` fallback may also fail
+
+3. **macOS Async Race (overlay.rs:511-531)**:
+   On macOS, position is set via `run_on_main_thread()` which is asynchronous:
+   ```rust
+   let _ = overlay_window.run_on_main_thread(move || {
+       let _ = window.set_position(...);
+       let _ = window.set_size(...);
+   });
+   ```
+   If `show()` is called immediately after, the window can be shown before the position update completes.
+
+4. **Timing Window**:
+   The bug occurs when starting a new transcription **immediately** after routing completes (within the hide animation window of ~200-300ms). This is when the display system may be unstable and monitor detection can fail transiently.
+
+### Why Subsequent Rounds Work
+
+- After the first failed positioning, the window ends up at some position (center or wherever)
+- By the time the next transcription starts, the display system has stabilized
+- Monitor detection succeeds on retry
+- The position is correctly calculated and applied
+
+### Fixes (implemented 2026-07-01)
+
+1. **Add fallback position with error logging** in `overlay.rs`:
+   ```rust
+   if let Some(monitor) = get_monitor_with_cursor(app_handle) {
+       // ... existing positioning logic ...
+   } else {
+       log::error!("position_overlay_fixed: get_monitor_with_cursor returned None! Using primary monitor fallback.");
+       
+       if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+           // Use the same positioning logic with primary monitor
+           // ... calculate position and set ...
+       } else {
+           log::error!("position_overlay_fixed: CRITICAL - No monitor available for positioning!");
+       }
+   }
+   ```
+
+2. **Ensure position update completes before show on macOS**:
+   Add a synchronous flush of the main thread's run loop to ensure the position update is processed before showing the window.
+
+3. **Add debug logging** at key points to track when positioning fails.
+
+### Key Insight
+
+When positioning overlay windows, **always have a fallback** when primary detection methods fail. Monitor detection can fail transiently due to timing issues, display reconfiguration, or platform-specific quirks. The `primary_monitor()` fallback ensures the window is always positioned somewhere sensible, even if it's not the exact monitor with the cursor. Additionally, on macOS, `run_on_main_thread()` is asynchronous — position updates must be flushed before showing the window to avoid race conditions.

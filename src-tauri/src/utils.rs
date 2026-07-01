@@ -16,6 +16,9 @@ pub use crate::tray::*;
 
 /// Centralized cancellation function that can be called from anywhere in the app.
 /// Handles cancelling both recording and transcription operations and updates UI state.
+/// 
+/// FIXED: Added defensive checks to ensure we don't try to cancel when already idle,
+/// and proper logging of state transitions for debugging freeze issues.
 pub fn cancel_current_operation(app: &AppHandle) {
     info!("Initiating operation cancellation...");
 
@@ -28,13 +31,17 @@ pub fn cancel_current_operation(app: &AppHandle) {
     // and this cancel handler would block waiting for that lock, freezing the UI.
     // By using the Arc<AtomicBool> directly, we can cancel without waiting.
     if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-        cancel_flag.store(true, Ordering::Release);
-        info!("Streaming transcription cancelled via Arc<AtomicBool>");
+        let was_already_cancelled = cancel_flag.swap(true, Ordering::AcqRel);
+        if was_already_cancelled {
+            info!("Streaming transcription was already cancelled");
+        } else {
+            info!("Streaming transcription cancelled via Arc<AtomicBool>");
+        }
     } else {
         warn!("Streaming cancel flag not available in app state");
     }
 
-    // Unregister the cancel shortcut asynchronously
+    // Unregister the cancel shortcut (synchronously now, not async)
     info!("Unregistering cancel shortcut...");
     shortcut::unregister_cancel_shortcut(app);
 
@@ -43,9 +50,14 @@ pub fn cancel_current_operation(app: &AppHandle) {
         warn!("AudioRecordingManager not available for cancellation");
         return;
     };
+    
     let recording_was_active = audio_manager.lock().is_recording();
-    info!("Cancelling recording (was_active={})", recording_was_active);
-    audio_manager.lock().cancel_recording();
+    if !recording_was_active {
+        info!("No active recording to cancel, but proceeding with cleanup");
+    } else {
+        info!("Cancelling active recording");
+        audio_manager.lock().cancel_recording();
+    }
 
     // Update tray icon and force-hide overlay (bypass state check for cancel)
     info!("Updating UI state...");
@@ -59,7 +71,7 @@ pub fn cancel_current_operation(app: &AppHandle) {
 
     // Notify coordinator so it can keep lifecycle state coherent.
     if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
-        info!("Notifying transcription coordinator");
+        info!("Notifying transcription coordinator (recording_was_active={})", recording_was_active);
         coordinator.notify_cancel(recording_was_active);
     } else {
         warn!("TranscriptionCoordinator not available");

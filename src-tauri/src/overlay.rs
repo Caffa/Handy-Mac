@@ -428,6 +428,17 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     position_overlay_fixed(app_handle, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
+        // BUGFIX (2026-07-01): On macOS, give the main thread time to process the
+        // position update before showing the window. The position is set via
+        // run_on_main_thread() which is asynchronous. Without this delay, the window
+        // can be shown before the position update completes, causing it to appear
+        // at the wrong position (center of screen instead of top/bottom).
+        // This is part of the fix for "Visualizer Positioning Bug — Center Screen After Router".
+        #[cfg(target_os = "macos")]
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
         let _ = overlay_window.show();
 
         // On Windows, aggressively re-assert "topmost" in the native Z-order after showing
@@ -466,6 +477,70 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
 /// works because `pointer-events: none` is set on html/body/#root in the
 /// overlay's index.html — only interactive elements (cancel button, edit
 /// textarea) opt back in with `pointer-events: auto`.
+/// Helper function to position overlay window on a specific monitor.
+/// Used by position_overlay_fixed for both cursor-based and fallback positioning.
+fn position_overlay_on_monitor(
+    overlay_window: &tauri::webview::WebviewWindow,
+    monitor: &tauri::Monitor,
+    app_handle: &AppHandle,
+) {
+    let scale = monitor.scale_factor();
+    let monitor_x = monitor.position().x as f64 / scale;
+    let monitor_y = monitor.position().y as f64 / scale;
+    let monitor_width = monitor.size().width as f64 / scale;
+    let monitor_height = monitor.size().height as f64 / scale;
+
+    let overlay_scale = settings::get_settings(app_handle).overlay_scale;
+
+    // FIXED max height — window never resizes during state transitions.
+    // All content below the pill is managed by CSS opacity/visibility.
+    let actual_height = calculate_overlay_window_height(monitor_height) * overlay_scale;
+    let actual_width = OVERLAY_WINDOW_WIDTH_BASE * overlay_scale;
+
+    // Center the window horizontally
+    let x = monitor_x + (monitor_width - actual_width) / 2.0;
+
+    // Position so the PILL (at top of window with 4px margin) sits at
+    // the correct screen position. Content below the pill is just
+    // transparent window space — it doesn't affect pill position.
+    let settings = settings::get_settings(app_handle);
+    let y = match settings.overlay_position {
+        OverlayPosition::Top => {
+            monitor_y + OVERLAY_TOP_OFFSET
+        }
+        OverlayPosition::Bottom | OverlayPosition::None => {
+            let pill_height = OVERLAY_PILL_HEIGHT * overlay_scale;
+            let pill_margin = 4.0 * overlay_scale;
+            monitor_y + monitor_height
+                - OVERLAY_BOTTOM_OFFSET
+                - pill_height
+                - pill_margin
+        }
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        let window = overlay_window.clone();
+        let _ = overlay_window.run_on_main_thread(move || {
+            let _ = window.set_position(tauri::Position::Logical(
+                tauri::LogicalPosition { x, y }
+            ));
+            let _ = window.set_size(tauri::Size::Logical(
+                tauri::LogicalSize { width: actual_width, height: actual_height }
+            ));
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = overlay_window
+            .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+        let _ = overlay_window.set_size(tauri::Size::Logical(
+            tauri::LogicalSize { width: actual_width, height: actual_height }
+        ));
+    }
+}
+
 fn position_overlay_fixed(app_handle: &AppHandle, _mode: &OverlayMode) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
@@ -473,61 +548,40 @@ fn position_overlay_fixed(app_handle: &AppHandle, _mode: &OverlayMode) {
             update_gtk_layer_shell_anchors(&overlay_window);
         }
 
+        // BUGFIX (2026-07-01): Visualizer Positioning Bug — Center Screen After Router
+        // PROBLEM: When Handy finishes routing and the user immediately starts a new
+        // transcription, the visualizer appears in the CENTER of the screen instead of
+        // at the configured position (top or bottom). This happens because
+        // get_monitor_with_cursor() can fail transiently during the hide/show cycle,
+        // leaving the window unpositioned.
+        //
+        // ROOT CAUSE: get_monitor_with_cursor() has multiple failure points:
+        // 1. input::get_cursor_position() returns None (cursor unavailable)
+        // 2. available_monitors() fails
+        // 3. No monitor contains the cursor
+        // 4. primary_monitor() fallback also fails
+        //
+        // FIX: Add fallback to primary_monitor() when get_monitor_with_cursor() fails.
+        // Also add logging to track positioning failures.
+        //
+        // See learning-log.md "Visualizer Positioning Bug — Center Screen After Router"
+        // for full documentation.
+
+        // Try to get monitor with cursor first
         if let Some(monitor) = get_monitor_with_cursor(app_handle) {
-            let scale = monitor.scale_factor();
-            let monitor_x = monitor.position().x as f64 / scale;
-            let monitor_y = monitor.position().y as f64 / scale;
-            let monitor_width = monitor.size().width as f64 / scale;
-            let monitor_height = monitor.size().height as f64 / scale;
-
-            let overlay_scale = settings::get_settings(app_handle).overlay_scale;
-
-            // FIXED max height — window never resizes during state transitions.
-            // All content below the pill is managed by CSS opacity/visibility.
-            let actual_height = calculate_overlay_window_height(monitor_height) * overlay_scale;
-            let actual_width = OVERLAY_WINDOW_WIDTH_BASE * overlay_scale;
-
-            // Center the window horizontally
-            let x = monitor_x + (monitor_width - actual_width) / 2.0;
-
-            // Position so the PILL (at top of window with 4px margin) sits at
-            // the correct screen position. Content below the pill is just
-            // transparent window space — it doesn't affect pill position.
-            let settings = settings::get_settings(app_handle);
-            let y = match settings.overlay_position {
-                OverlayPosition::Top => {
-                    monitor_y + OVERLAY_TOP_OFFSET
-                }
-                OverlayPosition::Bottom | OverlayPosition::None => {
-                    let pill_height = OVERLAY_PILL_HEIGHT * overlay_scale;
-                    let pill_margin = 4.0 * overlay_scale;
-                    monitor_y + monitor_height
-                        - OVERLAY_BOTTOM_OFFSET
-                        - pill_height
-                        - pill_margin
-                }
-            };
-
-            #[cfg(target_os = "macos")]
-            {
-                let window = overlay_window.clone();
-                let _ = overlay_window.run_on_main_thread(move || {
-                    let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition { x, y }
-                    ));
-                    let _ = window.set_size(tauri::Size::Logical(
-                        tauri::LogicalSize { width: actual_width, height: actual_height }
-                    ));
-                });
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = overlay_window
-                    .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-                let _ = overlay_window.set_size(tauri::Size::Logical(
-                    tauri::LogicalSize { width: actual_width, height: actual_height }
-                ));
+            debug!("position_overlay_fixed: Using monitor with cursor at ({}, {})",
+                monitor.position().x, monitor.position().y);
+            position_overlay_on_monitor(&overlay_window, &monitor, app_handle);
+        } else {
+            // FALLBACK: Use primary monitor when cursor-based detection fails
+            debug!("position_overlay_fixed: get_monitor_with_cursor returned None, falling back to primary monitor");
+            
+            if let Some(primary) = app_handle.primary_monitor().ok().flatten() {
+                debug!("position_overlay_fixed: Using primary monitor at ({}, {})",
+                    primary.position().x, primary.position().y);
+                position_overlay_on_monitor(&overlay_window, &primary, app_handle);
+            } else {
+                log::error!("position_overlay_fixed: CRITICAL - No monitor available for positioning! Window will appear at default position.");
             }
         }
 

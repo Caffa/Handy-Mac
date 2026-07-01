@@ -379,12 +379,32 @@ impl AudioRecorder {
         Ok(())
     }
 
+    /// Stop recording and return the audio samples.
+    /// 
+    /// FIXED: Added a 5-second timeout to prevent infinite blocking if the
+    /// audio stream is frozen (e.g., zombie device, CoreAudio hang). If the
+    /// timeout expires, returns an empty sample vector instead of blocking forever.
     pub fn stop(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
         }
-        Ok(resp_rx.recv()?) // wait for the samples
+        
+        // FIXED: Use recv_timeout instead of blocking recv to prevent infinite hang.
+        // If the consumer thread is frozen (zombie stream), this prevents the app
+        // from becoming completely unresponsive. 5 seconds is generous enough for
+        // even the largest audio buffers to be processed.
+        match resp_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(samples) => Ok(samples),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                log::warn!("Timeout waiting for audio samples after 5 seconds - stream may be frozen");
+                // Return empty samples instead of blocking forever
+                Ok(Vec::new())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Audio consumer thread disconnected".into())
+            }
+        }
     }
 
     /// Volume-aware stop: continues recording for up to `max_buffer_ms`
@@ -395,6 +415,9 @@ impl AudioRecorder {
     /// collected during the preceding recording, so noisy environments
     /// are handled naturally — the threshold adapts to whatever
     /// background level was present while the user was speaking.
+    /// 
+    /// FIXED: Added timeout protection (max_buffer_ms + 2 seconds) to prevent
+    /// infinite blocking if the audio stream is frozen.
     pub fn smart_stop(&self, max_buffer_ms: u64) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
@@ -403,7 +426,20 @@ impl AudioRecorder {
                 reply_tx: resp_tx,
             })?;
         }
-        Ok(resp_rx.recv()?) // wait for the samples
+        
+        // FIXED: Use recv_timeout instead of blocking recv.
+        // The smart-stop can take up to max_buffer_ms, so we add a 2-second safety margin.
+        let timeout = Duration::from_millis(max_buffer_ms) + Duration::from_secs(2);
+        match resp_rx.recv_timeout(timeout) {
+            Ok(samples) => Ok(samples),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                log::warn!("Timeout waiting for smart_stop samples after {}ms - stream may be frozen", timeout.as_millis());
+                Ok(Vec::new())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Audio consumer thread disconnected".into())
+            }
+        }
     }
 
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {

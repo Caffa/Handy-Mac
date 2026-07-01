@@ -28,7 +28,7 @@
 //! via Tauri's event system.
 
 use handy_keys::{Hotkey, HotkeyId, HotkeyManager, HotkeyState, KeyboardListener};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::Serialize;
 use specta::Type;
 use std::collections::HashMap;
@@ -447,6 +447,8 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Register the cancel shortcut (called when recording starts)
+/// FIXED: Changed from async to synchronous registration to prevent race condition
+/// where the user presses the hotkey before async registration completes.
 pub fn register_cancel_shortcut(app: &AppHandle) {
     // Disabled on Linux due to instability
     #[cfg(target_os = "linux")]
@@ -457,20 +459,22 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let app_clone = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = get_settings(&app_clone).bindings.get("cancel").cloned() {
-                if let Some(state) = app_clone.try_state::<HandyKeysState>() {
-                    if let Err(e) = state.register(&cancel_binding) {
-                        error!("Failed to register cancel shortcut: {}", e);
-                    }
+        if let Some(cancel_binding) = get_settings(app).bindings.get("cancel").cloned() {
+            if let Some(state) = app.try_state::<HandyKeysState>() {
+                if let Err(e) = state.register(&cancel_binding) {
+                    error!("Failed to register cancel shortcut: {}", e);
+                } else {
+                    debug!("Cancel shortcut registered synchronously: {}", cancel_binding.current_binding);
                 }
+            } else {
+                warn!("HandyKeysState not available for cancel shortcut registration");
             }
-        });
+        }
     }
 }
 
 /// Unregister the cancel shortcut (called when recording stops)
+/// FIXED: Changed from async to synchronous unregistration for consistency with registration.
 pub fn unregister_cancel_shortcut(app: &AppHandle) {
     #[cfg(target_os = "linux")]
     {
@@ -480,14 +484,14 @@ pub fn unregister_cancel_shortcut(app: &AppHandle) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let app_clone = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = get_settings(&app_clone).bindings.get("cancel").cloned() {
-                if let Some(state) = app_clone.try_state::<HandyKeysState>() {
-                    let _ = state.unregister(&cancel_binding);
-                }
+        if let Some(cancel_binding) = get_settings(app).bindings.get("cancel").cloned() {
+            if let Some(state) = app.try_state::<HandyKeysState>() {
+                let _ = state.unregister(&cancel_binding);
+                debug!("Cancel shortcut unregistered synchronously");
+            } else {
+                warn!("HandyKeysState not available for cancel shortcut unregistration");
             }
-        });
+        }
     }
 }
 
