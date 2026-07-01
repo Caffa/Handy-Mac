@@ -104,6 +104,7 @@
 
 /* Live captions displayed below the pill during recording */
 .live-captions-box {
+  box-sizing: border-box;
   --overlay-scale: 1;
   position: fixed;
   top: calc(70px * var(--overlay-scale));
@@ -128,7 +129,6 @@
   overflow-wrap: break-word;
   text-align: center;
   line-height: 1.4;
-  opacity: 1;
   display: block;
 }
 
@@ -322,7 +322,9 @@
   top: calc(75px * var(--overlay-scale)); /* Below the overlay pill */
   left: 50%;
   transform: translateX(-50%);
-  width: calc(516px * var(--overlay-scale)); /* 3x the visualizer width (172px) */
+  width: calc(
+    516px * var(--overlay-scale)
+  ); /* 3x the visualizer width (172px) */
   max-width: 90vw;
   max-height: 80vh; /* Limit to 80% of viewport height */
   overflow-y: auto; /* Allow scrolling for long text */
@@ -335,7 +337,8 @@
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   box-shadow:
-    0 calc(8px * var(--overlay-scale)) calc(32px * var(--overlay-scale)) rgba(0, 0, 0, 0.12),
+    0 calc(8px * var(--overlay-scale)) calc(32px * var(--overlay-scale))
+      rgba(0, 0, 0, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.5);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: calc(12px * var(--overlay-scale));
@@ -344,7 +347,7 @@
   overflow-wrap: break-word;
   word-break: break-word; /* Break long words if needed */
   line-height: 1.5;
-  text-align: left; /* Left-align for readability */
+  text-align: start; /* Respect RTL direction */
   pointer-events: auto; /* Allow interaction */
   z-index: 9999;
   display: block;
@@ -354,7 +357,8 @@
 .transcription-text-preview {
   cursor: pointer;
   user-select: none;
-  min-height: 40px;
+  min-height: calc(40px * var(--overlay-scale));
+  border-radius: calc(8px * var(--overlay-scale));
 }
 
 .transcription-text-preview:hover {
@@ -372,17 +376,17 @@
 /* Textarea for editing */
 .transcription-edit {
   width: 100%;
-  min-height: 80px;
+  min-height: calc(80px * var(--overlay-scale));
   max-height: 50vh;
-  padding: 12px;
-  font-size: 18px;
+  padding: calc(12px * var(--overlay-scale));
+  font-size: calc(18px * var(--overlay-scale));
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
   color: #1a1a1a;
   background: rgba(255, 255, 255, 0.95);
   border: 2px solid rgba(59, 130, 246, 0.3);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--overlay-scale));
   resize: vertical;
   outline: none;
   pointer-events: auto;
@@ -533,7 +537,7 @@
 
 /* Preview when editing or showing result */
 .transcription-preview.editing {
-  padding: 12px;
+  padding: calc(12px * var(--overlay-scale));
 }
 
 .transcription-preview.has-result {

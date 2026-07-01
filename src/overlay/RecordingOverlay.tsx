@@ -11,7 +11,10 @@ import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
-import { PartialTranscriptionEvent, TranscriptionSegment } from "@/lib/types/events";
+import {
+  PartialTranscriptionEvent,
+  TranscriptionSegment,
+} from "@/lib/types/events";
 
 type OverlayState =
   | "recording"
@@ -124,7 +127,17 @@ function getHandlerIcon(handlerName: string): string {
 
 /// Filter filler words from the start of streaming transcription text.
 function filterStreamingText(text: string): string {
-  const fillerWords = ["okay", "yeah", "um", "uh", "so", "like", "you know", "right", "well"];
+  const fillerWords = [
+    "okay",
+    "yeah",
+    "um",
+    "uh",
+    "so",
+    "like",
+    "you know",
+    "right",
+    "well",
+  ];
   const trimmed = text.trim();
   if (!trimmed) return "";
 
@@ -133,9 +146,7 @@ function filterStreamingText(text: string): string {
     const lowerText = trimmed.toLowerCase();
     const isFiller = fillerWords.some(
       (fw) =>
-        lowerText === fw ||
-        lowerText === `${fw}.` ||
-        lowerText === `${fw},`,
+        lowerText === fw || lowerText === `${fw}.` || lowerText === `${fw},`,
     );
     if (isFiller) return "";
     return trimmed;
@@ -173,6 +184,9 @@ const RecordingOverlay: React.FC = () => {
   // Hybrid mode indicator state
   const [hybridEnabled, setHybridEnabled] = useState(false);
   const [hybridThresholdSecs, setHybridThresholdSecs] = useState(20);
+
+  // Live captions setting (fetched from backend on mount/visibility change)
+  const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(true); // default to enabled
   const [recordingElapsedSecs, setRecordingElapsedSecs] = useState(0);
   const recordingStartRef = useRef<number>(0);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -214,7 +228,9 @@ const RecordingOverlay: React.FC = () => {
 
   // Streaming transcription text (shown during recording)
   const [streamingText, setStreamingText] = useState<string>("");
-  const [streamingSegments, setStreamingSegments] = useState<TranscriptionSegment[]>([]);
+  const [streamingSegments, setStreamingSegments] = useState<
+    TranscriptionSegment[]
+  >([]);
 
   // Routing confirmation countdown
   const [countdown, setCountdown] = useState<number>(0);
@@ -235,7 +251,7 @@ const RecordingOverlay: React.FC = () => {
   // Refs to avoid stale closures in async callbacks
   const transcriptionPreviewRef = useRef(transcriptionPreview);
   const editedTextRef = useRef(editedText);
-  
+
   // Track whether USB cycling is currently active (to ignore stale stage events)
   const usbCyclingActiveRef = useRef(false);
 
@@ -323,7 +339,7 @@ const RecordingOverlay: React.FC = () => {
       const allBelowThreshold = history.every(
         (level) => level < LOW_AUDIO_THRESHOLD,
       );
-      
+
       // Debug logging for low-audio warning evaluation
       console.log(
         "[audio-level] history:",
@@ -335,18 +351,20 @@ const RecordingOverlay: React.FC = () => {
         "| elapsed:",
         (elapsed / 1000).toFixed(1) + "s",
       );
-      
+
       if (allBelowThreshold) {
-        console.warn("[audio-level] ⚠️ Low audio warning triggered - all samples below threshold");
+        console.warn(
+          "[audio-level] ⚠️ Low audio warning triggered - all samples below threshold",
+        );
       }
-      
+
       setLowAudioWarning(allBelowThreshold);
     } else {
       setLowAudioWarning(false);
     }
   }, [state, isVisible, levels]);
 
-  // Fetch hybrid mode settings when overlay becomes visible
+  // Fetch hybrid mode + live captions settings when overlay becomes visible
   useEffect(() => {
     if (!isVisible) return;
     const fetchSettings = async () => {
@@ -355,6 +373,12 @@ const RecordingOverlay: React.FC = () => {
         if (result.status === "ok" && result.data) {
           setHybridEnabled(result.data.hybrid_mode_enabled ?? false);
           setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
+          const captionsEnabled = result.data.live_captions_enabled ?? true;
+          setLiveCaptionsEnabled(captionsEnabled);
+          console.log(
+            "[Live Captions] Settings fetched — live_captions_enabled:",
+            captionsEnabled,
+          );
         }
       } catch {
         // Silently ignore — indicator simply won't show
@@ -633,89 +657,96 @@ const RecordingOverlay: React.FC = () => {
         setState(parsed.state);
         setAction(parsed.action);
         setIsVisible(true);
-          // Reset editing state on new recording
-          if (parsed.state === "recording") {
-            // CRITICAL: Reset USB cycling state when starting a new recording.
-            // This ensures stale stage events from a previous cycle don't affect
-            // the new recording. Without this, the ref could remain true if the
-            // finished/failed event wasn't properly received.
-            usbCyclingActiveRef.current = false;
-            setTranscriptionPreview("");
-            setStreamingText(""); // Clear streaming text
-            setStreamingSegments([]);
-            setRouterResult(null);
-            setIsEditing(false);
-            setEditedText("");
-            setCountdown(0);
-            // Reset mic-level timestamp for dead-mic detection
-            lastLevelTimeRef.current = Date.now();
-            recordingStartTimeRef.current = Date.now();
-            setMicDeadWarning(false);
-            setLowAudioWarning(false);
-            lowAudioHistoryRef.current = [];
-            hadGoodAudioRef.current = false; // Reset good audio flag for new recording
-          }
+        // Reset editing state on new recording
+        if (parsed.state === "recording") {
+          console.log(
+            "[Live Captions] Recording started — liveCaptionsEnabled:",
+            liveCaptionsEnabled,
+          );
+          // CRITICAL: Reset USB cycling state when starting a new recording.
+          // This ensures stale stage events from a previous cycle don't affect
+          // the new recording. Without this, the ref could remain true if the
+          // finished/failed event wasn't properly received.
+          usbCyclingActiveRef.current = false;
+          setTranscriptionPreview("");
+          setStreamingText(""); // Clear streaming text
+          setStreamingSegments([]);
+          setRouterResult(null);
+          setIsEditing(false);
+          setEditedText("");
+          setCountdown(0);
+          // Reset mic-level timestamp for dead-mic detection
+          lastLevelTimeRef.current = Date.now();
+          recordingStartTimeRef.current = Date.now();
+          setMicDeadWarning(false);
+          setLowAudioWarning(false);
+          lowAudioHistoryRef.current = [];
+          hadGoodAudioRef.current = false; // Reset good audio flag for new recording
+        }
       });
 
       // Listen for hide-overlay event from Rust
-      const unlistenHide = await listen<{ force?: boolean }>("hide-overlay", (event) => {
-        const { force } = event.payload || {};
+      const unlistenHide = await listen<{ force?: boolean }>(
+        "hide-overlay",
+        (event) => {
+          const { force } = event.payload || {};
 
-        // ============================================================================
-        // BUGFIX (2026-06-29): Cancel Operation Support
-        // ============================================================================
-        // When force: true (from cancel operation), always hide regardless of state.
-        // When force: false/undefined (from normal completion), check state to avoid
-        // hiding during a new recording that started after the hide was triggered.
-        //
-        // Original BUGFIX (2026-06-17): Router Filing Race Condition — Hide Overlay Event
-        // PROBLEM: When router finishes filing and user has already started a new
-        // transcription, the hide-overlay event would hide the overlay mid-recording.
-        //
-        // ROOT CAUSE: Router thread emits hide-overlay immediately when it finishes.
-        // If user started new recording between router finish and hide event emission,
-        // the event still arrives at frontend with stale state assumption.
-        //
-        // FIX: Check current state before hiding. If recording/transcribing/processing/
-        // confirming, keep overlay visible — unless force: true (cancel).
-        //
-        // See learning-log.md "Router Filing Race Condition" for full documentation.
-        // ============================================================================
-        setState((current) => {
-          // If forced (cancel), always hide
-          if (force) {
-            setIsVisible(false);
-            setTranscriptionPreview("");
-            setStreamingText("");
-            setStreamingSegments([]);
-            setRouterResult(null);
-            setIsEditing(false);
-            setCountdown(0);
-            return current; // Return unchanged state, setIsVisible handles visibility
-          }
+          // ============================================================================
+          // BUGFIX (2026-06-29): Cancel Operation Support
+          // ============================================================================
+          // When force: true (from cancel operation), always hide regardless of state.
+          // When force: false/undefined (from normal completion), check state to avoid
+          // hiding during a new recording that started after the hide was triggered.
+          //
+          // Original BUGFIX (2026-06-17): Router Filing Race Condition — Hide Overlay Event
+          // PROBLEM: When router finishes filing and user has already started a new
+          // transcription, the hide-overlay event would hide the overlay mid-recording.
+          //
+          // ROOT CAUSE: Router thread emits hide-overlay immediately when it finishes.
+          // If user started new recording between router finish and hide event emission,
+          // the event still arrives at frontend with stale state assumption.
+          //
+          // FIX: Check current state before hiding. If recording/transcribing/processing/
+          // confirming, keep overlay visible — unless force: true (cancel).
+          //
+          // See learning-log.md "Router Filing Race Condition" for full documentation.
+          // ============================================================================
+          setState((current) => {
+            // If forced (cancel), always hide
+            if (force) {
+              setIsVisible(false);
+              setTranscriptionPreview("");
+              setStreamingText("");
+              setStreamingSegments([]);
+              setRouterResult(null);
+              setIsEditing(false);
+              setCountdown(0);
+              return current; // Return unchanged state, setIsVisible handles visibility
+            }
 
-          // Don't hide if a new recording/transcription is active
-          if (
-            current === "recording" ||
-            current === "transcribing" ||
-            current === "processing" ||
-            current === "confirming"
-          ) {
-            // New transcription is active — ignore the hide event
+            // Don't hide if a new recording/transcription is active
+            if (
+              current === "recording" ||
+              current === "transcribing" ||
+              current === "processing" ||
+              current === "confirming"
+            ) {
+              // New transcription is active — ignore the hide event
+              return current;
+            }
+            if (current !== "usb-cycling") {
+              setIsVisible(false);
+              setTranscriptionPreview(""); // Clear preview when hiding
+              setStreamingText(""); // Clear streaming text when hiding
+              setStreamingSegments([]);
+              setRouterResult(null);
+              setIsEditing(false);
+              setCountdown(0);
+            }
             return current;
-          }
-          if (current !== "usb-cycling") {
-            setIsVisible(false);
-            setTranscriptionPreview(""); // Clear preview when hiding
-            setStreamingText(""); // Clear streaming text when hiding
-            setStreamingSegments([]);
-            setRouterResult(null);
-            setIsEditing(false);
-            setCountdown(0);
-          }
-          return current;
-        });
-      });
+          });
+        },
+      );
 
       // Listen for mic-level updates
       const unlistenLevel = await listen<number[]>("mic-level", (event) => {
@@ -757,7 +788,7 @@ const RecordingOverlay: React.FC = () => {
         // Track low audio levels during recording
         // Calculate max level from the incoming audio data
         const maxLevel = Math.max(...newLevels);
-        
+
         // Debug logging for audio level threshold tuning
         console.log(
           "[audio-level] maxLevel:",
@@ -767,13 +798,15 @@ const RecordingOverlay: React.FC = () => {
           "| hadGoodAudio:",
           hadGoodAudioRef.current,
         );
-        
+
         // If we see good audio levels, mark that the mic is working
         if (maxLevel >= GOOD_AUDIO_THRESHOLD) {
           hadGoodAudioRef.current = true;
-          console.log("[audio-level] ✓ Good audio detected, suppressing low-audio warning");
+          console.log(
+            "[audio-level] ✓ Good audio detected, suppressing low-audio warning",
+          );
         }
-        
+
         lowAudioHistoryRef.current.push(maxLevel);
         // Keep only last N samples
         if (lowAudioHistoryRef.current.length > LOW_AUDIO_CHECK_SAMPLES) {
@@ -810,10 +843,10 @@ const RecordingOverlay: React.FC = () => {
           // All of these can cause "low audio" warnings or insensitive volume bars.
           setLevels(Array(16).fill(0));
           smoothedLevelsRef.current = Array(16).fill(0);
-           lowAudioHistoryRef.current = [];
-           recordingStartTimeRef.current = Date.now(); // Reset recording timer
-           hadGoodAudioRef.current = false; // Reset good audio flag after USB cycling
-           // Close and reopen the overlay to reinitialize the transcription
+          lowAudioHistoryRef.current = [];
+          recordingStartTimeRef.current = Date.now(); // Reset recording timer
+          hadGoodAudioRef.current = false; // Reset good audio flag after USB cycling
+          // Close and reopen the overlay to reinitialize the transcription
           // visualizer. This fixes the "mic not listening, volume bars
           // not moving" issue after USB cycling.
           setIsVisible(false);
@@ -836,10 +869,10 @@ const RecordingOverlay: React.FC = () => {
           // Reset all audio level tracking state on failure too
           setLevels(Array(16).fill(0));
           smoothedLevelsRef.current = Array(16).fill(0);
-           lowAudioHistoryRef.current = [];
-           recordingStartTimeRef.current = Date.now();
-           hadGoodAudioRef.current = false; // Reset good audio flag after USB cycling
-           setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
+          lowAudioHistoryRef.current = [];
+          recordingStartTimeRef.current = Date.now();
+          hadGoodAudioRef.current = false; // Reset good audio flag after USB cycling
+          setState((prev) => (prev === "usb-cycling" ? "recording" : prev));
           setIsVisible(false);
         },
       );
@@ -891,45 +924,89 @@ const RecordingOverlay: React.FC = () => {
       // Receives structured payload with segments and timestamps.
       // Accumulates segments by timestamp to prevent early content from
       // disappearing when Whisper re-interprets longer audio buffers.
-      const unlistenPartialTranscription = await listen<PartialTranscriptionEvent>(
-        "partial-transcription",
-        (event) => {
-          const { text, segments } = event.payload;
-
-          if (segments && segments.length > 0) {
-            // Merge new segments with accumulated segments by timestamp.
-            // Any existing segment that overlaps with a new segment is
-            // replaced. Non-overlapping existing segments are preserved.
-            // Also compute display text from the merged result in one pass.
-            setStreamingSegments((prev) => {
-              const merged = [...prev];
-              for (const ns of segments) {
-                const kept = merged.filter(
-                  (es) => !(es.start < ns.end && es.end > ns.start),
-                );
-                kept.push(ns);
-                merged.splice(0, merged.length, ...kept);
-              }
-              merged.sort((a, b) => a.start - b.start);
-
-              // Derive display text from merged segments
-              const text = merged.map((s) => s.text).join(" ");
-              setStreamingText((prevText) => {
-                const filtered = filterStreamingText(text);
-                return filtered || prevText;
-              });
-
-              return merged;
-            });
-          } else {
-            // Fallback for models without timestamps (e.g. Moonshine)
-            setStreamingText((prev) => {
-              if (prev === text) return prev;
-              return filterStreamingText(text) || prev;
-            });
-          }
-        },
+      console.log(
+        "[Live Captions] Registering partial-transcription event listener",
       );
+      const unlistenPartialTranscription =
+        await listen<PartialTranscriptionEvent>(
+          "partial-transcription",
+          (event) => {
+            const { text, segments } = event.payload;
+            console.log(
+              "[Live Captions] Event received — text:",
+              JSON.stringify(text),
+              "| segments:",
+              segments?.length ?? 0,
+              "| liveCaptionsEnabled:",
+              liveCaptionsEnabled,
+            );
+
+            if (segments && segments.length > 0) {
+              // Merge new segments with accumulated segments by timestamp.
+              // Any existing segment that overlaps with a new segment is
+              // replaced. Non-overlapping existing segments are preserved.
+              // Also compute display text from the merged result in one pass.
+              setStreamingSegments((prev) => {
+                const merged = [...prev];
+                for (const ns of segments) {
+                  const kept = merged.filter(
+                    (es) => !(es.start < ns.end && es.end > ns.start),
+                  );
+                  kept.push(ns);
+                  merged.splice(0, merged.length, ...kept);
+                }
+                merged.sort((a, b) => a.start - b.start);
+
+                // Derive display text from merged segments
+                const text = merged.map((s) => s.text).join(" ");
+                setStreamingText((prevText) => {
+                  const filtered = filterStreamingText(text);
+                  if (!filtered) {
+                    console.log(
+                      "[Live Captions] Filler filter removed ALL text — raw:",
+                      JSON.stringify(text),
+                      "| keeping previous:",
+                      JSON.stringify(prevText),
+                    );
+                  } else {
+                    console.log(
+                      "[Live Captions] streamingText set to:",
+                      JSON.stringify(filtered),
+                    );
+                  }
+                  return filtered || prevText;
+                });
+
+                return merged;
+              });
+            } else {
+              // Fallback for models without timestamps (e.g. Moonshine)
+              setStreamingText((prev) => {
+                if (prev === text) {
+                  console.log(
+                    "[Live Captions] Text unchanged from previous — skipping update",
+                  );
+                  return prev;
+                }
+                const filtered = filterStreamingText(text);
+                if (!filtered) {
+                  console.log(
+                    "[Live Captions] Filler filter removed ALL text (fallback) — raw:",
+                    JSON.stringify(text),
+                    "| keeping previous:",
+                    JSON.stringify(prev),
+                  );
+                } else {
+                  console.log(
+                    "[Live Captions] streamingText set to (fallback):",
+                    JSON.stringify(filtered),
+                  );
+                }
+                return filtered || prev;
+              });
+            }
+          },
+        );
 
       // Listen for routing state changes
       const unlistenRoutingState = await listen<string>(
@@ -1010,8 +1087,8 @@ const RecordingOverlay: React.FC = () => {
 
   return (
     <>
-      <div 
-        dir={direction} 
+      <div
+        dir={direction}
         className={getOverlayClassNames()}
         style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
       >
@@ -1140,6 +1217,7 @@ const RecordingOverlay: React.FC = () => {
       {/* Live captions - positioned below the pill */}
       {isVisible &&
         state === "recording" &&
+        liveCaptionsEnabled &&
         !micDeadWarning &&
         !lowAudioWarning &&
         streamingText &&
@@ -1161,6 +1239,7 @@ const RecordingOverlay: React.FC = () => {
         <div
           dir={direction}
           className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""} ${isFadingOut ? "fade-out" : ""}`}
+          style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
         >
           {routerResult ? (
             // Router result display - icons only, no white box

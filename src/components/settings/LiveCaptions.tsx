@@ -8,18 +8,16 @@ interface LiveCaptionsProps {
   grouped?: boolean;
 }
 
-export const LiveCaptions: React.FC<LiveCaptionsProps> =
-  React.memo(({ descriptionMode = "tooltip", grouped = false }) => {
+export const LiveCaptions: React.FC<LiveCaptionsProps> = React.memo(
+  ({ descriptionMode = "tooltip", grouped = false }) => {
     const { t } = useTranslation();
     const { getSetting, updateSetting, isUpdating } = useSettings();
-    const enabled = getSetting("live_captions_enabled") ?? false;
+    const enabled = getSetting("live_captions_enabled") ?? true;
 
     return (
       <ToggleSwitch
         checked={enabled}
-        onChange={(checked) =>
-          updateSetting("live_captions_enabled", checked)
-        }
+        onChange={(checked) => updateSetting("live_captions_enabled", checked)}
         isUpdating={isUpdating("live_captions_enabled")}
         label={t("settings.advanced.liveCaptions.label")}
         description={t("settings.advanced.liveCaptions.description")}
@@ -27,4 +25,5 @@ export const LiveCaptions: React.FC<LiveCaptionsProps> =
         grouped={grouped}
       />
     );
-  });
+  },
+);
