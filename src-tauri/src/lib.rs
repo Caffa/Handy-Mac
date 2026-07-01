@@ -390,7 +390,64 @@ fn show_main_window_command(app: AppHandle) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Handles query-only flags (--is-active-use, --is-recording) by polling for result files.
+/// This runs AFTER the single-instance plugin has forwarded args to the running instance.
+/// The running instance writes the result to a temp file, and we poll for it here.
+fn handle_query_flag(result_file: &str, flag_name: &str) {
+    // Clean up any stale result file before polling
+    let _ = std::fs::remove_file(result_file);
+    
+    // Poll for result file with timeout
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(5);
+    
+    loop {
+        if let Ok(content) = std::fs::read_to_string(result_file) {
+            let lines: Vec<&str> = content.lines().collect();
+            if lines.len() >= 2 {
+                // Line 0: status string, Line 1: exit code
+                println!("{}", lines[0]);
+                if let Ok(code) = lines[1].parse::<i32>() {
+                    // Clean up temp file
+                    let _ = std::fs::remove_file(result_file);
+                    std::process::exit(code);
+                }
+            }
+        }
+        
+        // Check timeout
+        if start.elapsed() > timeout {
+            break;
+        }
+        
+        // Wait a bit before retrying
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    
+    // Timeout or no result file = no running instance
+    eprintln!("error: Handy is not running");
+    std::process::exit(2);
+}
+
 pub fn run(cli_args: CliArgs) {
+    // For query-only flags (--is-active-use, --is-recording), we need to handle them
+    // BEFORE Tauri initializes, because the single-instance plugin will exit immediately
+    // if another instance is running, before we can read the result file.
+    //
+    // The flow:
+    // 1. CLI instance starts with --is-active-use
+    // 2. Clean up any stale result file
+    // 3. Tauri initializes, single-instance plugin detects running instance
+    // 4. Plugin forwards args to running instance (callback creates result file)
+    // 5. Plugin exits CLI instance with code 0
+    // 6. THIS CODE RUNS: poll for result file and exit with correct code
+    if cli_args.is_active_use {
+        handle_query_flag("/tmp/handy-is-active-use.result", "is-active-use");
+    }
+    if cli_args.is_recording {
+        handle_query_flag("/tmp/handy-is-recording.result", "is-recording");
+    }
+
     // Detect portable mode before anything else
     portable::init();
 
@@ -726,87 +783,9 @@ pub fn run(cli_args: CliArgs) {
         ))
         .manage(cli_args.clone())
         .setup(move |app| {
-            // Query-only flags (sent to running instance, or no instance running)
-            // If we reach this point, we need to check:
-            // 1. If a running instance wrote a result file, read it and exit with that code
-            // 2. Otherwise, no instance is running, exit with error
-            
-            if cli_args.is_active_use {
-                // Wait for result file from running instance (with timeout)
-                // The single-instance plugin forwards args to the running instance,
-                // which writes the result to /tmp/handy-is-active-use.result
-                // We need to poll for the file since the callback is async
-                let result_file = "/tmp/handy-is-active-use.result";
-                let start = std::time::Instant::now();
-                let timeout = std::time::Duration::from_secs(5);
-                
-                // Clean up any stale result file first
-                let _ = std::fs::remove_file(result_file);
-                
-                loop {
-                    if let Ok(content) = std::fs::read_to_string(result_file) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        if lines.len() >= 2 {
-                            // Line 0: status string, Line 1: exit code
-                            println!("{}", lines[0]);
-                            if let Ok(code) = lines[1].parse::<i32>() {
-                                // Clean up temp file
-                                let _ = std::fs::remove_file(result_file);
-                                std::process::exit(code);
-                            }
-                        }
-                    }
-                    
-                    // Check timeout
-                    if start.elapsed() > timeout {
-                        break;
-                    }
-                    
-                    // Wait a bit before retrying
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                
-                // Timeout or no result file = no running instance
-                eprintln!("error: Handy is not running");
-                std::process::exit(2);
-            }
-            
-            if cli_args.is_recording {
-                // Wait for result file from running instance (with timeout)
-                let result_file = "/tmp/handy-is-recording.result";
-                let start = std::time::Instant::now();
-                let timeout = std::time::Duration::from_secs(5);
-                
-                // Clean up any stale result file first
-                let _ = std::fs::remove_file(result_file);
-                
-                loop {
-                    if let Ok(content) = std::fs::read_to_string(result_file) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        if lines.len() >= 2 {
-                            // Line 0: status string, Line 1: exit code
-                            println!("{}", lines[0]);
-                            if let Ok(code) = lines[1].parse::<i32>() {
-                                // Clean up temp file
-                                let _ = std::fs::remove_file(result_file);
-                                std::process::exit(code);
-                            }
-                        }
-                    }
-                    
-                    // Check timeout
-                    if start.elapsed() > timeout {
-                        break;
-                    }
-                    
-                    // Wait a bit before retrying
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                
-                // Timeout or no result file = no running instance
-                eprintln!("error: Handy is not running");
-                std::process::exit(2);
-            }
+            // Query-only flags (--is-active-use, --is-recording) are handled at the start of run()
+            // before Tauri initializes, so we don't need to handle them here.
+            // This setup block only runs if we're starting the main app.
 
             specta_builder.mount_events(app);
 
