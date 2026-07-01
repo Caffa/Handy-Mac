@@ -433,8 +433,7 @@
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 16px 24px;
-  /* No background - just the icons floating */
+  /* Padding comes from parent .transcription-preview */
 }
 
 .router-success {
@@ -484,15 +483,7 @@
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-/* Remove white box background when showing result */
-.transcription-preview.has-result {
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: none;
-  padding: 0;
-}
+/* Keep container styling when showing result - icons appear inside the rounded box */
 
 /* Editing state overlay */
 .editing-overlay {
