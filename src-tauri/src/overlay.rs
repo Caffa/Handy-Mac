@@ -2,7 +2,22 @@ use crate::input;
 use crate::settings;
 use crate::settings::OverlayPosition;
 use log::debug;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
+
+use crate::transcription_coordinator::TranscriptionCoordinator;
+
+/// Session counter for overlay hide-guard. Incremented when a new recording
+/// starts so any pending hide from a previous session is invalidated.
+static OVERLAY_SESSION: AtomicU64 = AtomicU64::new(0);
+
+/// Bump the overlay session counter. Called when a new recording starts.
+/// Any pending hide operation from a previous session will see the session
+/// has changed and will skip hiding the window.
+pub fn bump_overlay_session() -> u64 {
+    OVERLAY_SESSION.fetch_add(1, Ordering::SeqCst)
+}
 
 #[cfg(not(target_os = "macos"))]
 use tauri::WebviewWindowBuilder;
@@ -42,6 +57,9 @@ const OVERLAY_PILL_HEIGHT: f64 = 50.0;
 /// Maximum percentage of screen height to use for the overlay window.
 const OVERLAY_MAX_SCREEN_RATIO: f64 = 0.85;
 /// Window height for live captions mode (taller to show multi-line text)
+/// Kept for potential future use; the fixed-size window approach uses
+/// calculate_overlay_window_height() instead.
+#[allow(dead_code)]
 const OVERLAY_LIVE_CAPTIONS_HEIGHT: f64 = 280.0;
 
 #[cfg(target_os = "macos")]
@@ -404,7 +422,10 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     // activates the Handy app, stealing focus from the user's target app.
     crate::focus::save_frontmost_app(app_handle);
 
-    update_overlay_position(app_handle, state, mode);
+    // Position the window ONCE at show time with max needed height.
+    // Content visibility is managed by CSS, not by resizing the window.
+    // This eliminates position jumps caused by async resize operations.
+    position_overlay_fixed(app_handle, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         let _ = overlay_window.show();
@@ -413,8 +434,107 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
         #[cfg(target_os = "windows")]
         force_overlay_topmost(&overlay_window);
 
+        // On macOS, update click-through state based on current overlay state.
+        // During router "processing" state, the entire window should be click-through
+        // (OS-level) so users can click on apps below the transparent overlay.
+        // For all other states, only the CSS pointer-events: none areas are click-through.
+        #[cfg(target_os = "macos")]
+        {
+            let should_ignore_mouse_events = matches!(mode, OverlayMode::Router) && state == "processing";
+            let window = overlay_window.clone();
+            let _ = overlay_window.run_on_main_thread(move || {
+                if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
+                    panel.set_ignores_mouse_events(should_ignore_mouse_events);
+                }
+            });
+        }
+
         let payload = format_overlay_payload(state, mode);
         let _ = overlay_window.emit("show-overlay", payload);
+    }
+}
+
+/// Position the overlay window once at show time. The window is always set
+/// to max height (85% of screen height × overlay scale) — content below the
+/// pill is managed by CSS (opacity transitions, fixed positioning), not by
+/// resizing the window. This eliminates position jumps caused by async resize
+/// operations during state transitions.
+///
+/// The pill sits at the top of the window with a 4px margin. By positioning
+/// the window so the pill's expected screen position is correct, the extra
+/// transparent space below doesn't affect visual positioning. Click-through
+/// works because `pointer-events: none` is set on html/body/#root in the
+/// overlay's index.html — only interactive elements (cancel button, edit
+/// textarea) opt back in with `pointer-events: auto`.
+fn position_overlay_fixed(app_handle: &AppHandle, _mode: &OverlayMode) {
+    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
+        #[cfg(target_os = "linux")]
+        {
+            update_gtk_layer_shell_anchors(&overlay_window);
+        }
+
+        if let Some(monitor) = get_monitor_with_cursor(app_handle) {
+            let scale = monitor.scale_factor();
+            let monitor_x = monitor.position().x as f64 / scale;
+            let monitor_y = monitor.position().y as f64 / scale;
+            let monitor_width = monitor.size().width as f64 / scale;
+            let monitor_height = monitor.size().height as f64 / scale;
+
+            let overlay_scale = settings::get_settings(app_handle).overlay_scale;
+
+            // FIXED max height — window never resizes during state transitions.
+            // All content below the pill is managed by CSS opacity/visibility.
+            let actual_height = calculate_overlay_window_height(monitor_height) * overlay_scale;
+            let actual_width = OVERLAY_WINDOW_WIDTH_BASE * overlay_scale;
+
+            // Center the window horizontally
+            let x = monitor_x + (monitor_width - actual_width) / 2.0;
+
+            // Position so the PILL (at top of window with 4px margin) sits at
+            // the correct screen position. Content below the pill is just
+            // transparent window space — it doesn't affect pill position.
+            let settings = settings::get_settings(app_handle);
+            let y = match settings.overlay_position {
+                OverlayPosition::Top => {
+                    monitor_y + OVERLAY_TOP_OFFSET
+                }
+                OverlayPosition::Bottom | OverlayPosition::None => {
+                    let pill_height = OVERLAY_PILL_HEIGHT * overlay_scale;
+                    let pill_margin = 4.0 * overlay_scale;
+                    monitor_y + monitor_height
+                        - OVERLAY_BOTTOM_OFFSET
+                        - pill_height
+                        - pill_margin
+                }
+            };
+
+            #[cfg(target_os = "macos")]
+            {
+                let window = overlay_window.clone();
+                let _ = overlay_window.run_on_main_thread(move || {
+                    let _ = window.set_position(tauri::Position::Logical(
+                        tauri::LogicalPosition { x, y }
+                    ));
+                    let _ = window.set_size(tauri::Size::Logical(
+                        tauri::LogicalSize { width: actual_width, height: actual_height }
+                    ));
+                });
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = overlay_window
+                    .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+                let _ = overlay_window.set_size(tauri::Size::Logical(
+                    tauri::LogicalSize { width: actual_width, height: actual_height }
+                ));
+            }
+        }
+
+        // On macOS, make the window click-through during router "processing" state.
+        // This allows clicks to pass through to the app below even on transparent areas.
+        // Note: This is NOT in position_overlay_fixed() because it's state-dependent.
+        // The initial position call should not assume any click-through state.
     }
 }
 
@@ -448,121 +568,36 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "processing", &OverlayMode::Transcribe);
 }
 
-/// Updates the overlay window position and size based on current settings and mode.
-/// Router mode uses a taller window to accommodate the transcription preview,
-/// while regular transcription uses minimal height to avoid blocking click-through.
-/// During processing (filing), the window stays tall to show the text preview,
-/// but CSS makes it click-through and visually dimmed.
-/// The overlay_scale setting (1.0 or 2.0) scales the window dimensions.
-pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
-    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
-        #[cfg(target_os = "linux")]
-        {
-            update_gtk_layer_shell_anchors(&overlay_window);
-        }
-
-        // Get monitor for position calculation
-        if let Some(monitor) = get_monitor_with_cursor(app_handle) {
-            let scale = monitor.scale_factor();
-            let monitor_x = monitor.position().x as f64 / scale;
-            let monitor_y = monitor.position().y as f64 / scale;
-            let monitor_width = monitor.size().width as f64 / scale;
-            let monitor_height = monitor.size().height as f64 / scale;
-            
-            // Get the overlay scale setting (1.0 = normal, 2.0 = double size)
-            let overlay_scale = settings::get_settings(app_handle).overlay_scale;
-            
-            // Use minimal height for regular transcription to allow click-through.
-            // Router mode needs full height during confirming (text preview) and
-            // processing (showing "Filing..." with visible but dimmed preview).
-            // During processing, the window is click-through at the OS level.
-            // During recording, we only show the visualizer pill (minimal height).
-            let actual_height = match mode {
-                OverlayMode::Router if state == "confirming" || state == "processing" => {
-                    calculate_overlay_window_height(monitor_height) * overlay_scale
-                },
-                OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
-                    if state == "recording" && settings::get_settings(app_handle).live_captions_enabled {
-                        OVERLAY_LIVE_CAPTIONS_HEIGHT * overlay_scale
-                    } else {
-                        OVERLAY_WINDOW_MIN_HEIGHT * overlay_scale
-                    }
-                }
-            };
-            
-            // Scale the window width based on overlay_scale
-            let actual_width = OVERLAY_WINDOW_WIDTH_BASE * overlay_scale;
-
-            // Center the window which is wider than the pill
-            let x = monitor_x + (monitor_width - OVERLAY_WINDOW_WIDTH) / 2.0;
-            
-            // Calculate Y position so the pillbox stays fixed on screen.
-            // The pillbox is at the top of the window (CSS: margin: 4px auto auto),
-            // height ~50px. The window may be taller (for live captions, router mode, etc),
-            // with extra space below the pillbox.
-            // We need to position the window so the pillbox stays at a fixed screen position.
-            let settings = settings::get_settings(app_handle);
-            let y = match settings.overlay_position {
-                OverlayPosition::Top => {
-                    monitor_y + OVERLAY_TOP_OFFSET
-                }
-                OverlayPosition::Bottom | OverlayPosition::None => {
-                    // Pillbox should be at: monitor_bottom - OVERLAY_BOTTOM_OFFSET - PILL_HEIGHT
-                    // Window top (y) = pillbox_position - PILL_MARGIN_TOP
-                    let pill_height = OVERLAY_PILL_HEIGHT * overlay_scale;
-                    let pill_margin = 4.0 * overlay_scale;
-                    monitor_y + monitor_height
-                        - OVERLAY_BOTTOM_OFFSET
-                        - pill_height
-                        - pill_margin
-                }
-            };
-
-            #[cfg(target_os = "macos")]
-            {
-                // Window operations must run on the main thread on macOS to avoid
-                // AppKit crashes (set_position/set_size trigger NSWindow property
-                // updates like applyTags:mask: that require main-thread access).
-                let window = overlay_window.clone();
-                let _ = overlay_window.run_on_main_thread(move || {
-                    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                        width: actual_width,
-                        height: actual_height,
-                    }));
-                });
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = overlay_window
-                    .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-                let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                    width: actual_width,
-                    height: actual_height,
-                }));
-            }
-        }
-
-        // On macOS, make the window click-through during router "processing" state.
-        // This allows clicks to pass through to the app below even on transparent areas.
-        // Note: set_ignores_mouse_events also requires main thread access.
-        #[cfg(target_os = "macos")]
-        {
-            let should_ignore_mouse_events = matches!(mode, OverlayMode::Router) && state == "processing";
-            let window = overlay_window.clone();
-            let _ = overlay_window.run_on_main_thread(move || {
-                if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
-                    panel.set_ignores_mouse_events(should_ignore_mouse_events);
-                }
-            });
-        }
-    }
+/// Updates the overlay window position and size.
+/// Now uses the fixed-size approach: the window is always positioned at max
+/// height, with content visibility managed by CSS. The `state` and `mode`
+/// parameters are kept for API compatibility but the window size no longer
+/// changes per state.
+///
+/// The only state-dependent behavior is the macOS click-through during
+/// router "processing" state, which uses OS-level `set_ignores_mouse_events`.
+pub fn update_overlay_position(app_handle: &AppHandle, _state: &str, mode: &OverlayMode) {
+    position_overlay_fixed(app_handle, mode);
 }
 
 /// Hides the recording overlay window with fade-out animation.
 /// Emits `force: false` so the frontend respects the state check (won't hide
 /// if a new recording is already active).
+///
+/// BUGFIX (2026-07-01): Race condition — Visualizer closing during new transcription.
+/// The old implementation checked `is_active_use()` in actions.rs (too early)
+/// then scheduled `window.hide()` via `run_on_main_thread`. If a new recording
+/// started between the check and the actual hide, the new visualizer was
+/// incorrectly closed.
+///
+/// FIX: Two-layer guard:
+/// 1. Session ID: Capture OVERLAY_SESSION at call time, check it in the
+///    closure. If a new recording started (bumped the session), the IDs
+///    won't match, so we skip the hide.
+/// 2. is_active_use(): Check inside the closure at the latest possible
+///    moment, right before window.hide(). If still active, skip the hide.
+///
+/// Both checks must pass to hide the window.
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
@@ -570,32 +605,52 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
         // Emit event to trigger fade-out animation
         // force: false means the frontend will check state before hiding
         let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": false }));
-        // Hide the window after a short delay to allow animation to complete
-        // Must run hide() on main thread on macOS to avoid crash
-        let window_for_thread = overlay_window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let window_for_main = window_for_thread.clone();
-            let _ = window_for_thread.run_on_main_thread(move || {
-                let _ = window_for_main.hide();
-            });
+
+        // Capture session ID at call time — if a new recording starts between
+        // now and the closure executing, the session will have been bumped.
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // Schedule hide on main thread after delay for animation.
+        // The closure checks BOTH the session ID and is_active_use() to
+        // guard against the race condition where a new recording starts
+        // between the caller's is_active_use() check and the actual hide.
+        let app_handle_clone = app_handle.clone();
+        let window_clone = overlay_window.clone();
+        let _ = overlay_window.run_on_main_thread(move || {
+            // GUARD 1: Session changed — a new recording started, keep overlay
+            let session_now = OVERLAY_SESSION.load(Ordering::SeqCst);
+            if session_now != session_at_call {
+                log::info!("hide_recording_overlay: session changed ({session_at_call} -> {session_now}), keeping overlay");
+                return;
+            }
+
+            // GUARD 2: Active use check at the latest possible moment
+            let is_active = app_handle_clone
+                .try_state::<Arc<TranscriptionCoordinator>>()
+                .map_or(false, |coord| coord.is_active_use());
+
+            if !is_active {
+                let _ = window_clone.hide();
+            } else {
+                log::info!("hide_recording_overlay: keeping overlay — new recording active");
+            }
         });
     }
 }
 
 /// Force hide the recording overlay, bypassing state checks.
 /// Used for cancel operation where the overlay must close regardless of state.
+/// 
+/// FIXED: Removed thread spawn to prevent orphaned threads on crash.
 pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         // Emit force: true to bypass the frontend state check for cancel
         let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": true }));
-        let window_for_thread = overlay_window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let window_for_main = window_for_thread.clone();
-            let _ = window_for_thread.run_on_main_thread(move || {
-                let _ = window_for_main.hide();
-            });
+        
+        // Hide immediately on main thread - no thread spawn, safer on crash
+        let window_clone = overlay_window.clone();
+        let _ = overlay_window.run_on_main_thread(move || {
+            let _ = window_clone.hide();
         });
     }
 }

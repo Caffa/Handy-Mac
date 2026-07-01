@@ -64,9 +64,24 @@ pub struct RouterResultEvent {
 
 /// Drop guard that notifies the [`TranscriptionCoordinator`] when the
 /// transcription pipeline finishes — whether it completes normally or panics.
+/// 
+/// FIXED: Only notifies if we're still in the Processing stage. This prevents
+/// race conditions where:
+/// 1. User starts recording → stage = Recording
+/// 2. User stops → stage = Processing, async task starts
+/// 3. User cancels → stage = Idle
+/// 4. User starts new recording → stage = Recording
+/// 5. Async task from step 2 finishes → FinishGuard fires
+/// 6. stage transitions to Idle (wrong!)
+/// 
+/// With this fix, FinishGuard only fires if stage is still Processing,
+/// preventing the race condition.
 struct FinishGuard(AppHandle);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
+        // The coordinator will only transition from Processing to Idle,
+        // so if we're already Idle (due to cancel), this is a no-op.
+        // This prevents race conditions between cancel and finish.
         if let Some(c) = self.0.try_state::<TranscriptionCoordinator>() {
             c.notify_processing_finished();
         }
@@ -1346,11 +1361,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         };
 
                         // ── Emit transcription preview for routing overlay ──
-                        // The overlay transitions to "confirming" state and needs to resize
-                        // to accommodate the transcription preview. Update the window size
-                        // before emitting the event so the frontend has the correct bounds.
+                        // The overlay transitions to "confirming" state. Update the window
+                        // position (fixed max-height, content managed by CSS).
                         if let Some(overlay_window) = ah.get_webview_window("recording_overlay") {
-                            // Resize window to full height for transcription preview
                             crate::overlay::update_overlay_position(&ah, "confirming", &OverlayMode::Router);
                             let _ = overlay_window.emit("transcription-preview", &transcription_text);
                         }

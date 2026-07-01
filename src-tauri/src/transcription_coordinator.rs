@@ -294,6 +294,8 @@ fn start(
         .map_or(false, |a| a.lock().is_recording())
     {
         set_stage(stage, Stage::Recording(binding_id.to_string()), active_use);
+        // Bump overlay session — any pending hide from previous session is now invalid
+        crate::overlay::bump_overlay_session();
     } else {
         debug!("Start for '{binding_id}' did not begin recording; staying idle");
     }
