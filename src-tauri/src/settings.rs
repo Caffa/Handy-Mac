@@ -1,4 +1,4 @@
-use log::{debug, warn};
+use log::{debug, error, warn};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
@@ -1125,11 +1125,55 @@ impl AppSettings {
     }
 }
 
+/// Validate that float fields are not NaN before serialization.
+/// NaN values cause serde_json serialization to fail (produces `null` which isn't valid for numbers).
+fn sanitize_floats(settings: &mut AppSettings) {
+    if settings.audio_feedback_volume.is_nan() {
+        error!("audio_feedback_volume is NaN, resetting to default");
+        settings.audio_feedback_volume = default_audio_feedback_volume();
+    }
+    if settings.word_correction_threshold.is_nan() {
+        error!("word_correction_threshold is NaN, resetting to default");
+        settings.word_correction_threshold = default_word_correction_threshold();
+    }
+    if settings.overlay_scale.is_nan() {
+        error!("overlay_scale is NaN, resetting to default");
+        settings.overlay_scale = default_overlay_scale();
+    }
+    if settings.hybrid_threshold_secs.is_nan() {
+        error!("hybrid_threshold_secs is NaN, resetting to default");
+        settings.hybrid_threshold_secs = default_hybrid_threshold_secs();
+    }
+}
+
+/// Helper: serialize settings to a serde_json::Value, logging errors instead of panicking.
+fn settings_to_value(settings: &AppSettings) -> Option<serde_json::Value> {
+    match serde_json::to_value(settings) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            error!("Failed to serialize settings to JSON: {}", e);
+            None
+        }
+    }
+}
+
+/// Helper: open the settings store, logging errors instead of panicking.
+fn open_settings_store(app: &AppHandle) -> Option<Arc<tauri_plugin_store::Store<tauri::Wry>>> {
+    match app.store(crate::portable::store_path(SETTINGS_STORE_PATH)) {
+        Ok(store) => Some(store),
+        Err(e) => {
+            error!("Failed to initialize settings store: {}", e);
+            None
+        }
+    }
+}
+
 pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     // Initialize store
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+    let Some(store) = open_settings_store(app) else {
+        error!("Cannot load settings: store initialization failed, returning defaults");
+        return get_default_settings();
+    };
 
     let mut settings = if let Some(settings_value) = store.get("settings") {
         // Parse the entire settings object
@@ -1185,8 +1229,11 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
 
                 if updated {
                     debug!("Settings updated with new bindings");
-                    store.set("settings", serde_json::to_value(&settings).unwrap());
-                    let _ = store.save(); // Persist binding migrations to disk
+                    sanitize_floats(&mut settings);
+                    if let Some(value) = settings_to_value(&settings) {
+                        store.set("settings", value);
+                        let _ = store.save(); // Persist binding migrations to disk
+                    }
                 }
 
                 settings
@@ -1195,37 +1242,50 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                 warn!("Failed to parse settings: {}", e);
                 // Fall back to default settings if parsing fails
                 let default_settings = get_default_settings();
-                store.set("settings", serde_json::to_value(&default_settings).unwrap());
+                if let Some(value) = settings_to_value(&default_settings) {
+                    store.set("settings", value);
+                }
                 default_settings
             }
         }
     } else {
         let default_settings = get_default_settings();
-        store.set("settings", serde_json::to_value(&default_settings).unwrap());
+        if let Some(value) = settings_to_value(&default_settings) {
+            store.set("settings", value);
+        }
         default_settings
     };
 
     if ensure_post_process_defaults(&mut settings) {
-        store.set("settings", serde_json::to_value(&settings).unwrap());
+        sanitize_floats(&mut settings);
+        if let Some(value) = settings_to_value(&settings) {
+            store.set("settings", value);
+        }
     }
 
     settings
 }
 
 pub fn get_settings(app: &AppHandle) -> AppSettings {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+    let Some(store) = open_settings_store(app) else {
+        error!("Cannot get settings: store initialization failed, returning defaults");
+        return get_default_settings();
+    };
 
     let mut settings = if let Some(settings_value) = store.get("settings") {
-        serde_json::from_value::<AppSettings>(settings_value).unwrap_or_else(|_| {
+        serde_json::from_value::<AppSettings>(settings_value).unwrap_or_else(|e| {
+            warn!("Failed to parse settings: {}, returning defaults", e);
             let default_settings = get_default_settings();
-            store.set("settings", serde_json::to_value(&default_settings).unwrap());
+            if let Some(value) = settings_to_value(&default_settings) {
+                store.set("settings", value);
+            }
             default_settings
         })
     } else {
         let default_settings = get_default_settings();
-        store.set("settings", serde_json::to_value(&default_settings).unwrap());
+        if let Some(value) = settings_to_value(&default_settings) {
+            store.set("settings", value);
+        }
         default_settings
     };
 
@@ -1262,12 +1322,18 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
     }
 
     if needs_save {
-        store.set("settings", serde_json::to_value(&settings).unwrap());
-        let _ = store.save(); // Persist migration to disk immediately
+        sanitize_floats(&mut settings);
+        if let Some(value) = settings_to_value(&settings) {
+            store.set("settings", value);
+            let _ = store.save(); // Persist migration to disk immediately
+        }
     }
 
     if ensure_post_process_defaults(&mut settings) {
-        store.set("settings", serde_json::to_value(&settings).unwrap());
+        sanitize_floats(&mut settings);
+        if let Some(value) = settings_to_value(&settings) {
+            store.set("settings", value);
+        }
     }
 
     settings
@@ -1300,12 +1366,20 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
 /// This is used internally by the debounced writer's flush and during
 /// app startup when the writer isn't yet available. It can also be called
 /// directly when an immediate write is known to be necessary (e.g. migration).
-pub fn write_settings_immediate(app: &AppHandle, settings: AppSettings) {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
+    let Some(store) = open_settings_store(app) else {
+        error!("Cannot write settings: store initialization failed, settings not saved");
+        return;
+    };
 
-    store.set("settings", serde_json::to_value(&settings).unwrap());
+    sanitize_floats(&mut settings);
+
+    let Some(value) = settings_to_value(&settings) else {
+        error!("Cannot write settings: serialization failed, settings not saved");
+        return;
+    };
+
+    store.set("settings", value);
     let _ = store.save(); // Persist to disk immediately
 }
 
