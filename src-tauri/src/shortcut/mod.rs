@@ -799,12 +799,22 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
     if let Some(rm) = app.try_state::<std::sync::Arc<parking_lot::Mutex<crate::managers::audio::AudioRecordingManager>>>() {
         let rm_guard = rm.lock();
         if rm_guard.is_stream_open() {
+            info!("Applying pre-recording buffer change ({}ms): stopping stream, recreating recorder", ms);
+
             // Stop the current stream
             rm_guard.stop_microphone_stream();
 
-            // Recreate the recorder with the new setting
+            // Recreate the recorder with the new setting.
+            // This must not panic — errors are propagated as Result.
             if let Err(e) = rm_guard.recreate_recorder() {
                 error!("Failed to recreate recorder after pre-recording buffer change: {}", e);
+                // Attempt to restart the stream even if recreation failed,
+                // so the app doesn't end up in a dead state with no mic stream.
+                if rm_guard.is_always_on() || rm_guard.is_bt_keep_alive() {
+                    if let Err(restart_err) = rm_guard.start_microphone_stream() {
+                        error!("Also failed to restart microphone stream after recreation failure: {}", restart_err);
+                    }
+                }
                 return Err(format!("Failed to apply pre-recording buffer setting: {}", e));
             }
 

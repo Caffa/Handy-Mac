@@ -908,13 +908,23 @@ impl AudioRecordingManager {
     pub fn recreate_recorder(&self) -> Result<(), anyhow::Error> {
         info!("Recreating AudioRecorder to discard stale device handles");
 
+        // Mark the stream as closed before tearing down — prevents concurrent
+        // operations from acting on a recorder that is about to be replaced.
+        let was_open = self.is_open.load(Ordering::Acquire);
+        if was_open {
+            self.is_open.store(false, Ordering::Release);
+        }
+
         // Take the old recorder and drop it (this stops any existing stream)
         let mut recorder_opt = self.recorder.lock();
         if recorder_opt.is_some() {
-            // Close the old recorder to clean up resources
+            // Close the old recorder to clean up resources.
+            // Errors are logged but not propagated — the old recorder is
+            // being discarded regardless, so we must continue with recreation.
             if let Some(mut old_rec) = recorder_opt.take() {
+                info!("Closing old recorder before recreation");
                 if let Err(e) = old_rec.close() {
-                    warn!("Error closing old recorder during recreation: {}", e);
+                    warn!("Error closing old recorder during recreation (continuing anyway): {}", e);
                 }
             }
         }
@@ -934,7 +944,9 @@ impl AudioRecordingManager {
             .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
 
         let new_recorder = create_audio_recorder(
-            vad_path.to_str().expect("VAD path should be valid UTF-8"),
+            vad_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("VAD path is not valid UTF-8: {:?}", vad_path))?,
             &self.app_handle,
             vad_threshold,
             vad_hangover_frames,
@@ -943,8 +955,9 @@ impl AudioRecordingManager {
         *recorder_opt = Some(new_recorder);
         drop(recorder_opt);
 
-        // Reset the is_open flag since we just recreated the recorder
-        self.is_open.store(false, Ordering::Release);
+        // is_open was already set to false above before recreation.
+        // Callers that need the stream running will call start_microphone_stream()
+        // after this method returns successfully.
 
         info!("AudioRecorder recreated successfully");
         Ok(())
