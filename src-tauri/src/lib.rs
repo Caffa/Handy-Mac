@@ -659,7 +659,8 @@ pub fn run(cli_args: CliArgs) {
                 
                 // Write result to temp file for CLI instance to read
                 // The CLI instance will read this file and exit with the correct code
-                if let Ok(mut file) = std::fs::File::create("/tmp/handy-is-active-use-result") {
+                let result_file = "/tmp/handy-is-active-use.result";
+                if let Ok(mut file) = std::fs::File::create(result_file) {
                     use std::io::Write;
                     let _ = writeln!(file, "{}", if is_active { "active-use" } else { "idle" });
                     let _ = writeln!(file, "{}", if is_active { "0" } else { "1" });
@@ -687,7 +688,8 @@ pub fn run(cli_args: CliArgs) {
                     eprintln!("  Always-on mode: {}", if is_always_on { "yes" } else { "no" });
                     
                     // Write result to temp file for CLI instance to read
-                    if let Ok(mut file) = std::fs::File::create("/tmp/handy-is-recording-result") {
+                    let result_file = "/tmp/handy-is-recording.result";
+                    if let Ok(mut file) = std::fs::File::create(result_file) {
                         use std::io::Write;
                         let _ = writeln!(file, "{}", if is_recording { "recording" } else { "not-recording" });
                         let _ = writeln!(file, "{}", if is_recording { "0" } else { "1" });
@@ -698,7 +700,8 @@ pub fn run(cli_args: CliArgs) {
                 } else {
                     eprintln!("error: AudioRecordingManager not initialized");
                     // Write error to temp file
-                    if let Ok(mut file) = std::fs::File::create("/tmp/handy-is-recording-result") {
+                    let result_file = "/tmp/handy-is-recording.result";
+                    if let Ok(mut file) = std::fs::File::create(result_file) {
                         use std::io::Write;
                         let _ = writeln!(file, "error");
                         let _ = writeln!(file, "2");
@@ -731,20 +734,24 @@ pub fn run(cli_args: CliArgs) {
             if cli_args.is_active_use {
                 // Wait for result file from running instance (with timeout)
                 // The single-instance plugin forwards args to the running instance,
-                // which writes the result to /tmp/handy-is-active-use-result
+                // which writes the result to /tmp/handy-is-active-use.result
                 // We need to poll for the file since the callback is async
+                let result_file = "/tmp/handy-is-active-use.result";
                 let start = std::time::Instant::now();
                 let timeout = std::time::Duration::from_secs(5);
                 
+                // Clean up any stale result file first
+                let _ = std::fs::remove_file(result_file);
+                
                 loop {
-                    if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-active-use-result") {
+                    if let Ok(content) = std::fs::read_to_string(result_file) {
                         let lines: Vec<&str> = content.lines().collect();
                         if lines.len() >= 2 {
                             // Line 0: status string, Line 1: exit code
                             println!("{}", lines[0]);
                             if let Ok(code) = lines[1].parse::<i32>() {
                                 // Clean up temp file
-                                let _ = std::fs::remove_file("/tmp/handy-is-active-use-result");
+                                let _ = std::fs::remove_file(result_file);
                                 std::process::exit(code);
                             }
                         }
@@ -766,18 +773,22 @@ pub fn run(cli_args: CliArgs) {
             
             if cli_args.is_recording {
                 // Wait for result file from running instance (with timeout)
+                let result_file = "/tmp/handy-is-recording.result";
                 let start = std::time::Instant::now();
                 let timeout = std::time::Duration::from_secs(5);
                 
+                // Clean up any stale result file first
+                let _ = std::fs::remove_file(result_file);
+                
                 loop {
-                    if let Ok(content) = std::fs::read_to_string("/tmp/handy-is-recording-result") {
+                    if let Ok(content) = std::fs::read_to_string(result_file) {
                         let lines: Vec<&str> = content.lines().collect();
                         if lines.len() >= 2 {
                             // Line 0: status string, Line 1: exit code
                             println!("{}", lines[0]);
                             if let Ok(code) = lines[1].parse::<i32>() {
                                 // Clean up temp file
-                                let _ = std::fs::remove_file("/tmp/handy-is-recording-result");
+                                let _ = std::fs::remove_file(result_file);
                                 std::process::exit(code);
                             }
                         }
