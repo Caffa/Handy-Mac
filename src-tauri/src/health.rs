@@ -154,7 +154,7 @@ pub fn generate_health_report(app: &tauri::AppHandle) -> HealthReport {
     };
     let p95_transcription_ms = percentile(&transcription_durations, 95);
 
-    let settings = crate::settings::get_settings(app);
+    let settings = crate::settings::get_settings_safe(app);
     let current_mic = settings
         .selected_microphone
         .clone()

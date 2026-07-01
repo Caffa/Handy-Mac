@@ -2,7 +2,7 @@ use crate::managers::model::{
     BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager,
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
-use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
+use crate::settings::{get_settings_safe, write_settings_safe, ModelUnloadTimeout};
 use crate::managers::history::HistoryManager;
 use log::{info, warn};
 use parking_lot::Mutex;
@@ -70,16 +70,16 @@ pub async fn delete_model(
     model_id: String,
 ) -> Result<(), String> {
     // If deleting the active model, unload it and clear the setting
-    let settings = get_settings(&app_handle);
+    let settings = get_settings_safe(&app_handle);
     if settings.selected_model == model_id {
         transcription_manager
             .lock()
             .unload_model()
             .map_err(|e| format!("Failed to unload model: {}", e))?;
 
-        let mut settings = get_settings(&app_handle);
+        let mut settings = get_settings_safe(&app_handle);
         settings.selected_model = String::new();
-        write_settings(&app_handle, settings);
+        write_settings_safe(&app_handle, settings);
     }
 
     model_manager
@@ -120,7 +120,7 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
         return Err(format!("Model not downloaded: {}", model_id));
     }
 
-    let settings = get_settings(app);
+    let settings = get_settings_safe(app);
     let unload_timeout = settings.model_unload_timeout;
     let old_model = settings.selected_model.clone();
 
@@ -146,7 +146,7 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
         settings.selected_language = "auto".to_string();
     }
 
-    write_settings(app, settings);
+    write_settings_safe(app, settings);
 
     // Skip eager loading if unload is set to "Immediately" — the model
     // will be loaded on-demand during the next transcription.
@@ -171,9 +171,9 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
 
     // Load the model. On failure, revert the persisted selection.
     if let Err(e) = transcription_manager.lock().load_model(model_id) {
-        let mut settings = get_settings(app);
+        let mut settings = get_settings_safe(app);
         settings.selected_model = old_model;
-        write_settings(app, settings);
+        write_settings_safe(app, settings);
         return Err(e.to_string());
     }
 
@@ -194,7 +194,7 @@ pub async fn set_active_model(
 #[tauri::command]
 #[specta::specta]
 pub async fn get_current_model(app_handle: AppHandle) -> Result<String, String> {
-    let settings = get_settings(&app_handle);
+    let settings = get_settings_safe(&app_handle);
     Ok(settings.selected_model)
 }
 

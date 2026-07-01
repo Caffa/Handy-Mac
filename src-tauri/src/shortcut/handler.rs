@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
-use crate::settings::get_settings;
+use crate::settings::get_settings_safe;
 use crate::transcription_coordinator::is_transcribe_binding;
 use crate::TranscriptionCoordinator;
 
@@ -33,7 +33,7 @@ pub fn handle_shortcut_event(
     hotkey_string: &str,
     is_pressed: bool,
 ) {
-    let settings = get_settings(app);
+    let settings = get_settings_safe(app);
 
     // Transcribe bindings are handled by the coordinator.
     if is_transcribe_binding(binding_id) {

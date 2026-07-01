@@ -8,7 +8,7 @@ use tauri::AppHandle;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[cfg(not(target_os = "linux"))]
-use crate::settings::get_settings;
+use crate::settings::get_settings_safe;
 use crate::settings::{self, ShortcutBinding};
 
 use super::handler::handle_shortcut_event;
@@ -16,7 +16,7 @@ use super::handler::handle_shortcut_event;
 /// Initialize shortcuts using Tauri's global-shortcut plugin
 pub fn init_shortcuts(app: &AppHandle) {
     let default_bindings = settings::get_default_settings().bindings;
-    let user_settings = settings::load_or_create_app_settings(app);
+    let user_settings = settings::load_or_create_app_settings_safe(app);
 
     // Register all default shortcuts, applying user customizations
     for (id, default_binding) in default_bindings {
@@ -167,7 +167,7 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
     {
         let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = get_settings(&app_clone).bindings.get("cancel").cloned() {
+            if let Some(cancel_binding) = get_settings_safe(&app_clone).bindings.get("cancel").cloned() {
                 if let Err(e) = register_shortcut(&app_clone, cancel_binding) {
                     error!("Failed to register cancel shortcut: {}", e);
                 }
@@ -189,7 +189,7 @@ pub fn unregister_cancel_shortcut(app: &AppHandle) {
     {
         let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = get_settings(&app_clone).bindings.get("cancel").cloned() {
+            if let Some(cancel_binding) = get_settings_safe(&app_clone).bindings.get("cancel").cloned() {
                 // We ignore errors here as it might already be unregistered
                 let _ = unregister_shortcut(&app_clone, cancel_binding);
             }

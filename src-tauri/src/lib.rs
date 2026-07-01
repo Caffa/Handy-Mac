@@ -58,7 +58,7 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
-use crate::settings::get_settings;
+use crate::settings::get_settings_safe;
 use crate::settings::SettingsWriter;
 
 // Global atomic to store the file log level filter
@@ -244,7 +244,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // If the tray icon is disabled, keep the dock icon so the user can reopen.
     #[cfg(target_os = "macos")]
     {
-        let settings = settings::get_settings(app_handle);
+        let settings = settings::get_settings_safe(app_handle);
         if settings.start_hidden && settings.show_tray_icon {
             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
         }
@@ -273,7 +273,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                 show_main_window(app);
             }
             "check_updates" => {
-                let settings = settings::get_settings(app);
+                let settings = settings::get_settings_safe(app);
                 if settings.update_checks_enabled {
                     show_main_window(app);
                     let _ = app.emit("check-for-updates", ());
@@ -308,7 +308,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
             }
             id if id.starts_with("model_select:") => {
                 let model_id = id.strip_prefix("model_select:").unwrap().to_string();
-                let current_model = settings::get_settings(app).selected_model;
+                let current_model = settings::get_settings_safe(app).selected_model;
                 if model_id == current_model {
                     return;
                 }
@@ -335,7 +335,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     utils::update_tray_menu(app_handle, &utils::TrayIconState::Idle, None);
 
     // Apply show_tray_icon setting
-    let settings = settings::get_settings(app_handle);
+    let settings = settings::get_settings_safe(app_handle);
     if !settings.show_tray_icon {
         tray::set_tray_visibility(app_handle, false);
     }
@@ -348,7 +348,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Get the autostart manager and configure based on user setting
     let autostart_manager = app_handle.autolaunch();
-    let settings = settings::get_settings(&app_handle);
+    let settings = settings::get_settings_safe(&app_handle);
 
     if settings.autostart_enabled {
         // Enable autostart if user has opted in
@@ -373,7 +373,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 #[tauri::command]
 #[specta::specta]
 fn trigger_update_check(app: AppHandle) -> Result<(), String> {
-    let settings = settings::get_settings(&app);
+    let settings = settings::get_settings_safe(&app);
     if !settings.update_checks_enabled {
         return Ok(());
     }
@@ -840,7 +840,7 @@ pub fn run(cli_args: CliArgs) {
 
             win_builder.build()?;
 
-            let mut settings = get_settings(&app.handle());
+            let mut settings = get_settings_safe(&app.handle());
 
             // CLI --debug flag overrides debug_mode and log level (runtime-only, not persisted)
             if cli_args.debug {
@@ -941,7 +941,7 @@ pub fn run(cli_args: CliArgs) {
 
                 #[cfg(target_os = "macos")]
                 {
-                    let settings = get_settings(&window.app_handle());
+                    let settings = get_settings_safe(&window.app_handle());
                     let tray_visible =
                         settings.show_tray_icon && !window.app_handle().state::<CliArgs>().no_tray;
                     if tray_visible {

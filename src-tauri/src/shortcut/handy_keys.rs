@@ -415,7 +415,7 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
     let state = HandyKeysState::new(app.clone())?;
 
     let default_bindings = settings::get_default_settings().bindings;
-    let user_settings = settings::load_or_create_app_settings(app);
+    let user_settings = settings::load_or_create_app_settings_safe(app);
 
     // Register all bindings except cancel (which is dynamic)
     for (id, default_binding) in default_bindings {

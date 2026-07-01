@@ -46,7 +46,7 @@ fn get_sound_base_dir(settings: &AppSettings) -> tauri::path::BaseDirectory {
 }
 
 pub fn play_feedback_sound(app: &AppHandle, sound_type: SoundType) {
-    let settings = settings::get_settings(app);
+    let settings = settings::get_settings_safe(app);
     if !settings.audio_feedback {
         return;
     }
@@ -56,7 +56,7 @@ pub fn play_feedback_sound(app: &AppHandle, sound_type: SoundType) {
 }
 
 pub fn play_feedback_sound_blocking(app: &AppHandle, sound_type: SoundType) {
-    let settings = settings::get_settings(app);
+    let settings = settings::get_settings_safe(app);
     if !settings.audio_feedback {
         return;
     }
@@ -66,7 +66,7 @@ pub fn play_feedback_sound_blocking(app: &AppHandle, sound_type: SoundType) {
 }
 
 pub fn play_test_sound(app: &AppHandle, sound_type: SoundType) {
-    let settings = settings::get_settings(app);
+    let settings = settings::get_settings_safe(app);
     if let Some(path) = resolve_sound_path(app, &settings, sound_type) {
         play_sound_blocking(app, &path);
     }
@@ -88,7 +88,7 @@ fn play_sound_blocking(app: &AppHandle, path: &Path) {
 }
 
 fn play_sound_at_path(app: &AppHandle, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = settings::get_settings(app);
+    let settings = settings::get_settings_safe(app);
     let volume = settings.audio_feedback_volume;
     let selected_device = settings.selected_output_device.clone();
     play_audio_file(path, selected_device, volume)

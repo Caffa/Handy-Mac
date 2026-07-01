@@ -4,6 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::fmt;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
@@ -1168,6 +1169,72 @@ fn open_settings_store(app: &AppHandle) -> Option<Arc<tauri_plugin_store::Store<
     }
 }
 
+/// Execute a settings operation safely, catching any panics before they can
+/// propagate to WebKit's URL scheme handler (which calls `abort()` on panic).
+///
+/// Uses `AssertUnwindSafe` unconditionally because `AppHandle` is not
+/// `UnwindSafe` — but we never actually unwind past this point since we
+/// catch and log the panic instead.
+fn safe_settings_operation<F, T>(label: &str, op: F) -> Option<T>
+where
+    F: FnOnce() -> T,
+{
+    match catch_unwind(AssertUnwindSafe(op)) {
+        Ok(result) => Some(result),
+        Err(panic_info) => {
+            error!("Panic in settings operation ({}) — caught to prevent WebKit abort: {:?}", label, panic_info);
+            None
+        }
+    }
+}
+
+/// Safe wrapper around [`load_or_create_app_settings`] that catches panics
+/// and falls back to defaults.
+///
+/// Use this when calling from contexts where a panic would propagate to
+/// WebKit (e.g. URL scheme handlers, Tauri command handlers, startup code).
+pub fn load_or_create_app_settings_safe(app: &AppHandle) -> AppSettings {
+    safe_settings_operation("load_or_create_app_settings", || {
+        load_or_create_app_settings(app)
+    })
+    .unwrap_or_else(|| {
+        error!("Falling back to default settings after panic in load_or_create_app_settings");
+        get_default_settings()
+    })
+}
+
+/// Safe wrapper around [`get_settings`] that catches panics and falls back
+/// to defaults.
+///
+/// Use this when calling from contexts where a panic would propagate to
+/// WebKit (e.g. URL scheme handlers, Tauri command handlers, startup code).
+pub fn get_settings_safe(app: &AppHandle) -> AppSettings {
+    safe_settings_operation("get_settings", || get_settings(app)).unwrap_or_else(|| {
+        error!("Falling back to default settings after panic in get_settings");
+        get_default_settings()
+    })
+}
+
+/// Safe wrapper around [`write_settings`] that catches panics.
+///
+/// If the write panics, the error is logged but the app continues running.
+/// This prevents WebKit's URL scheme handler from calling `abort()`.
+pub fn write_settings_safe(app: &AppHandle, settings: AppSettings) {
+    let _ = safe_settings_operation("write_settings", || {
+        write_settings(app, settings);
+    });
+}
+
+/// Safe wrapper around [`write_settings_immediate`] that catches panics.
+///
+/// If the write panics, the error is logged but the app continues running.
+#[allow(dead_code)] // Available for direct use when immediate safe writes are needed
+pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
+    let _ = safe_settings_operation("write_settings_immediate", || {
+        write_settings_immediate(app, settings);
+    });
+}
+
 pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     // Initialize store
     let Some(store) = open_settings_store(app) else {
@@ -1346,19 +1413,24 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
 /// a slider being dragged) are coalesced into a single disk flush. If the
 /// writer is not yet initialised (e.g. during startup), falls back to an
 /// immediate write.
+///
+/// This function is wrapped in `catch_unwind` to prevent panics from
+/// propagating to WebKit's URL scheme handler (which calls `abort()` on panic).
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
-    // Try to use the debounced writer. During app startup the writer may not
-    // yet be registered in Tauri state, so we fall back to an immediate write.
-    if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
-        let app_clone = app.clone(); // AppHandle is cheaply clonable (Arc internally)
-        let writer = writer.inner().clone(); // Clone the Arc<SettingsWriter> for 'static spawn
-        tokio::spawn(async move {
-            writer.write(app_clone, settings).await;
-        });
-    } else {
-        // Fallback: no debounce state yet (e.g. during initialisation)
-        write_settings_immediate(app, settings);
-    }
+    let _ = safe_settings_operation("write_settings", || {
+        // Try to use the debounced writer. During app startup the writer may not
+        // yet be registered in Tauri state, so we fall back to an immediate write.
+        if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
+            let app_clone = app.clone(); // AppHandle is cheaply clonable (Arc internally)
+            let writer = writer.inner().clone(); // Clone the Arc<SettingsWriter> for 'static spawn
+            tokio::spawn(async move {
+                writer.write(app_clone, settings).await;
+            });
+        } else {
+            // Fallback: no debounce state yet (e.g. during initialisation)
+            write_settings_immediate(app, settings);
+        }
+    });
 }
 
 /// Write settings to disk immediately, bypassing the debounce timer.
@@ -1366,21 +1438,26 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
 /// This is used internally by the debounced writer's flush and during
 /// app startup when the writer isn't yet available. It can also be called
 /// directly when an immediate write is known to be necessary (e.g. migration).
+///
+/// This function is wrapped in `catch_unwind` to prevent panics from
+/// propagating to WebKit's URL scheme handler (which calls `abort()` on panic).
 pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
-    let Some(store) = open_settings_store(app) else {
-        error!("Cannot write settings: store initialization failed, settings not saved");
-        return;
-    };
+    let _ = safe_settings_operation("write_settings_immediate", || {
+        let Some(store) = open_settings_store(app) else {
+            error!("Cannot write settings: store initialization failed, settings not saved");
+            return;
+        };
 
-    sanitize_floats(&mut settings);
+        sanitize_floats(&mut settings);
 
-    let Some(value) = settings_to_value(&settings) else {
-        error!("Cannot write settings: serialization failed, settings not saved");
-        return;
-    };
+        let Some(value) = settings_to_value(&settings) else {
+            error!("Cannot write settings: serialization failed, settings not saved");
+            return;
+        };
 
-    store.set("settings", value);
-    let _ = store.save(); // Persist to disk immediately
+        store.set("settings", value);
+        let _ = store.save(); // Persist to disk immediately
+    });
 }
 
 /// Flush any pending debounced settings to disk.
@@ -1388,20 +1465,22 @@ pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
 /// Should be called on app shutdown (via `RunEvent::ExitRequested`) to
 /// guarantee that the most recent settings value is persisted.
 pub fn flush_settings(app: &AppHandle) {
-    if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
-        let writer = writer.inner().clone();
-        // Use block_in_place so we can await the async flush from
-        // a synchronous context (the Tauri run callback is not async).
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                writer.flush(app).await;
-            })
-        });
-    }
+    let _ = safe_settings_operation("flush_settings", || {
+        if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
+            let writer = writer.inner().clone();
+            // Use block_in_place so we can await the async flush from
+            // a synchronous context (the Tauri run callback is not async).
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    writer.flush(app).await;
+                })
+            });
+        }
+    });
 }
 
 pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
-    let settings = get_settings(app);
+    let settings = get_settings_safe(app);
 
     settings.bindings
 }
@@ -1433,12 +1512,12 @@ pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
 }
 
 pub fn get_history_limit(app: &AppHandle) -> usize {
-    let settings = get_settings(app);
+    let settings = get_settings_safe(app);
     settings.history_limit
 }
 
 pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeriod {
-    let settings = get_settings(app);
+    let settings = get_settings_safe(app);
     settings.recording_retention_period
 }
 

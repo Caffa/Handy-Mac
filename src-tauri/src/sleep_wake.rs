@@ -77,7 +77,7 @@ pub fn start_sleep_wake_listener(app_handle: tauri::AppHandle) {
 fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
     info!("Handling system wake event — checking USB watchdog settings");
 
-    let settings = crate::settings::get_settings(app_handle);
+    let settings = crate::settings::get_settings_safe(app_handle);
     let cycle_on_wake = settings.usb_watchdog_enabled && settings.usb_watchdog_cycle_on_wake;
 
     if !cycle_on_wake {

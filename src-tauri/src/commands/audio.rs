@@ -3,7 +3,7 @@ use crate::audio_toolkit::audio::{list_input_devices, list_output_devices};
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
-use crate::settings::{get_settings, write_settings};
+use crate::settings::{get_settings_safe, write_settings_safe};
 use crate::usb_watchdog;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -189,9 +189,9 @@ pub fn open_microphone_privacy_settings() -> Result<(), String> {
 #[specta::specta]
 pub fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), String> {
     // Update settings
-    let mut settings = get_settings(&app);
+    let mut settings = get_settings_safe(&app);
     settings.always_on_microphone = always_on;
-    write_settings(&app, settings);
+    write_settings_safe(&app, settings);
 
     // Update the audio manager mode
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
@@ -210,7 +210,7 @@ pub fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), Str
 #[tauri::command]
 #[specta::specta]
 pub fn get_microphone_mode(app: AppHandle) -> Result<bool, String> {
-    let settings = get_settings(&app);
+    let settings = get_settings_safe(&app);
     Ok(settings.always_on_microphone)
 }
 
@@ -238,13 +238,13 @@ pub fn get_available_microphones() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn set_selected_microphone(app: AppHandle, device_name: String) -> Result<(), String> {
-    let mut settings = get_settings(&app);
+    let mut settings = get_settings_safe(&app);
     settings.selected_microphone = if device_name == "default" {
         None
     } else {
         Some(device_name)
     };
-    write_settings(&app, settings);
+    write_settings_safe(&app, settings);
 
     // Update the audio manager to use the new device
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
@@ -259,7 +259,7 @@ pub fn set_selected_microphone(app: AppHandle, device_name: String) -> Result<()
 #[tauri::command]
 #[specta::specta]
 pub fn get_selected_microphone(app: AppHandle) -> Result<String, String> {
-    let settings = get_settings(&app);
+    let settings = get_settings_safe(&app);
     Ok(settings
         .selected_microphone
         .unwrap_or_else(|| "default".to_string()))
@@ -289,20 +289,20 @@ pub fn get_available_output_devices() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn set_selected_output_device(app: AppHandle, device_name: String) -> Result<(), String> {
-    let mut settings = get_settings(&app);
+    let mut settings = get_settings_safe(&app);
     settings.selected_output_device = if device_name == "default" {
         None
     } else {
         Some(device_name)
     };
-    write_settings(&app, settings);
+    write_settings_safe(&app, settings);
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_selected_output_device(app: AppHandle) -> Result<String, String> {
-    let settings = get_settings(&app);
+    let settings = get_settings_safe(&app);
     Ok(settings
         .selected_output_device
         .unwrap_or_else(|| "default".to_string()))
@@ -325,20 +325,20 @@ pub async fn play_test_sound(app: AppHandle, sound_type: String) {
 #[tauri::command]
 #[specta::specta]
 pub fn set_clamshell_microphone(app: AppHandle, device_name: String) -> Result<(), String> {
-    let mut settings = get_settings(&app);
+    let mut settings = get_settings_safe(&app);
     settings.clamshell_microphone = if device_name == "default" {
         None
     } else {
         Some(device_name)
     };
-    write_settings(&app, settings);
+    write_settings_safe(&app, settings);
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_clamshell_microphone(app: AppHandle) -> Result<String, String> {
-    let settings = get_settings(&app);
+    let settings = get_settings_safe(&app);
     Ok(settings
         .clamshell_microphone
         .unwrap_or_else(|| "default".to_string()))
@@ -376,10 +376,10 @@ pub fn list_usb_devices() -> Result<Vec<usb_watchdog::UsbDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mut settings = get_settings(&app);
+    let mut settings = get_settings_safe(&app);
     let device_name = settings.usb_watchdog_device_name.clone();
     settings.usb_watchdog_enabled = enabled;
-    write_settings(&app, settings);
+    write_settings_safe(&app, settings);
 
     // Update the runtime watchdog state
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
@@ -397,10 +397,10 @@ pub fn change_usb_watchdog_device_name_setting(
     app: AppHandle,
     device_name: String,
 ) -> Result<(), String> {
-    let mut settings = get_settings(&app);
+    let mut settings = get_settings_safe(&app);
     let enabled = settings.usb_watchdog_enabled;
     settings.usb_watchdog_device_name = device_name.clone();
-    write_settings(&app, settings);
+    write_settings_safe(&app, settings);
 
     // Update the runtime watchdog state
     let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
@@ -420,9 +420,9 @@ pub fn change_usb_watchdog_cycle_on_wake_setting(
     app: AppHandle,
     cycle_on_wake: bool,
 ) -> Result<(), String> {
-    let mut settings = get_settings(&app);
+    let mut settings = get_settings_safe(&app);
     settings.usb_watchdog_cycle_on_wake = cycle_on_wake;
-    write_settings(&app, settings);
+    write_settings_safe(&app, settings);
     Ok(())
 }
 
@@ -896,7 +896,7 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
 
     // Remember the currently selected model so we can restore it
     let original_model = {
-        let settings = get_settings(&app);
+        let settings = get_settings_safe(&app);
         settings.selected_model.clone()
     };
 

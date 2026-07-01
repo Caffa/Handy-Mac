@@ -111,7 +111,7 @@ fn version_label() -> String {
 /// Internal implementation that updates the tray menu without acquiring the lock.
 /// Called from within lock-holding functions like change_tray_icon.
 fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
-    let settings = settings::get_settings(app);
+    let settings = settings::get_settings_safe(app);
 
     let locale = locale.unwrap_or(&settings.app_language);
     let strings = get_tray_translations(Some(locale.to_string()));

@@ -79,7 +79,7 @@ fn update_gtk_layer_shell_anchors(overlay_window: &tauri::webview::WebviewWindow
     let _ = overlay_window.run_on_main_thread(move || {
         // Try to get the GTK window from the Tauri webview
         if let Ok(gtk_window) = window_clone.gtk_window() {
-            let settings = settings::get_settings(window_clone.app_handle());
+            let settings = settings::get_settings_safe(window_clone.app_handle());
             match settings.overlay_position {
                 OverlayPosition::Top => {
                     gtk_window.set_anchor(Edge::Top, true);
@@ -246,7 +246,7 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
     // Dynamic window height based on screen size (85% of screen height)
     let window_height = calculate_overlay_window_height(monitor_height);
 
-    let settings = settings::get_settings(app_handle);
+    let settings = settings::get_settings_safe(app_handle);
     
     debug!(
         "calculate_overlay_position: overlay_position={:?}, monitor=({},{}) {}x{}",
@@ -412,7 +412,7 @@ fn format_overlay_payload(state: &str, mode: &OverlayMode) -> String {
 
 pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     // Check if overlay should be shown based on position setting
-    let settings = settings::get_settings(app_handle);
+    let settings = settings::get_settings_safe(app_handle);
     if settings.overlay_position == OverlayPosition::None {
         return;
     }
@@ -490,7 +490,7 @@ fn position_overlay_on_monitor(
     let monitor_width = monitor.size().width as f64 / scale;
     let monitor_height = monitor.size().height as f64 / scale;
 
-    let overlay_scale = settings::get_settings(app_handle).overlay_scale;
+    let overlay_scale = settings::get_settings_safe(app_handle).overlay_scale;
 
     // FIXED max height — window never resizes during state transitions.
     // All content below the pill is managed by CSS opacity/visibility.
@@ -503,7 +503,7 @@ fn position_overlay_on_monitor(
     // Position so the PILL (at top of window with 4px margin) sits at
     // the correct screen position. Content below the pill is just
     // transparent window space — it doesn't affect pill position.
-    let settings = settings::get_settings(app_handle);
+    let settings = settings::get_settings_safe(app_handle);
     let y = match settings.overlay_position {
         OverlayPosition::Top => {
             monitor_y + OVERLAY_TOP_OFFSET
