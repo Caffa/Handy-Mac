@@ -1335,9 +1335,27 @@ pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
 pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
     let bindings = get_bindings(app);
 
-    let binding = bindings.get(id).unwrap().clone();
+    if let Some(binding) = bindings.get(id) {
+        return binding.clone();
+    }
 
-    binding
+    // Not found in current settings — check defaults
+    warn!("Binding '{}' not found in current settings, falling back to defaults", id);
+    let default_settings = get_default_settings();
+
+    if let Some(default_binding) = default_settings.bindings.get(id) {
+        return default_binding.clone();
+    }
+
+    // Not in defaults either — create a sensible fallback
+    warn!("Binding '{}' not found in defaults either, creating fallback binding", id);
+    ShortcutBinding {
+        id: id.to_string(),
+        name: id.to_string(),
+        description: format!("{} shortcut", id),
+        default_binding: String::new(),
+        current_binding: String::new(),
+    }
 }
 
 pub fn get_history_limit(app: &AppHandle) -> usize {
