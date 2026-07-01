@@ -391,12 +391,8 @@ fn show_main_window_command(app: AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Handles query-only flags (--is-active-use, --is-recording) by polling for result files.
-/// This runs AFTER the single-instance plugin has forwarded args to the running instance.
-/// The running instance writes the result to a temp file, and we poll for it here.
-fn handle_query_flag(result_file: &str, flag_name: &str) {
-    // Clean up any stale result file before polling
-    let _ = std::fs::remove_file(result_file);
-    
+/// Polls for result file with timeout, then exits with the correct code.
+fn handle_query_flag(result_file: &str, flag_name: &str) -> ! {
     // Poll for result file with timeout
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(5);
@@ -410,6 +406,10 @@ fn handle_query_flag(result_file: &str, flag_name: &str) {
                 if let Ok(code) = lines[1].parse::<i32>() {
                     // Clean up temp file
                     let _ = std::fs::remove_file(result_file);
+                    // Use libc::_exit to bypass atexit handlers and avoid recursion
+                    #[cfg(unix)]
+                    unsafe { libc::_exit(code); }
+                    #[cfg(not(unix))]
                     std::process::exit(code);
                 }
             }
@@ -426,30 +426,64 @@ fn handle_query_flag(result_file: &str, flag_name: &str) {
     
     // Timeout or no result file = no running instance
     eprintln!("error: Handy is not running");
+    #[cfg(unix)]
+    unsafe { libc::_exit(2); }
+    #[cfg(not(unix))]
     std::process::exit(2);
 }
 
-pub fn run(cli_args: CliArgs) {
-    // For query-only flags (--is-active-use, --is-recording), we need to handle them
-    // BEFORE Tauri initializes, because the single-instance plugin will exit immediately
-    // if another instance is running, before we can read the result file.
-    //
-    // The flow:
-    // 1. CLI instance starts with --is-active-use
-    // 2. Clean up any stale result file
-    // 3. Tauri initializes, single-instance plugin detects running instance
-    // 4. Plugin forwards args to running instance (callback creates result file)
-    // 5. Plugin exits CLI instance with code 0
-    // 6. THIS CODE RUNS: poll for result file and exit with correct code
-    if cli_args.is_active_use {
-        handle_query_flag("/tmp/handy-is-active-use.result", "is-active-use");
-    }
-    if cli_args.is_recording {
-        handle_query_flag("/tmp/handy-is-recording.result", "is-recording");
-    }
+/// Check if this is a query-only CLI flag (--is-active-use or --is-recording).
+fn is_query_only_flag(cli_args: &CliArgs) -> bool {
+    cli_args.is_active_use || cli_args.is_recording
+}
 
+/// Set up a signal handler to poll for result files when the process exits.
+/// This uses libc's atexit to ensure the handler runs even with std::process::exit.
+#[cfg(target_os = "macos")]
+fn setup_query_flag_handler(is_active_use: bool, is_recording: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    
+    // Store flags for the atexit handler
+    static QUERY_FLAGS: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    QUERY_FLAGS.set((is_active_use, is_recording)).ok();
+    
+    // Register atexit handler
+    extern "C" {
+        fn atexit(cb: extern "C" fn()) -> i32;
+    }
+    
+    extern "C" fn query_flag_atexit() {
+        if let Some((is_active_use, is_recording)) = QUERY_FLAGS.get() {
+            if *is_active_use {
+                handle_query_flag("/tmp/handy-is-active-use.result", "is-active-use");
+            }
+            if *is_recording {
+                handle_query_flag("/tmp/handy-is-recording.result", "is-recording");
+            }
+        }
+    }
+    
+    unsafe {
+        atexit(query_flag_atexit);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn setup_query_flag_handler(_is_active_use: bool, _is_recording: bool) {
+    // On non-macOS platforms, we rely on Drop handlers
+    // This may not work if std::process::exit is called before Drop
+}
+
+pub fn run(cli_args: CliArgs) {
     // Detect portable mode before anything else
     portable::init();
+    
+    // For query-only flags, set up an atexit handler to poll for result files.
+    // The single-instance plugin will call std::process::exit(0) after forwarding args,
+    // which triggers our atexit handler.
+    if is_query_only_flag(&cli_args) {
+        setup_query_flag_handler(cli_args.is_active_use, cli_args.is_recording);
+    }
 
     // Parse console logging directives from RUST_LOG, falling back to info-level logging
     // when the variable is unset
