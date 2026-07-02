@@ -57,9 +57,6 @@ const OVERLAY_PILL_HEIGHT: f64 = 50.0;
 /// Maximum percentage of screen height to use for the overlay window.
 const OVERLAY_MAX_SCREEN_RATIO: f64 = 0.85;
 /// Window height for live captions mode (taller to show multi-line text)
-/// Kept for potential future use; the fixed-size window approach uses
-/// calculate_overlay_window_height() instead.
-#[allow(dead_code)]
 const OVERLAY_LIVE_CAPTIONS_HEIGHT: f64 = 280.0;
 
 #[cfg(target_os = "macos")]
@@ -422,10 +419,12 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     // activates the Handy app, stealing focus from the user's target app.
     crate::focus::save_frontmost_app(app_handle);
 
-    // Position the window ONCE at show time with max needed height.
-    // Content visibility is managed by CSS, not by resizing the window.
-    // This eliminates position jumps caused by async resize operations.
-    position_overlay_fixed(app_handle, mode);
+    // Position the window with dynamic height based on state and mode.
+    // Dynamic height ensures the window only covers what's needed, keeping
+    // transparent areas click-through at the OS level. Position jumps are
+    // prevented by combining set_position + set_size in a single atomic
+    // run_on_main_thread closure.
+    position_overlay_fixed(app_handle, state, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         // BUGFIX (2026-07-01): On macOS, give the main thread time to process the
@@ -465,24 +464,38 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     }
 }
 
-/// Position the overlay window once at show time. The window is always set
-/// to max height (85% of screen height × overlay scale) — content below the
-/// pill is managed by CSS (opacity transitions, fixed positioning), not by
-/// resizing the window. This eliminates position jumps caused by async resize
-/// operations during state transitions.
+/// Position the overlay window with dynamic height based on state and mode.
 ///
-/// The pill sits at the top of the window with a 4px margin. By positioning
-/// the window so the pill's expected screen position is correct, the extra
-/// transparent space below doesn't affect visual positioning. Click-through
-/// works because `pointer-events: none` is set on html/body/#root in the
-/// overlay's index.html — only interactive elements (cancel button, edit
-/// textarea) opt back in with `pointer-events: auto`.
+/// Uses dynamic window height so the window only covers what's needed — this
+/// ensures transparent areas below the pill are click-through at the OS level
+/// (on macOS, CSS pointer-events: none alone is insufficient; the NSPanel
+/// still captures scroll/hover events on transparent regions).
+///
+/// Position jumps are prevented by combining set_position + set_size in a
+/// single atomic run_on_main_thread closure, rather than using a fixed max-height
+/// window approach (which broke click-through by making the window too tall).
+///
+/// Height varies by state and mode:
+/// - Regular recording/transcribing: minimal height (100px, pill only)
+/// - Recording with live captions: 280px for multi-line text
+/// - Router confirming/processing: full height for transcription preview
 /// Helper function to position overlay window on a specific monitor.
-/// Used by position_overlay_fixed for both cursor-based and fallback positioning.
+/// Used by update_overlay_position for both cursor-based and fallback positioning.
+///
+/// Calculates dynamic window height based on state and mode:
+/// - Regular recording/transcribing: minimal height (pill only, 100px)
+/// - Recording with live captions: 280px to show multi-line text
+/// - Router confirming/processing: full height to show transcription preview
+///
+/// On macOS, set_position + set_size are combined in a single
+/// run_on_main_thread closure to prevent position jumps caused by
+/// async interleaving of separate main-thread calls.
 fn position_overlay_on_monitor(
     overlay_window: &tauri::webview::WebviewWindow,
     monitor: &tauri::Monitor,
     app_handle: &AppHandle,
+    state: &str,
+    mode: &OverlayMode,
 ) {
     let scale = monitor.scale_factor();
     let monitor_x = monitor.position().x as f64 / scale;
@@ -492,17 +505,34 @@ fn position_overlay_on_monitor(
 
     let overlay_scale = settings::get_settings_safe(app_handle).overlay_scale;
 
-    // FIXED max height — window never resizes during state transitions.
-    // All content below the pill is managed by CSS opacity/visibility.
-    let actual_height = calculate_overlay_window_height(monitor_height) * overlay_scale;
+    // Dynamic window height based on state and mode:
+    // - Router confirming/processing: full height for transcription preview
+    // - Recording with live captions: 280px for multi-line text
+    // - All other states (pill-only): 100px minimal height
+    let actual_height = match mode {
+        OverlayMode::Router if state == "confirming" || state == "processing" => {
+            calculate_overlay_window_height(monitor_height) * overlay_scale
+        },
+        OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
+            if state == "recording" && settings::get_settings_safe(app_handle).live_captions_enabled {
+                OVERLAY_LIVE_CAPTIONS_HEIGHT * overlay_scale
+            } else {
+                OVERLAY_WINDOW_MIN_HEIGHT * overlay_scale
+            }
+        }
+    };
+
     let actual_width = OVERLAY_WINDOW_WIDTH_BASE * overlay_scale;
 
     // Center the window horizontally
     let x = monitor_x + (monitor_width - actual_width) / 2.0;
 
-    // Position so the PILL (at top of window with 4px margin) sits at
-    // the correct screen position. Content below the pill is just
-    // transparent window space — it doesn't affect pill position.
+    // Calculate Y position so the pillbox stays fixed on screen.
+    // The pillbox is at the top of the window (CSS: margin: 4px auto auto),
+    // height ~50px. The window may be taller (for live captions, router mode, etc),
+    // with extra space below the pillbox.
+    // We position the window so the pillbox stays at a fixed screen position
+    // regardless of window height.
     let settings = settings::get_settings_safe(app_handle);
     let y = match settings.overlay_position {
         OverlayPosition::Top => {
@@ -518,6 +548,11 @@ fn position_overlay_on_monitor(
         }
     };
 
+    // On macOS, combine set_position + set_size in a SINGLE run_on_main_thread
+    // closure to prevent position jumps caused by async interleaving of separate
+    // main-thread calls. This is the actual fix for the position jump bug — the
+    // Y calculation is independent of window height, so the jump was caused by
+    // the position and size updates being applied asynchronously in separate calls.
     #[cfg(target_os = "macos")]
     {
         let window = overlay_window.clone();
@@ -541,7 +576,7 @@ fn position_overlay_on_monitor(
     }
 }
 
-fn position_overlay_fixed(app_handle: &AppHandle, _mode: &OverlayMode) {
+fn position_overlay_fixed(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
         {
@@ -571,7 +606,7 @@ fn position_overlay_fixed(app_handle: &AppHandle, _mode: &OverlayMode) {
         if let Some(monitor) = get_monitor_with_cursor(app_handle) {
             debug!("position_overlay_fixed: Using monitor with cursor at ({}, {})",
                 monitor.position().x, monitor.position().y);
-            position_overlay_on_monitor(&overlay_window, &monitor, app_handle);
+            position_overlay_on_monitor(&overlay_window, &monitor, app_handle, state, mode);
         } else {
             // FALLBACK: Use primary monitor when cursor-based detection fails
             debug!("position_overlay_fixed: get_monitor_with_cursor returned None, falling back to primary monitor");
@@ -579,7 +614,7 @@ fn position_overlay_fixed(app_handle: &AppHandle, _mode: &OverlayMode) {
             if let Some(primary) = app_handle.primary_monitor().ok().flatten() {
                 debug!("position_overlay_fixed: Using primary monitor at ({}, {})",
                     primary.position().x, primary.position().y);
-                position_overlay_on_monitor(&overlay_window, &primary, app_handle);
+                position_overlay_on_monitor(&overlay_window, &primary, app_handle, state, mode);
             } else {
                 log::error!("position_overlay_fixed: CRITICAL - No monitor available for positioning! Window will appear at default position.");
             }
@@ -622,16 +657,17 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "processing", &OverlayMode::Transcribe);
 }
 
-/// Updates the overlay window position and size.
-/// Now uses the fixed-size approach: the window is always positioned at max
-/// height, with content visibility managed by CSS. The `state` and `mode`
-/// parameters are kept for API compatibility but the window size no longer
-/// changes per state.
+/// Updates the overlay window position and size based on current settings and mode.
+/// Router mode uses a taller window to accommodate the transcription preview,
+/// while regular transcription uses minimal height to avoid blocking click-through.
+/// During processing (filing), the window stays tall to show the text preview,
+/// but CSS makes it click-through and visually dimmed.
+/// The overlay_scale setting (1.0 or 2.0) scales the window dimensions.
 ///
-/// The only state-dependent behavior is the macOS click-through during
-/// router "processing" state, which uses OS-level `set_ignores_mouse_events`.
-pub fn update_overlay_position(app_handle: &AppHandle, _state: &str, mode: &OverlayMode) {
-    position_overlay_fixed(app_handle, mode);
+/// On macOS, set_position and set_size are combined in a single run_on_main_thread
+/// closure to prevent position jumps caused by async interleaving.
+pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
+    position_overlay_fixed(app_handle, state, mode);
 }
 
 /// Hides the recording overlay window with fade-out animation.

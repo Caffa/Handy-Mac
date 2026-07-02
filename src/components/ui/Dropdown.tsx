@@ -106,7 +106,9 @@ export const Dropdown: React.FC<DropdownProps> = ({
                 disabled={option.disabled}
                 title={option.tooltip}
               >
-                <span className="whitespace-normal break-words">{option.label}</span>
+                <span className="whitespace-normal break-words">
+                  {option.label}
+                </span>
               </button>
             ))
           )}

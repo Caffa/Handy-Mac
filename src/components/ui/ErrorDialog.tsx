@@ -120,7 +120,9 @@ export const ErrorDialog: React.FC = () => {
   const toggleDetails = useCallback((errorId: string) => {
     setErrors((prev) =>
       prev.map((e) =>
-        e.event.error_id === errorId ? { ...e, showDetails: !e.showDetails } : e,
+        e.event.error_id === errorId
+          ? { ...e, showDetails: !e.showDetails }
+          : e,
       ),
     );
   }, []);
@@ -172,14 +174,16 @@ export const ErrorDialog: React.FC = () => {
 
   // Show only the most recent error (modal-like behavior)
   const currentError = errors[errors.length - 1];
+  const { event, retryCount, showDetails, isRetrying } = currentError;
   const {
-    event,
-    retryCount,
-    showDetails,
-    isRetrying,
-  } = currentError;
-  const { error_id, error_type, recovery_action, message, message_key, message_params, technical_detail } =
-    event;
+    error_id,
+    error_type,
+    recovery_action,
+    message,
+    message_key,
+    message_params,
+    technical_detail,
+  } = event;
 
   const canRetry =
     recovery_action !== "permanent" &&
@@ -204,7 +208,8 @@ export const ErrorDialog: React.FC = () => {
     return message;
   })();
 
-  const titleKey = ERROR_TYPE_TITLE_KEYS[error_type] || "errorDialog.titles.generic";
+  const titleKey =
+    ERROR_TYPE_TITLE_KEYS[error_type] || "errorDialog.titles.generic";
   const title = t(titleKey);
   const IconComponent = ERROR_TYPE_ICONS[error_type] || AlertCircle;
 
@@ -242,7 +247,10 @@ export const ErrorDialog: React.FC = () => {
         {retryCount > 0 && canRetry && (
           <div className="px-5 pb-2">
             <p className="text-xs text-mid-gray">
-              {t("errorDialog.retryCount", { count: retryCount, max: MAX_RETRIES })}
+              {t("errorDialog.retryCount", {
+                count: retryCount,
+                max: MAX_RETRIES,
+              })}
             </p>
           </div>
         )}

@@ -14,11 +14,18 @@ export const OverlayScale: React.FC<OverlayScaleProps> = React.memo(
     const scale = getSetting("overlay_scale") ?? 1.0;
 
     const options = [
-      { value: 1.0, label: t("settings.advanced.overlayScale.options.normal", "Normal") },
-      { value: 2.0, label: t("settings.advanced.overlayScale.options.large", "Large (2x)") },
+      {
+        value: 1.0,
+        label: t("settings.advanced.overlayScale.options.normal", "Normal"),
+      },
+      {
+        value: 2.0,
+        label: t("settings.advanced.overlayScale.options.large", "Large (2x)"),
+      },
     ];
 
-    const selectedOption = options.find((opt) => opt.value === scale) || options[0];
+    const selectedOption =
+      options.find((opt) => opt.value === scale) || options[0];
 
     return (
       <div className={`settings-item ${grouped ? "grouped" : ""}`}>
@@ -54,7 +61,9 @@ export const OverlayScale: React.FC<OverlayScaleProps> = React.memo(
         <div className="settings-item-control">
           <select
             value={selectedOption.value}
-            onChange={(e) => updateSetting("overlay_scale", parseFloat(e.target.value))}
+            onChange={(e) =>
+              updateSetting("overlay_scale", parseFloat(e.target.value))
+            }
             disabled={isUpdating("overlay_scale")}
             className="settings-dropdown"
           >

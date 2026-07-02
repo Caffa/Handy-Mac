@@ -2,6 +2,7 @@
 
 **Review Date:** 2026-06-20  
 **Files Reviewed:**
+
 - `/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src/components/settings/history/HistorySettings.tsx`
 - `/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src/components/ui/AudioPlayer.tsx`
 - `/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src/stores/settingsStore.ts`
@@ -18,17 +19,19 @@
 
 **Bug Description:**
 The `loadPage` function uses `loadingRef` to prevent concurrent loads, but this ref is not synchronized with the React `loading` state. This creates a race condition where:
+
 1. Multiple rapid scrolls can trigger simultaneous `loadPage` calls before the first completes
 2. The `loading` state is set to `false` in the `finally` block even when another load is in progress via `loadingRef`
 3. Cursor-based pagination can load duplicate entries if concurrent requests resolve out of order
 
 **Current Code:**
+
 ```typescript
 const loadPage = useCallback(async (cursor?: number) => {
   const isFirstPage = cursor === undefined;
   if (!isFirstPage && loadingRef.current) return; // Only checks ref
   loadingRef.current = true;
-  
+
   if (isFirstPage) {
     setLoading(true); // State not checked
     setError(null);
@@ -37,51 +40,58 @@ const loadPage = useCallback(async (cursor?: number) => {
 }, []);
 ```
 
-**Impact:** 
+**Impact:**
+
 - Duplicate entries in the list
 - Out-of-order entries
 - Inconsistent UI state
 - Potential infinite scroll issues
 
 **Suggested Fix:**
+
 ```typescript
-const loadPage = useCallback(async (cursor?: number) => {
-  const isFirstPage = cursor === undefined;
-  
-  // Check both ref and state
-  if (loadingRef.current || loading) return;
-  
-  loadingRef.current = true;
-  
-  if (isFirstPage) {
-    setLoading(true);
-    setError(null);
-  }
-  
-  try {
-    const result = await commands.getHistoryEntries(
-      cursor ?? null,
-      PAGE_SIZE,
-    );
-    if (result.status === "ok") {
-      const { entries: newEntries, has_more } = result.data;
-      setEntries((prev) => {
-        // Deduplicate by ID to prevent race condition duplicates
-        const existingIds = new Set(prev.map(e => e.id));
-        const uniqueNewEntries = newEntries.filter(e => !existingIds.has(e.id));
-        return isFirstPage ? newEntries : [...prev, ...uniqueNewEntries];
-      });
-      setHasMore(has_more);
-    }
-    // ...
-  } finally {
-    // Only clear loading if we're still on the same "request"
+const loadPage = useCallback(
+  async (cursor?: number) => {
+    const isFirstPage = cursor === undefined;
+
+    // Check both ref and state
+    if (loadingRef.current || loading) return;
+
+    loadingRef.current = true;
+
     if (isFirstPage) {
-      setLoading(false);
+      setLoading(true);
+      setError(null);
     }
-    loadingRef.current = false;
-  }
-}, [loading]); // Add loading dependency
+
+    try {
+      const result = await commands.getHistoryEntries(
+        cursor ?? null,
+        PAGE_SIZE,
+      );
+      if (result.status === "ok") {
+        const { entries: newEntries, has_more } = result.data;
+        setEntries((prev) => {
+          // Deduplicate by ID to prevent race condition duplicates
+          const existingIds = new Set(prev.map((e) => e.id));
+          const uniqueNewEntries = newEntries.filter(
+            (e) => !existingIds.has(e.id),
+          );
+          return isFirstPage ? newEntries : [...prev, ...uniqueNewEntries];
+        });
+        setHasMore(has_more);
+      }
+      // ...
+    } finally {
+      // Only clear loading if we're still on the same "request"
+      if (isFirstPage) {
+        setLoading(false);
+      }
+      loadingRef.current = false;
+    }
+  },
+  [loading],
+); // Add loading dependency
 ```
 
 ---
@@ -96,6 +106,7 @@ The event listener comment states: `"deleted" and "toggled" are handled by optim
 However, the backend DOES emit `HistoryUpdatePayload::Deleted` events (line 915-917 in `history.rs`), and the `Toggled` event is also emitted but ignored. If the backend deletes an entry (e.g., via cleanup or another client in a multi-window scenario), the frontend won't reflect this change.
 
 **Current Code:**
+
 ```typescript
 useEffect(() => {
   const unlisten = events.historyUpdatePayload.listen((event) => {
@@ -114,11 +125,13 @@ useEffect(() => {
 ```
 
 **Impact:**
+
 - Entries deleted by backend cleanup remain visible until page refresh
 - Inconsistent state between frontend and backend
 - User may try to interact with already-deleted entries
 
 **Suggested Fix:**
+
 ```typescript
 useEffect(() => {
   const unlisten = events.historyUpdatePayload.listen((event) => {
@@ -134,7 +147,7 @@ useEffect(() => {
       setEntries((prev) => prev.filter((e) => e.id !== payload.id));
     } else if (payload.action === "toggled") {
       // Refresh the specific entry when toggled by another source
-      commands.getHistoryEntries(payload.id, 1).then(result => {
+      commands.getHistoryEntries(payload.id, 1).then((result) => {
         if (result.status === "ok" && result.data.entries.length > 0) {
           setEntries((prev) =>
             prev.map((e) => (e.id === payload.id ? result.data.entries[0] : e)),
@@ -160,6 +173,7 @@ useEffect(() => {
 The `routingResult` is parsed from JSON without any error handling. If the `routing_result` field contains malformed JSON (corrupted data, manual database edits, etc.), the entire component will crash.
 
 **Current Code:**
+
 ```typescript
 const routingResult = entry.routing_result
   ? (JSON.parse(entry.routing_result) as Array<{
@@ -172,10 +186,12 @@ const routingResult = entry.routing_result
 ```
 
 **Impact:**
+
 - White screen of death if malformed JSON exists
 - Entire history list becomes unusable
 
 **Suggested Fix:**
+
 ```typescript
 const routingResult = useMemo(() => {
   if (!entry.routing_result) return null;
@@ -205,6 +221,7 @@ const routingResult = useMemo(() => {
 When a user searches, the infinite scroll sentinel (`sentinelRef`) is hidden from view (line 373), but the IntersectionObserver is still active. If the search results are few and the sentinel becomes visible again, it triggers `loadPage` with the last entry's ID, loading entries that don't match the search query. This causes confusion as new entries appear that don't match the search.
 
 **Current Code:**
+
 ```typescript
 // Line 373 - Sentinel hidden when searching
 {searchQuery.trim() === "" && <div ref={sentinelRef} className="h-1" />}
@@ -214,7 +231,7 @@ useEffect(() => {
   if (loading) return;
   const sentinel = sentinelRef.current;
   if (!sentinel || !hasMore) return; // Doesn't check searchQuery
-  
+
   const observer = new IntersectionObserver(
     (observerEntries) => {
       const first = observerEntries[0];
@@ -232,15 +249,17 @@ useEffect(() => {
 ```
 
 **Impact:**
+
 - Search results polluted with non-matching entries
 - Confusing UX where user sees entries not matching their search
 
 **Suggested Fix:**
+
 ```typescript
 useEffect(() => {
   if (loading) return;
   if (searchQuery.trim() !== "") return; // Skip if searching
-  
+
   const sentinel = sentinelRef.current;
   if (!sentinel || !hasMore) return;
   // ... rest of observer setup
@@ -255,12 +274,14 @@ useEffect(() => {
 
 **Bug Description:**
 The `deleteAudioEntry` function performs an optimistic update (removing the entry from state) before the API call. However, if the delete fails:
+
 1. It calls `loadPage()` to reload
 2. But `loadPage()` clears all entries and reloads from the beginning
 3. This loses the user's scroll position and any entries that were loaded via infinite scroll
 4. If called during pagination loading, it can cause inconsistent state
 
 **Current Code:**
+
 ```typescript
 const deleteAudioEntry = async (id: number) => {
   // Optimistically remove
@@ -279,25 +300,29 @@ const deleteAudioEntry = async (id: number) => {
 ```
 
 **Impact:**
+
 - Loss of user's scroll position
 - Unnecessary full reload of all entries
 - Poor UX on slow connections
 
 **Suggested Fix:**
+
 ```typescript
 const deleteAudioEntry = async (id: number) => {
   // Store entry for potential restoration
   const entryToDelete = entries.find((e) => e.id === id);
-  
+
   // Optimistically remove
   setEntries((prev) => prev.filter((e) => e.id !== id));
-  
+
   try {
     const result = await commands.deleteHistoryEntry(id);
     if (result.status !== "ok") {
       // Restore entry on failure instead of full reload
       if (entryToDelete) {
-        setEntries((prev) => [...prev, entryToDelete].sort((a, b) => b.id - a.id));
+        setEntries((prev) =>
+          [...prev, entryToDelete].sort((a, b) => b.id - a.id),
+        );
       }
       toast.error(t("settings.history.deleteFailed"));
     }
@@ -305,7 +330,9 @@ const deleteAudioEntry = async (id: number) => {
     console.error("Failed to delete entry:", error);
     // Restore entry on error
     if (entryToDelete) {
-      setEntries((prev) => [...prev, entryToDelete].sort((a, b) => b.id - a.id));
+      setEntries((prev) =>
+        [...prev, entryToDelete].sort((a, b) => b.id - a.id),
+      );
     }
     toast.error(t("settings.history.deleteError"));
   }
@@ -322,6 +349,7 @@ const deleteAudioEntry = async (id: number) => {
 The `retryHistoryEntry` function throws an error on failure but doesn't handle the case where the history entry might be deleted between the initial fetch and the retry. Additionally, there's no loading state coordination between the component and the child `HistoryEntryComponent`.
 
 **Current Code:**
+
 ```typescript
 const retryHistoryEntry = async (id: number) => {
   const result = await commands.retryHistoryEntryTranscription(id);
@@ -332,11 +360,13 @@ const retryHistoryEntry = async (id: number) => {
 ```
 
 **Impact:**
+
 - Uncaught errors can crash the app
 - No user feedback on retry failure in parent component
 - Potential race condition with concurrent retries
 
 **Suggested Fix:**
+
 ```typescript
 const retryHistoryEntry = async (id: number) => {
   try {
@@ -367,6 +397,7 @@ const retryHistoryEntry = async (id: number) => {
 The blob URL cleanup only runs when the component unmounts or when `loadedSrc` changes. However, if `getAudioUrl` returns a blob URL for Linux (line 231 in HistorySettings.tsx), and the AudioPlayer is unmounted before the audio loads, the blob URL may not be cleaned up properly.
 
 **Current Code:**
+
 ```typescript
 useEffect(() => {
   return () => {
@@ -378,10 +409,12 @@ useEffect(() => {
 ```
 
 **Impact:**
+
 - Memory leak on Linux when users navigate away before audio loads
 - Accumulation of blob URLs in memory
 
 **Suggested Fix:**
+
 ```typescript
 // Track all created blob URLs for cleanup
 const blobUrlsRef = useRef<Set<string>>(new Set());
@@ -389,7 +422,7 @@ const blobUrlsRef = useRef<Set<string>>(new Set());
 useEffect(() => {
   return () => {
     // Cleanup all tracked blob URLs
-    blobUrlsRef.current.forEach(url => {
+    blobUrlsRef.current.forEach((url) => {
       URL.revokeObjectURL(url);
     });
     blobUrlsRef.current.clear();
@@ -415,6 +448,7 @@ const setLoadedSrcWithTracking = useCallback((url: string | null) => {
 
 **Bug Description:**
 The `editingGroundTruth` and `groundTruth` state are initialized from the entry prop but never reset when a different entry is rendered (React reuses component instances). This means if a user:
+
 1. Opens entry A and edits ground truth
 2. Deletes entry A
 3. A different entry B appears at the same position
@@ -422,16 +456,21 @@ The `editingGroundTruth` and `groundTruth` state are initialized from the entry 
 Entry B will show the edit mode from entry A with entry A's data.
 
 **Current Code:**
+
 ```typescript
 const [editingGroundTruth, setEditingGroundTruth] = useState(false);
-const [groundTruth, setGroundTruth] = useState(entry.ground_truth || entry.transcription_text);
+const [groundTruth, setGroundTruth] = useState(
+  entry.ground_truth || entry.transcription_text,
+);
 ```
 
 **Impact:**
+
 - Edit mode persists across different entries
 - Potential data corruption if user saves wrong value
 
 **Suggested Fix:**
+
 ```typescript
 // Reset state when entry ID changes
 useEffect(() => {
@@ -452,6 +491,7 @@ The `updateMetadata` function updates `ground_truth`, `quality`, and `speech_spe
 Additionally, the backend `update_metadata` doesn't update all fields atomically - it makes separate UPDATE calls for each field that is present.
 
 **Current Code:**
+
 ```typescript
 const updateMetadata = async (
   id: number,
@@ -476,11 +516,13 @@ const updateMetadata = async (
 ```
 
 **Impact:**
+
 - Inconsistent state if metadata and tags updated simultaneously
 - Multiple network requests instead of one
 
 **Suggested Fix:**
 Add tags support to the metadata update or provide a combined function:
+
 ```typescript
 const updateMetadata = async (
   id: number,
@@ -502,7 +544,7 @@ const updateMetadata = async (
       };
     }),
   );
-  
+
   try {
     // Use Promise.all for concurrent updates
     const promises: Promise<unknown>[] = [
@@ -511,18 +553,18 @@ const updateMetadata = async (
         ground_truth ?? null,
         quality ?? null,
         speech_speed ?? null,
-      )
+      ),
     ];
-    
+
     if (tags !== undefined) {
       promises.push(
-        commands.updateHistoryEntryTags(id, tags ? JSON.stringify(tags) : null)
+        commands.updateHistoryEntryTags(id, tags ? JSON.stringify(tags) : null),
       );
     }
-    
+
     const results = await Promise.all(promises);
-    const hasError = results.some(r => r.status !== "ok");
-    
+    const hasError = results.some((r) => r.status !== "ok");
+
     if (hasError) {
       loadPage(); // Reload on partial failure
     }
@@ -543,6 +585,7 @@ const updateMetadata = async (
 The `tick` callback has an empty dependency array, meaning it closes over the initial values of `isDraggingRef` and `isPlayingRef`. While refs are used to avoid stale closures, the `tick` function itself is recreated on every render but only the first version is used in `requestAnimationFrame`.
 
 **Current Code:**
+
 ```typescript
 const tick = useCallback(() => {
   if (audioRef.current && !isDraggingRef.current) {
@@ -557,10 +600,12 @@ const tick = useCallback(() => {
 ```
 
 **Impact:**
+
 - Potential memory leak if component unmounts during animation
 - Callback identity issues with React DevTools
 
 **Suggested Fix:**
+
 ```typescript
 const tick = useCallback(() => {
   if (audioRef.current && !isDraggingRef.current) {
@@ -585,7 +630,7 @@ useEffect(() => {
       animationRef.current = undefined;
     }
   }
-  
+
   return () => {
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
@@ -607,11 +652,13 @@ useEffect(() => {
 The `history_limit` setting is passed directly to the backend without any validation. Negative values or extremely large values could cause issues.
 
 **Current Code:**
+
 ```typescript
 history_limit: (value) => commands.updateHistoryLimit(value as number),
 ```
 
 **Suggested Fix:**
+
 ```typescript
 history_limit: (value) => {
   const limit = Math.max(0, Math.min(10000, Number(value) || 100));
@@ -629,6 +676,7 @@ history_limit: (value) => {
 The backend emits `Toggled` events with just the ID, but the frontend ignores it. This means the frontend can't easily update its state when another window/instance toggles the saved status. The current comment says it's intentional to avoid double-mutation, but this creates inconsistency in multi-window scenarios.
 
 **Current Backend Code:**
+
 ```rust
 if let Err(e) = (HistoryUpdatePayload::Toggled { id }).emit(&self.app_handle) {
     error!("Failed to emit history-updated event: {}", e);
@@ -636,11 +684,13 @@ if let Err(e) = (HistoryUpdatePayload::Toggled { id }).emit(&self.app_handle) {
 ```
 
 **Impact:**
+
 - Minor inconsistency in multi-window scenarios
 - Wasted event emissions
 
 **Suggested Fix:**
 Either remove the event emission from backend or handle it in frontend:
+
 ```rust
 // Backend: Remove unused event emission
 // Frontend already handles optimistic updates for the same window
@@ -655,6 +705,7 @@ Either remove the event emission from backend or handle it in frontend:
 
 **Bug Description:**
 Several database operations in `history.rs` don't use transactions when updating multiple fields:
+
 - `update_metadata` (lines 768-812) - separate UPDATE statements
 - `update_experiment_group` (lines 1004-1050) - separate UPDATE statements
 - `update_variant` (lines 1154-1193) - separate UPDATE statements
@@ -663,6 +714,7 @@ If one UPDATE fails, the database can be left in an inconsistent state.
 
 **Suggested Fix:**
 Wrap multi-field updates in transactions:
+
 ```rust
 pub async fn update_metadata(
     &self,
@@ -673,28 +725,28 @@ pub async fn update_metadata(
 ) -> Result<()> {
     let mut conn = self.get_connection()?;
     let tx = conn.transaction()?;
-    
+
     if let Some(gt) = &ground_truth {
         tx.execute(
             "UPDATE transcription_history SET ground_truth = ?1 WHERE id = ?2",
             params![gt, id],
         )?;
     }
-    
+
     if let Some(q) = &quality {
         tx.execute(
             "UPDATE transcription_history SET quality = ?1 WHERE id = ?2",
             params![q, id],
         )?;
     }
-    
+
     if let Some(ss) = &speech_speed {
         tx.execute(
             "UPDATE transcription_history SET speech_speed = ?1 WHERE id = ?2",
             params![ss, id],
         )?;
     }
-    
+
     tx.commit()?;
     // ... emit event
 }
@@ -710,6 +762,7 @@ pub async fn update_metadata(
 The `cleanup_by_count` method loads ALL unsaved entries into memory before deciding which to delete. For large databases, this could be memory-intensive.
 
 **Current Code:**
+
 ```rust
 let mut entries: Vec<(i64, String)> = Vec::new();
 for row in rows {
@@ -724,29 +777,30 @@ if entries.len() > limit {
 
 **Suggested Fix:**
 Use a single DELETE query with OFFSET:
+
 ```rust
 fn cleanup_by_count(&self, limit: usize) -> Result<()> {
     let conn = self.get_connection()?;
-    
+
     // Get IDs to delete using a subquery
     let mut stmt = conn.prepare(
-        "SELECT id, file_name FROM transcription_history 
-         WHERE saved = 0 
-         ORDER BY timestamp DESC 
+        "SELECT id, file_name FROM transcription_history
+         WHERE saved = 0
+         ORDER BY timestamp DESC
          LIMIT -1 OFFSET ?1"
     )?;
-    
+
     let entries_to_delete: Vec<(i64, String)> = stmt
         .query_map(params![limit as i64], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     if !entries_to_delete.is_empty() {
         let deleted_count = self.delete_entries_and_files(&entries_to_delete)?;
         debug!("Cleaned up {} old history entries by count.", deleted_count);
     }
-    
+
     Ok(())
 }
 ```
@@ -762,6 +816,7 @@ fn cleanup_by_count(&self, limit: usize) -> Result<()> {
 The current empty state check only looks at `entries.length`, but after filtering with search, the user could see "No results" instead of "Empty history". This is handled correctly (lines 347-352), but there's no distinction between "no history" and "no matching results".
 
 **Current Behavior:**
+
 - Shows "empty" message when no entries exist
 - Shows "noResults" message when search returns nothing
 
@@ -774,6 +829,7 @@ This is actually correct behavior, but worth noting that the messages might need
 **Location:** `HistorySettings.tsx`, lines 194-214, 279-315
 
 Multiple concurrent metadata updates can cause race conditions. If a user rapidly clicks quality buttons:
+
 1. Click "good" → optimistic update → API call starts
 2. Click "okay" → optimistic update → API call starts
 3. First API call completes, triggers reload
@@ -783,13 +839,14 @@ This can lead to inconsistent UI state.
 
 **Suggested Fix:**
 Add debouncing or queue management for updates:
+
 ```typescript
 const pendingUpdatesRef = useRef<Set<number>>(new Set());
 
 const updateMetadata = async (...) => {
   if (pendingUpdatesRef.current.has(id)) return;
   pendingUpdatesRef.current.add(id);
-  
+
   try {
     // ... update logic
   } finally {
@@ -802,14 +859,15 @@ const updateMetadata = async (...) => {
 
 ## Summary
 
-| Severity | Count | Description |
-|----------|-------|-------------|
-| Critical | 1 | Race condition in pagination loading |
-| High | 6 | Missing event handlers, unprotected JSON.parse, scroll issues, delete race conditions |
-| Medium | 3 | State management issues, stale closures |
-| Low | 4 | Validation, unused code, performance |
+| Severity | Count | Description                                                                           |
+| -------- | ----- | ------------------------------------------------------------------------------------- |
+| Critical | 1     | Race condition in pagination loading                                                  |
+| High     | 6     | Missing event handlers, unprotected JSON.parse, scroll issues, delete race conditions |
+| Medium   | 3     | State management issues, stale closures                                               |
+| Low      | 4     | Validation, unused code, performance                                                  |
 
 **Priority Fixes (in order):**
+
 1. Fix pagination race condition (CRITICAL)
 2. Add JSON.parse error handling (HIGH)
 3. Handle "deleted" events (HIGH)

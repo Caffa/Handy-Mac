@@ -5,6 +5,7 @@ This guide explains how to run transcription accuracy experiments using the tagg
 ## Overview
 
 The Handy app serves as a **data tagging tool**. Users tag recordings with:
+
 - **Ground Truth** - What they actually said (corrected transcription)
 - **Quality** - Recording quality rating (good/okay/bad)
 - **Speech Speed** - How fast they spoke (fast/normal/slow)
@@ -74,7 +75,7 @@ CREATE TABLE transcription_variants (
 ### Get All Tagged Recordings
 
 ```sql
-SELECT 
+SELECT
     id,
     file_name,
     transcription_text,
@@ -123,7 +124,7 @@ GROUP BY speech_speed;
 ### Get Dataset Summary
 
 ```sql
-SELECT 
+SELECT
     quality,
     speech_speed,
     COUNT(*) as count
@@ -157,6 +158,7 @@ let duration = start.elapsed();
 ```
 
 **Metrics to track**:
+
 - Transcription time (ms)
 - Match score (%)
 - Words per second
@@ -236,7 +238,7 @@ use crate::audio_toolkit::read_wav_samples;
 for recording in &recordings {
     let audio_path = history_manager.get_audio_file_path(&recording.file_name);
     let samples = read_wav_samples(&audio_path)?;
-    
+
     // Run experiments on samples
 }
 ```
@@ -248,14 +250,14 @@ let models = vec!["turbo", "medium", "small", "parakeet-tdt-0.6b-v3"];
 
 for model_id in &models {
     transcription_manager.load_model(model_id)?;
-    
+
     for recording in &recordings {
         let audio = read_wav_samples(&recording.audio_path)?;
         let result = transcription_manager.transcribe_for_benchmark(audio)?;
-        
+
         // Calculate match score
         let score = calculate_match_score(&result.text, &recording.ground_truth);
-        
+
         // Store in experiment_variants table
         store_variant(experiment_id, model_id, result.text, score)?;
     }
@@ -268,20 +270,20 @@ for model_id in &models {
 fn calculate_match_score(transcription: &str, ground_truth: &str) -> f32 {
     let a = transcription.to_lowercase();
     let b = ground_truth.to_lowercase();
-    
+
     if a == b {
         return 100.0;
     }
-    
+
     let words_a: Vec<&str> = a.split_whitespace().collect();
     let words_b: Vec<&str> = b.split_whitespace().collect();
-    
+
     let common = words_a.iter()
         .filter(|w| words_b.contains(w))
         .count();
-    
+
     let total = words_a.len().max(words_b.len());
-    
+
     (common as f32 / total as f32 * 100.0).round()
 }
 ```
@@ -312,7 +314,7 @@ conn.execute(
 
 ```rust
 let results: Vec<ExperimentResult> = conn.query_map(
-    "SELECT 
+    "SELECT
         eg.id as experiment_id,
         th.file_name,
         eg.ground_truth,
@@ -369,7 +371,7 @@ std::fs::write("experiment_results.csv", csv)?;
 ### Calculate Model Accuracy
 
 ```sql
-SELECT 
+SELECT
     tv.model_id,
     COUNT(*) as recordings_tested,
     AVG(tv.match_score) as avg_accuracy,
@@ -384,7 +386,7 @@ ORDER BY avg_accuracy DESC;
 ### Accuracy by Quality Level
 
 ```sql
-SELECT 
+SELECT
     eg.recording_quality,
     tv.model_id,
     AVG(tv.match_score) as avg_accuracy
@@ -397,7 +399,7 @@ ORDER BY eg.recording_quality, avg_accuracy DESC;
 ### Find Worst Transcriptions
 
 ```sql
-SELECT 
+SELECT
     th.file_name,
     eg.ground_truth,
     tv.model_id,
@@ -448,6 +450,7 @@ ORDER BY tv.match_score ASC;
 When the user asks you to run experiments:
 
 1. **Count available data**
+
    ```sql
    SELECT COUNT(*) FROM transcription_history
    WHERE saved = 1 AND ground_truth IS NOT NULL;

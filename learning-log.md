@@ -202,12 +202,13 @@ The `recreate_recorder()` method in `src-tauri/src/managers/audio.rs` used `.exp
 ### Fixes (implemented 2026-07-01)
 
 1. **Replaced `.expect()` with `.ok_or_else()`** in `audio.rs`:
+
    ```rust
    // Before (line 937):
    vad_path.to_str().expect("VAD path should be valid UTF-8")
-   
+
    // After:
-   vad_path.to_str().ok_or_else(|| 
+   vad_path.to_str().ok_or_else(||
      anyhow::anyhow!("VAD path is not valid UTF-8: {:?}", vad_path)
    )?
    ```
@@ -229,6 +230,7 @@ The `recreate_recorder()` method in `src-tauri/src/managers/audio.rs` used `.exp
 When calling methods that acquire Mutexes during UI-triggered operations (like settings changes), **always use `.ok_or()` / `.map_err()` / `?` instead of `.expect()` / `.unwrap()`**. A panic under a Mutex will abort the entire process on most platforms because the Mutex is poisoned and cannot be safely recovered. The `?` operator propagates errors to the caller, allowing the frontend to display a toast notification instead of crashing the app.
 
 **Files changed:**
+
 - `src-tauri/src/managers/audio.rs` — Fixed `recreate_recorder()` panic point and is_open flag ordering
 - `src-tauri/src/shortcut/mod.rs` — Added error recovery and logging to `change_pre_recording_buffer_setting`
 
@@ -290,6 +292,7 @@ The backend's `is_active_use()` check (lines 1268-1276) correctly prevents hidin
 ### Fixes
 
 1. **Frontend: Check overlay state before hiding after router result timeout** (RecordingOverlay.tsx lines 391-401):
+
    ```typescript
    // Handle router result timeout
    useEffect(() => {
@@ -300,8 +303,12 @@ The backend's `is_active_use()` check (lines 1268-1276) correctly prevents hidin
          // This prevents race condition where router result timeout fires while user is
          // actively recording a second transcription
          setState((current) => {
-           if (current === "recording" || current === "transcribing" || 
-               current === "processing" || current === "confirming") {
+           if (
+             current === "recording" ||
+             current === "transcribing" ||
+             current === "processing" ||
+             current === "confirming"
+           ) {
              // New transcription is active — keep overlay visible
              return current;
            }
@@ -360,6 +367,7 @@ The 2026-06-15 fix addressed the **router-result timeout race** (frontend 5-seco
 ### Fixes
 
 1. **Frontend: Add state check to `hide-overlay` event handler** (RecordingOverlay.tsx lines 548-588):
+
    ```typescript
    const unlistenHide = await listen("hide-overlay", () => {
      // Check current state before hiding
@@ -408,12 +416,14 @@ Event-based UI updates must **defensively check current state at event-handler t
 The bug is caused by **silent failure in monitor detection** combined with a **timing race on macOS**:
 
 1. **Silent Failure in `position_overlay_fixed()` (overlay.rs:476)**:
+
    ```rust
    if let Some(monitor) = get_monitor_with_cursor(app_handle) {
        // ... positioning logic ...
    }
    // NO ELSE BRANCH! If monitor detection fails, window is shown unpositioned
    ```
+
    When `get_monitor_with_cursor()` returns `None`, the function exits without setting any position. The window is then shown at its previous/default position (center of screen).
 
 2. **Multiple Failure Points in `get_monitor_with_cursor()` (overlay.rs:170-198)**:
@@ -424,12 +434,14 @@ The bug is caused by **silent failure in monitor detection** combined with a **t
 
 3. **macOS Async Race (overlay.rs:511-531)**:
    On macOS, position is set via `run_on_main_thread()` which is asynchronous:
+
    ```rust
    let _ = overlay_window.run_on_main_thread(move || {
        let _ = window.set_position(...);
        let _ = window.set_size(...);
    });
    ```
+
    If `show()` is called immediately after, the window can be shown before the position update completes.
 
 4. **Timing Window**:
@@ -445,12 +457,13 @@ The bug is caused by **silent failure in monitor detection** combined with a **t
 ### Fixes (implemented 2026-07-01)
 
 1. **Add fallback position with error logging** in `overlay.rs`:
+
    ```rust
    if let Some(monitor) = get_monitor_with_cursor(app_handle) {
        // ... existing positioning logic ...
    } else {
        log::error!("position_overlay_fixed: get_monitor_with_cursor returned None! Using primary monitor fallback.");
-       
+
        if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
            // Use the same positioning logic with primary monitor
            // ... calculate position and set ...

@@ -22,7 +22,13 @@ interface ExperimentCardProps {
   onCreateExperiment: () => void;
   onUpdateGroundTruth: (text: string) => void;
   onGenerateVariants: (models: string[]) => Promise<void>;
-  onUpdateVariant: (id: number, ranking: number | null, is_acceptable: boolean | null, notes: string | null, match_score: number | null) => void;
+  onUpdateVariant: (
+    id: number,
+    ranking: number | null,
+    is_acceptable: boolean | null,
+    notes: string | null,
+    match_score: number | null,
+  ) => void;
   onUpdateMetadata: (speech_speed: string, recording_quality: string) => void;
 }
 
@@ -81,8 +87,8 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
     if (a === b) return 100;
 
     // Simple word-level similarity
-    const wordsA = a.split(/\s+/).filter(w => w.length > 0);
-    const wordsB = b.split(/\s+/).filter(w => w.length > 0);
+    const wordsA = a.split(/\s+/).filter((w) => w.length > 0);
+    const wordsB = b.split(/\s+/).filter((w) => w.length > 0);
 
     // Handle empty strings
     if (wordsA.length === 0 && wordsB.length === 0) return 100;
@@ -151,8 +157,7 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
                   size="sm"
                   onClick={() => {
                     setGroundTruth(
-                      experimentGroup?.ground_truth ||
-                        entry.transcription_text,
+                      experimentGroup?.ground_truth || entry.transcription_text,
                     );
                     setEditingGroundTruth(false);
                   }}
@@ -162,7 +167,10 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
               </div>
             </div>
           ) : (
-            <div className="cursor-pointer" onClick={() => setEditingGroundTruth(true)}>
+            <div
+              className="cursor-pointer"
+              onClick={() => setEditingGroundTruth(true)}
+            >
               <p className="text-sm font-medium text-primary">
                 Ground Truth: {groundTruth}
               </p>
@@ -227,10 +235,13 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
                 if (!experimentGroup) return;
 
                 // Default to using all downloaded models
-                const downloadedModels = availableModels.filter(m => m.is_downloaded);
-                const modelIds = downloadedModels.length > 0
-                  ? downloadedModels.slice(0, 5).map(m => m.id)
-                  : ["turbo", "medium", "small"]; // Fallback defaults
+                const downloadedModels = availableModels.filter(
+                  (m) => m.is_downloaded,
+                );
+                const modelIds =
+                  downloadedModels.length > 0
+                    ? downloadedModels.slice(0, 5).map((m) => m.id)
+                    : ["turbo", "medium", "small"]; // Fallback defaults
 
                 setIsGenerating(true);
                 try {
@@ -255,7 +266,8 @@ const ExperimentCard: React.FC<ExperimentCardProps> = ({
 
         {variants.length === 0 ? (
           <p className="text-sm text-text/60 text-center py-4">
-            No variants yet. Edit ground truth above, then click "Generate Variants" to test different models.
+            No variants yet. Edit ground truth above, then click "Generate
+            Variants" to test different models.
           </p>
         ) : (
           <div className="space-y-2">
@@ -372,7 +384,7 @@ export const ExperimentReview: React.FC = () => {
       try {
         const result = await commands.getAvailableModels();
         if (result.status === "ok") {
-          setAvailableModels(result.data.filter(m => m.is_downloaded));
+          setAvailableModels(result.data.filter((m) => m.is_downloaded));
         }
       } catch (e) {
         console.error("Failed to load models:", e);
@@ -541,7 +553,10 @@ export const ExperimentReview: React.FC = () => {
         });
       }
 
-      await writeFile(filePath, new TextEncoder().encode(JSON.stringify(dataset, null, 2)));
+      await writeFile(
+        filePath,
+        new TextEncoder().encode(JSON.stringify(dataset, null, 2)),
+      );
     } catch (e) {
       console.error("Failed to export dataset:", e);
     }
@@ -552,8 +567,8 @@ export const ExperimentReview: React.FC = () => {
       <div className="space-y-4">
         <div className="flex justify-between items-center">
           <p className="text-sm text-text/70">
-            Review saved recordings, compare transcription variants, and mark ground truth for
-            accuracy testing.
+            Review saved recordings, compare transcription variants, and mark
+            ground truth for accuracy testing.
           </p>
           <Button variant="secondary" size="sm" onClick={handleExportDataset}>
             <Download className="w-4 h-4 mr-1" />
@@ -578,8 +593,16 @@ export const ExperimentReview: React.FC = () => {
                 onUpdateGroundTruth={(text) =>
                   handleUpdateGroundTruth(entry.id, text)
                 }
-                onGenerateVariants={(models) => handleGenerateVariants(entry.id, models)}
-                onUpdateVariant={async (id, ranking, is_acceptable, notes, match_score) => {
+                onGenerateVariants={(models) =>
+                  handleGenerateVariants(entry.id, models)
+                }
+                onUpdateVariant={async (
+                  id,
+                  ranking,
+                  is_acceptable,
+                  notes,
+                  match_score,
+                ) => {
                   try {
                     const result = await commands.updateTranscriptionVariant(
                       id,

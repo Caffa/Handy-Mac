@@ -16,9 +16,8 @@ export const WordReplacements: React.FC<WordReplacementsProps> = React.memo(
   ({ descriptionMode = "tooltip", grouped = false }) => {
     const { t } = useTranslation();
     const { getSetting, updateSetting, isUpdating } = useSettings();
-    const wordReplacements = (getSetting("word_replacements") as
-      | WordReplacement[]
-      | undefined) || [];
+    const wordReplacements =
+      (getSetting("word_replacements") as WordReplacement[] | undefined) || [];
     const [newMistranslation, setNewMistranslation] = useState("");
     const [newCorrection, setNewCorrection] = useState("");
 

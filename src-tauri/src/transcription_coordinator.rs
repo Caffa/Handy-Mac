@@ -3,7 +3,6 @@ use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -290,8 +289,8 @@ fn start(
     };
     action.start(app, binding_id, hotkey_string);
     if app
-        .try_state::<Arc<Mutex<AudioRecordingManager>>>()
-        .map_or(false, |a| a.lock().is_recording())
+        .try_state::<Arc<AudioRecordingManager>>()
+        .map_or(false, |a| a.is_recording())
     {
         set_stage(stage, Stage::Recording(binding_id.to_string()), active_use);
         // Bump overlay session — any pending hide from previous session is now invalid

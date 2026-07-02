@@ -3,7 +3,6 @@ use crate::shortcut;
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
@@ -45,17 +44,17 @@ pub fn cancel_current_operation(app: &AppHandle) {
     shortcut::unregister_cancel_shortcut(app);
 
     // Cancel any ongoing recording
-    let Some(audio_manager) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+    let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() else {
         warn!("AudioRecordingManager not available for cancellation");
         return;
     };
     
-    let recording_was_active = audio_manager.lock().is_recording();
+    let recording_was_active = audio_manager.is_recording();
     if !recording_was_active {
         info!("No active recording to cancel, but proceeding with cleanup");
     } else {
         info!("Cancelling active recording");
-        audio_manager.lock().cancel_recording();
+        audio_manager.cancel_recording();
     }
 
     // Update tray icon and force-hide overlay (bypass state check for cancel)

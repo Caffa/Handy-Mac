@@ -25,7 +25,7 @@ export const PreRecordingBuffer: React.FC<PreRecordingBufferProps> = ({
   const { t } = useTranslation();
   const { settings, updateSetting } = useSettings();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
+
   // Local state for immediate UI feedback during slider drag
   const [localValue, setLocalValue] = useState<number | null>(null);
 

@@ -35,7 +35,9 @@ export const VadSensitivity: React.FC<VadSensitivityProps> = React.memo(
     const { t } = useTranslation();
     const { getSetting, updateSetting, isUpdating } = useSettings();
 
-    const vadSensitivity = validateVadSensitivity(getSetting("vad_sensitivity"));
+    const vadSensitivity = validateVadSensitivity(
+      getSetting("vad_sensitivity"),
+    );
 
     const options = [
       {

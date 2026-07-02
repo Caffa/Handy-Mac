@@ -59,7 +59,9 @@ const IconButton: React.FC<{
 const PAGE_SIZE = 30;
 
 // Safe JSON parse for routing_result
-const parseRoutingResult = (json: string | null): Array<{
+const parseRoutingResult = (
+  json: string | null,
+): Array<{
   status: string;
   handler: string;
   classification: string;
@@ -416,7 +418,7 @@ export const HistorySettings: React.FC = () => {
     <div className="max-w-3xl w-full mx-auto space-y-6">
       {/* Retry Queue - Failed transcriptions */}
       <RetryQueue className="space-y-2" />
-      
+
       <div className="space-y-2">
         <div className="px-4 flex items-center justify-between">
           <div>
@@ -457,7 +459,11 @@ interface HistoryEntryProps {
   getAudioUrl: (fileName: string) => Promise<string | null>;
   deleteAudio: (id: number) => Promise<void>;
   retryTranscription: (id: number) => Promise<void>;
-  onUpdateMetadata: (ground_truth?: string, quality?: string, speech_speed?: string) => Promise<void>;
+  onUpdateMetadata: (
+    ground_truth?: string,
+    quality?: string,
+    speech_speed?: string,
+  ) => Promise<void>;
 }
 
 const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
@@ -473,7 +479,9 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   const [showCopied, setShowCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [editingGroundTruth, setEditingGroundTruth] = useState(false);
-  const [groundTruth, setGroundTruth] = useState(entry.ground_truth || entry.transcription_text);
+  const [groundTruth, setGroundTruth] = useState(
+    entry.ground_truth || entry.transcription_text,
+  );
 
   const hasTranscription = entry.transcription_text.trim().length > 0;
 
@@ -642,7 +650,9 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
                   size="sm"
                   variant="secondary"
                   onClick={() => {
-                    setGroundTruth(entry.ground_truth || entry.transcription_text);
+                    setGroundTruth(
+                      entry.ground_truth || entry.transcription_text,
+                    );
                     setEditingGroundTruth(false);
                   }}
                 >
@@ -657,7 +667,10 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
               onClick={() => setEditingGroundTruth(true)}
             >
               <p className="text-xs text-text/60">
-                Ground Truth: <span className="text-text">{entry.ground_truth || "Click to edit"}</span>
+                Ground Truth:{" "}
+                <span className="text-text">
+                  {entry.ground_truth || "Click to edit"}
+                </span>
               </p>
             </div>
           )}

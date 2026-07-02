@@ -185,9 +185,12 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         // TODO: Emit event to frontend to notify user about recovered recordings
     }
     
-    let recording_manager = Arc::new(Mutex::new(
+    // NOTE: AudioRecordingManager uses internal locks for all its state (state, recorder, mode)
+    // so we don't need an outer Mutex wrapper. This allows methods to run concurrently
+    // without blocking each other for extended periods (e.g., USB recovery takes 10+ seconds).
+    let recording_manager = Arc::new(
         AudioRecordingManager::new(app_handle).expect("Failed to initialize recording manager"),
-    ));
+    );
     let model_manager = Arc::new(
         ModelManager::new(app_handle).expect("Failed to initialize model manager"),
     );
@@ -206,10 +209,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Add managers to Tauri's managed state
     app_handle.manage(recording_manager.clone());
-    {
-        let rm = recording_manager.lock();
-        app_handle.manage(rm.usb_watchdog.clone());
-    }
+    app_handle.manage(recording_manager.usb_watchdog.clone());
     app_handle.manage(model_manager.clone());
     // Store the streaming cancel flag separately so it can be accessed without
     // acquiring the TranscriptionManager mutex. This prevents blocking when:
@@ -726,19 +726,19 @@ pub fn run(cli_args: CliArgs) {
                 // - AudioRecordingManager tracks pronunciation recordings which bypass coordinator
                 let (is_coord_active, is_audio_recording) = {
                     let coord = app.try_state::<TranscriptionCoordinator>();
-                    let audio = app.try_state::<Arc<Mutex<AudioRecordingManager>>>();
+                    let audio = app.try_state::<Arc<AudioRecordingManager>>();
                     (
                         coord.as_ref().map_or(false, |c| c.is_active_use()),
-                        audio.as_ref().map_or(false, |a| a.lock().is_recording()),
+                        audio.as_ref().map_or(false, |a| a.is_recording()),
                     )
                 };
                 let is_active = is_coord_active || is_audio_recording;
                 
                 // Also check audio state for debugging
-                let is_open = app.try_state::<Arc<Mutex<AudioRecordingManager>>>()
-                    .map_or(false, |a| a.lock().is_stream_open());
-                let is_always_on = app.try_state::<Arc<Mutex<AudioRecordingManager>>>()
-                    .map_or(false, |a| a.lock().is_always_on());
+                let is_open = app.try_state::<Arc<AudioRecordingManager>>()
+                    .map_or(false, |a| a.is_stream_open());
+                let is_always_on = app.try_state::<Arc<AudioRecordingManager>>()
+                    .map_or(false, |a| a.is_always_on());
                 
                 // Print detailed status for debugging
                 eprintln!("Handy active use status:");
@@ -766,11 +766,10 @@ pub fn run(cli_args: CliArgs) {
                 // NOTE: This flag checks ONLY audio recording state. For scripts that need
                 // to wait for Handy to be fully idle (including processing/transcription),
                 // use --is-active-use instead.
-                if let Some(audio_manager) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
-                    let audio = audio_manager.lock();
-                    let is_recording = audio.is_recording();
-                    let is_open = audio.is_stream_open();
-                    let is_always_on = audio.is_always_on();
+                if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
+                    let is_recording = audio_manager.is_recording();
+                    let is_open = audio_manager.is_stream_open();
+                    let is_always_on = audio_manager.is_always_on();
                     
                     // Print detailed status for debugging
                     eprintln!("Handy audio status:");

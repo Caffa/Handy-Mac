@@ -2,7 +2,11 @@ import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { AlertCircle, RefreshCw, Trash2, Clock, FileAudio } from "lucide-react";
-import { commands, type RetryableTranscription, type TranscriptionFailure } from "@/bindings";
+import {
+  commands,
+  type RetryableTranscription,
+  type TranscriptionFailure,
+} from "@/bindings";
 import { Button } from "@/components/ui/Button";
 
 /**
@@ -108,20 +112,22 @@ export const RetryQueue: React.FC<RetryQueueProps> = ({ className }) => {
     try {
       const result = await commands.retryTranscription(entryId);
       if (result.status === "ok") {
-        toast.success(t("settings.retryQueue.retrySuccess", "Retry successful"));
+        toast.success(
+          t("settings.retryQueue.retrySuccess", "Retry successful"),
+        );
         await loadQueue();
       } else {
         toast.error(
           t("settings.retryQueue.retryError", "Retry failed: {{error}}", {
             error: result.error,
-          })
+          }),
         );
       }
     } catch (error) {
       toast.error(
         t("settings.retryQueue.retryError", "Retry failed: {{error}}", {
           error: String(error),
-        })
+        }),
       );
     } finally {
       setRetrying(null);
@@ -142,7 +148,7 @@ export const RetryQueue: React.FC<RetryQueueProps> = ({ className }) => {
       toast.error(
         t("settings.retryQueue.removeError", "Failed to remove: {{error}}", {
           error: String(error),
-        })
+        }),
       );
     }
   };
@@ -159,9 +165,13 @@ export const RetryQueue: React.FC<RetryQueueProps> = ({ className }) => {
       }
     } catch (error) {
       toast.error(
-        t("settings.retryQueue.clearError", "Failed to clear queue: {{error}}", {
-          error: String(error),
-        })
+        t(
+          "settings.retryQueue.clearError",
+          "Failed to clear queue: {{error}}",
+          {
+            error: String(error),
+          },
+        ),
       );
     }
   };
@@ -187,16 +197,24 @@ export const RetryQueue: React.FC<RetryQueueProps> = ({ className }) => {
 
     if (successCount > 0) {
       toast.success(
-        t("settings.retryQueue.batchSuccess", "{{count}} entries retried successfully", {
-          count: successCount,
-        })
+        t(
+          "settings.retryQueue.batchSuccess",
+          "{{count}} entries retried successfully",
+          {
+            count: successCount,
+          },
+        ),
       );
     }
     if (failCount > 0) {
       toast.error(
-        t("settings.retryQueue.batchFail", "{{count}} entries failed to retry", {
-          count: failCount,
-        })
+        t(
+          "settings.retryQueue.batchFail",
+          "{{count}} entries failed to retry",
+          {
+            count: failCount,
+          },
+        ),
       );
     }
 
@@ -219,9 +237,7 @@ export const RetryQueue: React.FC<RetryQueueProps> = ({ className }) => {
           <h3 className="text-sm font-medium text-text">
             {t("settings.retryQueue.title", "Failed Transcriptions")}
           </h3>
-          <span className="text-xs text-text/60">
-            ({entries.length})
-          </span>
+          <span className="text-xs text-text/60">({entries.length})</span>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -292,11 +308,15 @@ const RetryEntry: React.FC<RetryEntryProps> = ({
 
     const diffMins = Math.floor(diffMs / 60000);
     if (diffMins < 60) {
-      return t("settings.retryQueue.retryInMinutes", "Retry in {{mins}}m", { mins: diffMins });
+      return t("settings.retryQueue.retryInMinutes", "Retry in {{mins}}m", {
+        mins: diffMins,
+      });
     }
 
     const diffHours = Math.floor(diffMins / 60);
-    return t("settings.retryQueue.retryInHours", "Retry in {{hours}}h", { hours: diffHours });
+    return t("settings.retryQueue.retryInHours", "Retry in {{hours}}h", {
+      hours: diffHours,
+    });
   };
 
   const fileName = entry.audio_path.split("/").pop() || entry.audio_path;
@@ -315,10 +335,14 @@ const RetryEntry: React.FC<RetryEntryProps> = ({
             variant="ghost"
             size="sm"
             onClick={onRetry}
-            disabled={isRetrying || entry.is_processing || !canRetry(entry.last_failure)}
+            disabled={
+              isRetrying || entry.is_processing || !canRetry(entry.last_failure)
+            }
             className="text-xs"
           >
-            <RefreshCw className={`w-3 h-3 mr-1 ${isRetrying ? "animate-spin" : ""}`} />
+            <RefreshCw
+              className={`w-3 h-3 mr-1 ${isRetrying ? "animate-spin" : ""}`}
+            />
             {isRetrying
               ? t("settings.retryQueue.retrying", "Retrying...")
               : t("settings.retryQueue.retry", "Retry")}
@@ -338,7 +362,9 @@ const RetryEntry: React.FC<RetryEntryProps> = ({
       {/* Error message */}
       <div className="text-xs text-red-500/80 flex items-start gap-2">
         <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-        <span className="break-all">{getFailureDescription(entry.last_failure)}</span>
+        <span className="break-all">
+          {getFailureDescription(entry.last_failure)}
+        </span>
       </div>
 
       {/* Metadata row */}

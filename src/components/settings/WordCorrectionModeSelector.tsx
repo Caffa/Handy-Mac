@@ -18,7 +18,10 @@ export const WordCorrectionModeSelector: React.FC<
   const currentMode = getSetting("word_correction_mode") || "word_bias";
 
   const modes: DropdownOption[] = [
-    { value: "word_bias", label: t("settings.debug.wordCorrectionMode.wordBias") },
+    {
+      value: "word_bias",
+      label: t("settings.debug.wordCorrectionMode.wordBias"),
+    },
     {
       value: "pronunciation",
       label: t("settings.debug.wordCorrectionMode.pronunciation"),

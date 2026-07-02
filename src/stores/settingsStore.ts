@@ -138,7 +138,9 @@ const settingUpdaters: {
   word_replacements: (value) =>
     commands.updateWordReplacements(value as WordReplacement[]),
   word_correction_mode: (value) =>
-    commands.changeWordCorrectionMode(value as import("@/bindings").WordCorrectionMode),
+    commands.changeWordCorrectionMode(
+      value as import("@/bindings").WordCorrectionMode,
+    ),
   use_advanced_custom_words: (value) =>
     commands.changeUseAdvancedCustomWordsSetting(value as boolean),
   word_correction_threshold: (value) =>
@@ -206,8 +208,7 @@ const settingUpdaters: {
     commands.changeVadSensitivitySetting(value as string),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
-  overlay_scale: (value) =>
-    commands.changeOverlayScaleSetting(value as number),
+  overlay_scale: (value) => commands.changeOverlayScaleSetting(value as number),
   noise_suppression_enabled: (value) =>
     commands.changeNoiseSuppressionEnabledSetting(value as boolean),
   noise_suppression_level: (value) =>
@@ -273,7 +274,8 @@ export const useSettingsStore = create<SettingsStore>()(
         }
       } catch (error) {
         console.error("Failed to load settings:", error);
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         set({ isLoading: false, error: errorMessage });
         toast.error(i18n.t("errors.settingsLoadFailed"), {
           description: i18n.t("errors.settingsLoadFailedDescription"),
@@ -730,12 +732,8 @@ export const useSettingsStore = create<SettingsStore>()(
         removed_output: string[];
         current_output: string[];
       }>("device-list-changed", (event) => {
-        const {
-          added_input,
-          removed_input,
-          added_output,
-          removed_output,
-        } = event.payload;
+        const { added_input, removed_input, added_output, removed_output } =
+          event.payload;
 
         if (
           added_input.length > 0 ||

@@ -7,11 +7,7 @@ import { ToggleSwitch } from "../ui/ToggleSwitch";
 import type { NoiseSuppressionLevel as NoiseSuppressionLevelType } from "../../bindings";
 
 // Valid noise suppression level values for runtime validation
-const VALID_LEVELS: NoiseSuppressionLevelType[] = [
-  "Low",
-  "Medium",
-  "High",
-];
+const VALID_LEVELS: NoiseSuppressionLevelType[] = ["Low", "Medium", "High"];
 
 // Validate and normalize noise suppression level value
 const validateNoiseSuppressionLevel = (

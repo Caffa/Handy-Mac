@@ -157,8 +157,8 @@ impl TranscriptionManager {
                     // While recording, keep the idle timer fresh so the
                     // model is never unloaded mid-session.
                     let is_recording = app_handle_cloned
-                        .try_state::<Arc<Mutex<AudioRecordingManager>>>()
-                        .map_or(false, |a| a.lock().is_recording());
+                        .try_state::<Arc<AudioRecordingManager>>()
+                        .map_or(false, |a| a.is_recording());
                     if is_recording {
                         manager_cloned.touch_activity();
                         continue;

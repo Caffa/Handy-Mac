@@ -17,7 +17,10 @@ import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
 import { commands } from "@/bindings";
 import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
-import { ErrorBoundary, SettingsErrorBoundary } from "./components/ErrorBoundary";
+import {
+  ErrorBoundary,
+  SettingsErrorBoundary,
+} from "./components/ErrorBoundary";
 import { ErrorDialog } from "./components/ui/ErrorDialog";
 
 type OnboardingStep = "accessibility" | "model" | "done";

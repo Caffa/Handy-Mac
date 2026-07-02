@@ -52,7 +52,10 @@ const TagInput: React.FC<TagInputProps> = ({
   };
 
   const handleRemoveTag = (tag: string) => {
-    onTagsUpdate(entryId, currentTags.filter((t) => t !== tag));
+    onTagsUpdate(
+      entryId,
+      currentTags.filter((t) => t !== tag),
+    );
   };
 
   const handleCustomTag = () => {
@@ -178,9 +181,7 @@ export const TranscriptionLab: React.FC = () => {
       const tagsJson = tags.length > 0 ? JSON.stringify(tags) : null;
       await commands.updateHistoryEntryTags(entryId, tagsJson);
       setEntries((prev) =>
-        prev.map((e) =>
-          e.id === entryId ? { ...e, tags: tagsJson } : e,
-        ),
+        prev.map((e) => (e.id === entryId ? { ...e, tags: tagsJson } : e)),
       );
     } catch (e) {
       console.error("Failed to update tags:", e);
@@ -214,22 +215,25 @@ export const TranscriptionLab: React.FC = () => {
 
       if (!filePath) return;
 
-          const exportData = await Promise.all(
-            taggedEntries.map(async (entry) => {
-              const audioPath = await commands.getAudioFilePath(entry.file_name);
-              return {
-                id: entry.id,
-                timestamp: entry.timestamp,
-                transcription: entry.transcription_text,
-                model_id: entry.model_id,
-                tags: parseJsonArray(entry.tags),
-                audio_file: entry.file_name,
-                saved: entry.saved,
-              };
-            }),
-          );
+      const exportData = await Promise.all(
+        taggedEntries.map(async (entry) => {
+          const audioPath = await commands.getAudioFilePath(entry.file_name);
+          return {
+            id: entry.id,
+            timestamp: entry.timestamp,
+            transcription: entry.transcription_text,
+            model_id: entry.model_id,
+            tags: parseJsonArray(entry.tags),
+            audio_file: entry.file_name,
+            saved: entry.saved,
+          };
+        }),
+      );
 
-      await writeFile(filePath, new TextEncoder().encode(JSON.stringify(exportData, null, 2)));
+      await writeFile(
+        filePath,
+        new TextEncoder().encode(JSON.stringify(exportData, null, 2)),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -288,7 +292,7 @@ export const TranscriptionLab: React.FC = () => {
         } catch (restoreError) {
           console.error("Failed to restore original model:", restoreError);
           setError(
-            `Test completed but failed to restore original model "${originalModel}". Please check your settings.`
+            `Test completed but failed to restore original model "${originalModel}". Please check your settings.`,
           );
         }
       }
@@ -392,11 +396,7 @@ export const TranscriptionLab: React.FC = () => {
         >
           {testing ? (
             <>
-              <RotateCcw
-                width={16}
-                height={16}
-                className="animate-spin mr-2"
-              />
+              <RotateCcw width={16} height={16} className="animate-spin mr-2" />
               Testing...
             </>
           ) : (

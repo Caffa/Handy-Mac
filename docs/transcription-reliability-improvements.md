@@ -7,6 +7,7 @@ This document describes the robustness improvements made to Handy's transcriptio
 ## Problem Statement
 
 When using Handy's live captions mode, users experienced:
+
 1. **Lost audio**: If transcription failed, the recording was lost
 2. **Silent failures**: Errors would slip through without proper notification
 3. **Race conditions**: Streaming transcription could conflict with final transcription
@@ -19,10 +20,12 @@ When using Handy's live captions mode, users experienced:
 **What changed**: Audio is now saved to disk BEFORE attempting transcription, guaranteeing no recording is ever lost.
 
 **Files changed**:
+
 - `src-tauri/src/actions.rs`: Modified error handling to always save WAV before transcription
 - `src-tauri/src/managers/transcription_retry.rs`: New module for retry management
 
 **How it works**:
+
 ```
 Before:
   Record → Transcribe → Save (if success)
@@ -36,12 +39,14 @@ After:
 **New module**: `src-tauri/src/managers/transcription_retry.rs`
 
 A persistent queue that tracks failed transcriptions with:
+
 - **Disk persistence**: Queue survives app restarts (stored as JSON in app data dir)
 - **Automatic retry**: Exponential backoff (5s → 10s → 20s → 40s...)
 - **Manual retry**: UI support for retrying specific entries
 - **Fallback models**: Automatically tries backup models if primary fails
 
 **RetryableTranscription fields**:
+
 ```rust
 pub struct RetryableTranscription {
     pub id: String,                          // Unique identifier
@@ -69,17 +74,17 @@ pub enum TranscriptionFailure {
     // Might succeed on retry with different model
     ModelLoadFailure { model_id, error },
     InferenceFailure { model_id, error },
-    
+
     // Unlikely to succeed on retry (engine crash)
     EnginePanic { model_id },
-    
+
     // Resource issues (might succeed after wait)
     Timeout { model_id, duration_secs },
     ResourceUnavailable { resource, error },
-    
+
     // Not an error - no retry needed
     SilentAudio,
-    
+
     // Unknown error - retry with caution
     Unknown { error },
 }
@@ -96,7 +101,7 @@ impl TranscriptionFailure {
             Self::SilentAudio => false,             // ❌ No retry
         }
     }
-    
+
     pub fn should_try_fallback_model(&self) -> bool {
         match self {
             Self::InferenceFailure { .. } => true,
@@ -127,7 +132,7 @@ let fallback_models = {
             }
         }
         if let Some(long_model) = &settings.hybrid_long_audio_model {
-            if long_model != &settings.selected_model 
+            if long_model != &settings.selected_model
                 && !models.contains(long_model) {
                 models.push(long_model.clone());
             }
@@ -156,7 +161,7 @@ retry_queue.add_failed_transcription(
 ```rust
 pub struct TranscriptionManager {
     // ... existing fields ...
-    
+
     /// Flag to cancel streaming transcription when recording stops.
     /// When set, the streaming callback should skip transcription and return early.
     cancel_streaming: Arc<AtomicBool>,
@@ -167,12 +172,12 @@ impl TranscriptionManager {
     pub fn cancel_streaming(&self) {
         self.cancel_streaming.store(true, Ordering::Release);
     }
-    
+
     /// Clear cancellation flag for new recording.
     pub fn clear_streaming_cancel(&self) {
         self.cancel_streaming.store(false, Ordering::Release);
     }
-    
+
     /// Check if cancelled.
     pub fn is_streaming_cancelled(&self) -> bool {
         self.cancel_streaming.load(Ordering::Acquire)
@@ -181,6 +186,7 @@ impl TranscriptionManager {
 ```
 
 **In streaming callback** (audio.rs):
+
 ```rust
 // Check if streaming was cancelled (recording stopped)
 if tm.is_streaming_cancelled() {
@@ -204,6 +210,7 @@ match tm.transcribe(samples) {
 ```
 
 **In actions.rs**:
+
 ```rust
 fn start(&self, app: &AppHandle, ...) {
     // Clear cancellation flag when starting new recording
@@ -236,7 +243,7 @@ if wav_saved {
         None,
         false,
     );
-    
+
     // Track for retry
     if let Ok(entry) = entry_result {
         retry_queue.add_failed_transcription(
@@ -285,7 +292,7 @@ fn start_retry_worker(app: AppHandle) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(60));
-            
+
             if let Some(queue) = app.try_state::<Arc<TranscriptionRetryQueue>>() {
                 if let Some(entry) = queue.get_next_retry() {
                     if entry.is_ready() {
@@ -303,6 +310,7 @@ fn start_retry_worker(app: AppHandle) {
 ### Recovery UI (Medium Priority)
 
 Add a section in History Settings showing failed transcriptions:
+
 - List of pending retries with timestamps
 - Retry button for individual entries
 - "Retry All" button
@@ -311,6 +319,7 @@ Add a section in History Settings showing failed transcriptions:
 ### Audio Validation (Medium Priority)
 
 Enhance audio validation to distinguish:
+
 - **Silent audio**: Detected by max_level < threshold, no retry needed
 - **Corrupted audio**: WAV file doesn't match expected format
 - **Failed transcription**: Audio is valid but model failed
@@ -337,10 +346,12 @@ Enhance audio validation to distinguish:
 ## Files Changed
 
 ### New Files
+
 - `src-tauri/src/managers/transcription_retry.rs` - Retry queue manager
 - `src-tauri/src/commands/transcription_retry.rs` - Tauri commands
 
 ### Modified Files
+
 - `src-tauri/src/lib.rs` - Register retry queue manager and commands
 - `src-tauri/src/managers/mod.rs` - Export retry module
 - `src-tauri/src/commands/mod.rs` - Export retry commands

@@ -156,7 +156,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
               {displayName}
             </h3>
             {showRecommended && model.is_recommended && (
-              <Badge 
+              <Badge
                 variant="primary"
                 title={t("modelSelector.recommendedTooltip")}
               >
@@ -170,10 +170,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
               </Badge>
             )}
             {status === "available" && (
-              <Badge 
-                variant="secondary"
-                title={t("modelSelector.downloaded")}
-              >
+              <Badge variant="secondary" title={t("modelSelector.downloaded")}>
                 {t("modelSelector.downloaded")}
               </Badge>
             )}
@@ -181,7 +178,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
               <Badge variant="secondary">{t("modelSelector.custom")}</Badge>
             )}
             {hybridRole === "short" && (
-              <Badge 
+              <Badge
                 variant="success"
                 title={t("settings.advanced.hybridMode.shortBadgeTooltip")}
               >
@@ -189,7 +186,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
               </Badge>
             )}
             {hybridRole === "long" && (
-              <Badge 
+              <Badge
                 variant="primary"
                 title={t("settings.advanced.hybridMode.longBadgeTooltip")}
               >
@@ -211,13 +208,13 @@ const ModelCard: React.FC<ModelCardProps> = ({
           <div className="hidden sm:flex items-center ms-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <p 
+                <p
                   className="text-xs text-text/60 w-24 text-end cursor-help"
                   title={t("modelSelector.accuracyTooltip")}
                 >
                   {t("onboarding.modelCard.accuracy")}
                 </p>
-                <div 
+                <div
                   className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden cursor-help"
                   title={t("modelSelector.accuracyTooltip")}
                 >
@@ -228,7 +225,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <p 
+                <p
                   className="text-xs text-text/60 w-24 text-end cursor-help"
                   title={t("modelSelector.speedTooltip")}
                 >
@@ -241,7 +238,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
                   </span>
                 ) : (
                   <>
-                    <div 
+                    <div
                       className="w-16 h-1.5 bg-mid-gray/20 rounded-full overflow-hidden cursor-help"
                       title={t("modelSelector.speedTooltip")}
                     >

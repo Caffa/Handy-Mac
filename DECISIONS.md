@@ -3,12 +3,15 @@
 ## 2026-06-25: Spelling Dictionary Source for US-to-British Conversion
 
 ### Status
+
 **Accepted**
 
 ### Context
+
 The Handy app provides US-to-British English spelling conversion for speech-to-text transcriptions. The previous implementation used the `varcon` crate (v1.0.5), which is based on the VARCON project (v2020.12.07).
 
 ### Problem
+
 The varcon-based solution had several issues:
 
 1. **Archaic spellings**: Varcon contains outdated British spellings like "waggon" (modern British uses "wagon") and "instal" (incorrect - both variants use "install")
@@ -23,6 +26,7 @@ The varcon-based solution had several issues:
 4. **Stale upstream**: Last updated in 2020, no recent maintenance
 
 ### Decision
+
 Replace varcon with two swappable dictionary sources:
 
 1. **DWYL Dictionary** (default) - Curated list from [dwyl/english-words](https://github.com/dwyl/english-words)
@@ -41,15 +45,15 @@ Replace varcon with two swappable dictionary sources:
 
 Both dictionaries explicitly exclude:
 
-| US Word | UK Word | Reason |
-|---------|---------|--------|
-| check | cheque | Semantic ambiguity (verify vs payment) |
-| tire | tyre | Semantic ambiguity (weary vs wheel) |
+| US Word | UK Word   | Reason                                   |
+| ------- | --------- | ---------------------------------------- |
+| check   | cheque    | Semantic ambiguity (verify vs payment)   |
+| tire    | tyre      | Semantic ambiguity (weary vs wheel)      |
 | program | programme | Semantic ambiguity (software vs TV show) |
-| catalog | catalogue | Computing context prefers "catalog" |
-| dialog | dialogue | Computing context prefers "dialog" |
-| wagon | waggon | Archaic - modern British uses "wagon" |
-| install | instal | Incorrect - both variants use "install" |
+| catalog | catalogue | Computing context prefers "catalog"      |
+| dialog  | dialogue  | Computing context prefers "dialog"       |
+| wagon   | waggon    | Archaic - modern British uses "wagon"    |
+| install | instal    | Incorrect - both variants use "install"  |
 
 ### Implementation
 
@@ -62,16 +66,19 @@ Both dictionaries explicitly exclude:
 ### Consequences
 
 **Positive:**
+
 - No more manual exclusion list maintenance
 - Archaic spellings excluded by upstream filtering
 - User can switch between dictionaries via settings
 - Smaller codebase (removed ~100 lines of exclusion logic)
 
 **Negative:**
+
 - Less comprehensive than varcon's 10,000+ clusters
 - Need to update dictionaries periodically from upstream
 
 **Neutral:**
+
 - Performance unchanged (both use HashMap lookup)
 - Same conversion logic for plurals/past tense/-ing forms
 
@@ -82,6 +89,7 @@ Both dictionaries explicitly exclude:
 3. **Keep varcon with more exclusions**: Ongoing maintenance, doesn't solve staleness
 
 ### References
+
 - Research document: `/research/us-british-spelling-conversion-solutions.md`
 - DWYL source: https://github.com/dwyl/english-words/blob/master/uk-us-dict.txt
 - CSpell dicts: https://github.com/streetsidesoftware/cspell-dicts

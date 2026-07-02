@@ -19,13 +19,13 @@ The application uses a well-designed error hierarchy in `src-tauri/src/errors.rs
 pub enum AppError {
     #[error("Audio error: {message}")]
     Audio { message: String, #[source] source: anyhow::Error },
-    
+
     #[error("Transcription engine panicked: {0}")]
     TranscriptionPanic(String),
-    
+
     #[error("Timed out waiting for model to load")]
     TranscriptionLoadTimeout,
-    
+
     #[error("Failed to load {engine} model {model_id}: {message}")]
     ModelLoadFailed { engine: String, model_id: String, message: String, #[source] source: anyhow::Error },
     // ... 15+ variants
@@ -33,6 +33,7 @@ pub enum AppError {
 ```
 
 **Key Features:**
+
 - Uses `thiserror` for structured error definitions
 - Implements `From<AppError> for String` for Tauri command compatibility
 - Provides convenience constructors (e.g., `AppError::audio()`, `AppError::model_load()`)
@@ -41,6 +42,7 @@ pub enum AppError {
 ### 1.2 Result Propagation Patterns
 
 **Excellent Pattern - Mutex Poison Recovery:**
+
 ```rust
 // src-tauri/src/managers/audio.rs:25-37
 fn lock_with_log<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
@@ -58,6 +60,7 @@ fn lock_with_log<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
 This pattern is consistently used across the audio manager (1536+ lines), ensuring the app continues even after thread panics.
 
 **Excellent Pattern - RAII Cleanup Guards:**
+
 ```rust
 // src-tauri/src/managers/model.rs:112-132
 struct DownloadCleanup<'a> {
@@ -96,12 +99,12 @@ A sophisticated automatic recovery system for USB audio devices:
 pub fn on_mic_open_failed(&self) -> bool {
     if !self.enabled.load(Ordering::SeqCst) { return false; }
     if self.cycling.load(Ordering::SeqCst) { return false; }
-    
+
     let failures = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
     if failures < self.fail_threshold.load(Ordering::SeqCst) {
         return false; // Below threshold
     }
-    
+
     self.power_cycle_blocking() // Trigger recovery
 }
 ```
@@ -109,6 +112,7 @@ pub fn on_mic_open_failed(&self) -> bool {
 **2. Liveness Monitor (`src-tauri/src/managers/audio.rs:423-533`)**
 
 Background thread that checks microphone stream health every 3 seconds:
+
 - Detects "zombie" streams (open but not producing audio)
 - Automatically restarts dead streams
 - Shows USB-cycling overlay during recovery
@@ -117,6 +121,7 @@ Background thread that checks microphone stream health every 3 seconds:
 **3. Model Loading Recovery (`src-tauri/src/managers/transcription.rs:715-765`)**
 
 Emergency fallback when transcription starts with no loaded model:
+
 ```rust
 // Emergency fallback when engine not loaded
 None => {
@@ -149,6 +154,7 @@ Prevents wasted work when user stops recording mid-stream.
 **5. Engine Panic Recovery (`src-tauri/src/managers/transcription.rs:767-1020`)**
 
 Uses `catch_unwind` to prevent transcription engine crashes from poisoning the mutex:
+
 ```rust
 let result = catch_unwind(AssertUnwindSafe(|| -> Result<...> {
     match &mut engine { /* transcription logic */ }
@@ -180,25 +186,27 @@ match result {
 The Zustand stores (`src/stores/modelStore.ts`, `src/stores/settingsStore.ts`) implement:
 
 - **Optimistic Updates:** UI updates immediately, rolls back on error
+
 ```typescript
 // src/stores/settingsStore.ts:320-348
 updateSetting: async <K extends keyof Settings>(key: K, value: Settings[K]) => {
-    const originalValue = settings?.[key];
-    set((state) => ({ settings: { ...state.settings, [key]: value } }));
-    
-    try {
-        const updater = settingUpdaters[key];
-        if (updater) await updater(value);
-    } catch (error) {
-        // Rollback on error
-        if (settings) {
-            set({ settings: { ...settings, [key]: originalValue } });
-        }
+  const originalValue = settings?.[key];
+  set((state) => ({ settings: { ...state.settings, [key]: value } }));
+
+  try {
+    const updater = settingUpdaters[key];
+    if (updater) await updater(value);
+  } catch (error) {
+    // Rollback on error
+    if (settings) {
+      set({ settings: { ...settings, [key]: originalValue } });
     }
-}
+  }
+};
 ```
 
 - **Event Listener Cleanup:** Prevents memory leaks and duplicate handlers
+
 ```typescript
 _unlistenFns: Array<() => void>;
 destroy: () => void;
@@ -214,6 +222,7 @@ initialize: async () => {
 **Toast Notifications (`src/App.tsx:99-158`)**
 
 Comprehensive error event handling:
+
 ```typescript
 // Microphone permission errors
 listen<RecordingErrorEvent>("recording-error", (event) => {
@@ -263,36 +272,36 @@ No React Error Boundaries found in the codebase. A component crash could potenti
 
 ### 3.1 ✅ Well Handled
 
-| Scenario | Implementation | Location |
-|----------|---------------|----------|
-| **Microphone permission denial** | Detected via error message parsing, emits `recording-error` event with platform-specific instructions | `audio_toolkit/audio/recorder.rs:595-600`, `App.tsx:103-109` |
-| **Audio device disconnection** | Device monitor thread polls every 2s, emits `device-list-changed` event, auto-restarts stream | `managers/audio.rs:546-694` |
-| **Model download failure** | `DownloadCleanup` RAII guard ensures state cleanup, SHA256 verification deletes corrupt files, resume support via Range headers | `managers/model.rs:112-132`, `1060-1281` |
-| **Model loading failure (OOM)** | `catch_unwind` prevents crash, unloads model, emits event, falls back to loading smaller model | `managers/transcription.rs:767-1020` |
-| **Transcription crash/panic** | Engine mutex taken before transcription, on panic model not put back, cleared for reload | `managers/transcription.rs:984-1019` |
-| **File system errors (history)** | SQLite migration system with schema verification, defensive column checks, auto-fix missing columns | `managers/history.rs:183-366` |
-| **Network failures (download)** | Exponential backoff via resume support, timeout handling, progress events, cancellation support | `managers/model.rs:1133-1281` |
+| Scenario                         | Implementation                                                                                                                  | Location                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| **Microphone permission denial** | Detected via error message parsing, emits `recording-error` event with platform-specific instructions                           | `audio_toolkit/audio/recorder.rs:595-600`, `App.tsx:103-109` |
+| **Audio device disconnection**   | Device monitor thread polls every 2s, emits `device-list-changed` event, auto-restarts stream                                   | `managers/audio.rs:546-694`                                  |
+| **Model download failure**       | `DownloadCleanup` RAII guard ensures state cleanup, SHA256 verification deletes corrupt files, resume support via Range headers | `managers/model.rs:112-132`, `1060-1281`                     |
+| **Model loading failure (OOM)**  | `catch_unwind` prevents crash, unloads model, emits event, falls back to loading smaller model                                  | `managers/transcription.rs:767-1020`                         |
+| **Transcription crash/panic**    | Engine mutex taken before transcription, on panic model not put back, cleared for reload                                        | `managers/transcription.rs:984-1019`                         |
+| **File system errors (history)** | SQLite migration system with schema verification, defensive column checks, auto-fix missing columns                             | `managers/history.rs:183-366`                                |
+| **Network failures (download)**  | Exponential backoff via resume support, timeout handling, progress events, cancellation support                                 | `managers/model.rs:1133-1281`                                |
 
 ### 3.2 ⚠️ Partially Handled
 
-| Scenario | Current Handling | Gap |
-|----------|-----------------|-----|
-| **Bluetooth audio dropout** | BT keep-alive keeps mic stream open | No detection of actual BT disconnections, relies on VAD timeout |
-| **GPU acceleration failure** | Falls back to CPU in `transcribe-rs` | No user notification about fallback, could surprise user with slow performance |
-| **Settings corruption** | Defaults applied for missing values | No validation of corrupted settings file, could cause undefined behavior |
-| **History database corruption** | Migrations + schema verification | If DB is completely unreadable, app may fail to start |
-| **USB watchdog uhubctl missing** | Attempts auto-install via Homebrew | If install fails, watchdog silently disabled, user not notified |
+| Scenario                         | Current Handling                     | Gap                                                                            |
+| -------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------ |
+| **Bluetooth audio dropout**      | BT keep-alive keeps mic stream open  | No detection of actual BT disconnections, relies on VAD timeout                |
+| **GPU acceleration failure**     | Falls back to CPU in `transcribe-rs` | No user notification about fallback, could surprise user with slow performance |
+| **Settings corruption**          | Defaults applied for missing values  | No validation of corrupted settings file, could cause undefined behavior       |
+| **History database corruption**  | Migrations + schema verification     | If DB is completely unreadable, app may fail to start                          |
+| **USB watchdog uhubctl missing** | Attempts auto-install via Homebrew   | If install fails, watchdog silently disabled, user not notified                |
 
 ### 3.3 ❌ Missing or Needs Improvement
 
-| Scenario | Risk | Recommendation |
-|----------|------|----------------|
-| **React component crashes** | UI could become unresponsive | Add Error Boundaries around major sections |
-| **Partial WAV file write** | Corrupt audio files in history | Add checksums or write-then-rename pattern |
-| **Model file corruption** | SHA256 only at download time | Periodic re-verification or on-load check |
-| **Memory exhaustion** | Large model files + concurrent ops | Add memory pressure detection |
-| **Deadlock in transcription** | 30s spin-wait could hang forever | Add absolute timeout with cancellation |
-| **VAD model corruption** | Silero VAD file could be damaged | Add VAD model integrity check at startup |
+| Scenario                      | Risk                               | Recommendation                             |
+| ----------------------------- | ---------------------------------- | ------------------------------------------ |
+| **React component crashes**   | UI could become unresponsive       | Add Error Boundaries around major sections |
+| **Partial WAV file write**    | Corrupt audio files in history     | Add checksums or write-then-rename pattern |
+| **Model file corruption**     | SHA256 only at download time       | Periodic re-verification or on-load check  |
+| **Memory exhaustion**         | Large model files + concurrent ops | Add memory pressure detection              |
+| **Deadlock in transcription** | 30s spin-wait could hang forever   | Add absolute timeout with cancellation     |
+| **VAD model corruption**      | Silero VAD file could be damaged   | Add VAD model integrity check at startup   |
 
 ---
 
@@ -300,12 +309,12 @@ No React Error Boundaries found in the codebase. A component crash could potenti
 
 ### 4.1 Automatic Retry Logic
 
-| Component | Strategy | Location |
-|-----------|----------|----------|
-| **Microphone stream open** | USB watchdog cycles port after 2 failures | `usb_watchdog.rs:109-140` |
-| **Model download** | Resume from byte offset via Range headers | `model.rs:1092-1151` |
-| **Transcription (emergency)** | Fallback to hybrid mode alternate model | `transcription.rs:728-740` |
-| **Liveness check** | Restart stream if no audio for 3s | `audio.rs:465-527` |
+| Component                     | Strategy                                  | Location                   |
+| ----------------------------- | ----------------------------------------- | -------------------------- |
+| **Microphone stream open**    | USB watchdog cycles port after 2 failures | `usb_watchdog.rs:109-140`  |
+| **Model download**            | Resume from byte offset via Range headers | `model.rs:1092-1151`       |
+| **Transcription (emergency)** | Fallback to hybrid mode alternate model   | `transcription.rs:728-740` |
+| **Liveness check**            | Restart stream if no audio for 3s         | `audio.rs:465-527`         |
 
 ### 4.2 Fallback Behaviors
 
@@ -335,6 +344,7 @@ Audio Device Selection:
 ### 4.4 State Recovery
 
 **On App Startup:**
+
 1. Clean up partial downloads (`.partial` files)
 2. Clean up interrupted extractions (`.extracting` directories)
 3. Verify database schema, auto-fix missing columns
@@ -342,6 +352,7 @@ Audio Device Selection:
 5. Auto-select first available model if none selected
 
 **After USB Power Cycle:**
+
 1. Wait for device re-enumeration (5s timeout, 250ms polling)
 2. Restart microphone stream
 3. Show recovery overlay during process
@@ -410,10 +421,10 @@ fn update_download_status(&self) -> Result<()> {
 
 ```typescript
 if (result.status === "ok") {
-    // ... set settings
+  // ... set settings
 } else {
-    console.error("Failed to load settings:", result.error);
-    set({ isLoading: false }); // Error not surfaced to user
+  console.error("Failed to load settings:", result.error);
+  set({ isLoading: false }); // Error not surfaced to user
 }
 ```
 
@@ -428,6 +439,7 @@ if (result.status === "ok") {
 ### High Priority
 
 1. **Add React Error Boundaries**
+
    ```typescript
    // Wrap major sections
    <ErrorBoundary fallback={<ErrorFallback />}>
@@ -483,15 +495,15 @@ if (result.status === "ok") {
 
 ## 7. Overall Assessment
 
-| Category | Score | Notes |
-|----------|-------|-------|
-| **Error Type Architecture** | ⭐⭐⭐⭐⭐ | Excellent use of `thiserror`, structured variants, clear separation |
-| **Recovery Mechanisms** | ⭐⭐⭐⭐⭐ | USB watchdog, liveness monitor, panic recovery are sophisticated |
-| **Resource Cleanup** | ⭐⭐⭐⭐⭐ | RAII guards consistently used, no leak patterns seen |
-| **Frontend Error Handling** | ⭐⭐⭐⭐ | Good state management, toast notifications, missing error boundaries |
-| **User Feedback** | ⭐⭐⭐⭐ | i18n support, platform-specific messages, could surface more failures |
-| **Edge Case Coverage** | ⭐⭐⭐⭐ | Most scenarios handled, some missing as noted in Section 3.3 |
-| **Testing** | ⭐⭐⭐ | Some unit tests for error detection, could use more integration tests |
+| Category                    | Score      | Notes                                                                 |
+| --------------------------- | ---------- | --------------------------------------------------------------------- |
+| **Error Type Architecture** | ⭐⭐⭐⭐⭐ | Excellent use of `thiserror`, structured variants, clear separation   |
+| **Recovery Mechanisms**     | ⭐⭐⭐⭐⭐ | USB watchdog, liveness monitor, panic recovery are sophisticated      |
+| **Resource Cleanup**        | ⭐⭐⭐⭐⭐ | RAII guards consistently used, no leak patterns seen                  |
+| **Frontend Error Handling** | ⭐⭐⭐⭐   | Good state management, toast notifications, missing error boundaries  |
+| **User Feedback**           | ⭐⭐⭐⭐   | i18n support, platform-specific messages, could surface more failures |
+| **Edge Case Coverage**      | ⭐⭐⭐⭐   | Most scenarios handled, some missing as noted in Section 3.3          |
+| **Testing**                 | ⭐⭐⭐     | Some unit tests for error detection, could use more integration tests |
 
 **Overall: 4.5/5** - Production-ready error handling with room for minor improvements.
 

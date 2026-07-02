@@ -107,13 +107,12 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         // If the device isn't ready in 2s, the watchdog power cycle will handle it.
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        let recording_manager = ah.try_state::<Arc<parking_lot::Mutex<crate::managers::audio::AudioRecordingManager>>>();
+        let recording_manager = ah.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>();
 
         match recording_manager {
             Some(rm) => {
-                let rm_guard = rm.lock();
                 // Check stream health using the public method
-                let (is_open, is_alive) = rm_guard.check_stream_health();
+                let (is_open, is_alive) = rm.check_stream_health();
                 
                 if !is_open {
                     info!("Wake recovery: stream not open, will open on next recording");
@@ -128,7 +127,7 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
                 }
 
                 warn!("Wake recovery: stream is dead (zombie), triggering USB power cycle");
-                let wd = &rm_guard.usb_watchdog;
+                let wd = &rm.usb_watchdog;
                 info!("Starting post-wake USB power cycle sequence");
                 // force_power_cycle already handles restart_microphone_if_needed
                 if !wd.force_power_cycle() {

@@ -42,8 +42,12 @@ export const HybridMode: React.FC<HybridModeProps> = React.memo(
             {hasAssignments ? (
               <div className="mb-4 px-3 py-2 rounded-lg bg-logo-primary/5 border border-logo-primary/10 text-xs text-text/70">
                 {t("settings.advanced.hybridMode.currentAssignment", {
-                  shortModel: shortModelName || t("settings.advanced.hybridMode.modelPlaceholder"),
-                  longModel: longModelName || t("settings.advanced.hybridMode.modelPlaceholder"),
+                  shortModel:
+                    shortModelName ||
+                    t("settings.advanced.hybridMode.modelPlaceholder"),
+                  longModel:
+                    longModelName ||
+                    t("settings.advanced.hybridMode.modelPlaceholder"),
                 })}
               </div>
             ) : (

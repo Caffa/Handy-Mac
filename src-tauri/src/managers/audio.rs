@@ -497,15 +497,13 @@ impl AudioRecordingManager {
                     usb_watchdog.on_stream_alive_check(false);
 
                     // Restart the stream via the app handle
-                    if let Some(rm) = app_handle.try_state::<Arc<Mutex<AudioRecordingManager>>>() {
-                        let rm_guard = rm.lock();
-                        
+                    if let Some(rm) = app_handle.try_state::<Arc<AudioRecordingManager>>() {
                         // Check if user was actively recording before showing overlay
-                        let was_recording = rm_guard.is_recording();
+                        let was_recording = rm.is_recording();
 
                         // Stop the current stream
-                        if rm_guard.is_open.load(Ordering::Acquire) {
-                            rm_guard.stop_microphone_stream();
+                        if rm.is_open.load(Ordering::Acquire) {
+                            rm.stop_microphone_stream();
                         }
 
                         // Only show USB-cycling overlay if user was actively recording.
@@ -527,7 +525,7 @@ impl AudioRecordingManager {
                         }
 
                         // Try to restart
-                        if let Err(e) = rm_guard.start_microphone_stream() {
+                        if let Err(e) = rm.start_microphone_stream() {
                             error!("Liveness monitor failed to restart stream: {}", e);
                             
                             if was_recording {
@@ -780,21 +778,20 @@ impl AudioRecordingManager {
         let bt_keep_alive = self.bt_keep_alive.clone();
         std::thread::spawn(move || {
             std::thread::sleep(STREAM_IDLE_TIMEOUT);
-            let Some(rm) = app.try_state::<Arc<Mutex<AudioRecordingManager>>>() else {
+            let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
                 debug!("AudioRecordingManager not available for lazy close");
                 return;
             };
-            let rm_guard = rm.lock();
             // Hold state lock across the check AND close to serialize against
             // try_start_recording, preventing a race where the stream is closed
             // under an active recording.
-            let state = rm_guard.state.lock();
+            let state = rm.state.lock();
             // Never close the stream if BT keep-alive is active
             if bt_keep_alive.load(Ordering::Acquire) {
                 debug!("Skipping lazy close: BT keep-alive is active");
                 return;
             }
-            if rm_guard.close_generation.load(Ordering::SeqCst) == gen
+            if rm.close_generation.load(Ordering::SeqCst) == gen
                 && matches!(*state, RecordingState::Idle)
             {
                 // stop_microphone_stream does not acquire the state lock,
@@ -803,7 +800,7 @@ impl AudioRecordingManager {
                     "Closing idle microphone stream after {:?}",
                     STREAM_IDLE_TIMEOUT
                 );
-                rm_guard.stop_microphone_stream();
+                rm.stop_microphone_stream();
             }
         });
     }

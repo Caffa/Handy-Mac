@@ -25,7 +25,10 @@ class ErrorBoundaryClass extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     // Log the error to console for debugging
-    console.error(`ErrorBoundary caught an error${this.props.section ? ` in ${this.props.section}` : ""}:`, error);
+    console.error(
+      `ErrorBoundary caught an error${this.props.section ? ` in ${this.props.section}` : ""}:`,
+      error,
+    );
     console.error("Component stack:", errorInfo.componentStack);
 
     // Call the optional error handler
@@ -158,11 +161,7 @@ export function SettingsErrorBoundary({
   children: ReactNode;
   section: string;
 }): ReactNode {
-  return (
-    <ErrorBoundary section={section}>
-      {children}
-    </ErrorBoundary>
-  );
+  return <ErrorBoundary section={section}>{children}</ErrorBoundary>;
 }
 
 export default ErrorBoundary;
