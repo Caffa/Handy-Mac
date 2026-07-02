@@ -472,8 +472,17 @@ impl ShortcutAction for TranscribeAction {
             return;
         };
         
-        // Clear any previous streaming cancellation flag when starting a new recording
-        tm.lock().clear_streaming_cancel();
+        // Clear any previous streaming cancellation flag when starting a new recording.
+        // Use the Arc<AtomicBool> directly to avoid blocking on the TM lock.
+        // The streaming callback may be holding the TM lock during transcription (seconds),
+        // and we want immediate feedback when starting a new recording.
+        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
+            cancel_flag.store(false, Ordering::Release);
+            debug!("Cleared streaming cancel flag for new recording");
+        } else {
+            // Fallback to TM lock if Arc<AtomicBool> not available (shouldn't happen)
+            tm.lock().clear_streaming_cancel();
+        }
 
         // Load ASR model and VAD model in parallel
         tm.lock().initiate_model_load();
@@ -1051,8 +1060,17 @@ impl ShortcutAction for TranscribeWithRouterAction {
             return;
         };
         
-        // Clear any previous streaming cancellation flag when starting a new recording
-        tm.lock().clear_streaming_cancel();
+        // Clear any previous streaming cancellation flag when starting a new recording.
+        // Use the Arc<AtomicBool> directly to avoid blocking on the TM lock.
+        // The streaming callback may be holding the TM lock during transcription (seconds),
+        // and we want immediate feedback when starting a new recording.
+        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
+            cancel_flag.store(false, Ordering::Release);
+            debug!("Cleared streaming cancel flag for new router recording");
+        } else {
+            // Fallback to TM lock if Arc<AtomicBool> not available (shouldn't happen)
+            tm.lock().clear_streaming_cancel();
+        }
         
         tm.lock().initiate_model_load();
         let rm_clone = Arc::clone(&rm);

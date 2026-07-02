@@ -1,5 +1,4 @@
 use crate::managers::audio::AudioRecordingManager;
-use crate::managers::transcription::TranscriptionManager;
 use crate::shortcut;
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
@@ -64,10 +63,17 @@ pub fn cancel_current_operation(app: &AppHandle) {
     change_tray_icon(app, crate::tray::TrayIconState::Idle);
     force_hide_recording_overlay(app);
 
-    // Unload model if immediate unload is enabled
-    if let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-        tm.lock().maybe_unload_immediately("cancellation");
-    }
+    // NOTE: We intentionally do NOT call tm.lock().maybe_unload_immediately() here.
+    // The streaming transcription callback holds the TM lock for seconds during GPU work.
+    // If we try to acquire the TM lock here, the cancel hotkey would block for the
+    // entire transcription duration, making the app feel frozen.
+    // 
+    // The model will be unloaded by the idle watcher when appropriate, or on the
+    // next transcription start if memory pressure demands it. Model unloading is
+    // not time-critical - immediate user feedback is.
+    //
+    // See: audio.rs streaming callback acquires tm.lock() for GPU transcription,
+    // which blocks any code path that needs the TM lock (including this cancel path).
 
     // Notify coordinator so it can keep lifecycle state coherent.
     if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
