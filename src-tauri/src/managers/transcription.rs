@@ -532,8 +532,17 @@ impl TranscriptionManager {
             // LoadingGuard's Drop impl will reset is_loading and notify waiters
             let _guard = guard;
             let settings = get_settings(&self_clone.app_handle);
+            info!(
+                "[Live Captions] Starting model load for streaming: model_id={}",
+                settings.selected_model
+            );
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
-                error!("Failed to load model: {}", e);
+                error!("[Live Captions] Failed to load model for streaming: {}", e);
+            } else {
+                info!(
+                    "[Live Captions] Model ready for streaming transcription: model_id={}",
+                    settings.selected_model
+                );
             }
         });
     }

@@ -205,13 +205,18 @@ fn create_audio_recorder(
         // Arc<AtomicBool> directly, we can check cancellation without any lock.
         // Use try_state to avoid panicking if TranscriptionManager isn't initialized yet.
         let cancel_flag = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-            Some(tm_state) => tm_state.lock().streaming_cancel_flag(),
+            Some(tm_state) => {
+                let flag = tm_state.lock().streaming_cancel_flag();
+                info!("[Live Captions] Streaming callback: TranscriptionManager available, cancel flag acquired");
+                flag
+            }
             None => {
-                info!("TranscriptionManager not available yet, skipping streaming callback setup");
+                warn!("[Live Captions] TranscriptionManager not available yet — live captions will NOT work until it initializes");
                 return Ok(recorder);
             }
         };
 
+        info!("[Live Captions] Setting up streaming callback for live captions");
         recorder.with_streaming_callback({
             let app_handle = app_handle.clone();
             let cancel_flag = cancel_flag.clone();
@@ -240,7 +245,7 @@ fn create_audio_recorder(
                     let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
                         Some(tm) => tm,
                         None => {
-                            debug!("TranscriptionManager not available for streaming");
+                            warn!("[Live Captions] TranscriptionManager not available for streaming callback — cannot transcribe");
                             return;
                         }
                     };
@@ -249,6 +254,11 @@ fn create_audio_recorder(
                     let transcription_result = tm.lock().transcribe(samples);
                     match transcription_result {
                         Ok(mut result) if !result.text.is_empty() => {
+                            info!(
+                                "[Live Captions] Streaming transcription succeeded: text_len={}, segments={}",
+                                result.text.len(),
+                                result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
+                            );
                             // Check again after transcription in case it was cancelled mid-work
                             // Using the Arc<AtomicBool> to avoid lock contention
                             if cancel_flag.load(Ordering::Acquire) {
@@ -298,15 +308,21 @@ fn create_audio_recorder(
                             }
 
                             // Emit partial transcription event with segments for frontend merge
+                            info!(
+                                "[Live Captions] Emitting partial-transcription event: text_len={}, segments={}",
+                                result.text.len(),
+                                result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
+                            );
                             if let Err(e) = app_handle.emit("partial-transcription", &result) {
                                 warn!("Failed to emit partial-transcription event: {}", e);
                             }
                         }
                         Ok(_) => {
                             // Empty transcription - skip
+                            debug!("[Live Captions] Streaming transcription returned empty text");
                         }
                         Err(e) => {
-                            debug!("Streaming transcription failed: {}", e);
+                            warn!("[Live Captions] Streaming transcription failed: {}", e);
                         }
                     }
                 });

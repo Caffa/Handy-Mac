@@ -148,7 +148,14 @@ function filterStreamingText(text: string): string {
       (fw) =>
         lowerText === fw || lowerText === `${fw}.` || lowerText === `${fw},`,
     );
-    if (isFiller) return "";
+    if (isFiller) {
+      console.log("[Live Captions] Text before filter (single word filler):", {
+        text: text.substring(0, 100),
+        length: text.length,
+        filteredOut: true,
+      });
+      return "";
+    }
     return trimmed;
   }
 
@@ -162,9 +169,18 @@ function filterStreamingText(text: string): string {
       secondWord === "and" ||
       secondWord === "but";
 
-    if (isContinuation && words.length === 2) return "";
-    if (isContinuation) return words.slice(1).join(" ");
-    return words.slice(1).join(" ");
+    // Determine the filtered result (same logic as before)
+    const filteredText = (() => {
+      if (isContinuation && words.length === 2) return "";
+      if (isContinuation) return words.slice(1).join(" ");
+      return words.slice(1).join(" ");
+    })();
+    console.log("[Live Captions] Text after filter:", {
+      originalText: text.substring(0, 100),
+      filteredText: filteredText.substring(0, 100),
+      wasFiltered: text !== filteredText,
+    });
+    return filteredText;
   }
 
   return trimmed;
@@ -375,10 +391,10 @@ const RecordingOverlay: React.FC = () => {
           setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
           const captionsEnabled = result.data.live_captions_enabled ?? true;
           setLiveCaptionsEnabled(captionsEnabled);
-          console.log(
-            "[Live Captions] Settings fetched — live_captions_enabled:",
-            captionsEnabled,
-          );
+          console.log("[Live Captions] Settings loaded:", {
+            enabled: captionsEnabled,
+            selectedModel: result.data.selected_model,
+          });
         }
       } catch {
         // Silently ignore — indicator simply won't show
@@ -487,6 +503,40 @@ const RecordingOverlay: React.FC = () => {
   useEffect(() => {
     editedTextRef.current = editedText;
   }, [editedText]);
+
+  // Debug log why captions might not show — helps diagnose live captions issues
+  useEffect(() => {
+    if (liveCaptionsEnabled && state === "recording") {
+      console.log("[Live Captions] Render check:", {
+        hasStreamingText: !!streamingText,
+        textLength: streamingText.length,
+        textPreview: streamingText.substring(0, 50),
+        isRecording: state === "recording",
+        liveCaptionsEnabled,
+        micDeadWarning,
+        lowAudioWarning,
+        shouldRender: !!(
+          streamingText.trim() &&
+          state === "recording" &&
+          liveCaptionsEnabled
+        ),
+      });
+    }
+  }, [streamingText, state, liveCaptionsEnabled, micDeadWarning, lowAudioWarning]);
+
+  // Detect if backend didn't set up streaming — warn after 3 seconds with no transcription
+  useEffect(() => {
+    if (state === "recording" && liveCaptionsEnabled) {
+      const timeout = setTimeout(() => {
+        if (!streamingText) {
+          console.warn(
+            "[Live Captions] No transcription received after 3 seconds — check backend logs for initialization issues",
+          );
+        }
+      }, 3000);
+      return () => clearTimeout(timeout);
+    }
+  }, [state, liveCaptionsEnabled]);
 
   // Countdown timer for routing confirmation
   useEffect(() => {
@@ -933,12 +983,13 @@ const RecordingOverlay: React.FC = () => {
           (event) => {
             const { text, segments } = event.payload;
             console.log(
-              "[Live Captions] Event received — text:",
-              JSON.stringify(text),
-              "| segments:",
-              segments?.length ?? 0,
-              "| liveCaptionsEnabled:",
-              liveCaptionsEnabled,
+              "[Live Captions] Received partial-transcription event:",
+              {
+                hasSegments: !!segments,
+                segmentCount: segments?.length || 0,
+                text: text?.substring(0, 100),
+                liveCaptionsEnabled,
+              },
             );
 
             if (segments && segments.length > 0) {

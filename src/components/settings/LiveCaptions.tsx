@@ -14,10 +14,15 @@ export const LiveCaptions: React.FC<LiveCaptionsProps> = React.memo(
     const { getSetting, updateSetting, isUpdating } = useSettings();
     const enabled = getSetting("live_captions_enabled") ?? true;
 
+    const handleChange = (checked: boolean) => {
+      console.log("[Live Captions] User toggled live captions in settings:", checked);
+      updateSetting("live_captions_enabled", checked);
+    };
+
     return (
       <ToggleSwitch
         checked={enabled}
-        onChange={(checked) => updateSetting("live_captions_enabled", checked)}
+        onChange={handleChange}
         isUpdating={isUpdating("live_captions_enabled")}
         label={t("settings.advanced.liveCaptions.label")}
         description={t("settings.advanced.liveCaptions.description")}
