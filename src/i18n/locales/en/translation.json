@@ -834,6 +834,8 @@
     "pasteFailedTitle": "Failed to Paste Text",
     "pasteFailed": "Text could not be pasted into the active application. Try clicking a text field first, or change the Paste Method in Advanced → Output Settings.",
     "pasteFailedDetail": "If this keeps happening, try using 'Clipboard' paste method instead of 'Direct' typing.",
+    "pasteFailedClipboardTitle": "Paste failed — copied to clipboard",
+    "pasteFailedClipboard": "Click in a text field and paste manually (Cmd+V / Ctrl+V).",
     "componentErrorTitle": "Something went wrong",
     "componentErrorDescription": "An unexpected error occurred. The app will continue running, but this section may not work correctly.",
     "viewDetails": "View error details",

@@ -142,6 +142,19 @@ function App() {
     };
   }, [t]);
 
+  // Listen for paste failures where clipboard fallback succeeded.
+  // Text was copied to clipboard — user just needs to paste manually.
+  useEffect(() => {
+    const unlisten = listen<string>("paste-error-clipboard-fallback", () => {
+      toast.warning(t("errors.pasteFailedClipboardTitle"), {
+        description: t("errors.pasteFailedClipboard"),
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [t]);
+
   // Listen for model loading failures and show a toast
   useEffect(() => {
     const unlisten = listen<ModelStateEvent>("model-state-changed", (event) => {

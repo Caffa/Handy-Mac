@@ -12,6 +12,30 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 #[cfg(target_os = "linux")]
 use crate::utils::{is_kde_wayland, is_wayland};
 
+/// Writes text to the system clipboard without pasting or restoring the previous content.
+/// Used as a fallback when the paste keystroke fails, so the user can manually paste.
+pub fn write_to_clipboard(text: &str, app_handle: &AppHandle) -> Result<(), String> {
+    let clipboard = app_handle.clipboard();
+
+    // On Wayland, prefer wl-copy for better compatibility
+    #[cfg(target_os = "linux")]
+    let write_result = if is_wayland() && is_wl_copy_available() {
+        info!("Using wl-copy for clipboard write on Wayland (fallback)");
+        write_clipboard_via_wl_copy(text)
+    } else {
+        clipboard
+            .write_text(text)
+            .map_err(|e| format!("Failed to write to clipboard: {}", e))
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let write_result = clipboard
+        .write_text(text)
+        .map_err(|e| format!("Failed to write to clipboard: {}", e));
+
+    write_result
+}
+
 /// Pastes text using the clipboard: saves current content, writes text, sends paste keystroke, restores clipboard.
 fn paste_via_clipboard(
     enigo: &mut Enigo,
