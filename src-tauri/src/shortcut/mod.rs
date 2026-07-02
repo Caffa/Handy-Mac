@@ -14,9 +14,11 @@ pub mod handy_keys;
 mod tauri_impl;
 pub mod conflicts;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
+use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
@@ -30,6 +32,7 @@ use crate::settings::{
     APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
+use crate::managers::transcription::TranscriptionManager;
 
 // Note: Commands are accessed via shortcut::handy_keys:: in lib.rs
 
@@ -1420,7 +1423,18 @@ pub fn change_live_captions_enabled_setting(
 ) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.live_captions_enabled = enabled;
-    settings::write_settings_safe(&app, settings);
+    settings::write_settings_safe(&app, settings.clone());
+
+    // Pre-warm the model when live captions is enabled so it's ready
+    // for the first recording. Without this, the model loads lazily
+    // on first hotkey press, causing a delay before live captions appear.
+    if enabled {
+        if let Some(transcription_manager) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
+            transcription_manager.lock().initiate_model_load();
+            debug!("Live captions enabled — pre-warming transcription model");
+        }
+    }
+
     Ok(())
 }
 

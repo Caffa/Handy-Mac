@@ -164,6 +164,15 @@ impl TranscriptionManager {
                         continue;
                     }
 
+                    // When live captions is enabled, keep the model loaded
+                    // so it's ready for the first recording. This ensures
+                    // immediate transcription when the user starts speaking.
+                    if settings.live_captions_enabled {
+                        debug!("Live captions enabled — keeping model loaded");
+                        manager_cloned.touch_activity();
+                        continue;
+                    }
+
                     if let Some(limit_seconds) = timeout.to_seconds() {
                         let last = manager_cloned.last_activity.load(Ordering::Relaxed);
                         let now_ms = TranscriptionManager::now_ms();
