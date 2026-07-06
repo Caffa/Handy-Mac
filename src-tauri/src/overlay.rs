@@ -2,7 +2,7 @@ use crate::input;
 use crate::settings;
 use crate::settings::OverlayPosition;
 use crate::transcription_coordinator::{emit_app_state, AppState};
-use log::debug;
+use log::{debug, info};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
@@ -841,6 +841,7 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
 /// will be superseded by the next `AppState::Recording` when the new
 /// recording's state is emitted.
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
+    info!("hide_recording_overlay: called");
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {

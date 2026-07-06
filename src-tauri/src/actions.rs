@@ -1540,12 +1540,20 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         // 2. RecordingOverlay.tsx router-result timeout (lines 414-441): checks state
                                         //    before hiding after 5-second result display timeout.
                                         //
+                                        // ADDITIONAL GUARD: The hide_recording_overlay() function also checks
+                                        // OVERLAY_SESSION to detect if a new recording started between the
+                                        // is_active_use() check and the actual window.hide() call.
+                                        //
                                         // See learning-log.md "Router Filing Race Condition — Overlay Dismissal Bug"
                                         // for full documentation.
                                         // ============================================================================
                                         let is_active = ah_for_router
                                             .try_state::<Arc<TranscriptionCoordinator>>()
                                             .map_or(false, |coord| coord.is_active_use());
+                                        info!(
+                                            "Router completion: is_active_use={}, will_hide={}",
+                                            is_active, !is_active
+                                        );
                                         if !is_active {
                                             utils::hide_recording_overlay(&ah_for_router);
                                             change_tray_icon(&ah_for_router, TrayIconState::Idle);
@@ -1597,12 +1605,16 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         );
 
                                         // ── Clean up overlay after routing fails ──
-                                        // Same BUGFIX (2026-06-15) as success case above — see comment there.
+                                        // Same BUGFIX (2026-06-15) as success case above.
                                         // Don't hide overlay if another transcription is active.
                                         // The frontend also guards against hide-overlay event races.
                                         let is_other_active = ah_for_router
                                             .try_state::<Arc<TranscriptionCoordinator>>()
                                             .map_or(false, |coord| coord.is_active_use());
+                                        info!(
+                                            "Router failure: is_active_use={}, will_hide={}",
+                                            is_other_active, !is_other_active
+                                        );
                                         if !is_other_active {
                                             utils::hide_recording_overlay(&ah_for_router);
                                             change_tray_icon(&ah_for_router, TrayIconState::Idle);
