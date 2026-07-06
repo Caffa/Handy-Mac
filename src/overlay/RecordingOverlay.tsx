@@ -504,25 +504,24 @@ const RecordingOverlay: React.FC = () => {
     editedTextRef.current = editedText;
   }, [editedText]);
 
-  // Debug log why captions might not show — helps diagnose live captions issues
+  // Debug effect for live captions visibility
+  // Logs specific reasons why captions might not show, making it easy to
+  // diagnose which condition is failing in production.
   useEffect(() => {
-    if (liveCaptionsEnabled && state === "recording") {
-      console.log("[Live Captions] Render check:", {
-        hasStreamingText: !!streamingText,
-        textLength: streamingText.length,
-        textPreview: streamingText.substring(0, 50),
-        isRecording: state === "recording",
-        liveCaptionsEnabled,
-        micDeadWarning,
-        lowAudioWarning,
-        shouldRender: !!(
-          streamingText.trim() &&
-          state === "recording" &&
-          liveCaptionsEnabled
-        ),
-      });
+    if (state === "recording" && isVisible) {
+      const reasons: string[] = [];
+      if (!liveCaptionsEnabled) reasons.push("liveCaptionsEnabled=false");
+      if (micDeadWarning) reasons.push("micDeadWarning=true");
+      if (lowAudioWarning) reasons.push("lowAudioWarning=true");
+      if (!streamingText.trim()) reasons.push(`streamingText="${streamingText.substring(0, 50)}..."`);
+
+      if (reasons.length > 0) {
+        console.log("[Live Captions] Not showing:", reasons.join(", "));
+      } else {
+        console.log("[Live Captions] ✓ Showing:", streamingText.substring(0, 50));
+      }
     }
-  }, [streamingText, state, liveCaptionsEnabled, micDeadWarning, lowAudioWarning]);
+  }, [state, isVisible, liveCaptionsEnabled, micDeadWarning, lowAudioWarning, streamingText]);
 
   // Detect if backend didn't set up streaming — warn after 3 seconds with no transcription
   useEffect(() => {
@@ -564,6 +563,7 @@ const RecordingOverlay: React.FC = () => {
   // Focus textarea when entering edit mode
   useEffect(() => {
     if (isEditing && textareaRef.current) {
+      console.log("[Edit Mode] Focusing textarea");
       textareaRef.current.focus();
       textareaRef.current.setSelectionRange(
         textareaRef.current.value.length,
@@ -982,15 +982,15 @@ const RecordingOverlay: React.FC = () => {
           "partial-transcription",
           (event) => {
             const { text, segments } = event.payload;
-            console.log(
-              "[Live Captions] Received partial-transcription event:",
-              {
-                hasSegments: !!segments,
-                segmentCount: segments?.length || 0,
-                text: text?.substring(0, 100),
-                liveCaptionsEnabled,
-              },
-            );
+            console.log("[Live Captions] Event received:", {
+              hasText: !!text,
+              textLength: text?.length || 0,
+              hasSegments: !!segments,
+              segmentCount: segments?.length || 0,
+              liveCaptionsEnabled,
+              currentState: state,
+              isVisible,
+            });
 
             if (segments && segments.length > 0) {
               // Merge new segments with accumulated segments by timestamp.
@@ -1328,6 +1328,13 @@ const RecordingOverlay: React.FC = () => {
                 className="transcription-edit"
                 value={editedText}
                 onChange={(e) => setEditedText(e.target.value)}
+                onKeyDown={(e) => e.stopPropagation()}
+                onBlur={() => {
+                  // Focus lock: refocus if still in editing mode
+                  if (isEditing) {
+                    setTimeout(() => textareaRef.current?.focus(), 10);
+                  }
+                }}
                 placeholder={t("overlay.editPlaceholder", "Edit your text...")}
                 dir={direction}
               />
