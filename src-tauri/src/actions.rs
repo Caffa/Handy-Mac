@@ -1389,6 +1389,13 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             let _ = overlay_window.emit("transcription-preview", &transcription_text);
                         }
 
+                        // ── Set coordinator state to Confirming ──
+                        // This ensures the backend's AppState reflects the correct state
+                        // for the frontend's useAppState hook.
+                        if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
+                            coordinator.set_confirming(&ah, transcription_text.clone());
+                        }
+
                         // ── Wait for user confirmation (with countdown) before routing ──
                         // Create a oneshot channel for the frontend to send confirmation
                         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel::<String>();

@@ -138,20 +138,11 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
         ("totaled", "totalled"), ("totaling", "totalling"),
     ]);
     
-    // Aluminum, airplane, etc.
+    // Spelling variants (not vocabulary differences)
     add_pairs(&mut map, &[
         ("aluminum", "aluminium"), ("airplane", "aeroplane"), ("airplanes", "aeroplanes"),
         ("mustache", "moustache"), ("mustaches", "moustaches"),
-        ("pajamas", "pyjamas"), ("diaper", "nappy"), ("diapers", "nappies"),
-        ("stroller", "pushchair"), ("cookie", "biscuit"), ("cookies", "biscuits"),
-        ("fries", "chips"), ("chip", "crisp"), ("chips", "crisps"),
-        ("elevator", "lift"), ("apartment", "flat"), ("apartments", "flats"),
-        ("truck", "lorry"), ("trucks", "lorries"), ("trunk", "boot"),
-        ("hood", "bonnet"), ("gas", "petrol"), ("gasoline", "petrol"),
-        ("faucet", "tap"), ("faucets", "taps"), ("flashlight", "torch"),
-        ("flashlights", "torches"), ("sweater", "jumper"), ("sweaters", "jumpers"),
-        ("vacation", "holiday"), ("vacations", "holidays"),
-        ("soccer", "football"), ("football", "American football"),
+        ("pajamas", "pyjamas"),
     ]);
     
     // Common spellings

@@ -15,7 +15,10 @@ export const LiveCaptions: React.FC<LiveCaptionsProps> = React.memo(
     const enabled = getSetting("live_captions_enabled") ?? true;
 
     const handleChange = (checked: boolean) => {
-      console.log("[Live Captions] User toggled live captions in settings:", checked);
+      console.log(
+        "[Live Captions] User toggled live captions in settings:",
+        checked,
+      );
       updateSetting("live_captions_enabled", checked);
     };
 

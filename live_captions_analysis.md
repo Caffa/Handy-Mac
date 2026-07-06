@@ -50,7 +50,7 @@ The live captions feature in Handy has a multi-layered architecture that can fai
        ✓ state === "recording"
        ✓ liveCaptionsEnabled === true
        ✓ !micDeadWarning
-       ✓ !lowAudioWarning  
+       ✓ !lowAudioWarning
        ✓ streamingText exists
        ✓ streamingText.trim() !== ""
 ```
@@ -64,6 +64,7 @@ The live captions feature in Handy has a multi-layered architecture that can fai
 **Location**: `src-tauri/src/managers/audio.rs:207-213`
 
 **Code**:
+
 ```rust
 let cancel_flag = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
     Some(tm_state) => tm_state.lock().streaming_cancel_flag(),
@@ -85,6 +86,7 @@ let cancel_flag = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>
 **Location**: `src/overlay/RecordingOverlay.tsx:368-388`
 
 **Code**:
+
 ```typescript
 useEffect(() => {
   if (!isVisible) return;
@@ -105,6 +107,7 @@ useEffect(() => {
 ```
 
 **Issue**: The setting is fetched ASYNCHRONOUSLY when overlay becomes visible. If recording starts quickly:
+
 1. Recording starts → streaming callback set up (or not) based on backend setting
 2. Overlay becomes visible → setting fetched
 3. If frontend thinks captions are enabled but backend didn't set up callback, mismatch occurs
@@ -118,6 +121,7 @@ useEffect(() => {
 **Location**: `src/overlay/RecordingOverlay.tsx:129-171`
 
 **Code**:
+
 ```typescript
 function filterStreamingText(text: string): string {
   const fillerWords = ["okay", "yeah", "um", "uh", "so", "like", "you know", "right", "well"];
@@ -141,6 +145,7 @@ function filterStreamingText(text: string): string {
 **Location**: `src-tauri/src/managers/transcription.rs:637-641`
 
 **Code**:
+
 ```rust
 {
     let engine_guard = self.lock_engine();
@@ -161,6 +166,7 @@ function filterStreamingText(text: string): string {
 **Location**: `src-tauri/src/managers/audio.rs:223-225` and `254-256`
 
 **Code**:
+
 ```rust
 // Check cancellation WITHOUT lock (atomic load)
 if cancel_flag.load(Ordering::Acquire) {
@@ -179,26 +185,26 @@ if cancel_flag.load(Ordering::Acquire) {
 
 ### Backend (Rust) - Good Coverage ✅
 
-| Location | Event | Log Level |
-|----------|-------|-----------|
-| `audio.rs:171` | Live captions enabled check | info |
-| `audio.rs:210` | TranscriptionManager not available | info |
-| `audio.rs:223` | Streaming cancelled | debug |
-| `audio.rs:235` | Streaming cancelled (blocking) | debug |
-| `audio.rs:244` | TranscriptionManager not available for streaming | debug |
-| `audio.rs:301-302` | Failed to emit partial-transcription | warn |
-| `audio.rs:309` | Streaming transcription failed | debug |
-| `transcription.rs:170-172` | Live captions keeping model loaded | debug |
+| Location                   | Event                                            | Log Level |
+| -------------------------- | ------------------------------------------------ | --------- |
+| `audio.rs:171`             | Live captions enabled check                      | info      |
+| `audio.rs:210`             | TranscriptionManager not available               | info      |
+| `audio.rs:223`             | Streaming cancelled                              | debug     |
+| `audio.rs:235`             | Streaming cancelled (blocking)                   | debug     |
+| `audio.rs:244`             | TranscriptionManager not available for streaming | debug     |
+| `audio.rs:301-302`         | Failed to emit partial-transcription             | warn      |
+| `audio.rs:309`             | Streaming transcription failed                   | debug     |
+| `transcription.rs:170-172` | Live captions keeping model loaded               | debug     |
 
 ### Frontend (TypeScript) - Moderate Coverage ⚠️
 
-| Location | Event | Log Type |
-|----------|-------|----------|
-| `RecordingOverlay.tsx:663-665` | Recording started + captions status | console.log |
-| `RecordingOverlay.tsx:927-929` | Event listener registration | console.log |
-| `RecordingOverlay.tsx:935-942` | Event received | console.log |
-| `RecordingOverlay.tsx:964-976` | streamingText updates | console.log |
-| `RecordingOverlay.tsx:991-1004` | Fallback text handling | console.log |
+| Location                        | Event                               | Log Type    |
+| ------------------------------- | ----------------------------------- | ----------- |
+| `RecordingOverlay.tsx:663-665`  | Recording started + captions status | console.log |
+| `RecordingOverlay.tsx:927-929`  | Event listener registration         | console.log |
+| `RecordingOverlay.tsx:935-942`  | Event received                      | console.log |
+| `RecordingOverlay.tsx:964-976`  | streamingText updates               | console.log |
+| `RecordingOverlay.tsx:991-1004` | Fallback text handling              | console.log |
 
 ### Missing Critical Logs ❌
 
@@ -230,8 +236,8 @@ info!(
 info!("Emitted partial-transcription event with {} segments", result.segments.as_ref().map(|s| s.len()).unwrap_or(0));
 
 // In transcription.rs transcribe() - Add streaming-specific logging
-debug!("Streaming transcription started - model loaded: {}, audio samples: {}", 
-    self.is_model_loaded(), 
+debug!("Streaming transcription started - model loaded: {}, audio samples: {}",
+    self.is_model_loaded(),
     audio.len()
 );
 ```
@@ -241,7 +247,7 @@ debug!("Streaming transcription started - model loaded: {}, audio samples: {}",
 ```typescript
 // In RecordingOverlay.tsx - Add render condition logging
 // After line 1224:
-console.log('[Live Captions] Render check:', {
+console.log("[Live Captions] Render check:", {
   isVisible,
   state,
   liveCaptionsEnabled,
@@ -249,14 +255,19 @@ console.log('[Live Captions] Render check:', {
   lowAudioWarning,
   hasStreamingText: !!streamingText,
   streamingTextLength: streamingText?.length,
-  shouldRender: isVisible && state === "recording" && liveCaptionsEnabled && 
-                !micDeadWarning && !lowAudioWarning && streamingText?.trim()
+  shouldRender:
+    isVisible &&
+    state === "recording" &&
+    liveCaptionsEnabled &&
+    !micDeadWarning &&
+    !lowAudioWarning &&
+    streamingText?.trim(),
 });
 
 // Add when settings are fetched
-console.log('[Live Captions] Settings fetched from backend:', {
+console.log("[Live Captions] Settings fetched from backend:", {
   live_captions_enabled: result.data.live_captions_enabled,
-  currentFrontendValue: liveCaptionsEnabled
+  currentFrontendValue: liveCaptionsEnabled,
 });
 ```
 
@@ -277,13 +288,13 @@ When a user reports "live captions not showing", check:
 
 ## Summary Table
 
-| Failure Point | Severity | Detectable | User Impact |
-|--------------|----------|------------|-------------|
-| TranscriptionManager not init | HIGH | No logging | Silent failure |
-| Setting fetch race condition | MEDIUM | Console logs only | Confusing behavior |
-| Filler filter removes all text | MEDIUM | Console logs only | No short captions |
-| Model not loaded | HIGH | Debug log only | No captions, no error |
-| Cancellation race | LOW | Debug log only | Brief recordings miss captions |
+| Failure Point                  | Severity | Detectable        | User Impact                    |
+| ------------------------------ | -------- | ----------------- | ------------------------------ |
+| TranscriptionManager not init  | HIGH     | No logging        | Silent failure                 |
+| Setting fetch race condition   | MEDIUM   | Console logs only | Confusing behavior             |
+| Filler filter removes all text | MEDIUM   | Console logs only | No short captions              |
+| Model not loaded               | HIGH     | Debug log only    | No captions, no error          |
+| Cancellation race              | LOW      | Debug log only    | Brief recordings miss captions |
 
 ---
 
@@ -297,6 +308,6 @@ When a user reports "live captions not showing", check:
 
 ---
 
-*Analysis completed: 2026-07-02*
-*Files analyzed: 15+ source files*
-*Lines of code reviewed: ~3000+*
+_Analysis completed: 2026-07-02_
+_Files analyzed: 15+ source files_
+_Lines of code reviewed: ~3000+_
