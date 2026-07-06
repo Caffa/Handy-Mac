@@ -481,3 +481,90 @@ The bug is caused by **silent failure in monitor detection** combined with a **t
 ### Key Insight
 
 When positioning overlay windows, **always have a fallback** when primary detection methods fail. Monitor detection can fail transiently due to timing issues, display reconfiguration, or platform-specific quirks. The `primary_monitor()` fallback ensures the window is always positioned somewhere sensible, even if it's not the exact monitor with the cursor. Additionally, on macOS, `run_on_main_thread()` is asynchronous — position updates must be flushed before showing the window to avoid race conditions.
+
+## Router Visualizer Shows Black Background (2026-07-06)
+
+### Problem
+
+Router mode should show blue background visualizer throughout (recording → transcribing → processing → confirming), but was showing the black background from regular transcription processing.
+
+### Root Cause
+
+The `isRouter` derivation in `RecordingOverlay.tsx` used `backendState.isVisible` as the condition to prefer backend state. When the backend is in `Processing` or `Confirming` state, `backendState.isRouter` is `false` because only `Recording { binding_id }` carries the binding information that determines router mode.
+
+```typescript
+// Before (Bug): Processing state has no binding_id, so isRouter = false
+const isRouter = useMemo(() => {
+    if (backendState.isVisible) {
+      return backendState.isRouter; // false during Processing!
+    }
+    return legacyIsRouter;
+}, ...);
+```
+
+### Fix
+
+Only use backend's `isRouter` when backend is in `Recording` state (which carries binding_id). For other states, fall back to the legacy `isRouter` derived from the `show-overlay` event payload (`"transcribing:router"` → action = "router").
+
+```typescript
+// After: Only use backend isRouter during Recording state
+const isRouter = useMemo(() => {
+    if (backendState.isVisible && backendState.isRecording) {
+      return backendState.isRouter;
+    }
+    return legacyIsRouter;
+}, ...);
+```
+
+### Key Insight
+
+During migration from legacy event-driven state to backend-driven state, **mode information must survive state transitions**. The backend's `AppState` only carries `binding_id` during `Recording`, so mode information (router vs. transcribe) must be preserved from the initial `show-overlay` event for subsequent states (Processing, Confirming). Use the legacy source as fallback when the backend source doesn't have the needed information.
+
+## Router Transcription Click-to-Edit Timing Gap (2026-07-06)
+
+### Problem
+
+Clicking on the router transcription text box doesn't open edit mode, even though the preview is shown.
+
+### Root Cause
+
+The `effectivelyConfirming` flag in `useRouterPreview.ts` was derived from:
+```typescript
+const effectivelyConfirming = isConfirming ?? state === "confirming";
+```
+
+The `transcription-preview` event arrives before the `app-state: Confirming` event. During this gap, `isConfirming` (from backend) is still `false` and `state` (from backend) is still `"processing"`. So `effectivelyConfirming` is `false` and the click handler bails out.
+
+### Fix
+
+Also consider `transcriptionPreview` being non-empty as a confirming signal:
+```typescript
+const effectivelyConfirming =
+    isConfirming ?? (state === "confirming" || !!transcriptionPreview);
+```
+
+This bridges the timing gap — when the transcription preview text arrives, the user can immediately click to edit, even before the backend state catches up.
+
+### Key Insight
+
+When bridging between event-driven and state-driven architectures, **consider the user-visible state as the source of truth, not just the backend state**. If the user sees confirming UI (transcription preview text), they should be able to interact with it, regardless of whether the backend state has transitioned yet.
+
+## Clipboard Fallback on macOS Desktop (2026-07-06)
+
+### Problem
+
+When focused on the macOS desktop (Finder), transcription completes but no toast appears and files are selected instead of text being pasted.
+
+### Root Cause
+
+When Finder is the frontmost app, `Cmd+V` is interpreted as "paste files" (if a file reference is on the clipboard) or does nothing (if only text is on the clipboard). Neither is useful — the user wants text pasted into a text field, not files selected on the desktop.
+
+The paste fallback code (`paste-error-clipboard-fallback`) only triggers when the paste operation itself fails, not when it succeeds but goes to the wrong context.
+
+### Fix
+
+Added `is_saved_app_desktop_like()` to `focus.rs` that checks if the saved frontmost app is Finder (`com.apple.finder`). When detected, the `paste()` function in `clipboard.rs` skips the paste entirely and falls back to clipboard-only mode (copy text to clipboard + emit toast notification).
+
+### Key Insight
+
+On macOS, Cmd+V has different behaviors depending on the target application. Finder interprets it as file paste, not text paste. When the user's target app is a file manager, always fall back to clipboard-only mode with a toast notification — pasting to the desktop is never the user's intent.
