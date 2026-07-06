@@ -34,6 +34,8 @@ interface UseRouterPreviewOptions {
   setState: React.Dispatch<React.SetStateAction<OverlayState>>;
   setIsVisible: React.Dispatch<React.SetStateAction<boolean>>;
   isRouter: boolean;
+  /** During migration: backend-derived isConfirming overrides state === "confirming" */
+  isConfirming?: boolean;
   transcriptionPreview: string;
   transcriptionPreviewRef: React.MutableRefObject<string>;
   routerResult: RouterResultEvent | null;
@@ -67,6 +69,8 @@ export function useRouterPreview(
     state,
     setIsVisible,
     setState,
+    isRouter,
+    isConfirming,
     transcriptionPreview,
     transcriptionPreviewRef,
     routerResult,
@@ -81,6 +85,10 @@ export function useRouterPreview(
     setCountdown,
     setIsFadingOut,
   } = options;
+
+  // During migration: prefer backend-derived isConfirming when provided,
+  // otherwise fall back to state === "confirming"
+  const effectivelyConfirming = isConfirming ?? state === "confirming";
 
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fadeOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -102,7 +110,7 @@ export function useRouterPreview(
 
   // Handle clicking on transcription to enter edit mode
   const handleTranscriptionClick = useCallback(() => {
-    if (state === "confirming" && !isEditing) {
+    if (effectivelyConfirming && !isEditing) {
       setIsEditing(true);
       setEditedText(transcriptionPreviewRef.current);
       if (countdownRef.current) {
@@ -110,7 +118,7 @@ export function useRouterPreview(
         countdownRef.current = null;
       }
     }
-  }, [state, isEditing]);
+  }, [effectivelyConfirming, isEditing]);
 
   // Handle sending edited text
   const handleSendEdited = useCallback(() => {
@@ -132,7 +140,7 @@ export function useRouterPreview(
 
   // Countdown timer for routing confirmation
   useEffect(() => {
-    if (state === "confirming" && !isEditing && countdown > 0) {
+    if (effectivelyConfirming && !isEditing && countdown > 0) {
       countdownRef.current = setInterval(() => {
         setCountdown((prev) => {
           if (prev <= 100) {
@@ -150,7 +158,7 @@ export function useRouterPreview(
         countdownRef.current = null;
       }
     };
-  }, [state, isEditing, countdown]);
+  }, [effectivelyConfirming, isEditing, countdown]);
 
   // Focus textarea when entering edit mode
   useEffect(() => {

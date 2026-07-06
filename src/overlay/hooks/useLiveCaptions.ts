@@ -90,6 +90,8 @@ function filterStreamingText(text: string): string {
 interface UseLiveCaptionsOptions {
   state: OverlayState;
   isVisible: boolean;
+  /** During migration: backend-derived isRecording overrides state === "recording" */
+  isRecording?: boolean;
   liveCaptionsEnabled: boolean;
   micDeadWarning: boolean;
   lowAudioWarning: boolean;
@@ -111,6 +113,7 @@ export function useLiveCaptions(
   const {
     state,
     isVisible,
+    isRecording,
     liveCaptionsEnabled,
     micDeadWarning,
     lowAudioWarning,
@@ -119,12 +122,16 @@ export function useLiveCaptions(
     setStreamingSegments,
   } = options;
 
+  // During migration: prefer backend-derived isRecording when provided,
+  // otherwise fall back to state === "recording"
+  const effectivelyRecording = isRecording ?? state === "recording";
+
   // Use ref for segments since we need the accumulated value in the event handler
   const segmentsRef = useRef<TranscriptionSegment[]>([]);
 
   // Debug effect for live captions visibility
   useEffect(() => {
-    if (state === "recording" && isVisible) {
+    if (effectivelyRecording && isVisible) {
       const reasons: string[] = [];
       if (!liveCaptionsEnabled) reasons.push("liveCaptionsEnabled=false");
       if (micDeadWarning) reasons.push("micDeadWarning=true");
@@ -142,7 +149,7 @@ export function useLiveCaptions(
       }
     }
   }, [
-    state,
+    effectivelyRecording,
     isVisible,
     liveCaptionsEnabled,
     micDeadWarning,
@@ -152,7 +159,7 @@ export function useLiveCaptions(
 
   // Detect if backend didn't set up streaming
   useEffect(() => {
-    if (state === "recording" && liveCaptionsEnabled) {
+    if (effectivelyRecording && liveCaptionsEnabled) {
       const timeout = setTimeout(() => {
         if (!streamingText) {
           console.warn(
@@ -162,7 +169,7 @@ export function useLiveCaptions(
       }, 3000);
       return () => clearTimeout(timeout);
     }
-  }, [state, liveCaptionsEnabled]);
+  }, [effectivelyRecording, liveCaptionsEnabled]);
 
   // Listen for partial transcription events
   useEffect(() => {

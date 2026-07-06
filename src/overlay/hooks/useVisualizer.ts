@@ -29,6 +29,8 @@ const LOW_AUDIO_MIN_RECORDING_MS = 1500;
 interface UseVisualizerOptions {
   state: OverlayState;
   isVisible: boolean;
+  /** During migration: backend-derived isRecording overrides state === "recording" */
+  isRecording?: boolean;
   lastLevelTimeRef: React.MutableRefObject<number>;
   recordingStartTimeRef: React.MutableRefObject<number>;
   lowAudioHistoryRef: React.MutableRefObject<number[]>;
@@ -48,6 +50,7 @@ export function useVisualizer(
   const {
     state,
     isVisible,
+    isRecording,
     lastLevelTimeRef,
     recordingStartTimeRef,
     lowAudioHistoryRef,
@@ -56,6 +59,10 @@ export function useVisualizer(
     setMicDeadWarning,
     setLowAudioWarning,
   } = options;
+
+  // During migration: prefer backend-derived isRecording when provided,
+  // otherwise fall back to state === "recording"
+  const effectivelyRecording = isRecording ?? state === "recording";
 
   const [levels, setLevels] = useState<number[]>(Array(16).fill(0));
 
@@ -85,7 +92,7 @@ export function useVisualizer(
 
   // "Mic dead" detection: warn if recording but no audio for >1s
   useEffect(() => {
-    if (state !== "recording" || !isVisible) {
+    if (!effectivelyRecording || !isVisible) {
       setMicDeadWarning(false);
       if (micDeadTimerRef.current) {
         clearInterval(micDeadTimerRef.current);
@@ -104,11 +111,11 @@ export function useVisualizer(
         clearInterval(micDeadTimerRef.current);
       }
     };
-  }, [state, isVisible]);
+  }, [effectivelyRecording, isVisible]);
 
   // Low audio level detection
   useEffect(() => {
-    if (state !== "recording" || !isVisible) {
+    if (!effectivelyRecording || !isVisible) {
       setLowAudioWarning(false);
       lowAudioHistoryRef.current = [];
       return;
@@ -152,7 +159,7 @@ export function useVisualizer(
     } else {
       setLowAudioWarning(false);
     }
-  }, [state, isVisible, levels]);
+  }, [effectivelyRecording, isVisible, levels]);
 
   // Listen for mic-level updates
   useEffect(() => {

@@ -22,6 +22,8 @@ interface UseUSBRecoveryOptions {
   state: OverlayState;
   setState: React.Dispatch<React.SetStateAction<OverlayState>>;
   setIsVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  /** During migration: backend-derived isUsbCycling overrides state === "usb-cycling" */
+  isUsbCycling?: boolean;
   setMicDeadWarning: React.Dispatch<React.SetStateAction<boolean>>;
   setLowAudioWarning: React.Dispatch<React.SetStateAction<boolean>>;
   setUsbCycleStage: React.Dispatch<
@@ -45,6 +47,7 @@ export function useUSBRecovery(
     state,
     setState,
     setIsVisible,
+    isUsbCycling,
     setMicDeadWarning,
     setLowAudioWarning,
     setUsbCycleStage,
@@ -54,6 +57,10 @@ export function useUSBRecovery(
     lowAudioHistoryRef,
     hadGoodAudioRef,
   } = options;
+
+  // During migration: prefer backend-derived isUsbCycling when provided,
+  // otherwise fall back to state === "usb-cycling"
+  const effectivelyUsbCycling = isUsbCycling ?? state === "usb-cycling";
 
   const [usbCyclingStartTime, setUsbCyclingStartTime] = useState<number | null>(
     null,
@@ -65,7 +72,7 @@ export function useUSBRecovery(
 
   // Safety timeout: if we stay in "usb-cycling" for too long, fall back
   useEffect(() => {
-    if (state !== "usb-cycling") return;
+    if (!effectivelyUsbCycling) return;
 
     const timer = setTimeout(() => {
       setState((prev) => {
@@ -82,11 +89,11 @@ export function useUSBRecovery(
     }, USB_CYCLING_SAFETY_TIMEOUT_MS);
 
     return () => clearTimeout(timer);
-  }, [state]);
+  }, [effectivelyUsbCycling]);
 
   // Track USB cycling elapsed time
   useEffect(() => {
-    if (state === "usb-cycling") {
+    if (effectivelyUsbCycling) {
       setUsbCyclingStartTime(Date.now());
       usbCyclingTimerRef.current = setInterval(() => {
         setUsbCyclingStartTime((startTime) => {
@@ -109,7 +116,7 @@ export function useUSBRecovery(
         clearInterval(usbCyclingTimerRef.current);
       }
     };
-  }, [state]);
+  }, [effectivelyUsbCycling]);
 
   // USB power-cycle event listeners
   useEffect(() => {

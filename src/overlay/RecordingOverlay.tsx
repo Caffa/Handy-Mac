@@ -14,7 +14,7 @@
  * Scope: Coordination only — delegates all logic to hooks.
  * Dependencies: All hooks, all components, icons, i18n, commands.
  */
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CancelIcon,
@@ -25,6 +25,7 @@ import {
 import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
 import { useOverlayState } from "./hooks/useOverlayState";
+import { useAppState } from "./hooks/useAppState";
 import { useVisualizer } from "./hooks/useVisualizer";
 import { useLiveCaptions } from "./hooks/useLiveCaptions";
 import { useRouterPreview } from "./hooks/useRouterPreview";
@@ -36,18 +37,19 @@ import {
   USBCyclingProgress,
   RouterResultDisplay,
 } from "./components";
+import type { OverlayState } from "./hooks/useOverlayState";
 
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
 
-  // ─── Core overlay state (owns all shared state) ────────────────────────
+  // ─── Core overlay state (legacy, kept for migration) ─────────────────
   const overlayState = useOverlayState();
   const {
     isVisible,
     setIsVisible,
-    state,
+    state: legacyState,
     setState,
-    isRouter,
+    isRouter: legacyIsRouter,
     overlayScale,
     direction,
     hybridEnabled,
@@ -87,10 +89,39 @@ const RecordingOverlay: React.FC = () => {
     transcriptionPreviewRef,
   } = overlayState;
 
+  // ─── Backend-driven state (new, gradually becomes primary) ──────────
+  const backendState = useAppState();
+
+  // ─── Dual-listening: prefer backend state when available ────────────
+  // During migration, both sources are active. We use the backend state
+  // as the primary source when it reports a non-Idle state, and fall
+  // back to the legacy overlay state otherwise. This ensures no
+  // regressions during the transition period.
+  const state: OverlayState = useMemo(() => {
+    if (backendState.isVisible) {
+      return backendState.overlayState;
+    }
+    return legacyState;
+  }, [backendState.isVisible, backendState.overlayState, legacyState]);
+
+  const isRouter = useMemo(() => {
+    // Prefer backend's isRouter when backend is active
+    if (backendState.isVisible) {
+      return backendState.isRouter;
+    }
+    return legacyIsRouter;
+  }, [backendState.isVisible, backendState.isRouter, legacyIsRouter]);
+
   // ─── Visualizer (audio levels + mic warnings) ──────────────────────────
+  // During migration: use isRecording from backend state when available
+  const backendIsRecording = backendState.isVisible
+    ? backendState.isRecording
+    : state === "recording";
+
   const { levels } = useVisualizer({
     state,
     isVisible,
+    isRecording: backendIsRecording,
     lastLevelTimeRef,
     recordingStartTimeRef,
     lowAudioHistoryRef,
@@ -104,6 +135,7 @@ const RecordingOverlay: React.FC = () => {
   useLiveCaptions({
     state,
     isVisible,
+    isRecording: backendIsRecording,
     liveCaptionsEnabled,
     micDeadWarning,
     lowAudioWarning,
@@ -113,6 +145,11 @@ const RecordingOverlay: React.FC = () => {
   });
 
   // ─── Router preview (confirmation, editing, result) ───────────────────
+  // During migration: use isConfirming from backend state when available
+  const backendIsConfirming = backendState.isVisible
+    ? backendState.isConfirming
+    : state === "confirming";
+
   const {
     handleTranscriptionClick,
     handleSendEdited,
@@ -125,6 +162,7 @@ const RecordingOverlay: React.FC = () => {
     setState,
     setIsVisible,
     isRouter,
+    isConfirming: backendIsConfirming,
     transcriptionPreview,
     transcriptionPreviewRef,
     routerResult,
@@ -141,10 +179,16 @@ const RecordingOverlay: React.FC = () => {
   });
 
   // ─── USB recovery (power cycling state) ───────────────────────────────
+  // During migration: use isUsbCycling from backend state when available
+  const backendIsUsbCycling = backendState.isVisible
+    ? backendState.isUsbCycling
+    : state === "usb-cycling";
+
   const { usbCyclingElapsed } = useUSBRecovery({
     state,
     setState,
     setIsVisible,
+    isUsbCycling: backendIsUsbCycling,
     setMicDeadWarning,
     setLowAudioWarning,
     setUsbCycleStage,
