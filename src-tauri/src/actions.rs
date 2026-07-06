@@ -795,8 +795,6 @@ impl ShortcutAction for TranscribeAction {
                                 );
                                 let result = ah.run_on_main_thread(move || {
                                     info!("Paste function starting on main thread...");
-                                    // Clone text before paste consumes it, for clipboard fallback
-                                    let text_for_fallback = final_text.clone();
                                     match utils::paste(final_text, ah_clone.clone()) {
                                         Ok(()) => {
                                             info!(
@@ -814,7 +812,7 @@ impl ShortcutAction for TranscribeAction {
                                             }
                                         }
                                         Err(e) => {
-                                            error!("Failed to paste transcription: {}", e);
+                                            error!("Failed to paste transcription (clipboard fallback also failed): {}", e);
 
                                             // ── Structured event: paste failed ──
                                             if let (Some(ref s), Some(tracker)) =
@@ -826,31 +824,10 @@ impl ShortcutAction for TranscribeAction {
                                                 );
                                             }
 
-                                            // Clipboard fallback: copy text to clipboard
-                                            // so the user can paste manually
-                                            let error_msg = e.clone();
-                                            match utils::write_to_clipboard(
-                                                &text_for_fallback,
-                                                &ah_clone,
-                                            ) {
-                                                Ok(()) => {
-                                                    info!(
-                                                        "Paste failed but text copied to clipboard as fallback"
-                                                    );
-                                                    let _ = ah_clone.emit(
-                                                        "paste-error-clipboard-fallback",
-                                                        error_msg,
-                                                    );
-                                                }
-                                                Err(clip_err) => {
-                                                    error!(
-                                                        "Clipboard fallback also failed: {}",
-                                                        clip_err
-                                                    );
-                                                    let _ =
-                                                        ah_clone.emit("paste-error", ());
-                                                }
-                                            }
+                                            // Both paste and clipboard fallback failed.
+                                            // The paste() function already tried clipboard
+                                            // fallback internally before returning Err.
+                                            let _ = ah_clone.emit("paste-error", ());
                                         }
                                     }
                                     utils::hide_recording_overlay(&ah_clone);

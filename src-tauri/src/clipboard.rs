@@ -3,10 +3,10 @@ use crate::input::{self, EnigoState};
 use crate::settings::TypingTool;
 use crate::settings::{get_settings, AutoSubmitKey, ClipboardHandling, PasteMethod};
 use enigo::{Direction, Enigo, Key, Keyboard};
-use log::{error, info};
+use log::{error, info, warn};
 use std::process::Command;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 #[cfg(target_os = "linux")]
@@ -683,11 +683,44 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     };
 
     match &result {
-        Ok(()) => info!("Paste completed successfully"),
-        Err(e) => error!("Paste failed: {}", e),
+        Ok(()) => {
+            info!("Paste completed successfully");
+
+            // If paste succeeded, still copy to clipboard if setting enabled
+            if settings.clipboard_handling == ClipboardHandling::CopyToClipboard {
+                info!("Copying text to clipboard");
+                if let Err(e) = app_handle.clipboard().write_text(&text) {
+                    warn!("Failed to copy to clipboard after paste: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Paste failed ({}), falling back to clipboard", e);
+
+            // ALWAYS fall back to clipboard on paste failure
+            match write_to_clipboard(&text, &app_handle) {
+                Ok(()) => {
+                    info!("Text copied to clipboard as fallback after paste failure");
+                    // Notify frontend that we fell back to clipboard
+                    let _ = app_handle.emit("paste-error-clipboard-fallback", &text);
+                }
+                Err(clipboard_err) => {
+                    error!("Clipboard fallback also failed: {}", clipboard_err);
+                    // Both paste and clipboard failed — return the combined error
+                    return Err(format!(
+                        "Paste failed and clipboard fallback failed: {} | {}",
+                        e, clipboard_err
+                    ));
+                }
+            }
+        }
     }
 
-    if should_send_auto_submit(settings.auto_submit, paste_method) {
+    // Only send auto-submit if the paste operation itself succeeded.
+    // When paste fails and clipboard fallback is used, the text is in
+    // the clipboard but not in the target field — pressing Enter would
+    // submit nothing or the wrong content.
+    if result.is_ok() && should_send_auto_submit(settings.auto_submit, paste_method) {
         info!("Sending auto-submit key");
         std::thread::sleep(std::time::Duration::from_millis(50));
         if let Err(e) = send_return_key(&mut enigo, settings.auto_submit_key) {
@@ -695,16 +728,7 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
         }
     }
 
-    // After pasting, optionally copy to clipboard based on settings
-    if settings.clipboard_handling == ClipboardHandling::CopyToClipboard {
-        info!("Copying text to clipboard");
-        let clipboard = app_handle.clipboard();
-        if let Err(e) = clipboard.write_text(&text) {
-            error!("Failed to copy to clipboard: {}", e);
-        }
-    }
-
-    result
+    Ok(())
 }
 
 #[cfg(test)]
