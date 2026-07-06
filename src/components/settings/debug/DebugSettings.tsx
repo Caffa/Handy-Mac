@@ -4,6 +4,7 @@ import { LogLevelSelector } from "./LogLevelSelector";
 import { PasteDelay } from "./PasteDelay";
 import { RecordingBuffer } from "./RecordingBuffer";
 import { PreRecordingBuffer } from "./PreRecordingBuffer";
+import { LogDirectory } from "./LogDirectory";
 import { SettingsGroup } from "../../ui/SettingsGroup";
 import { AlwaysOnMicrophone } from "../AlwaysOnMicrophone";
 import { SoundPicker } from "../SoundPicker";
@@ -19,6 +20,7 @@ export const DebugSettings: React.FC = () => {
     <div className="max-w-3xl w-full mx-auto space-y-6">
       <SettingsGroup title={t("settings.debug.title")}>
         <LogLevelSelector grouped={true} />
+        <LogDirectory descriptionMode="tooltip" grouped={true} />
         <UpdateChecksToggle descriptionMode="tooltip" grouped={true} />
         <SoundPicker
           label={t("settings.debug.soundTheme.label")}
