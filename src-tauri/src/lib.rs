@@ -54,6 +54,7 @@ use tauri::image::Image;
 pub use transcription_coordinator::TranscriptionCoordinator;
 pub use transcription_coordinator::AppState;
 pub use transcription_coordinator::emit_app_state;
+pub use transcription_coordinator::CancelSignal;
 
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -854,7 +855,13 @@ pub fn run(cli_args: CliArgs) {
             // Store the file log level in the atomic for the filter to use
             FILE_LOG_LEVEL.store(file_log_level.to_level_filter() as u8, Ordering::Relaxed);
             let app_handle = app.handle().clone();
-            app.manage(TranscriptionCoordinator::new(app_handle.clone()));
+            // Create the non-blocking cancel signal before the coordinator.
+            // The coordinator thread polls this flag on every loop iteration
+            // to detect cancel requests without blocking on the TM mutex.
+            let cancel_signal = CancelSignal::new();
+            let cancel_flag = cancel_signal.flag();
+            app.manage(cancel_signal);
+            app.manage(TranscriptionCoordinator::new(app_handle.clone(), cancel_flag));
 
             initialize_core_logic(&app_handle);
 

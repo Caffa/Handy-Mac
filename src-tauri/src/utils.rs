@@ -1,6 +1,6 @@
 use crate::managers::audio::AudioRecordingManager;
 use crate::shortcut;
-use crate::transcription_coordinator::{emit_app_state, AppState};
+use crate::transcription_coordinator::{emit_app_state, AppState, CancelSignal};
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,6 +81,16 @@ pub fn cancel_current_operation(app: &AppHandle) {
         coordinator.notify_cancel(recording_was_active);
     } else {
         warn!("TranscriptionCoordinator not available");
+    }
+
+    // Set the non-blocking cancel flag so the coordinator thread transitions
+    // to Idle on its next loop iteration. This is the critical fix for the
+    // visualizer frozen bug: the cancel hotkey handler must return immediately
+    // without waiting for the coordinator to process the cancel command.
+    // The coordinator thread polls this flag at the top of every loop iteration.
+    if let Some(cancel_signal) = app.try_state::<CancelSignal>() {
+        cancel_signal.send_cancel();
+        info!("Cancel signal sent via CancelSignal flag");
     }
 
     // Emit unified app-state: Idle so frontend knows the app has returned to idle.

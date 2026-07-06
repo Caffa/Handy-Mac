@@ -9,6 +9,47 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
+/// Non-blocking cancel signal for the coordinator thread.
+///
+/// Uses an `AtomicBool` so the sender (cancel hotkey handler) never blocks,
+/// even when the GPU transcription callback holds the TM mutex. The coordinator
+/// thread polls this flag on every loop iteration and immediately transitions
+/// to Idle when a cancel is detected.
+#[derive(Clone)]
+pub struct CancelSignal {
+    flag: Arc<AtomicBool>,
+}
+
+impl CancelSignal {
+    pub fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Non-blocking cancel signal. Returns immediately.
+    pub fn send_cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        info!("CancelSignal: cancel flag set");
+    }
+
+    /// Check and consume the cancel flag. Returns true if a cancel was pending.
+    pub fn consume_cancel(&self) -> bool {
+        self.flag.swap(false, Ordering::SeqCst)
+    }
+
+    /// Create a separate flag handle for passing to the coordinator thread.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.flag)
+    }
+}
+
+impl Default for CancelSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
 /// Maximum time the coordinator will stay in `Processing` before
@@ -112,6 +153,12 @@ pub struct TranscriptionCoordinator {
     /// Current application state (shared for reads from any thread).
     /// Updated after every state transition and emitted via `app-state` events.
     current_state: Arc<RwLock<AppState>>,
+    /// Non-blocking cancel flag. When set, the coordinator thread transitions
+    /// to Idle on the next loop iteration, ensuring the UI never blocks.
+    /// Stored here for ownership; actual reads happen through the clone passed
+    /// to the coordinator thread.
+    #[allow(dead_code)]
+    cancel_flag: Arc<AtomicBool>,
 }
 
 pub fn is_transcribe_binding(id: &str) -> bool {
@@ -119,12 +166,13 @@ pub fn is_transcribe_binding(id: &str) -> bool {
 }
 
 impl TranscriptionCoordinator {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(app: AppHandle, cancel_flag: Arc<AtomicBool>) -> Self {
         let (tx, rx) = mpsc::channel();
         let active_use = Arc::new(AtomicBool::new(false));
         let active_use_clone = Arc::clone(&active_use);
         let current_state = Arc::new(RwLock::new(AppState::Idle));
         let current_state_clone = Arc::clone(&current_state);
+        let cancel_flag_clone = Arc::clone(&cancel_flag);
         info!("Starting transcription coordinator thread");
 
         // Emit initial Idle state
@@ -138,6 +186,15 @@ impl TranscriptionCoordinator {
                 let mut last_press: Option<Instant> = None;
 
                 loop {
+                    // Check cancel flag FIRST, before waiting for commands.
+                    // This ensures the coordinator transitions to Idle immediately
+                    // when cancel is requested, even if a command is pending.
+                    if cancel_flag_clone.swap(false, Ordering::SeqCst) {
+                        info!("Coordinator: cancel flag detected, resetting to Idle");
+                        set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
+                        continue;
+                    }
+
                     // Calculate recv timeout: if in Processing, wake up to check the timeout.
                     let timeout = match &stage {
                         Stage::Processing { since } => {
@@ -177,6 +234,14 @@ impl TranscriptionCoordinator {
                             }
                         }
                     };
+
+                    // Check cancel flag again after receiving a command.
+                    // A cancel may have arrived while we were blocking on recv.
+                    if cancel_flag_clone.swap(false, Ordering::SeqCst) {
+                        info!("Coordinator: cancel flag detected after recv, resetting to Idle");
+                        set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
+                        continue;
+                    }
 
                     match cmd {
                         Command::Input {
@@ -275,7 +340,7 @@ impl TranscriptionCoordinator {
             }
         });
 
-        Self { tx, active_use, current_state }
+        Self { tx, active_use, current_state, cancel_flag }
     }
 
     /// Returns true if Handy is in active use (recording or processing).

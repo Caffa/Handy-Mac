@@ -66,6 +66,19 @@ export function useVisualizer(
 
   const [levels, setLevels] = useState<number[]>(Array(16).fill(0));
 
+  // Clear visualizer bars immediately when state transitions away from recording.
+  // This prevents the frozen bars bug: after cancel, the overlay may still
+  // receive mic-level events briefly, but the visualizer should already be
+  // fading to zero. Without this effect, bars can freeze at non-zero values
+  // because the decay timer alone may not reach zero fast enough.
+  useEffect(() => {
+    if (!effectivelyRecording || !isVisible) {
+      setLevels(Array(9).fill(0));
+      // Also reset the smoothed levels ref so the next recording starts clean
+      smoothedLevelsRef.current = Array(16).fill(0);
+    }
+  }, [effectivelyRecording, isVisible]);
+
   const decayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const micDeadTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
