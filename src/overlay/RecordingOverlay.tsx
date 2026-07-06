@@ -149,10 +149,10 @@ function filterStreamingText(text: string): string {
         lowerText === fw || lowerText === `${fw}.` || lowerText === `${fw},`,
     );
     if (isFiller) {
-      console.log("[Live Captions] Text before filter (single word filler):", {
-        text: text.substring(0, 100),
-        length: text.length,
-        filteredOut: true,
+      console.log("[Live Captions] Filler filter removed ALL text:", {
+        original: text.substring(0, 100),
+        filtered: "",
+        reason: "single-filler-word",
       });
       return "";
     }
@@ -175,11 +175,21 @@ function filterStreamingText(text: string): string {
       if (isContinuation) return words.slice(1).join(" ");
       return words.slice(1).join(" ");
     })();
-    console.log("[Live Captions] Text after filter:", {
-      originalText: text.substring(0, 100),
-      filteredText: filteredText.substring(0, 100),
-      wasFiltered: text !== filteredText,
-    });
+
+    // Log when filler filter removes ALL text (continuation pair like "so um")
+    if (!filteredText) {
+      console.log("[Live Captions] Filler filter removed ALL text:", {
+        original: text.substring(0, 100),
+        filtered: "",
+        reason: "filler-continuation-pair",
+      });
+    } else {
+      console.log("[Live Captions] Text after filter:", {
+        originalText: text.substring(0, 100),
+        filteredText: filteredText.substring(0, 100),
+        wasFiltered: text !== filteredText,
+      });
+    }
     return filteredText;
   }
 
