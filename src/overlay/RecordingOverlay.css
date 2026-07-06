@@ -107,7 +107,7 @@
   box-sizing: border-box;
   --overlay-scale: 1;
   position: fixed;
-  top: calc(70px * var(--overlay-scale));
+  top: calc(80px * var(--overlay-scale));
   left: 50%;
   transform: translateX(-50%);
   min-width: calc(600px * var(--overlay-scale));

@@ -645,25 +645,24 @@ fn position_overlay_on_monitor(
 
     // Dynamic window height based on state and mode:
     // - Router confirming/processing: full height for transcription preview
-    // - Recording with live captions: 280px for multi-line text
-    // - All other states (pill-only): 100px minimal height
+    // - All other non-router states: always live-captions height (280px)
+    //   This ensures the window never resizes between state transitions AND
+    //   the pill position stays identical whether live captions is on or off.
+    //   The pill is anchored at the top; extra space below is unused when
+    //   live captions is off. This prevents macOS position jumps from async
+    //   set_position/set_size calls during recording → transcribing → processing.
     let actual_height = match mode {
         OverlayMode::Router if state == "confirming" || state == "processing" => {
             calculate_overlay_window_height(monitor_height) * overlay_scale
         },
         OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
-            // Use consistent height for ALL non-router states (recording, transcribing,
-            // processing) to prevent window resize during state transitions, which
-            // causes visible position jumps on macOS due to async set_position/set_size.
-            // Height depends only on whether live captions is enabled, not on the
-            // current state. This is the "fixed canvas" approach from
-            // FIX_PLAN_VISUALIZER.md — the window never resizes between
-            // recording → transcribing → processing transitions.
-            if settings::get_settings_safe(app_handle).live_captions_enabled {
-                OVERLAY_LIVE_CAPTIONS_HEIGHT * overlay_scale
-            } else {
-                OVERLAY_WINDOW_MIN_HEIGHT * overlay_scale
-            }
+            // Always use live-captions height so the window never resizes
+            // and the pill stays at the same screen position regardless of
+            // the live_captions_enabled setting. Live captions renders below
+            // the pill in the extra window space; when off, the space is
+            // simply empty. This extends the "fixed canvas" approach from
+            // FIX_PLAN_VISUALIZER.md to also cover live-captions on/off.
+            OVERLAY_LIVE_CAPTIONS_HEIGHT * overlay_scale
         }
     };
 
