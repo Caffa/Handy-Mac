@@ -1434,6 +1434,29 @@ pub fn change_live_captions_enabled_setting(
         }
     }
 
+    // Recreate the AudioRecorder so the streaming callback is attached/detached
+    // based on the new live_captions_enabled setting. Without this, the recorder
+    // keeps the old configuration (no streaming callback if live captions was
+    // off when the recorder was first created — which is the default).
+    // The streaming callback that emits "partial-transcription" events is only
+    // attached in create_audio_recorder() (audio.rs), which reads this setting
+    // at recorder creation time.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            warn!(
+                "Failed to recreate recorder after live captions toggle: {}",
+                e
+            );
+        } else {
+            debug!(
+                "Recorder recreated for live captions toggle (enabled={})",
+                enabled
+            );
+        }
+    }
+
     Ok(())
 }
 

@@ -652,7 +652,14 @@ fn position_overlay_on_monitor(
             calculate_overlay_window_height(monitor_height) * overlay_scale
         },
         OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
-            if state == "recording" && settings::get_settings_safe(app_handle).live_captions_enabled {
+            // Use consistent height for ALL non-router states (recording, transcribing,
+            // processing) to prevent window resize during state transitions, which
+            // causes visible position jumps on macOS due to async set_position/set_size.
+            // Height depends only on whether live captions is enabled, not on the
+            // current state. This is the "fixed canvas" approach from
+            // FIX_PLAN_VISUALIZER.md — the window never resizes between
+            // recording → transcribing → processing transitions.
+            if settings::get_settings_safe(app_handle).live_captions_enabled {
                 OVERLAY_LIVE_CAPTIONS_HEIGHT * overlay_scale
             } else {
                 OVERLAY_WINDOW_MIN_HEIGHT * overlay_scale
