@@ -1,6 +1,7 @@
 use crate::input;
 use crate::settings;
 use crate::settings::OverlayPosition;
+use crate::transcription_coordinator::{emit_app_state, AppState};
 use log::debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -461,6 +462,23 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
 
         let payload = format_overlay_payload(state, mode);
         let _ = overlay_window.emit("show-overlay", payload);
+
+        // Also emit app-state for the new frontend state hook (Phase 1 backward compat).
+        // This supplements the existing show-overlay event with a structured AppState.
+        let app_state = match state {
+            "recording" => AppState::Recording {
+                binding_id: String::new(), // Will be updated by coordinator
+            },
+            "transcribing" | "processing" => AppState::Processing,
+            "usb-cycling" => AppState::UsbCycling {
+                stage: String::new(),
+            },
+            "confirming" => AppState::Confirming {
+                text: String::new(),
+            },
+            _ => AppState::Idle,
+        };
+        emit_app_state(app_handle, &app_state);
     }
 }
 
@@ -696,6 +714,13 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
         // force: false means the frontend will check state before hiding
         let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": false }));
 
+        // Also emit app-state: Idle for the new frontend state hook.
+        // This supplements the existing hide-overlay event. Note: the coordinator
+        // also emits Idle on ProcessingFinished, so this may be a duplicate emission,
+        // but duplicate Idle emissions are harmless and ensure the frontend always
+        // receives the state transition even if one event is lost.
+        emit_app_state(app_handle, &AppState::Idle);
+
         // Capture session ID at call time — if a new recording starts between
         // now and the closure executing, the session will have been bumped.
         let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
@@ -736,6 +761,10 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         // Emit force: true to bypass the frontend state check for cancel
         let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": true }));
+        
+        // Also emit app-state: Idle for the new frontend state hook.
+        // This ensures the frontend resets to Idle even if it misses the hide-overlay event.
+        emit_app_state(app_handle, &AppState::Idle);
         
         // Hide immediately on main thread - no thread spawn, safer on crash
         let window_clone = overlay_window.clone();

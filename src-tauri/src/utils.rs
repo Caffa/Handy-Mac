@@ -1,5 +1,6 @@
 use crate::managers::audio::AudioRecordingManager;
 use crate::shortcut;
+use crate::transcription_coordinator::{emit_app_state, AppState};
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,6 +82,11 @@ pub fn cancel_current_operation(app: &AppHandle) {
     } else {
         warn!("TranscriptionCoordinator not available");
     }
+
+    // Emit unified app-state: Idle so frontend knows the app has returned to idle.
+    // This is the single source of truth for state — it supplements the existing
+    // hide-overlay event to prevent state desync during cancel.
+    emit_app_state(app, &AppState::Idle);
 
     info!("Operation cancellation completed - returned to idle state");
 }

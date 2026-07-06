@@ -52,6 +52,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tauri::image::Image;
 pub use transcription_coordinator::TranscriptionCoordinator;
+pub use transcription_coordinator::AppState;
+pub use transcription_coordinator::emit_app_state;
 
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Listener, Manager};

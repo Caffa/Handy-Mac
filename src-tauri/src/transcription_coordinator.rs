@@ -1,12 +1,13 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
+use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
@@ -16,6 +17,32 @@ const DEBOUNCE: Duration = Duration::from_millis(30);
 /// USB microphone, model load timeout, or engine panic that didn't fire
 /// the `FinishGuard`).
 const PROCESSING_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Unified application state. This is the single source of truth
+/// for the frontend to render the overlay. Emitted via `app-state` events
+/// alongside existing `show-overlay`/`hide-overlay` events for backward
+/// compatibility during migration.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state", content = "data")]
+pub enum AppState {
+    Idle,
+    Recording { binding_id: String },
+    Processing,
+    UsbCycling { stage: String },
+    Confirming { text: String },
+}
+
+/// Emit an `app-state` event to both the overlay window and the main window.
+/// This provides a single source of truth for frontend state, supplementing
+/// the existing `show-overlay`/`hide-overlay` events during the migration period.
+pub fn emit_app_state(app: &AppHandle, state: &AppState) {
+    // Emit to overlay window (primary consumer)
+    if let Some(overlay) = app.get_webview_window("recording_overlay") {
+        let _ = overlay.emit("app-state", state);
+    }
+    // Also emit to main window for settings UI and other consumers
+    let _ = app.emit("app-state", state);
+}
 
 /// Commands processed sequentially by the coordinator thread.
 enum Command {
@@ -47,10 +74,31 @@ impl Stage {
     }
 }
 
-/// Helper to update stage and sync the active_use flag
-fn set_stage(stage: &mut Stage, new_stage: Stage, active_use: &AtomicBool) {
+/// Helper to update stage and sync the active_use flag.
+/// Also updates the shared AppState and emits an `app-state` event.
+fn set_stage(
+    stage: &mut Stage,
+    new_stage: Stage,
+    active_use: &AtomicBool,
+    current_state: &RwLock<AppState>,
+    app: &AppHandle,
+) {
     *stage = new_stage;
     active_use.store(stage.is_active(), Ordering::SeqCst);
+
+    // Update the shared AppState to reflect the new stage
+    let new_app_state = match stage {
+        Stage::Idle => AppState::Idle,
+        Stage::Recording(id) => AppState::Recording {
+            binding_id: id.clone(),
+        },
+        Stage::Processing { .. } => AppState::Processing,
+    };
+
+    if let Ok(mut guard) = current_state.write() {
+        *guard = new_app_state.clone();
+    }
+    emit_app_state(app, &new_app_state);
 }
 
 /// Serialises all transcription lifecycle events through a single thread
@@ -61,6 +109,9 @@ pub struct TranscriptionCoordinator {
     /// Shared flag indicating whether Handy is in active use (Recording or Processing stage).
     /// This is used by the CLI `--is-active-use` flag to determine if the app is busy.
     active_use: Arc<AtomicBool>,
+    /// Current application state (shared for reads from any thread).
+    /// Updated after every state transition and emitted via `app-state` events.
+    current_state: Arc<RwLock<AppState>>,
 }
 
 pub fn is_transcribe_binding(id: &str) -> bool {
@@ -72,7 +123,12 @@ impl TranscriptionCoordinator {
         let (tx, rx) = mpsc::channel();
         let active_use = Arc::new(AtomicBool::new(false));
         let active_use_clone = Arc::clone(&active_use);
+        let current_state = Arc::new(RwLock::new(AppState::Idle));
+        let current_state_clone = Arc::clone(&current_state);
         info!("Starting transcription coordinator thread");
+
+        // Emit initial Idle state
+        emit_app_state(&app, &AppState::Idle);
 
         thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -92,7 +148,7 @@ impl TranscriptionCoordinator {
                                     "Processing stage exceeded {:?} timeout, auto-resetting to Idle",
                                     PROCESSING_TIMEOUT
                                 );
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
                                 continue; // re-evaluate in next iteration
                             }
                             Some(PROCESSING_TIMEOUT - elapsed)
@@ -143,12 +199,12 @@ impl TranscriptionCoordinator {
                             if push_to_talk {
                                 if is_pressed && matches!(stage, Stage::Idle) {
                                     info!("Coordinator: starting recording for '{}'", binding_id);
-                                    start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
+                                    start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
                                 } else if !is_pressed
                                     && matches!(&stage, Stage::Recording(id) if id == &binding_id)
                                 {
                                     info!("Coordinator: stopping recording for '{}'", binding_id);
-                                    stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
+                                    stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
                                 }
                             } else if is_pressed {
                                 match &stage {
@@ -157,14 +213,14 @@ impl TranscriptionCoordinator {
                                             "Coordinator: starting recording for '{}'",
                                             binding_id
                                         );
-                                        start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
+                                        start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
                                     }
                                     Stage::Recording(id) if id == &binding_id => {
                                         info!(
                                             "Coordinator: stopping recording for '{}'",
                                             binding_id
                                         );
-                                        stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone);
+                                        stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
                                     }
                                     _ => {
                                         debug!("Ignoring press for '{binding_id}': pipeline busy")
@@ -180,7 +236,7 @@ impl TranscriptionCoordinator {
                                 recording_was_active
                             );
                             if recording_was_active || matches!(stage, Stage::Recording(_)) {
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
                                 info!("Coordinator: cancelled, reset to Idle");
                             } else if matches!(stage, Stage::Processing { .. }) {
                                 // Allow cancel during processing too — if the
@@ -188,13 +244,13 @@ impl TranscriptionCoordinator {
                                 // way to unstick the app. The FinishGuard will
                                 // still fire when (if) the pipeline completes.
                                 warn!("Cancelling stuck processing stage");
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
                             }
                         }
                         Command::ProcessingFinished => {
                             if matches!(stage, Stage::Processing { .. }) {
                                 info!("Coordinator: processing finished, reset to Idle");
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
                             }
                         }
                         Command::ProcessingTimeout => {
@@ -206,7 +262,7 @@ impl TranscriptionCoordinator {
                                     "Processing stage timed out after {:?}, auto-resetting to Idle",
                                     PROCESSING_TIMEOUT
                                 );
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone);
+                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
                             }
                         }
                     }
@@ -219,7 +275,7 @@ impl TranscriptionCoordinator {
             }
         });
 
-        Self { tx, active_use }
+        Self { tx, active_use, current_state }
     }
 
     /// Returns true if Handy is in active use (recording or processing).
@@ -232,6 +288,44 @@ impl TranscriptionCoordinator {
     /// Returns a clone of the active_use Arc for external querying
     pub fn active_use_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.active_use)
+    }
+
+    /// Get the current application state (thread-safe).
+    /// This is the single source of truth for frontend state.
+    pub fn get_state(&self) -> AppState {
+        match self.current_state.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => AppState::Idle, // fallback if lock is poisoned
+        }
+    }
+
+    /// Set the application state to UsbCycling and emit an app-state event.
+    /// Called from the USB watchdog when cycling a USB port.
+    pub fn set_usb_cycling(&self, app: &AppHandle, stage: String) {
+        let new_state = AppState::UsbCycling { stage };
+        if let Ok(mut guard) = self.current_state.write() {
+            *guard = new_state.clone();
+        }
+        emit_app_state(app, &new_state);
+    }
+
+    /// Set the application state to Confirming and emit an app-state event.
+    /// Called when the router preview is shown for user confirmation.
+    pub fn set_confirming(&self, app: &AppHandle, text: String) {
+        let new_state = AppState::Confirming { text };
+        if let Ok(mut guard) = self.current_state.write() {
+            *guard = new_state.clone();
+        }
+        emit_app_state(app, &new_state);
+    }
+
+    /// Set the application state to Idle and emit an app-state event.
+    /// Can be called to explicitly reset state from any thread.
+    pub fn set_idle(&self, app: &AppHandle) {
+        if let Ok(mut guard) = self.current_state.write() {
+            *guard = AppState::Idle;
+        }
+        emit_app_state(app, &AppState::Idle);
     }
 
     /// Send a keyboard/signal input event for a transcribe binding.
@@ -282,6 +376,7 @@ fn start(
     binding_id: &str,
     hotkey_string: &str,
     active_use: &AtomicBool,
+    current_state: &RwLock<AppState>,
 ) {
     let Some(action) = ACTION_MAP.get(binding_id) else {
         warn!("No action in ACTION_MAP for '{binding_id}'");
@@ -292,7 +387,7 @@ fn start(
         .try_state::<Arc<AudioRecordingManager>>()
         .map_or(false, |a| a.is_recording())
     {
-        set_stage(stage, Stage::Recording(binding_id.to_string()), active_use);
+        set_stage(stage, Stage::Recording(binding_id.to_string()), active_use, current_state, app);
         // Bump overlay session — any pending hide from previous session is now invalid
         crate::overlay::bump_overlay_session();
     } else {
@@ -306,6 +401,7 @@ fn stop(
     binding_id: &str,
     hotkey_string: &str,
     active_use: &AtomicBool,
+    current_state: &RwLock<AppState>,
 ) {
     let Some(action) = ACTION_MAP.get(binding_id) else {
         warn!("No action in ACTION_MAP for '{binding_id}'");
@@ -318,5 +414,7 @@ fn stop(
             since: Instant::now(),
         },
         active_use,
+        current_state,
+        app,
     );
 }
