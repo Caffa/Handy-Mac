@@ -3,7 +3,7 @@ use crate::settings;
 use crate::settings::OverlayPosition;
 use crate::transcription_coordinator::{emit_app_state, AppState};
 use log::debug;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
@@ -18,6 +18,120 @@ static OVERLAY_SESSION: AtomicU64 = AtomicU64::new(0);
 /// has changed and will skip hiding the window.
 pub fn bump_overlay_session() -> u64 {
     OVERLAY_SESSION.fetch_add(1, Ordering::SeqCst)
+}
+
+/// Global flag controlling whether the overlay can become the key window
+/// (accept keyboard input). Set to true when the user is editing transcription
+/// text in the overlay, and restored to false when editing ends.
+/// On macOS, the RecordingOverlayPanel class has `can_become_key_window: false`
+/// which prevents it from accepting keyboard input. When this flag is true,
+/// the swizzled `canBecomeKeyWindow` method returns true, allowing the panel
+/// to become key and accept keyboard focus for text editing.
+#[cfg(target_os = "macos")]
+static OVERLAY_CAN_BECOME_KEY: AtomicBool = AtomicBool::new(false);
+
+/// Swizzle the `canBecomeKeyWindow` method on the RecordingOverlayPanel class
+/// to check the `OVERLAY_CAN_BECOME_KEY` global flag instead of always returning false.
+/// This must be called once after the RecordingOverlayPanel class is registered
+/// with the Objective-C runtime (i.e., after `create_recording_overlay` creates the panel).
+///
+/// # Safety
+/// This uses the Objective-C runtime to replace a method implementation. It is safe
+/// because:
+/// - The RecordingOverlayPanel class exists (created by `tauri_panel!` macro)
+/// - The replacement function has the correct signature for `canBecomeKeyWindow`
+/// - The `OVERLAY_CAN_BECOME_KEY` flag is accessed with atomic ordering
+#[cfg(target_os = "macos")]
+fn swizzle_can_become_key_window() {
+    use objc2::runtime::AnyClass;
+    use std::ffi::CStr;
+
+    let class_name = CStr::from_bytes_with_nul(b"RecordingOverlayPanel\0").unwrap();
+    let Some(class) = AnyClass::get(class_name) else {
+        log::error!("swizzle_can_become_key_window: RecordingOverlayPanel class not found");
+        return;
+    };
+
+    // Safety: We're replacing the `canBecomeKeyWindow` instance method on
+    // RecordingOverlayPanel. This is an instance method that returns BOOL (bool).
+    // Our replacement reads a global AtomicBool, which is thread-safe.
+    unsafe {
+        /// Replacement canBecomeKeyWindow implementation that reads the global flag.
+        /// This is called by the Objective-C runtime when the window system checks
+        /// whether this panel can become the key window.
+        ///
+        /// # Safety
+        /// The Objective-C runtime passes `self` and `_cmd` as the first two
+        /// arguments, matching the standard messaging convention.
+        unsafe extern "C-unwind" fn overlay_can_become_key(
+            _this: *mut objc2::runtime::AnyObject,
+            _cmd: objc2::runtime::Sel,
+        ) -> bool {
+            OVERLAY_CAN_BECOME_KEY.load(Ordering::SeqCst)
+        }
+
+        let sel = objc2::sel!(canBecomeKeyWindow);
+        // Type encoding for canBecomeKeyWindow method:
+        // Return type: BOOL (encoded as "B" on macOS ARM64 where BOOL = bool)
+        // The self and _cmd parameters are implicit in ObjC encoding.
+        let types = CStr::from_bytes_with_nul(b"B\0").unwrap();
+        let imp: objc2::runtime::Imp = std::mem::transmute::<
+            unsafe extern "C-unwind" fn(*mut objc2::runtime::AnyObject, objc2::runtime::Sel) -> bool,
+            objc2::runtime::Imp,
+        >(overlay_can_become_key);
+        objc2::ffi::class_replaceMethod(
+            class as *const AnyClass as *mut AnyClass,
+            sel,
+            imp,
+            types.as_ptr(),
+        );
+    }
+
+    log::info!("swizzle_can_become_key_window: Successfully swizzled canBecomeKeyWindow on RecordingOverlayPanel");
+}
+
+/// Tauri command to toggle the overlay window's ability to become the key window
+/// (accept keyboard input). On macOS, this swizzles the RecordingOverlayPanel's
+/// `canBecomeKeyWindow` method to check a global flag.
+///
+/// When `can_become_key` is true, the overlay can accept keyboard focus,
+/// enabling text editing in the transcription preview. When false, the overlay
+/// returns to its default behavior of not accepting keyboard input.
+///
+/// On non-macOS platforms, this is a no-op (keyboard input works by default).
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        OVERLAY_CAN_BECOME_KEY.store(can_become_key, Ordering::SeqCst);
+
+        if let Some(overlay_window) = app.get_webview_window("recording_overlay") {
+            let window = overlay_window.clone();
+            let _ = overlay_window.run_on_main_thread(move || {
+                if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
+                    if can_become_key {
+                        // Make the panel the key window so it receives keyboard input.
+                        // This is necessary because the overlay is normally non-activating
+                        // and cannot become key by default.
+                        panel.make_key_and_order_front();
+                    } else {
+                        // Resign key window status when editing ends, restoring
+                        // the overlay's normal click-through behavior.
+                        panel.resign_key_window();
+                    }
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, can_become_key);
+        Ok(())
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -375,6 +489,12 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
         {
             Ok(panel) => {
                 let _ = panel.hide();
+
+                // Swizzle canBecomeKeyWindow on the RecordingOverlayPanel class
+                // so it checks OVERLAY_CAN_BECOME_KEY instead of always returning false.
+                // This must happen after the class is registered by PanelBuilder::build()
+                // which triggers define_class! registration.
+                swizzle_can_become_key_window();
             }
             Err(e) => {
                 log::error!("Failed to create recording overlay panel: {}", e);

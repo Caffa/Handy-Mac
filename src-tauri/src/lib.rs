@@ -651,6 +651,7 @@ pub fn run(cli_args: CliArgs) {
             helpers::clamshell::is_laptop,
             commands::confirm_routing,
             commands::open_path,
+            overlay::set_overlay_can_become_key,
         ])
         .events(collect_events![managers::history::HistoryUpdate, managers::audio::DeviceListChanged,]);
 

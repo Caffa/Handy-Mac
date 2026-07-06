@@ -176,6 +176,31 @@ export function useRouterPreview(
     }
   }, [isEditing]);
 
+  // Toggle overlay key window status for keyboard input on macOS.
+  // When editing, the overlay must accept keyboard input (can_become_key_window=true)
+  // so the user can type in the textarea. When editing ends, restore the default
+  // behavior (can_become_key_window=false) so the overlay doesn't steal focus.
+  useEffect(() => {
+    const enableKeyWindow = async () => {
+      try {
+        await commands.setOverlayCanBecomeKey(isEditing);
+      } catch (e) {
+        console.error("Failed to set overlay key window status:", e);
+      }
+    };
+    enableKeyWindow();
+
+    // Cleanup: ensure we restore can_become_key=false when the component unmounts
+    // or when editing ends.
+    return () => {
+      if (isEditing) {
+        commands.setOverlayCanBecomeKey(false).catch((e) => {
+          console.error("Failed to restore overlay key window status:", e);
+        });
+      }
+    };
+  }, [isEditing]);
+
   // Router result display timeout with race condition fix
   useEffect(() => {
     if (routerResult) {

@@ -1326,6 +1326,19 @@ async openPath(path: string) : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Toggle the overlay window's ability to become the key window (accept keyboard input).
+ * On macOS, this enables/disables keyboard input in the overlay for text editing.
+ * On other platforms, this is a no-op.
+ */
+async setOverlayCanBecomeKey(canBecomeKey: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_overlay_can_become_key", { canBecomeKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
