@@ -1411,6 +1411,27 @@ pub fn change_vad_sensitivity_setting(
     let mut settings = settings::get_settings_safe(&app);
     settings.vad_sensitivity = vad_sensitivity;
     settings::write_settings_safe(&app, settings);
+
+    // Recreate the recorder so the new VAD sensitivity takes effect immediately.
+    // vad_threshold and vad_hangover_frames are read in create_audio_recorder()
+    // and baked into the VAD at construction time — without this, the change
+    // only takes effect on next app restart.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            warn!(
+                "Failed to recreate recorder after VAD sensitivity change: {}",
+                e
+            );
+        } else {
+            debug!(
+                "Recorder recreated for VAD sensitivity change ({})",
+                sensitivity
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -1485,6 +1506,27 @@ pub fn change_noise_suppression_enabled_setting(
     let mut settings = settings::get_settings_safe(&app);
     settings.noise_suppression_enabled = enabled;
     settings::write_settings_safe(&app, settings);
+
+    // Recreate the recorder so the noise suppression toggle takes effect immediately.
+    // The noise suppressor is attached via recorder.with_noise_suppressor() at
+    // recorder creation time — without this, the change only takes effect on next
+    // app restart.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            warn!(
+                "Failed to recreate recorder after noise suppression toggle: {}",
+                e
+            );
+        } else {
+            debug!(
+                "Recorder recreated for noise suppression toggle (enabled={})",
+                enabled
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -1503,5 +1545,26 @@ pub fn change_noise_suppression_level_setting(
     let mut settings = settings::get_settings_safe(&app);
     settings.noise_suppression_level = noise_level;
     settings::write_settings_safe(&app, settings);
+
+    // Recreate the recorder so the new noise suppression level takes effect immediately.
+    // The noise suppressor level is read in create_audio_recorder() and baked
+    // into the suppressor at construction time — without this, the change only
+    // takes effect on next app restart.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            warn!(
+                "Failed to recreate recorder after noise suppression level change: {}",
+                e
+            );
+        } else {
+            debug!(
+                "Recorder recreated for noise suppression level change ({})",
+                level
+            );
+        }
+    }
+
     Ok(())
 }

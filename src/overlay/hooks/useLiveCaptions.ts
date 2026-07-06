@@ -129,6 +129,14 @@ export function useLiveCaptions(
   // Use ref for segments since we need the accumulated value in the event handler
   const segmentsRef = useRef<TranscriptionSegment[]>([]);
 
+  // Clear accumulated segments when recording stops or overlay hides
+  // to prevent segments from a previous recording bleeding into the next.
+  useEffect(() => {
+    if (!effectivelyRecording || !isVisible) {
+      segmentsRef.current = [];
+    }
+  }, [effectivelyRecording, isVisible]);
+
   // Debug effect for live captions visibility
   useEffect(() => {
     if (effectivelyRecording && isVisible) {
