@@ -293,12 +293,16 @@ export function useOverlayState(
               return current;
             }
 
+            // Don't hide if a recording/transcription/processing/confirming
+            // state is active — this guards against the race condition where
+            // a hide event arrives after a new recording has started.
             if (
               current === "recording" ||
               current === "transcribing" ||
               current === "processing" ||
               current === "confirming"
             ) {
+              console.log("[Overlay] Ignoring hide-overlay: active state =", current);
               return current;
             }
             if (current !== "usb-cycling") {

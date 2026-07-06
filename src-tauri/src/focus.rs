@@ -67,6 +67,42 @@ pub fn save_frontmost_app(app: &AppHandle) {
     }
 }
 
+/// Check if the saved frontmost application is a desktop/file manager
+/// (e.g., Finder on macOS) where pasting text is not meaningful.
+///
+/// On macOS, Finder interprets Cmd+V as "paste files" when a file reference
+/// is on the clipboard, or does nothing when plain text is on the clipboard.
+/// Neither of these is useful for the user — they want the text in a text
+/// field. When the user is focused on Finder/Desktop, we should fall back
+/// to clipboard-only mode (CopyToClipboard) and show a toast notification.
+pub fn is_saved_app_desktop_like(app: &AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let state = app.try_state::<SavedFrontmostApp>();
+        if let Some(s) = state {
+            let guard = s.0.lock();
+            if let Some(ref info) = *guard {
+                // Finder is the macOS desktop/file manager app
+                // Also detect other file managers that might be in the foreground
+                let is_finder = info.bundle_id == "com.apple.finder";
+                if is_finder {
+                    info!(
+                        "Saved frontmost app is Finder (bundle_id={}, pid={}) — treating as desktop",
+                        info.bundle_id, info.pid
+                    );
+                }
+                return is_finder;
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
 /// Restore the previously frontmost application by activating it.
 ///
 /// Should be called **before** sending the Cmd+V paste keystroke so the

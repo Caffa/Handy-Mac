@@ -105,12 +105,15 @@ const RecordingOverlay: React.FC = () => {
   }, [backendState.isVisible, backendState.overlayState, legacyState]);
 
   const isRouter = useMemo(() => {
-    // Prefer backend's isRouter when backend is active
-    if (backendState.isVisible) {
+    // During migration: prefer backend's isRouter when backend reports a Recording
+    // state (which carries binding_id). For Processing/Confirming/UsbCycling states,
+    // the backend doesn't carry mode info, so fall back to legacy isRouter from
+    // the show-overlay event payload.
+    if (backendState.isVisible && backendState.isRecording) {
       return backendState.isRouter;
     }
     return legacyIsRouter;
-  }, [backendState.isVisible, backendState.isRouter, legacyIsRouter]);
+  }, [backendState.isVisible, backendState.isRecording, backendState.isRouter, legacyIsRouter]);
 
   // ─── Visualizer (audio levels + mic warnings) ──────────────────────────
   // During migration: use isRecording from backend state when available

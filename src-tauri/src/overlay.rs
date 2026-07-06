@@ -706,6 +706,14 @@ pub fn update_overlay_position(app_handle: &AppHandle, state: &str, mode: &Overl
 ///    moment, right before window.hide(). If still active, skip the hide.
 ///
 /// Both checks must pass to hide the window.
+///
+/// NOTE: The `hide-overlay` event and `AppState::Idle` are still emitted
+/// unconditionally because the frontend needs to know about the state
+/// transition. The frontend's hide-overlay handler has its own guard
+/// (checking if recording/transcription is active) and will ignore the
+/// event if a new recording is in progress. Similarly, `AppState::Idle`
+/// will be superseded by the next `AppState::Recording` when the new
+/// recording's state is emitted.
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
@@ -735,7 +743,10 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
             // GUARD 1: Session changed — a new recording started, keep overlay
             let session_now = OVERLAY_SESSION.load(Ordering::SeqCst);
             if session_now != session_at_call {
-                log::info!("hide_recording_overlay: session changed ({session_at_call} -> {session_now}), keeping overlay");
+                log::info!(
+                    "hide_recording_overlay: session changed ({} -> {}), keeping overlay",
+                    session_at_call, session_now
+                );
                 return;
             }
 

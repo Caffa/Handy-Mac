@@ -617,6 +617,29 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     let paste_method = settings.paste_method;
     let paste_delay_ms = settings.paste_delay_ms;
 
+    // Check if the previously frontmost app is a desktop/file manager (e.g., Finder).
+    // On macOS, Finder interprets Cmd+V as "paste files" or does nothing with text.
+    // When the user is focused on Finder/Desktop, we fall back to clipboard-only
+    // mode and show a toast notification instead of attempting a paste.
+    if crate::focus::is_saved_app_desktop_like(&app_handle) {
+        info!("Frontmost app is Finder/Desktop — falling back to clipboard-only mode");
+        let text_for_clipboard = if settings.append_trailing_space {
+            format!("{} ", text)
+        } else {
+            text.clone()
+        };
+        match write_to_clipboard(&text_for_clipboard, &app_handle) {
+            Ok(()) => {
+                info!("Text copied to clipboard (desktop fallback)");
+                let _ = app_handle.emit("paste-error-clipboard-fallback", &text_for_clipboard);
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(format!("Clipboard fallback failed for desktop app: {}", e));
+            }
+        }
+    }
+
     // Restore the previously frontmost application before pasting.
     // On macOS, the overlay's orderFrontRegardless can steal focus
     // from the user's target app. Without restoring, Cmd+V goes to

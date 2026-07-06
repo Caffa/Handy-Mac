@@ -87,8 +87,12 @@ export function useRouterPreview(
   } = options;
 
   // During migration: prefer backend-derived isConfirming when provided,
-  // otherwise fall back to state === "confirming"
-  const effectivelyConfirming = isConfirming ?? state === "confirming";
+  // otherwise fall back to state === "confirming".
+  // Also consider transcriptionPreview being non-empty as a confirming signal —
+  // this bridges the timing gap where transcription-preview arrives before the
+  // app-state Confirming event, so the user can click to edit immediately.
+  const effectivelyConfirming =
+    isConfirming ?? (state === "confirming" || !!transcriptionPreview);
 
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fadeOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -184,8 +188,10 @@ export function useRouterPreview(
             current === "processing" ||
             current === "confirming"
           ) {
+            console.log("[Router] Keeping overlay visible: active state =", current);
             return current;
           }
+          console.log("[Router] Hiding overlay after result display, state =", current);
           setIsVisible(false);
           setTranscriptionPreview("");
           setCountdown(0);
