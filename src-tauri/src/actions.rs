@@ -693,7 +693,14 @@ impl ShortcutAction for TranscribeAction {
                     // If we can't acquire the lock within 10 seconds, abort with an error
                     // instead of freezing the UI indefinitely.
                     let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
-                        Some(guard) => guard.transcribe(samples),
+                        Some(guard) => {
+                            // Clear the streaming cancel flag before the final transcription.
+                            // The stop handler set it to cancel in-flight streaming, but we've
+                            // now acquired the lock (meaning streaming is done), so the final
+                            // transcription must proceed without the cancel check aborting it.
+                            guard.clear_streaming_cancel();
+                            guard.transcribe(samples)
+                        }
                         None => {
                             warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
                             Err(AppError::TranscriptionBusy)
@@ -1296,7 +1303,14 @@ impl ShortcutAction for TranscribeWithRouterAction {
                 // If we can't acquire the lock within 10 seconds, abort with an error
                 // instead of freezing the UI indefinitely.
                 let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
-                    Some(guard) => guard.transcribe(samples),
+                    Some(guard) => {
+                        // Clear the streaming cancel flag before the final transcription.
+                        // The stop handler set it to cancel in-flight streaming, but we've
+                        // now acquired the lock (meaning streaming is done), so the final
+                        // transcription must proceed without the cancel check aborting it.
+                        guard.clear_streaming_cancel();
+                        guard.transcribe(samples)
+                    }
                     None => {
                         warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
                         Err(AppError::TranscriptionBusy)
