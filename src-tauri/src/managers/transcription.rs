@@ -1,7 +1,5 @@
 use crate::audio_toolkit::audio::AudioQualityMetrics;
-use crate::audio_toolkit::{
-    process_transcription_text, trim_trailing_silence,
-};
+use crate::audio_toolkit::{process_transcription_text, trim_trailing_silence};
 use crate::errors::{AppError, AppResult};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
@@ -11,12 +9,12 @@ use crate::settings::{
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use serde::Serialize;
 use specta::Type;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use parking_lot::{Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
@@ -421,7 +419,12 @@ impl TranscriptionManager {
                         let error_msg =
                             format!("Failed to load parakeet model {}: {}", model_id, e);
                         emit_loading_failed(&error_msg);
-                        AppError::model_load("Parakeet", model_id, error_msg, anyhow::anyhow!("{}", e))
+                        AppError::model_load(
+                            "Parakeet",
+                            model_id,
+                            error_msg,
+                            anyhow::anyhow!("{}", e),
+                        )
                     })?;
                 LoadedEngine::Parakeet(engine)
             }
@@ -446,7 +449,12 @@ impl TranscriptionManager {
                             model_id, e
                         );
                         emit_loading_failed(&error_msg);
-                        AppError::model_load("MoonshineStreaming", model_id, error_msg, anyhow::anyhow!("{}", e))
+                        AppError::model_load(
+                            "MoonshineStreaming",
+                            model_id,
+                            error_msg,
+                            anyhow::anyhow!("{}", e),
+                        )
                     })?;
                 LoadedEngine::MoonshineStreaming(engine)
             }
@@ -456,7 +464,12 @@ impl TranscriptionManager {
                         let error_msg =
                             format!("Failed to load SenseVoice model {}: {}", model_id, e);
                         emit_loading_failed(&error_msg);
-                        AppError::model_load("SenseVoice", model_id, error_msg, anyhow::anyhow!("{}", e))
+                        AppError::model_load(
+                            "SenseVoice",
+                            model_id,
+                            error_msg,
+                            anyhow::anyhow!("{}", e),
+                        )
                     })?;
                 LoadedEngine::SenseVoice(engine)
             }
@@ -578,6 +591,12 @@ impl TranscriptionManager {
             let max_wait = Duration::from_secs(30);
             let wait_deadline = std::time::Instant::now() + max_wait;
             while *is_transcribing {
+                // If streaming cancellation was requested, abort immediately
+                // instead of waiting for the in-flight transcription to finish.
+                if self.is_streaming_cancelled() {
+                    debug!("Transcribe aborted: streaming cancellation requested while waiting for in-progress transcription");
+                    return Err(AppError::TranscriptionBusy);
+                }
                 let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
                     warn!("Timed out waiting for previous transcription to complete");
@@ -588,6 +607,14 @@ impl TranscriptionManager {
                     .wait_for(&mut is_transcribing, remaining);
                 // With parking_lot, the guard is not consumed — no reassignment needed
             }
+        }
+
+        // Check cancellation again after acquiring the transcribing slot.
+        // If the stop handler set the cancel flag while we were waiting, abort
+        // instead of proceeding to our own GPU inference.
+        if self.is_streaming_cancelled() {
+            debug!("Transcribe aborted: streaming cancellation requested after acquiring transcribing slot");
+            return Err(AppError::TranscriptionBusy);
         }
 
         // Set transcribing flag for the duration of this transcription.
@@ -628,6 +655,12 @@ impl TranscriptionManager {
             let mut is_loading = self.is_loading.lock();
             let wait_deadline = std::time::Instant::now() + Duration::from_secs(120);
             while *is_loading {
+                // If streaming cancellation was requested, abort immediately
+                // instead of waiting for model load to complete.
+                if self.is_streaming_cancelled() {
+                    debug!("Transcribe aborted: streaming cancellation requested while waiting for model load");
+                    return Err(AppError::TranscriptionBusy);
+                }
                 let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
                     // Timed out waiting for model to load. Force-reset the flag
@@ -637,9 +670,7 @@ impl TranscriptionManager {
                     self.loading_condvar.notify_all();
                     return Err(AppError::TranscriptionLoadTimeout);
                 }
-                let _timed_out = self
-                    .loading_condvar
-                    .wait_for(&mut is_loading, remaining);
+                let _timed_out = self.loading_condvar.wait_for(&mut is_loading, remaining);
                 // With parking_lot, the guard is not consumed — no reassignment needed
             }
 
@@ -793,23 +824,28 @@ impl TranscriptionManager {
                     e
                 }
                 None => {
-                    warn!("Engine not loaded when transcribe() started - attempting emergency load");
+                    warn!(
+                        "Engine not loaded when transcribe() started - attempting emergency load"
+                    );
                     drop(engine_guard);
-                    
+
                     // Try to load the model immediately
                     let model_id = settings.selected_model.clone();
-                    
+
                     // Try loading primary model
                     if let Err(e) = self.load_model(&model_id) {
                         warn!("Primary model load failed: {} - trying fallback models", e);
-                        
+
                         // Try fallback models from hybrid mode
                         let mut fallback_tried = false;
                         if settings.hybrid_mode_enabled {
-                            for fallback in [&settings.hybrid_short_audio_model, &settings.hybrid_long_audio_model]
-                                .into_iter()
-                                .filter_map(|m| m.as_ref())
-                                .filter(|m| *m != &model_id) 
+                            for fallback in [
+                                &settings.hybrid_short_audio_model,
+                                &settings.hybrid_long_audio_model,
+                            ]
+                            .into_iter()
+                            .filter_map(|m| m.as_ref())
+                            .filter(|m| *m != &model_id)
                             {
                                 info!("Trying fallback model: {}", fallback);
                                 if self.load_model(fallback).is_ok() {
@@ -818,17 +854,20 @@ impl TranscriptionManager {
                                 }
                             }
                         }
-                        
+
                         if !fallback_tried {
                             return Err(AppError::ModelLoadFailed {
                                 engine: "fallback".to_string(),
                                 model_id: model_id,
-                                message: format!("Model failed to load and no fallback available: {}", e),
+                                message: format!(
+                                    "Model failed to load and no fallback available: {}",
+                                    e
+                                ),
                                 source: anyhow::anyhow!("{}", e),
                             });
                         }
                     }
-                    
+
                     // Re-acquire engine after load
                     let mut engine_guard = self.lock_engine();
                     match engine_guard.take() {
@@ -943,10 +982,12 @@ impl TranscriptionManager {
 
                             whisper_engine
                                 .transcribe_with(&audio, &params)
-                                .map_err(|e| AppError::transcription(
-                                    format!("Whisper transcription failed: {}", e),
-                                    anyhow::anyhow!("{}", e),
-                                ))
+                                .map_err(|e| {
+                                    AppError::transcription(
+                                        format!("Whisper transcription failed: {}", e),
+                                        anyhow::anyhow!("{}", e),
+                                    )
+                                })
                         }
                         LoadedEngine::Parakeet(parakeet_engine) => {
                             // Use library defaults by not specifying thresholds.
@@ -957,7 +998,7 @@ impl TranscriptionManager {
                             let params = ParakeetParams {
                                 language: None,
                                 timestamp_granularity: Some(TimestampGranularity::Segment),
-                                confidence_threshold: None,  // Use library default (0.30)
+                                confidence_threshold: None, // Use library default (0.30)
                                 post_gap_confidence: None,  // Use library default (0.45)
                             };
                             parakeet_engine
@@ -971,10 +1012,12 @@ impl TranscriptionManager {
                         }
                         LoadedEngine::Moonshine(moonshine_engine) => moonshine_engine
                             .transcribe(&audio, &TranscribeOptions::default())
-                            .map_err(|e| AppError::transcription(
-                                format!("Moonshine transcription failed: {}", e),
-                                anyhow::anyhow!("{}", e),
-                            )),
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("Moonshine transcription failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
                         LoadedEngine::MoonshineStreaming(streaming_engine) => streaming_engine
                             .transcribe(&audio, &TranscribeOptions::default())
                             .map_err(|e| {
@@ -1007,10 +1050,12 @@ impl TranscriptionManager {
                         }
                         LoadedEngine::GigaAM(gigaam_engine) => gigaam_engine
                             .transcribe(&audio, &TranscribeOptions::default())
-                            .map_err(|e| AppError::transcription(
-                                format!("GigaAM transcription failed: {}", e),
-                                anyhow::anyhow!("{}", e),
-                            )),
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("GigaAM transcription failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
                         LoadedEngine::Canary(canary_engine) => {
                             let lang = if validated_language == "auto" {
                                 None
@@ -1022,12 +1067,12 @@ impl TranscriptionManager {
                                 translate: settings.translate_to_english,
                                 ..Default::default()
                             };
-                            canary_engine
-                                .transcribe(&audio, &options)
-                                .map_err(|e| AppError::transcription(
+                            canary_engine.transcribe(&audio, &options).map_err(|e| {
+                                AppError::transcription(
                                     format!("Canary transcription failed: {}", e),
                                     anyhow::anyhow!("{}", e),
-                                ))
+                                )
+                            })
                         }
                         LoadedEngine::Cohere(cohere_engine) => {
                             let lang = if validated_language == "auto" {
@@ -1043,12 +1088,12 @@ impl TranscriptionManager {
                                 language: lang,
                                 ..Default::default()
                             };
-                            cohere_engine
-                                .transcribe(&audio, &options)
-                                .map_err(|e| AppError::transcription(
+                            cohere_engine.transcribe(&audio, &options).map_err(|e| {
+                                AppError::transcription(
                                     format!("Cohere transcription failed: {}", e),
                                     anyhow::anyhow!("{}", e),
-                                ))
+                                )
+                            })
                         }
                     }
                 },
@@ -1076,9 +1121,9 @@ impl TranscriptionManager {
                         panic_msg
                     );
 
-                     // Clear the model ID so it will be reloaded on next attempt
-                     {
-                         let mut current_model = self.current_model_id.lock();
+                    // Clear the model ID so it will be reloaded on next attempt
+                    {
+                        let mut current_model = self.current_model_id.lock();
                         *current_model = None;
                     }
 
@@ -1151,7 +1196,10 @@ impl TranscriptionManager {
 
         // Log if processing changed the text
         if final_result != raw_text {
-            info!("Text processing applied: '{}' -> '{}'", raw_text, final_result);
+            info!(
+                "Text processing applied: '{}' -> '{}'",
+                raw_text, final_result
+            );
         }
 
         let et = std::time::Instant::now();
@@ -1233,75 +1281,91 @@ impl TranscriptionManager {
             drop(engine_guard);
 
             // Use greedy + single_segment for consistent benchmarking
-            let transcribe_result = catch_unwind(AssertUnwindSafe(|| -> Result<transcribe_rs::TranscriptionResult, AppError> {
-                match &mut engine {
-                    LoadedEngine::Whisper(whisper_engine) => {
-                        let params = WhisperInferenceParams {
-                            language: None, // auto-detect
-                            translate: false,
-                            single_segment: true,
-                            use_greedy: true,
-                            ..Default::default()
-                        };
-                        whisper_engine
-                            .transcribe_with(&audio, &params)
-                            .map_err(|e| AppError::transcription(
-                                format!("Whisper benchmark failed: {}", e),
-                                anyhow::anyhow!("{}", e),
-                            ))
+            let transcribe_result = catch_unwind(AssertUnwindSafe(
+                || -> Result<transcribe_rs::TranscriptionResult, AppError> {
+                    match &mut engine {
+                        LoadedEngine::Whisper(whisper_engine) => {
+                            let params = WhisperInferenceParams {
+                                language: None, // auto-detect
+                                translate: false,
+                                single_segment: true,
+                                use_greedy: true,
+                                ..Default::default()
+                            };
+                            whisper_engine
+                                .transcribe_with(&audio, &params)
+                                .map_err(|e| {
+                                    AppError::transcription(
+                                        format!("Whisper benchmark failed: {}", e),
+                                        anyhow::anyhow!("{}", e),
+                                    )
+                                })
+                        }
+                        LoadedEngine::Parakeet(parakeet_engine) => parakeet_engine
+                            .transcribe(&audio, &TranscribeOptions::default())
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("Parakeet benchmark failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
+                        LoadedEngine::Moonshine(moonshine_engine) => moonshine_engine
+                            .transcribe(&audio, &TranscribeOptions::default())
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("Moonshine benchmark failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
+                        LoadedEngine::MoonshineStreaming(streaming_engine) => streaming_engine
+                            .transcribe(&audio, &TranscribeOptions::default())
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("Moonshine streaming benchmark failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
+                        LoadedEngine::SenseVoice(sense_voice_engine) => {
+                            let params = SenseVoiceParams {
+                                language: None,
+                                use_itn: Some(true),
+                            };
+                            sense_voice_engine
+                                .transcribe_with(&audio, &params)
+                                .map_err(|e| {
+                                    AppError::transcription(
+                                        format!("SenseVoice benchmark failed: {}", e),
+                                        anyhow::anyhow!("{}", e),
+                                    )
+                                })
+                        }
+                        LoadedEngine::GigaAM(gigaam_engine) => gigaam_engine
+                            .transcribe(&audio, &TranscribeOptions::default())
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("GigaAM benchmark failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
+                        LoadedEngine::Canary(canary_engine) => canary_engine
+                            .transcribe(&audio, &TranscribeOptions::default())
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("Canary benchmark failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
+                        LoadedEngine::Cohere(cohere_engine) => cohere_engine
+                            .transcribe(&audio, &TranscribeOptions::default())
+                            .map_err(|e| {
+                                AppError::transcription(
+                                    format!("Cohere benchmark failed: {}", e),
+                                    anyhow::anyhow!("{}", e),
+                                )
+                            }),
                     }
-                    LoadedEngine::Parakeet(parakeet_engine) => parakeet_engine
-                        .transcribe(&audio, &TranscribeOptions::default())
-                        .map_err(|e| AppError::transcription(
-                            format!("Parakeet benchmark failed: {}", e),
-                            anyhow::anyhow!("{}", e),
-                        )),
-                    LoadedEngine::Moonshine(moonshine_engine) => moonshine_engine
-                        .transcribe(&audio, &TranscribeOptions::default())
-                        .map_err(|e| AppError::transcription(
-                            format!("Moonshine benchmark failed: {}", e),
-                            anyhow::anyhow!("{}", e),
-                        )),
-                    LoadedEngine::MoonshineStreaming(streaming_engine) => streaming_engine
-                        .transcribe(&audio, &TranscribeOptions::default())
-                        .map_err(|e| {
-                            AppError::transcription(
-                                format!("Moonshine streaming benchmark failed: {}", e),
-                                anyhow::anyhow!("{}", e),
-                            )
-                        }),
-                    LoadedEngine::SenseVoice(sense_voice_engine) => {
-                        let params = SenseVoiceParams {
-                            language: None,
-                            use_itn: Some(true),
-                        };
-                        sense_voice_engine
-                            .transcribe_with(&audio, &params)
-                            .map_err(|e| AppError::transcription(
-                                format!("SenseVoice benchmark failed: {}", e),
-                                anyhow::anyhow!("{}", e),
-                            ))
-                    }
-                    LoadedEngine::GigaAM(gigaam_engine) => gigaam_engine
-                        .transcribe(&audio, &TranscribeOptions::default())
-                        .map_err(|e| AppError::transcription(
-                            format!("GigaAM benchmark failed: {}", e),
-                            anyhow::anyhow!("{}", e),
-                        )),
-                    LoadedEngine::Canary(canary_engine) => canary_engine
-                        .transcribe(&audio, &TranscribeOptions::default())
-                        .map_err(|e| AppError::transcription(
-                            format!("Canary benchmark failed: {}", e),
-                            anyhow::anyhow!("{}", e),
-                        )),
-                    LoadedEngine::Cohere(cohere_engine) => cohere_engine
-                        .transcribe(&audio, &TranscribeOptions::default())
-                        .map_err(|e| AppError::transcription(
-                            format!("Cohere benchmark failed: {}", e),
-                            anyhow::anyhow!("{}", e),
-                        )),
-                }
-            }));
+                },
+            ));
 
             match transcribe_result {
                 Ok(inner_result) => {
@@ -1322,7 +1386,7 @@ impl TranscriptionManager {
                     warn!("Benchmark engine panicked: {}", panic_msg);
                     // Clear model ID
                     {
-                         let mut current_model = self.current_model_id.lock();
+                        let mut current_model = self.current_model_id.lock();
                         *current_model = None;
                     }
                     return Err(AppError::TranscriptionPanic(format!(

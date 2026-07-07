@@ -2,6 +2,7 @@
 use crate::apple_intelligence;
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
 use crate::audio_toolkit::{is_microphone_access_denied, is_no_input_device_error};
+use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
@@ -21,11 +22,11 @@ use crate::TranscriptionCoordinator;
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
@@ -64,7 +65,7 @@ pub struct RouterResultEvent {
 
 /// Drop guard that notifies the [`TranscriptionCoordinator`] when the
 /// transcription pipeline finishes — whether it completes normally or panics.
-/// 
+///
 /// FIXED: Only notifies if we're still in the Processing stage. This prevents
 /// race conditions where:
 /// 1. User starts recording → stage = Recording
@@ -73,7 +74,7 @@ pub struct RouterResultEvent {
 /// 4. User starts new recording → stage = Recording
 /// 5. Async task from step 2 finishes → FinishGuard fires
 /// 6. stage transitions to Idle (wrong!)
-/// 
+///
 /// With this fix, FinishGuard only fires if stage is still Processing,
 /// preventing the race condition.
 struct FinishGuard(AppHandle);
@@ -471,7 +472,7 @@ impl ShortcutAction for TranscribeAction {
             warn!("AudioRecordingManager not available, skipping recording start");
             return;
         };
-        
+
         // Clear any previous streaming cancellation flag when starting a new recording.
         // Use the Arc<AtomicBool> directly to avoid blocking on the TM lock.
         // The streaming callback may be holding the TM lock during transcription (seconds),
@@ -617,16 +618,22 @@ impl ShortcutAction for TranscribeAction {
         let ah = app.clone();
         let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
             warn!("AudioRecordingManager not available, cannot stop recording");
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
             return;
         };
         let rm = Arc::clone(&rm);
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop transcription");
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
             return;
         };
         let tm = Arc::clone(&tm);
         let Some(hm) = app.try_state::<Arc<HistoryManager>>() else {
             warn!("HistoryManager not available, cannot save recording");
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
             return;
         };
         let hm = Arc::clone(&hm);
@@ -681,7 +688,17 @@ impl ShortcutAction for TranscribeAction {
 
                     // Transcribe concurrently with WAV save
                     let transcription_time = Instant::now();
-                    let transcription_result = tm.lock().transcribe(samples);
+                    // Use a bounded lock timeout to avoid indefinite blocking when a streaming
+                    // transcription is in-flight holding the TM lock (1-5s of GPU work).
+                    // If we can't acquire the lock within 10 seconds, abort with an error
+                    // instead of freezing the UI indefinitely.
+                    let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
+                        Some(guard) => guard.transcribe(samples),
+                        None => {
+                            warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
+                            Err(AppError::TranscriptionBusy)
+                        }
+                    };
 
                     // ── Structured session tracking: advance to Transcribing phase ──
                     let model_id = transcription_result
@@ -854,14 +871,15 @@ impl ShortcutAction for TranscribeAction {
                             {
                                 tracker.fail_session(s, &err.to_string());
                             }
-                            
+
                             // Get settings for error classification and fallback models
                             let settings = get_settings(&ah);
-                            
+
                             // Classify the error for retry handling
-                            let failure_type = if err.to_string().contains("Model is not loaded") 
+                            let failure_type = if err.to_string().contains("Model is not loaded")
                                 || err.to_string().contains("failed to load")
-                                || err.to_string().contains("Timed out waiting for model") {
+                                || err.to_string().contains("Timed out waiting for model")
+                            {
                                 TranscriptionFailure::ModelLoadFailure {
                                     model_id: settings.selected_model.clone(),
                                     error: err.to_string(),
@@ -876,7 +894,7 @@ impl ShortcutAction for TranscribeAction {
                                     error: err.to_string(),
                                 }
                             };
-                            
+
                             // Get fallback models from settings (hybrid mode models)
                             let fallback_models = {
                                 let mut models = Vec::new();
@@ -887,15 +905,16 @@ impl ShortcutAction for TranscribeAction {
                                         }
                                     }
                                     if let Some(long_model) = &settings.hybrid_long_audio_model {
-                                        if long_model != &settings.selected_model 
-                                            && !models.contains(long_model) {
+                                        if long_model != &settings.selected_model
+                                            && !models.contains(long_model)
+                                        {
                                             models.push(long_model.clone());
                                         }
                                     }
                                 }
                                 models
                             };
-                            
+
                             // Save entry with empty text so user can retry
                             let history_entry_id = if wav_saved {
                                 let entry_result = hm.save_entry(
@@ -907,10 +926,13 @@ impl ShortcutAction for TranscribeAction {
                                     None,
                                     false, // routed: not sent to router
                                 );
-                                
+
                                 match entry_result {
                                     Ok(entry) => {
-                                        info!("Saved history entry {} for failed transcription", entry.id);
+                                        info!(
+                                            "Saved history entry {} for failed transcription",
+                                            entry.id
+                                        );
                                         Some(entry.id)
                                     }
                                     Err(save_err) => {
@@ -921,35 +943,42 @@ impl ShortcutAction for TranscribeAction {
                             } else {
                                 None
                             };
-                            
+
                             // Add to retry queue for automatic retry
                             if wav_saved {
-                                if let Some(retry_queue) = ah.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() {
+                                if let Some(retry_queue) =
+                                    ah.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>()
+                                {
                                     let wav_path = hm.recordings_dir().join(&file_name);
                                     let model_id = {
                                         let settings = get_settings(&ah);
                                         settings.selected_model.clone()
                                     };
-                                    
-                                    if let Err(retry_err) = retry_queue.lock().add_failed_transcription(
-                                        wav_path,
-                                        model_id,
-                                        fallback_models,
-                                        failure_type,
-                                        post_process,
-                                        None, // post_process_prompt
-                                        history_entry_id,
-                                    ) {
-                                        error!("Failed to add transcription to retry queue: {}", retry_err);
+
+                                    if let Err(retry_err) =
+                                        retry_queue.lock().add_failed_transcription(
+                                            wav_path,
+                                            model_id,
+                                            fallback_models,
+                                            failure_type,
+                                            post_process,
+                                            None, // post_process_prompt
+                                            history_entry_id,
+                                        )
+                                    {
+                                        error!(
+                                            "Failed to add transcription to retry queue: {}",
+                                            retry_err
+                                        );
                                     } else {
                                         info!("Added failed transcription to retry queue for automatic retry");
                                     }
                                 }
                             }
-                            
+
                             utils::hide_recording_overlay(&ah);
                             change_tray_icon(&ah, TrayIconState::Idle);
-                            
+
                             // Emit a recoverable transcription error for the error dialog system
                             let model_id_for_error = {
                                 let settings = get_settings(&ah);
@@ -1062,7 +1091,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
             warn!("AudioRecordingManager not available, skipping router recording start");
             return;
         };
-        
+
         // Clear any previous streaming cancellation flag when starting a new recording.
         // Use the Arc<AtomicBool> directly to avoid blocking on the TM lock.
         // The streaming callback may be holding the TM lock during transcription (seconds),
@@ -1074,7 +1103,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
             // Fallback to TM lock if Arc<AtomicBool> not available (shouldn't happen)
             tm.lock().clear_streaming_cancel();
         }
-        
+
         tm.lock().initiate_model_load();
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
@@ -1193,16 +1222,22 @@ impl ShortcutAction for TranscribeWithRouterAction {
         let ah = app.clone();
         let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
             warn!("AudioRecordingManager not available, cannot stop router recording");
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
             return;
         };
         let rm = Arc::clone(&rm);
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop router transcription");
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
             return;
         };
         let tm = Arc::clone(&tm);
         let Some(hm) = app.try_state::<Arc<HistoryManager>>() else {
             warn!("HistoryManager not available, cannot save router recording");
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
             return;
         };
         let hm = Arc::clone(&hm);
@@ -1256,7 +1291,17 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                 // Transcribe
                 let transcription_time = Instant::now();
-                let transcription_result = tm.lock().transcribe(samples);
+                // Use a bounded lock timeout to avoid indefinite blocking when a streaming
+                // transcription is in-flight holding the TM lock (1-5s of GPU work).
+                // If we can't acquire the lock within 10 seconds, abort with an error
+                // instead of freezing the UI indefinitely.
+                let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
+                    Some(guard) => guard.transcribe(samples),
+                    None => {
+                        warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
+                        Err(AppError::TranscriptionBusy)
+                    }
+                };
 
                 // ── Structured session tracking ──
                 let model_id = transcription_result
@@ -1321,8 +1366,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             // Trigger USB watchdog check (same as normal transcription)
                             // Calculate duration from sample count (16000 Hz sample rate)
                             let duration_secs = sample_count as f32 / 16000.0;
-                                if rm.usb_watchdog.on_silent_transcription(duration_secs) {
-                                    if let Err(e) = rm.restart_microphone_if_needed() {
+                            if rm.usb_watchdog.on_silent_transcription(duration_secs) {
+                                if let Err(e) = rm.restart_microphone_if_needed() {
                                     error!(
                                         "Failed to restart microphone after silent transcription USB cycle: {}",
                                         e
@@ -1385,8 +1430,13 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         // The overlay transitions to "confirming" state. Update the window
                         // position (fixed max-height, content managed by CSS).
                         if let Some(overlay_window) = ah.get_webview_window("recording_overlay") {
-                            crate::overlay::update_overlay_position(&ah, "confirming", &OverlayMode::Router);
-                            let _ = overlay_window.emit("transcription-preview", &transcription_text);
+                            crate::overlay::update_overlay_position(
+                                &ah,
+                                "confirming",
+                                &OverlayMode::Router,
+                            );
+                            let _ =
+                                overlay_window.emit("transcription-preview", &transcription_text);
                         }
 
                         // ── Set coordinator state to Confirming ──
@@ -1399,33 +1449,40 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         // ── Wait for user confirmation (with countdown) before routing ──
                         // Create a oneshot channel for the frontend to send confirmation
                         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel::<String>();
-                        
+
                         // Store the pending routing state so the frontend can trigger it
-                        let pending_state: crate::commands::PendingRoutingState = std::sync::Arc::new(
-                            parking_lot::Mutex::new(Some(crate::commands::PendingRouting { confirm_tx }))
-                        );
+                        let pending_state: crate::commands::PendingRoutingState =
+                            std::sync::Arc::new(parking_lot::Mutex::new(Some(
+                                crate::commands::PendingRouting { confirm_tx },
+                            )));
                         ah.manage(pending_state);
 
                         // Wait for confirmation with timeout (30 seconds)
                         let confirmation_timeout = std::time::Duration::from_secs(30);
-                        let confirmed_text = match tokio::time::timeout(confirmation_timeout, confirm_rx).await {
-                            Ok(Ok(edited_text)) => {
-                                debug!("Router confirmation received, text length: {}", edited_text.len());
-                                edited_text
-                            }
-                            Ok(Err(_)) => {
-                                debug!("Router confirmation channel closed, using original text");
-                                transcription_text.clone()
-                            }
-                            Err(_) => {
-                                debug!("Router confirmation timeout, using original text");
-                                transcription_text.clone()
-                            }
-                        };
+                        let confirmed_text =
+                            match tokio::time::timeout(confirmation_timeout, confirm_rx).await {
+                                Ok(Ok(edited_text)) => {
+                                    debug!(
+                                        "Router confirmation received, text length: {}",
+                                        edited_text.len()
+                                    );
+                                    edited_text
+                                }
+                                Ok(Err(_)) => {
+                                    debug!(
+                                        "Router confirmation channel closed, using original text"
+                                    );
+                                    transcription_text.clone()
+                                }
+                                Err(_) => {
+                                    debug!("Router confirmation timeout, using original text");
+                                    transcription_text.clone()
+                                }
+                            };
 
                         // ── Show "Filing…" overlay while routing ──
                         show_processing_overlay_with_mode(&ah, OverlayMode::Router);
-                        
+
                         // Use the confirmed (possibly edited) text for routing
                         let transcription_text = confirmed_text;
 
@@ -1674,9 +1731,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         let settings = get_settings(&ah);
 
                         // Classify the error for retry handling
-                        let failure_type = if err.to_string().contains("Model is not loaded") 
+                        let failure_type = if err.to_string().contains("Model is not loaded")
                             || err.to_string().contains("failed to load")
-                            || err.to_string().contains("Timed out waiting for model") {
+                            || err.to_string().contains("Timed out waiting for model")
+                        {
                             TranscriptionFailure::ModelLoadFailure {
                                 model_id: settings.selected_model.clone(),
                                 error: err.to_string(),
@@ -1724,7 +1782,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 true, // routed
                             ) {
                                 Ok(entry) => {
-                                    info!("Saved history entry {} for failed router transcription", entry.id);
+                                    info!(
+                                        "Saved history entry {} for failed router transcription",
+                                        entry.id
+                                    );
                                     Some(entry.id)
                                 }
                                 Err(save_err) => {
@@ -1738,7 +1799,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                         // Add to retry queue for automatic retry
                         if wav_saved {
-                            if let Some(retry_queue) = ah.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() {
+                            if let Some(retry_queue) =
+                                ah.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>()
+                            {
                                 let wav_path = hm.recordings_dir().join(&file_name);
                                 let model_id = {
                                     let settings = get_settings(&ah);
@@ -1754,7 +1817,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                     None,  // post_process_prompt
                                     history_entry_id,
                                 ) {
-                                    error!("Failed to add transcription to retry queue: {}", retry_err);
+                                    error!(
+                                        "Failed to add transcription to retry queue: {}",
+                                        retry_err
+                                    );
                                 } else {
                                     info!("Added failed router transcription to retry queue for automatic retry");
                                 }
@@ -1762,7 +1828,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         }
 
                         // ── Notify user of failure with retry intent ──
-                        send_macos_notification("Handy Router", "Transcription failed. Will retry automatically.");
+                        send_macos_notification(
+                            "Handy Router",
+                            "Transcription failed. Will retry automatically.",
+                        );
 
                         // ── Clean up overlay on transcription failure ──
                         utils::hide_recording_overlay(&ah);

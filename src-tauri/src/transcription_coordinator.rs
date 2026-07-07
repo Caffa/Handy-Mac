@@ -179,20 +179,26 @@ impl TranscriptionCoordinator {
         emit_app_state(&app, &AppState::Idle);
 
         thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut stage = Stage::Idle;
-                // Sync active_use flag with initial stage
-                active_use_clone.store(false, Ordering::SeqCst);
-                let mut last_press: Option<Instant> = None;
+            let mut stage = Stage::Idle;
+            active_use_clone.store(false, Ordering::SeqCst);
+            let mut last_press: Option<Instant> = None;
+            let mut should_exit = false;
 
-                loop {
+            loop {
+                let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // Check cancel flag FIRST, before waiting for commands.
                     // This ensures the coordinator transitions to Idle immediately
                     // when cancel is requested, even if a command is pending.
                     if cancel_flag_clone.swap(false, Ordering::SeqCst) {
                         info!("Coordinator: cancel flag detected, resetting to Idle");
-                        set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
-                        continue;
+                        set_stage(
+                            &mut stage,
+                            Stage::Idle,
+                            &active_use_clone,
+                            &current_state_clone,
+                            &app,
+                        );
+                        return;
                     }
 
                     // Calculate recv timeout: if in Processing, wake up to check the timeout.
@@ -201,12 +207,24 @@ impl TranscriptionCoordinator {
                             let elapsed = since.elapsed();
                             if elapsed >= PROCESSING_TIMEOUT {
                                 // Already past the deadline — reset immediately.
+                                // Hide the overlay so the user doesn't see a stuck "Transcribing..." state.
                                 warn!(
                                     "Processing stage exceeded {:?} timeout, auto-resetting to Idle",
                                     PROCESSING_TIMEOUT
                                 );
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
-                                continue; // re-evaluate in next iteration
+                                crate::utils::hide_recording_overlay(&app);
+                                crate::utils::change_tray_icon(
+                                    &app,
+                                    crate::utils::TrayIconState::Idle,
+                                );
+                                set_stage(
+                                    &mut stage,
+                                    Stage::Idle,
+                                    &active_use_clone,
+                                    &current_state_clone,
+                                    &app,
+                                );
+                                return; // exit this iteration cleanly, outer loop will re-enter
                             }
                             Some(PROCESSING_TIMEOUT - elapsed)
                         }
@@ -220,7 +238,8 @@ impl TranscriptionCoordinator {
                                 Err(mpsc::RecvTimeoutError::Timeout) => Command::ProcessingTimeout,
                                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                                     info!("Transcription coordinator channel disconnected, shutting down");
-                                    break;
+                                    should_exit = true;
+                                    return;
                                 }
                             }
                         }
@@ -229,7 +248,8 @@ impl TranscriptionCoordinator {
                                 Ok(c) => c,
                                 Err(_) => {
                                     info!("Transcription coordinator channel disconnected, shutting down");
-                                    break;
+                                    should_exit = true;
+                                    return;
                                 }
                             }
                         }
@@ -239,8 +259,14 @@ impl TranscriptionCoordinator {
                     // A cancel may have arrived while we were blocking on recv.
                     if cancel_flag_clone.swap(false, Ordering::SeqCst) {
                         info!("Coordinator: cancel flag detected after recv, resetting to Idle");
-                        set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
-                        continue;
+                        set_stage(
+                            &mut stage,
+                            Stage::Idle,
+                            &active_use_clone,
+                            &current_state_clone,
+                            &app,
+                        );
+                        return;
                     }
 
                     match cmd {
@@ -256,7 +282,7 @@ impl TranscriptionCoordinator {
                                 let now = Instant::now();
                                 if last_press.map_or(false, |t| now.duration_since(t) < DEBOUNCE) {
                                     debug!("Debounced press for '{binding_id}'");
-                                    continue;
+                                    return;
                                 }
                                 last_press = Some(now);
                             }
@@ -264,12 +290,26 @@ impl TranscriptionCoordinator {
                             if push_to_talk {
                                 if is_pressed && matches!(stage, Stage::Idle) {
                                     info!("Coordinator: starting recording for '{}'", binding_id);
-                                    start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
+                                    start(
+                                        &app,
+                                        &mut stage,
+                                        &binding_id,
+                                        &hotkey_string,
+                                        &active_use_clone,
+                                        &current_state_clone,
+                                    );
                                 } else if !is_pressed
                                     && matches!(&stage, Stage::Recording(id) if id == &binding_id)
                                 {
                                     info!("Coordinator: stopping recording for '{}'", binding_id);
-                                    stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
+                                    stop(
+                                        &app,
+                                        &mut stage,
+                                        &binding_id,
+                                        &hotkey_string,
+                                        &active_use_clone,
+                                        &current_state_clone,
+                                    );
                                 }
                             } else if is_pressed {
                                 match &stage {
@@ -278,14 +318,28 @@ impl TranscriptionCoordinator {
                                             "Coordinator: starting recording for '{}'",
                                             binding_id
                                         );
-                                        start(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
+                                        start(
+                                            &app,
+                                            &mut stage,
+                                            &binding_id,
+                                            &hotkey_string,
+                                            &active_use_clone,
+                                            &current_state_clone,
+                                        );
                                     }
                                     Stage::Recording(id) if id == &binding_id => {
                                         info!(
                                             "Coordinator: stopping recording for '{}'",
                                             binding_id
                                         );
-                                        stop(&app, &mut stage, &binding_id, &hotkey_string, &active_use_clone, &current_state_clone);
+                                        stop(
+                                            &app,
+                                            &mut stage,
+                                            &binding_id,
+                                            &hotkey_string,
+                                            &active_use_clone,
+                                            &current_state_clone,
+                                        );
                                     }
                                     _ => {
                                         debug!("Ignoring press for '{binding_id}': pipeline busy")
@@ -301,7 +355,13 @@ impl TranscriptionCoordinator {
                                 recording_was_active
                             );
                             if recording_was_active || matches!(stage, Stage::Recording(_)) {
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
+                                set_stage(
+                                    &mut stage,
+                                    Stage::Idle,
+                                    &active_use_clone,
+                                    &current_state_clone,
+                                    &app,
+                                );
                                 info!("Coordinator: cancelled, reset to Idle");
                             } else if matches!(stage, Stage::Processing { .. }) {
                                 // Allow cancel during processing too — if the
@@ -309,38 +369,83 @@ impl TranscriptionCoordinator {
                                 // way to unstick the app. The FinishGuard will
                                 // still fire when (if) the pipeline completes.
                                 warn!("Cancelling stuck processing stage");
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
+                                set_stage(
+                                    &mut stage,
+                                    Stage::Idle,
+                                    &active_use_clone,
+                                    &current_state_clone,
+                                    &app,
+                                );
                             }
                         }
                         Command::ProcessingFinished => {
                             if matches!(stage, Stage::Processing { .. }) {
                                 info!("Coordinator: processing finished, reset to Idle");
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
+                                set_stage(
+                                    &mut stage,
+                                    Stage::Idle,
+                                    &active_use_clone,
+                                    &current_state_clone,
+                                    &app,
+                                );
                             }
                         }
                         Command::ProcessingTimeout => {
                             // Handled above in the timeout calculation, but
                             // also reachable if the timer fires exactly. Reset
                             // to Idle so the pipeline can be triggered again.
+                            // Hide the overlay so the user doesn't see a stuck "Transcribing..." state.
                             if matches!(stage, Stage::Processing { .. }) {
                                 warn!(
                                     "Processing stage timed out after {:?}, auto-resetting to Idle",
                                     PROCESSING_TIMEOUT
                                 );
-                                set_stage(&mut stage, Stage::Idle, &active_use_clone, &current_state_clone, &app);
+                                crate::utils::hide_recording_overlay(&app);
+                                crate::utils::change_tray_icon(
+                                    &app,
+                                    crate::utils::TrayIconState::Idle,
+                                );
+                                set_stage(
+                                    &mut stage,
+                                    Stage::Idle,
+                                    &active_use_clone,
+                                    &current_state_clone,
+                                    &app,
+                                );
                             }
                         }
                     }
+                }));
+
+                if let Err(e) = panic_result {
+                    error!("Transcription coordinator iteration panicked: {:?}", e);
+                    error!("Recovering: resetting state to Idle and continuing");
+                    // Clean up after panic: hide overlay, reset tray, reset shared state
+                    crate::utils::hide_recording_overlay(&app);
+                    crate::utils::change_tray_icon(&app, crate::utils::TrayIconState::Idle);
+                    active_use_clone.store(false, Ordering::SeqCst);
+                    if let Ok(mut guard) = current_state_clone.write() {
+                        *guard = AppState::Idle;
+                    }
+                    emit_app_state(&app, &AppState::Idle);
+                    stage = Stage::Idle;
+                    // Brief pause to avoid hot-looping if panic is deterministic
+                    thread::sleep(Duration::from_millis(100));
                 }
-                debug!("Transcription coordinator exited");
-            }));
-            if let Err(e) = result {
-                error!("Transcription coordinator panicked: {:?}", e);
-                error!("This is likely the cause of sudden app crashes!");
+
+                if should_exit {
+                    info!("Transcription coordinator exiting (channel disconnected)");
+                    break;
+                }
             }
         });
 
-        Self { tx, active_use, current_state, cancel_flag }
+        Self {
+            tx,
+            active_use,
+            current_state,
+            cancel_flag,
+        }
     }
 
     /// Returns true if Handy is in active use (recording or processing).
@@ -452,7 +557,13 @@ fn start(
         .try_state::<Arc<AudioRecordingManager>>()
         .map_or(false, |a| a.is_recording())
     {
-        set_stage(stage, Stage::Recording(binding_id.to_string()), active_use, current_state, app);
+        set_stage(
+            stage,
+            Stage::Recording(binding_id.to_string()),
+            active_use,
+            current_state,
+            app,
+        );
         // Bump overlay session — any pending hide from previous session is now invalid
         crate::overlay::bump_overlay_session();
     } else {
