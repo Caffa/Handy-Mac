@@ -2,6 +2,7 @@ use crate::audio_toolkit::{
     is_bluetooth_audio_active, list_input_devices, list_output_devices, process_transcription_text,
     vad::SmoothedVad, AudioRecorder, SileroVad,
 };
+use crate::errors::AppError;
 use crate::helpers::clamshell;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::managers::transcription::TranscriptionManager;
@@ -11,12 +12,12 @@ use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
 use log::{debug, error, info, warn};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -124,7 +125,7 @@ const NO_AUDIO_THRESHOLD: f32 = 0.001;
 #[derive(Clone, Debug)]
 pub enum RecordingState {
     Idle,
-    Recording { 
+    Recording {
         binding_id: String,
         start_time: Instant,
     },
@@ -322,13 +323,21 @@ fn create_audio_recorder(
                             debug!("[Live Captions] Streaming transcription returned empty text");
                         }
                         Err(e) => {
-                            warn!("[Live Captions] Streaming transcription failed: {}", e);
+                            if matches!(e, AppError::ModelNotLoaded) {
+                                info!("[Live Captions] Model not loaded — initiating model load for next streaming cycle");
+                                tm.lock().initiate_model_load();
+                            } else if matches!(e, AppError::TranscriptionBusy) {
+                                debug!("[Live Captions] Streaming transcription skipped (busy): {}", e);
+                            } else {
+                                warn!("[Live Captions] Streaming transcription failed: {}", e);
+                            }
                         }
                     }
                 });
             }
         })
     } else {
+        info!("[Live Captions] Streaming callback NOT attached — live_captions_enabled is false");
         recorder
     };
 
@@ -531,7 +540,7 @@ impl AudioRecordingManager {
                                 &app_handle,
                                 crate::tray::TrayIconState::Recording,
                             );
-                            
+
                             // Emit stage event so the overlay shows progress dots and elapsed time
                             usb_watchdog::emit_stage_event_with_handle(
                                 &Some(app_handle.clone()),
@@ -543,7 +552,7 @@ impl AudioRecordingManager {
                         // Try to restart
                         if let Err(e) = rm.start_microphone_stream() {
                             error!("Liveness monitor failed to restart stream: {}", e);
-                            
+
                             if was_recording {
                                 // Emit failed event so frontend can recover from stuck state
                                 usb_watchdog::emit_cycle_event_with_handle(
@@ -553,7 +562,7 @@ impl AudioRecordingManager {
                                 );
                                 utils::hide_recording_overlay(&app_handle);
                             }
-                            
+
                             crate::tray::change_tray_icon(
                                 &app_handle,
                                 crate::tray::TrayIconState::Idle,
@@ -564,7 +573,7 @@ impl AudioRecordingManager {
                                 crate::tray::TrayIconState::Idle,
                             );
                             info!("Liveness monitor: stream restarted successfully");
-                            
+
                             if was_recording {
                                 // Emit finished event so frontend clears the USB cycling state
                                 usb_watchdog::emit_cycle_event_with_handle(
@@ -848,7 +857,7 @@ impl AudioRecordingManager {
             let settings = get_settings(&self.app_handle);
             let vad_threshold = settings.vad_sensitivity.threshold();
             let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
-            
+
             let vad_path = self
                 .app_handle
                 .path()
@@ -937,7 +946,10 @@ impl AudioRecordingManager {
             if let Some(mut old_rec) = recorder_opt.take() {
                 info!("Closing old recorder before recreation");
                 if let Err(e) = old_rec.close() {
-                    warn!("Error closing old recorder during recreation (continuing anyway): {}", e);
+                    warn!(
+                        "Error closing old recorder during recreation (continuing anyway): {}",
+                        e
+                    );
                 }
             }
         }
@@ -1011,7 +1023,7 @@ impl AudioRecordingManager {
                     }
                     changed
                 }
-                (Some(_), None) => true, // Configured but no current device
+                (Some(_), None) => true,  // Configured but no current device
                 (None, Some(_)) => false, // No configured device, use whatever is open
                 (None, None) => false,
             };
@@ -1220,11 +1232,9 @@ impl AudioRecordingManager {
                     true
                 } else {
                     // Stream is open with correct device, check if it's alive
-                    let stream_alive = self.recorder.lock()
-                        .as_ref()
-                        .map_or(false, |r| {
-                            r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
-                        });
+                    let stream_alive = self.recorder.lock().as_ref().map_or(false, |r| {
+                        r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
+                    });
 
                     if !stream_alive {
                         warn!(
@@ -1345,9 +1355,7 @@ impl AudioRecordingManager {
             info!("Bluetooth output device no longer detected — disabling mic stream keep-alive");
             self.bt_keep_alive.store(false, Ordering::Release);
             // Close the stream if we're in OnDemand mode and not recording
-            if matches!(*self.mode.lock(), MicrophoneMode::OnDemand)
-                && !self.is_recording()
-            {
+            if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) && !self.is_recording() {
                 self.close_generation.fetch_add(1, Ordering::SeqCst);
                 self.stop_microphone_stream();
             }
@@ -1423,11 +1431,13 @@ impl AudioRecordingManager {
                 // low audio is a failure condition - we want to count it as a failure
                 // and potentially trigger USB cycling. The next successful recording will
                 // reset the failure counter via on_recording_finished() -> on_mic_open_succeeded().
-                let max_level = self.recorder.lock()
+                let max_level = self
+                    .recorder
+                    .lock()
                     .as_ref()
                     .map(|r| r.get_max_level())
                     .unwrap_or(0.0);
-                
+
                 if samples.len() > 0 && max_level < NO_AUDIO_THRESHOLD {
                     warn!(
                         "Recording had very low audio level (max RMS: {:.6}, threshold: {:.6}, duration: {:.1}s) - mic may be dead/muted",
@@ -1447,7 +1457,10 @@ impl AudioRecordingManager {
                     // Normal path: inform USB watchdog about recording result.
                     // If 0 samples were captured, this may trigger an automatic USB cycle.
                     // Pass recording duration so it can require minimum duration before counting.
-                    if self.usb_watchdog.on_recording_finished(samples.len(), recording_duration) {
+                    if self
+                        .usb_watchdog
+                        .on_recording_finished(samples.len(), recording_duration)
+                    {
                         // Watchdog completed a power cycle. Restart the stream if needed.
                         if let Err(e) = self.restart_microphone_if_needed() {
                             error!(
@@ -1496,10 +1509,7 @@ impl AudioRecordingManager {
         }
     }
     pub fn is_recording(&self) -> bool {
-        matches!(
-            *self.state.lock(),
-            RecordingState::Recording { .. }
-        )
+        matches!(*self.state.lock(), RecordingState::Recording { .. })
     }
 
     /// Check if the microphone stream is open (always-on mode or BT keep-alive)
@@ -1582,14 +1592,14 @@ impl AudioRecordingManager {
         if !is_open {
             return (false, false);
         }
-        
+
         let stream_alive = {
             let recorder_guard = self.recorder.lock();
             recorder_guard.as_ref().map_or(false, |r| {
                 r.is_stream_alive(Self::STREAM_LIVENESS_TIMEOUT_MS)
             })
         };
-        
+
         (true, stream_alive)
     }
 }

@@ -127,7 +127,7 @@ export function useOverlayState(
   const [hybridThresholdSecs, setHybridThresholdSecs] = useState(20);
 
   // Live captions setting
-  const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(true);
+  const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(false);
 
   const [recordingElapsedSecs, setRecordingElapsedSecs] = useState(0);
   const recordingStartRef = useRef<number>(0);
@@ -190,7 +190,7 @@ export function useOverlayState(
         if (result.status === "ok" && result.data) {
           setHybridEnabled(result.data.hybrid_mode_enabled ?? false);
           setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
-          const captionsEnabled = result.data.live_captions_enabled ?? true;
+          const captionsEnabled = result.data.live_captions_enabled ?? false;
           setLiveCaptionsEnabled(captionsEnabled);
           console.log("[Live Captions] Settings loaded:", {
             enabled: captionsEnabled,
