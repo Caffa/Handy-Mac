@@ -309,13 +309,7 @@ const RecordingOverlay: React.FC = () => {
               />
             </div>
           )}
-          {state === "confirming" && isEditing && (
-            <div className="confirm-buttons">
-              <div className="confirm-send-button" onClick={handleSendEdited}>
-                {t("overlay.send", "Send")}
-              </div>
-            </div>
-          )}
+
         </div>
       </div>
 

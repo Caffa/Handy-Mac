@@ -410,7 +410,7 @@
 /* Edit buttons container */
 .edit-buttons {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 8px;
 }
 
@@ -428,6 +428,26 @@
 
 .edit-cancel-button:hover {
   background: rgba(0, 0, 0, 0.1);
+}
+
+.edit-send-button {
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: white;
+  background: #3b82f6;
+  border-radius: 6px;
+  cursor: pointer;
+  border: none;
+  transition: background-color 150ms ease;
+}
+
+.edit-send-button:hover {
+  background: #2563eb;
+}
+
+.edit-send-button:active {
+  background: #1d4ed8;
 }
 
 /* Countdown progress bar */

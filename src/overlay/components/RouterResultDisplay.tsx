@@ -134,7 +134,13 @@ export function RouterResultDisplay({
             className="transcription-edit"
             value={editedText}
             onChange={(e) => onEditedTextChange(e.target.value)}
-            onKeyDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                onSendEdited();
+              }
+            }}
             onBlur={() => {
               // Focus lock: refocus if still in editing mode
               if (isEditing) {
@@ -147,6 +153,9 @@ export function RouterResultDisplay({
           <div className="edit-buttons">
             <button className="edit-cancel-button" onClick={onCancelEdit}>
               {t("overlay.cancel", "Cancel")}
+            </button>
+            <button className="edit-send-button" onClick={onSendEdited}>
+              {t("overlay.send", "Send")}
             </button>
           </div>
         </div>
