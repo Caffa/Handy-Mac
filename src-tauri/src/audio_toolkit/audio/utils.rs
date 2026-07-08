@@ -162,25 +162,25 @@ pub fn validate_audio(samples: &[f32], sample_rate: u32) -> AudioValidationResul
     }
 
     let duration_secs = samples.len() as f64 / sample_rate as f64;
-    
+
     // Calculate audio statistics
     let mut max_amplitude = 0.0f32;
     let mut rms_sum = 0.0f32;
-    
+
     for sample in samples {
         let abs_sample = sample.abs();
         max_amplitude = max_amplitude.max(abs_sample);
         rms_sum += abs_sample * abs_sample;
     }
-    
+
     let rms = (rms_sum / samples.len() as f32).sqrt();
-    
+
     // Threshold for silence detection (empirically determined)
     // - Max amplitude < 0.01 (very quiet, likely silence)
     // - RMS < 0.005 (sustained low energy)
     const SILENCE_MAX_THRESHOLD: f32 = 0.01;
     const SILENCE_RMS_THRESHOLD: f32 = 0.005;
-    
+
     if max_amplitude < SILENCE_MAX_THRESHOLD && rms < SILENCE_RMS_THRESHOLD {
         debug!(
             "Audio classified as silent: max_amplitude={:.6}, rms={:.6}, duration={:.2}s",
@@ -213,7 +213,7 @@ pub fn validate_wav_file<P: AsRef<Path>>(file_path: P) -> AudioValidationResult 
             };
         }
     };
-    
+
     validate_audio(&samples, 16000) // Standard sample rate for Handy
 }
 

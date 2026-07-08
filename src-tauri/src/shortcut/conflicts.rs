@@ -32,28 +32,112 @@ struct ReservedShortcut {
 
 #[cfg(target_os = "macos")]
 const MACOS_RESERVED: &[ReservedShortcut] = &[
-    ReservedShortcut { shortcut: "cmd+q", name: "Quit Application", reserved: true },
-    ReservedShortcut { shortcut: "cmd+w", name: "Close Window", reserved: false },
-    ReservedShortcut { shortcut: "cmd+h", name: "Hide Application", reserved: true },
-    ReservedShortcut { shortcut: "cmd+m", name: "Minimize Window", reserved: false },
-    ReservedShortcut { shortcut: "cmd+space", name: "Spotlight Search", reserved: true },
-    ReservedShortcut { shortcut: "cmd+tab", name: "Application Switcher", reserved: true },
-    ReservedShortcut { shortcut: "cmd+shift+3", name: "Screenshot (Full Screen)", reserved: true },
-    ReservedShortcut { shortcut: "cmd+shift+4", name: "Screenshot (Selection)", reserved: true },
-    ReservedShortcut { shortcut: "cmd+shift+5", name: "Screenshot/Recording Utility", reserved: true },
-    ReservedShortcut { shortcut: "cmd+option+esc", name: "Force Quit", reserved: true },
-    ReservedShortcut { shortcut: "cmd+comma", name: "Preferences", reserved: false },
-    ReservedShortcut { shortcut: "cmd+n", name: "New Window", reserved: false },
-    ReservedShortcut { shortcut: "cmd+s", name: "Save", reserved: false },
-    ReservedShortcut { shortcut: "ctrl+arrow_up", name: "Mission Control", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+arrow_down", name: "Application Windows", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+arrow_left", name: "Switch Desktop Left", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+arrow_right", name: "Switch Desktop Right", reserved: true },
+    ReservedShortcut {
+        shortcut: "cmd+q",
+        name: "Quit Application",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+w",
+        name: "Close Window",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+h",
+        name: "Hide Application",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+m",
+        name: "Minimize Window",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+space",
+        name: "Spotlight Search",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+tab",
+        name: "Application Switcher",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+shift+3",
+        name: "Screenshot (Full Screen)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+shift+4",
+        name: "Screenshot (Selection)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+shift+5",
+        name: "Screenshot/Recording Utility",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+option+esc",
+        name: "Force Quit",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+comma",
+        name: "Preferences",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+n",
+        name: "New Window",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "cmd+s",
+        name: "Save",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+arrow_up",
+        name: "Mission Control",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+arrow_down",
+        name: "Application Windows",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+arrow_left",
+        name: "Switch Desktop Left",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+arrow_right",
+        name: "Switch Desktop Right",
+        reserved: true,
+    },
     // Also match with "control" alias
-    ReservedShortcut { shortcut: "control+arrow_up", name: "Mission Control", reserved: true },
-    ReservedShortcut { shortcut: "control+arrow_down", name: "Application Windows", reserved: true },
-    ReservedShortcut { shortcut: "control+arrow_left", name: "Switch Desktop Left", reserved: true },
-    ReservedShortcut { shortcut: "control+arrow_right", name: "Switch Desktop Right", reserved: true },
+    ReservedShortcut {
+        shortcut: "control+arrow_up",
+        name: "Mission Control",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "control+arrow_down",
+        name: "Application Windows",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "control+arrow_left",
+        name: "Switch Desktop Left",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "control+arrow_right",
+        name: "Switch Desktop Right",
+        reserved: true,
+    },
 ];
 
 #[cfg(not(target_os = "macos"))]
@@ -63,22 +147,86 @@ const MACOS_RESERVED: &[ReservedShortcut] = &[];
 
 #[cfg(target_os = "windows")]
 const WINDOWS_RESERVED: &[ReservedShortcut] = &[
-    ReservedShortcut { shortcut: "alt+f4", name: "Close Window", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+alt+delete", name: "System Security / Task Manager", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+alt+del", name: "System Security / Task Manager", reserved: true },
-    ReservedShortcut { shortcut: "win+e", name: "File Explorer", reserved: true },
-    ReservedShortcut { shortcut: "win+d", name: "Show Desktop", reserved: true },
-    ReservedShortcut { shortcut: "win+l", name: "Lock Screen", reserved: true },
-    ReservedShortcut { shortcut: "win+tab", name: "Task View", reserved: true },
-    ReservedShortcut { shortcut: "win+r", name: "Run Dialog", reserved: true },
-    ReservedShortcut { shortcut: "win+i", name: "Settings", reserved: true },
-    ReservedShortcut { shortcut: "win+s", name: "Search", reserved: true },
-    ReservedShortcut { shortcut: "alt+tab", name: "Window Switcher", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+shift+esc", name: "Task Manager", reserved: true },
-    ReservedShortcut { shortcut: "win+shift+s", name: "Screenshot", reserved: true },
-    ReservedShortcut { shortcut: "win+v", name: "Clipboard History", reserved: false },
-    ReservedShortcut { shortcut: "win+.", name: "Emoji Picker", reserved: false },
-    ReservedShortcut { shortcut: "win+;", name: "Emoji Picker", reserved: false },
+    ReservedShortcut {
+        shortcut: "alt+f4",
+        name: "Close Window",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+alt+delete",
+        name: "System Security / Task Manager",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+alt+del",
+        name: "System Security / Task Manager",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+e",
+        name: "File Explorer",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+d",
+        name: "Show Desktop",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+l",
+        name: "Lock Screen",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+tab",
+        name: "Task View",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+r",
+        name: "Run Dialog",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+i",
+        name: "Settings",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+s",
+        name: "Search",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "alt+tab",
+        name: "Window Switcher",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+shift+esc",
+        name: "Task Manager",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+shift+s",
+        name: "Screenshot",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "win+v",
+        name: "Clipboard History",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "win+.",
+        name: "Emoji Picker",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "win+;",
+        name: "Emoji Picker",
+        reserved: false,
+    },
 ];
 
 #[cfg(not(target_os = "windows"))]
@@ -92,22 +240,82 @@ const WINDOWS_RESERVED: &[ReservedShortcut] = &[];
 #[cfg(target_os = "linux")]
 const LINUX_RESERVED: &[ReservedShortcut] = &[
     // GNOME shortcuts
-    ReservedShortcut { shortcut: "super", name: "Activities Overview (GNOME)", reserved: true },
-    ReservedShortcut { shortcut: "alt+tab", name: "Window Switcher", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+alt+tab", name: "Switch System Controls", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+alt+arrow_up", name: "Switch Workspace Up (GNOME)", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+alt+arrow_down", name: "Switch Workspace Down (GNOME)", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+alt+left", name: "Switch Workspace Left (GNOME)", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+alt+right", name: "Switch Workspace Right (GNOME)", reserved: true },
-    ReservedShortcut { shortcut: "super+l", name: "Lock Screen (GNOME)", reserved: true },
-    ReservedShortcut { shortcut: "super+d", name: "Show Desktop (GNOME)", reserved: false },
-    ReservedShortcut { shortcut: "super+v", name: "Notifications (GNOME)", reserved: false },
-    ReservedShortcut { shortcut: "alt+f2", name: "Run Command (GNOME)", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+shift+esc", name: "System Monitor (GNOME)", reserved: false },
+    ReservedShortcut {
+        shortcut: "super",
+        name: "Activities Overview (GNOME)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "alt+tab",
+        name: "Window Switcher",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+alt+tab",
+        name: "Switch System Controls",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+alt+arrow_up",
+        name: "Switch Workspace Up (GNOME)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+alt+arrow_down",
+        name: "Switch Workspace Down (GNOME)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+alt+left",
+        name: "Switch Workspace Left (GNOME)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+alt+right",
+        name: "Switch Workspace Right (GNOME)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "super+l",
+        name: "Lock Screen (GNOME)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "super+d",
+        name: "Show Desktop (GNOME)",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "super+v",
+        name: "Notifications (GNOME)",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "alt+f2",
+        name: "Run Command (GNOME)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+shift+esc",
+        name: "System Monitor (GNOME)",
+        reserved: false,
+    },
     // KDE shortcuts
-    ReservedShortcut { shortcut: "alt+f4", name: "Close Window (KDE)", reserved: true },
-    ReservedShortcut { shortcut: "ctrl+f1", name: "Desktop 1 (KDE)", reserved: false },
-    ReservedShortcut { shortcut: "meta+tab", name: "Present Windows (KDE)", reserved: false },
+    ReservedShortcut {
+        shortcut: "alt+f4",
+        name: "Close Window (KDE)",
+        reserved: true,
+    },
+    ReservedShortcut {
+        shortcut: "ctrl+f1",
+        name: "Desktop 1 (KDE)",
+        reserved: false,
+    },
+    ReservedShortcut {
+        shortcut: "meta+tab",
+        name: "Present Windows (KDE)",
+        reserved: false,
+    },
 ];
 
 #[cfg(not(target_os = "linux"))]
@@ -126,18 +334,8 @@ fn normalize_shortcut(shortcut: &str) -> String {
 
     // Modifier key order for normalization
     let modifier_order = [
-        "ctrl",
-        "control",
-        "shift",
-        "alt",
-        "option",
-        "meta",
-        "cmd",
-        "command",
-        "super",
-        "win",
-        "windows",
-        "fn",
+        "ctrl", "control", "shift", "alt", "option", "meta", "cmd", "command", "super", "win",
+        "windows", "fn",
     ];
 
     let mut modifiers: Vec<String> = Vec::new();
@@ -178,24 +376,40 @@ pub fn detect_conflicts(shortcut: &str) -> Vec<ConflictInfo> {
     // Check platform-specific conflicts
     let reserved_list: &[ReservedShortcut] = {
         #[cfg(target_os = "macos")]
-        { MACOS_RESERVED }
+        {
+            MACOS_RESERVED
+        }
         #[cfg(target_os = "windows")]
-        { WINDOWS_RESERVED }
+        {
+            WINDOWS_RESERVED
+        }
         #[cfg(target_os = "linux")]
-        { LINUX_RESERVED }
+        {
+            LINUX_RESERVED
+        }
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        { &[] }
+        {
+            &[]
+        }
     };
 
     let platform_name = {
         #[cfg(target_os = "macos")]
-        { "macOS" }
+        {
+            "macOS"
+        }
         #[cfg(target_os = "windows")]
-        { "Windows" }
+        {
+            "Windows"
+        }
         #[cfg(target_os = "linux")]
-        { "Linux" }
+        {
+            "Linux"
+        }
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        { "Unknown" }
+        {
+            "Unknown"
+        }
     };
 
     for entry in reserved_list {
@@ -311,6 +525,8 @@ mod tests {
     fn test_detect_conflicts_cmd_space() {
         let all = detect_conflicts_all_platforms("cmd+space");
         assert!(!all.is_empty());
-        assert!(all.iter().any(|c| c.platform == "macOS" && c.name == "Spotlight Search"));
+        assert!(all
+            .iter()
+            .any(|c| c.platform == "macOS" && c.name == "Spotlight Search"));
     }
 }

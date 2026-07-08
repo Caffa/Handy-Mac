@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 use std::{
     collections::VecDeque,
     io::Error,
@@ -7,7 +8,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use parking_lot::Mutex;
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -243,7 +243,7 @@ impl AudioRecorder {
                     channels,
                     config.sample_format()
                 );
-                
+
                 // Debug: Log all supported configs to detect if device capabilities change after USB cycling
                 if let Ok(configs) = thread_device.supported_input_configs() {
                     for cfg in configs {
@@ -380,7 +380,7 @@ impl AudioRecorder {
     }
 
     /// Stop recording and return the audio samples.
-    /// 
+    ///
     /// FIXED: Added a 5-second timeout to prevent infinite blocking if the
     /// audio stream is frozen (e.g., zombie device, CoreAudio hang). If the
     /// timeout expires, returns an empty sample vector instead of blocking forever.
@@ -389,7 +389,7 @@ impl AudioRecorder {
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
         }
-        
+
         // FIXED: Use recv_timeout instead of blocking recv to prevent infinite hang.
         // If the consumer thread is frozen (zombie stream), this prevents the app
         // from becoming completely unresponsive. 5 seconds is generous enough for
@@ -397,7 +397,9 @@ impl AudioRecorder {
         match resp_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(samples) => Ok(samples),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                log::warn!("Timeout waiting for audio samples after 5 seconds - stream may be frozen");
+                log::warn!(
+                    "Timeout waiting for audio samples after 5 seconds - stream may be frozen"
+                );
                 // Return empty samples instead of blocking forever
                 Ok(Vec::new())
             }
@@ -415,7 +417,7 @@ impl AudioRecorder {
     /// collected during the preceding recording, so noisy environments
     /// are handled naturally — the threshold adapts to whatever
     /// background level was present while the user was speaking.
-    /// 
+    ///
     /// FIXED: Added timeout protection (max_buffer_ms + 2 seconds) to prevent
     /// infinite blocking if the audio stream is frozen.
     pub fn smart_stop(&self, max_buffer_ms: u64) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
@@ -426,14 +428,17 @@ impl AudioRecorder {
                 reply_tx: resp_tx,
             })?;
         }
-        
+
         // FIXED: Use recv_timeout instead of blocking recv.
         // The smart-stop can take up to max_buffer_ms, so we add a 2-second safety margin.
         let timeout = Duration::from_millis(max_buffer_ms) + Duration::from_secs(2);
         match resp_rx.recv_timeout(timeout) {
             Ok(samples) => Ok(samples),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                log::warn!("Timeout waiting for smart_stop samples after {}ms - stream may be frozen", timeout.as_millis());
+                log::warn!(
+                    "Timeout waiting for smart_stop samples after {}ms - stream may be frozen",
+                    timeout.as_millis()
+                );
                 Ok(Vec::new())
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -470,7 +475,7 @@ impl AudioRecorder {
     /// Returns true if the microphone stream has received audio data within
     /// the last `timeout_ms` milliseconds. Returns false if the stream has
     /// never received data or if data stopped flowing.
-    /// 
+    ///
     /// Grace period: For the first 500ms after the stream opens, we return true
     /// even if no audio has been received yet. This allows CoreAudio time to start
     /// delivering samples. After 500ms, we require actual audio data.
@@ -485,11 +490,11 @@ impl AudioRecorder {
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        
+
         // Grace period: give CoreAudio ~500ms to start delivering samples
         const GRACE_PERIOD_MS: u64 = 500;
         let stream_age_ms = now_ms.saturating_sub(opened_at);
-        
+
         if last == 0 {
             // No audio received yet
             // Return true only during grace period
@@ -499,7 +504,7 @@ impl AudioRecorder {
             // Grace period expired with no audio = zombie stream
             return false;
         }
-        
+
         // Check if audio is flowing
         now_ms.saturating_sub(last) < timeout_ms
     }
@@ -744,7 +749,10 @@ fn handle_frame(
     // while the original signal is preserved for output quality.
     if let Some(vad_arc) = vad {
         let mut det = vad_arc.lock();
-        match det.push_frame(&processed_samples).unwrap_or(VadFrame::Speech(samples)) {
+        match det
+            .push_frame(&processed_samples)
+            .unwrap_or(VadFrame::Speech(samples))
+        {
             VadFrame::Speech(_) => {
                 // Use original samples for output quality — we don't want
                 // the noise suppressor's artifacts in the final transcription.
@@ -925,7 +933,10 @@ fn run_consumer(
         // to enable real-time partial transcription display.
         // We wait for several consecutive speech frames before starting to
         // avoid false starts where VAD briefly flags noise as speech.
-        if recording && streaming_cb.is_some() && consecutive_speech_frames >= MIN_SPEECH_FRAMES_BEFORE_STREAMING {
+        if recording
+            && streaming_cb.is_some()
+            && consecutive_speech_frames >= MIN_SPEECH_FRAMES_BEFORE_STREAMING
+        {
             let should_invoke = match streaming_last_invoked {
                 None => true, // First time: invoke after collecting some audio
                 Some(last) => last.elapsed().as_millis() as u64 >= STREAMING_INTERVAL_MS,
@@ -954,7 +965,7 @@ fn run_consumer(
 
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
             let rms = compute_rms(frame);
-            
+
             // Track max audio level during recording for noise detection
             if recording {
                 // Store as u32 (RMS * 1_000_000) to avoid float atomics
@@ -972,7 +983,7 @@ fn run_consumer(
                     }
                 }
             }
-            
+
             // When NOT recording, store frames in pre-buffer for always-on mode
             // This captures audio BEFORE the hotkey is pressed
             if !recording && pre_buffer_max_samples > 0 {
@@ -984,8 +995,14 @@ fn run_consumer(
                     }
                 }
             }
-            
-            let class = handle_frame(frame, recording, &vad, &noise_suppressor, &mut processed_samples);
+
+            let class = handle_frame(
+                frame,
+                recording,
+                &vad,
+                &noise_suppressor,
+                &mut processed_samples,
+            );
 
             // Track consecutive speech frames for streaming transcription
             // Reset on noise, increment on speech to avoid false starts
@@ -1063,7 +1080,7 @@ fn run_consumer(
                 Cmd::Start => {
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
-                    
+
                     // Prepend pre-buffer if configured (always-on mode)
                     // This captures speech that started BEFORE the hotkey was pressed
                     if pre_buffer_max_samples > 0 && !pre_buffer.is_empty() {
@@ -1078,7 +1095,7 @@ fn run_consumer(
                         // Clear the pre-buffer after use
                         pre_buffer.clear();
                     }
-                    
+
                     recording = true;
                     noise_floor = DEFAULT_NOISE_FLOOR;
                     noise_floor_initialised = false;
@@ -1101,7 +1118,13 @@ fn run_consumer(
                     // doesn’t hang forever on resp_rx.recv().
                     if let Some(ss) = smart_stop.take() {
                         frame_resampler.finish(&mut |frame: &[f32]| {
-                            let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
+                            let _ = handle_frame(
+                                frame,
+                                true,
+                                &vad,
+                                &noise_suppressor,
+                                &mut processed_samples,
+                            );
                         });
                         let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
                         log::debug!("Smart-stop: resolved by Cmd::Stop (cancel)");
@@ -1118,7 +1141,13 @@ fn run_consumer(
                         match sample_rx.recv_timeout(Duration::from_secs(2)) {
                             Ok(AudioChunk::Samples(remaining)) => {
                                 frame_resampler.push(&remaining, &mut |frame: &[f32]| {
-                                    let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
+                                    let _ = handle_frame(
+                                        frame,
+                                        true,
+                                        &vad,
+                                        &noise_suppressor,
+                                        &mut processed_samples,
+                                    );
                                 });
                             }
                             Ok(AudioChunk::EndOfStream) => break,
@@ -1130,7 +1159,13 @@ fn run_consumer(
                     }
 
                     frame_resampler.finish(&mut |frame: &[f32]| {
-                        let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
+                        let _ = handle_frame(
+                            frame,
+                            true,
+                            &vad,
+                            &noise_suppressor,
+                            &mut processed_samples,
+                        );
                     });
 
                     let _ = reply_tx.send(std::mem::take(&mut processed_samples));

@@ -12,10 +12,10 @@
 
 use crate::logging::{self, AppEvent, SessionId};
 use log::{debug, info};
+use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
 use std::collections::HashMap;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::Manager;

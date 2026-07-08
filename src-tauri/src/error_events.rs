@@ -171,9 +171,7 @@ pub fn emit_transcription_error(
         RecoveryAction::Permanent
     };
 
-    let context = model_id.map(|mid| {
-        serde_json::json!({ "model_id": mid }).to_string()
-    });
+    let context = model_id.map(|mid| serde_json::json!({ "model_id": mid }).to_string());
 
     let event = RecoverableErrorEvent {
         error_id: generate_error_id(),
@@ -205,9 +203,7 @@ pub fn emit_audio_device_error(
     };
 
     let message_key = match error_type {
-        "microphone_permission_denied" => {
-            "errors.recoverable.microphonePermissionDenied"
-        }
+        "microphone_permission_denied" => "errors.recoverable.microphonePermissionDenied",
         "no_input_device" => "errors.recoverable.noInputDevice",
         _ => "errors.recoverable.audioDeviceError",
     };

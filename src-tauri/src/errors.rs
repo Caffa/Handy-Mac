@@ -109,10 +109,7 @@ pub enum AppError {
 
     /// Model file/directory not found on disk.
     #[error("Complete model {kind} not found: {model_id}")]
-    ModelPathNotFound {
-        kind: String,
-        model_id: String,
-    },
+    ModelPathNotFound { kind: String, model_id: String },
 
     // ── Settings ────────────────────────────────────────────────────────
     /// Error persisting or loading application settings.

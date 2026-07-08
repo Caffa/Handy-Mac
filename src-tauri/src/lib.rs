@@ -6,9 +6,9 @@ pub mod audio_toolkit;
 pub mod cli;
 mod clipboard;
 mod commands;
+mod emergency_save;
 pub mod error_events;
 pub mod errors;
-mod emergency_save;
 mod focus;
 mod health;
 mod helpers;
@@ -51,10 +51,10 @@ use signal_hook::iterator::Signals;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tauri::image::Image;
-pub use transcription_coordinator::TranscriptionCoordinator;
-pub use transcription_coordinator::AppState;
 pub use transcription_coordinator::emit_app_state;
+pub use transcription_coordinator::AppState;
 pub use transcription_coordinator::CancelSignal;
+pub use transcription_coordinator::TranscriptionCoordinator;
 
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -168,15 +168,14 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     logging::install_panic_hook();
 
     // Initialize the managers (wrapped in Arc<Mutex<T>> for consistent state access)
-    let history_manager = Arc::new(
-        HistoryManager::new(app_handle).expect("Failed to initialize history manager"),
-    );
-    
+    let history_manager =
+        Arc::new(HistoryManager::new(app_handle).expect("Failed to initialize history manager"));
+
     // Initialize emergency backup system to prevent recording loss
     // This must happen BEFORE AudioRecordingManager starts recording
     let backup_dir = history_manager.recordings_dir();
     emergency_save::init_emergency_backup(&backup_dir);
-    
+
     // Check for and recover any orphaned recordings from previous crashes
     let recovered = emergency_save::EmergencyBackup::recover_orphaned_recordings(&backup_dir);
     if !recovered.is_empty() {
@@ -187,16 +186,15 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         );
         // TODO: Emit event to frontend to notify user about recovered recordings
     }
-    
+
     // NOTE: AudioRecordingManager uses internal locks for all its state (state, recorder, mode)
     // so we don't need an outer Mutex wrapper. This allows methods to run concurrently
     // without blocking each other for extended periods (e.g., USB recovery takes 10+ seconds).
     let recording_manager = Arc::new(
         AudioRecordingManager::new(app_handle).expect("Failed to initialize recording manager"),
     );
-    let model_manager = Arc::new(
-        ModelManager::new(app_handle).expect("Failed to initialize model manager"),
-    );
+    let model_manager =
+        Arc::new(ModelManager::new(app_handle).expect("Failed to initialize model manager"));
     let transcription_manager = Arc::new(Mutex::new(
         TranscriptionManager::new(app_handle, model_manager.clone())
             .expect("Failed to initialize transcription manager"),
@@ -286,7 +284,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                 tray::copy_last_transcript(app);
             }
             "unload_model" => {
-                let Some(transcription_manager) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+                let Some(transcription_manager) =
+                    app.try_state::<Arc<Mutex<TranscriptionManager>>>()
+                else {
                     log::warn!("TranscriptionManager not available, skipping model unload");
                     return;
                 };
@@ -399,7 +399,7 @@ fn handle_query_flag(result_file: &str, flag_name: &str) -> ! {
     // Poll for result file with timeout
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(5);
-    
+
     loop {
         if let Ok(content) = std::fs::read_to_string(result_file) {
             let lines: Vec<&str> = content.lines().collect();
@@ -411,26 +411,30 @@ fn handle_query_flag(result_file: &str, flag_name: &str) -> ! {
                     let _ = std::fs::remove_file(result_file);
                     // Use libc::_exit to bypass atexit handlers and avoid recursion
                     #[cfg(unix)]
-                    unsafe { libc::_exit(code); }
+                    unsafe {
+                        libc::_exit(code);
+                    }
                     #[cfg(not(unix))]
                     std::process::exit(code);
                 }
             }
         }
-        
+
         // Check timeout
         if start.elapsed() > timeout {
             break;
         }
-        
+
         // Wait a bit before retrying
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    
+
     // Timeout or no result file = no running instance
     eprintln!("error: Handy is not running");
     #[cfg(unix)]
-    unsafe { libc::_exit(2); }
+    unsafe {
+        libc::_exit(2);
+    }
     #[cfg(not(unix))]
     std::process::exit(2);
 }
@@ -445,16 +449,16 @@ fn is_query_only_flag(cli_args: &CliArgs) -> bool {
 #[cfg(target_os = "macos")]
 fn setup_query_flag_handler(is_active_use: bool, is_recording: bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
-    
+
     // Store flags for the atexit handler
     static QUERY_FLAGS: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     QUERY_FLAGS.set((is_active_use, is_recording)).ok();
-    
+
     // Register atexit handler
     extern "C" {
         fn atexit(cb: extern "C" fn()) -> i32;
     }
-    
+
     extern "C" fn query_flag_atexit() {
         if let Some((is_active_use, is_recording)) = QUERY_FLAGS.get() {
             if *is_active_use {
@@ -465,7 +469,7 @@ fn setup_query_flag_handler(is_active_use: bool, is_recording: bool) {
             }
         }
     }
-    
+
     unsafe {
         atexit(query_flag_atexit);
     }
@@ -480,7 +484,7 @@ fn setup_query_flag_handler(_is_active_use: bool, _is_recording: bool) {
 pub fn run(cli_args: CliArgs) {
     // Detect portable mode before anything else
     portable::init();
-    
+
     // For query-only flags, set up an atexit handler to poll for result files.
     // The single-instance plugin will call std::process::exit(0) after forwarding args,
     // which triggers our atexit handler.
@@ -653,7 +657,10 @@ pub fn run(cli_args: CliArgs) {
             commands::open_path,
             overlay::set_overlay_can_become_key,
         ])
-        .events(collect_events![managers::history::HistoryUpdate, managers::audio::DeviceListChanged,]);
+        .events(collect_events![
+            managers::history::HistoryUpdate,
+            managers::audio::DeviceListChanged,
+        ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
     specta_builder
@@ -737,21 +744,32 @@ pub fn run(cli_args: CliArgs) {
                     )
                 };
                 let is_active = is_coord_active || is_audio_recording;
-                
+
                 // Also check audio state for debugging
-                let is_open = app.try_state::<Arc<AudioRecordingManager>>()
+                let is_open = app
+                    .try_state::<Arc<AudioRecordingManager>>()
                     .map_or(false, |a| a.is_stream_open());
-                let is_always_on = app.try_state::<Arc<AudioRecordingManager>>()
+                let is_always_on = app
+                    .try_state::<Arc<AudioRecordingManager>>()
                     .map_or(false, |a| a.is_always_on());
-                
+
                 // Print detailed status for debugging
                 eprintln!("Handy active use status:");
                 eprintln!("  Active use: {}", if is_active { "YES" } else { "no" });
-                eprintln!("  Coordinator stage: {}", if is_coord_active { "active" } else { "idle" });
-                eprintln!("  Recording session: {}", if is_audio_recording { "ACTIVE" } else { "none" });
+                eprintln!(
+                    "  Coordinator stage: {}",
+                    if is_coord_active { "active" } else { "idle" }
+                );
+                eprintln!(
+                    "  Recording session: {}",
+                    if is_audio_recording { "ACTIVE" } else { "none" }
+                );
                 eprintln!("  Mic stream: {}", if is_open { "open" } else { "closed" });
-                eprintln!("  Always-on mode: {}", if is_always_on { "yes" } else { "no" });
-                
+                eprintln!(
+                    "  Always-on mode: {}",
+                    if is_always_on { "yes" } else { "no" }
+                );
+
                 // Write result to temp file for CLI instance to read
                 // The CLI instance will read this file and exit with the correct code
                 let result_file = "/tmp/handy-is-active-use.result";
@@ -760,7 +778,7 @@ pub fn run(cli_args: CliArgs) {
                     let _ = writeln!(file, "{}", if is_active { "active-use" } else { "idle" });
                     let _ = writeln!(file, "{}", if is_active { "0" } else { "1" });
                 }
-                
+
                 // Do NOT call std::process::exit() here — this callback runs
                 // inside the RUNNING instance. Exiting would kill Handy.
             } else if args.iter().any(|a| a == "--is-recording") {
@@ -774,21 +792,35 @@ pub fn run(cli_args: CliArgs) {
                     let is_recording = audio_manager.is_recording();
                     let is_open = audio_manager.is_stream_open();
                     let is_always_on = audio_manager.is_always_on();
-                    
+
                     // Print detailed status for debugging
                     eprintln!("Handy audio status:");
-                    eprintln!("  Recording session: {}", if is_recording { "ACTIVE" } else { "none" });
+                    eprintln!(
+                        "  Recording session: {}",
+                        if is_recording { "ACTIVE" } else { "none" }
+                    );
                     eprintln!("  Mic stream: {}", if is_open { "open" } else { "closed" });
-                    eprintln!("  Always-on mode: {}", if is_always_on { "yes" } else { "no" });
-                    
+                    eprintln!(
+                        "  Always-on mode: {}",
+                        if is_always_on { "yes" } else { "no" }
+                    );
+
                     // Write result to temp file for CLI instance to read
                     let result_file = "/tmp/handy-is-recording.result";
                     if let Ok(mut file) = std::fs::File::create(result_file) {
                         use std::io::Write;
-                        let _ = writeln!(file, "{}", if is_recording { "recording" } else { "not-recording" });
+                        let _ = writeln!(
+                            file,
+                            "{}",
+                            if is_recording {
+                                "recording"
+                            } else {
+                                "not-recording"
+                            }
+                        );
                         let _ = writeln!(file, "{}", if is_recording { "0" } else { "1" });
                     }
-                    
+
                     // Do NOT call std::process::exit() here — this callback runs
                     // inside the RUNNING instance. Exiting would kill Handy.
                 } else {
@@ -862,7 +894,10 @@ pub fn run(cli_args: CliArgs) {
             let cancel_signal = CancelSignal::new();
             let cancel_flag = cancel_signal.flag();
             app.manage(cancel_signal);
-            app.manage(TranscriptionCoordinator::new(app_handle.clone(), cancel_flag));
+            app.manage(TranscriptionCoordinator::new(
+                app_handle.clone(),
+                cancel_flag,
+            ));
 
             initialize_core_logic(&app_handle);
 
@@ -874,8 +909,8 @@ pub fn run(cli_args: CliArgs) {
             // the get_available_accelerators command), causing a UI freeze.
             // Result is cached in a OnceLock inside the transcription manager.
             std::thread::spawn(|| {
-                 let _ = crate::managers::transcription::get_available_accelerators();
-             });
+                let _ = crate::managers::transcription::get_available_accelerators();
+            });
 
             // Pre-warm the ASR model on a background thread so it's ready when
             // the user first presses the hotkey. Without this, the model is loaded

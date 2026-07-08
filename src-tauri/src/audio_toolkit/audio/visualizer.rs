@@ -136,7 +136,7 @@ impl AudioVisualiser {
             let normalized = ((db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0.0, 1.0);
             let bucket_value = (normalized * GAIN).powf(CURVE_POWER).clamp(0.0, 1.0);
             buckets[bucket_idx] = bucket_value;
-            
+
             // Debug: Log first bucket value periodically to track signal levels
             if bucket_idx == 0 {
                 log::debug!(

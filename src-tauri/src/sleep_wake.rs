@@ -107,13 +107,14 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         // If the device isn't ready in 2s, the watchdog power cycle will handle it.
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        let recording_manager = ah.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>();
+        let recording_manager =
+            ah.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>();
 
         match recording_manager {
             Some(rm) => {
                 // Check stream health using the public method
                 let (is_open, is_alive) = rm.check_stream_health();
-                
+
                 if !is_open {
                     info!("Wake recovery: stream not open, will open on next recording");
                     // Stream not open (OnDemand mode or closed), skip cycle

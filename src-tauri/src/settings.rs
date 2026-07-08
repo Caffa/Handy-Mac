@@ -1182,7 +1182,10 @@ where
     match catch_unwind(AssertUnwindSafe(op)) {
         Ok(result) => Some(result),
         Err(panic_info) => {
-            error!("Panic in settings operation ({}) — caught to prevent WebKit abort: {:?}", label, panic_info);
+            error!(
+                "Panic in settings operation ({}) — caught to prevent WebKit abort: {:?}",
+                label, panic_info
+            );
             None
         }
     }
@@ -1493,7 +1496,10 @@ pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
     }
 
     // Not found in current settings — check defaults
-    warn!("Binding '{}' not found in current settings, falling back to defaults", id);
+    warn!(
+        "Binding '{}' not found in current settings, falling back to defaults",
+        id
+    );
     let default_settings = get_default_settings();
 
     if let Some(default_binding) = default_settings.bindings.get(id) {
@@ -1501,7 +1507,10 @@ pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
     }
 
     // Not in defaults either — create a sensible fallback
-    warn!("Binding '{}' not found in defaults either, creating fallback binding", id);
+    warn!(
+        "Binding '{}' not found in defaults either, creating fallback binding",
+        id
+    );
     ShortcutBinding {
         id: id.to_string(),
         name: id.to_string(),

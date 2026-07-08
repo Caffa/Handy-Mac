@@ -16,9 +16,9 @@
 
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
+use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -164,11 +164,11 @@ impl UsbWatchdog {
 
     /// Called when a recording finishes. If the sample count is zero, it
     /// counts as a failure and may trigger a power cycle.
-    /// 
+    ///
     /// Parameters:
     /// - `sample_count`: Number of audio samples captured
     /// - `duration_secs`: Duration of the recording in seconds
-    /// 
+    ///
     /// Returns true if a USB power cycle was triggered.
     pub fn on_recording_finished(&self, sample_count: usize, _duration_secs: f32) -> bool {
         if sample_count > 0 {
@@ -183,11 +183,11 @@ impl UsbWatchdog {
 
     /// Called when a transcription returns empty text despite having audio samples.
     /// This may indicate the microphone is capturing silence/noise instead of actual audio.
-    /// 
+    ///
     /// Parameters:
     /// - `duration_secs`: Duration of the recording in seconds. Short recordings (< 10s)
     ///   are less likely to indicate a dead mic (user may have stopped early).
-    /// 
+    ///
     /// Returns true if a USB power cycle was triggered.
     pub fn on_silent_transcription(&self, duration_secs: f32) -> bool {
         if !self.enabled.load(Ordering::SeqCst) {
@@ -236,11 +236,11 @@ impl UsbWatchdog {
 
     /// Called when a recording had very low audio levels (near silence).
     /// This indicates the microphone may be dead or muted.
-    /// 
+    ///
     /// Parameters:
     /// - `duration_secs`: Duration of the recording in seconds. Short recordings (< 10s)
     ///   are less likely to indicate a dead mic (user may have stopped early).
-    /// 
+    ///
     /// Returns true if a USB power cycle was triggered.
     pub fn on_low_audio_level(&self, duration_secs: f32) -> bool {
         if !self.enabled.load(Ordering::SeqCst) {
@@ -255,7 +255,9 @@ impl UsbWatchdog {
 
         // During grace period after a USB cycle, be more lenient
         if self.post_cycle_grace.load(Ordering::SeqCst) {
-            debug!("USB watchdog: in post-cycle grace period, not counting low audio level as failure");
+            debug!(
+                "USB watchdog: in post-cycle grace period, not counting low audio level as failure"
+            );
             return false;
         }
 
@@ -584,7 +586,13 @@ fn resolve_device(name: &str) -> Option<UsbDevice> {
     // Helper to normalize strings for comparison (case-insensitive, alphanumeric only)
     let to_fuzzy = |s: &str| -> String {
         s.chars()
-            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' })
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    ' '
+                }
+            })
             .collect::<String>()
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -603,7 +611,10 @@ fn resolve_device(name: &str) -> Option<UsbDevice> {
     });
 
     if let Some(ref d) = found {
-        debug!("USB watchdog: resolved '{}' fuzzy matching to '{}' (hub {} port {})", name, d.name, d.hub, d.port);
+        debug!(
+            "USB watchdog: resolved '{}' fuzzy matching to '{}' (hub {} port {})",
+            name, d.name, d.hub, d.port
+        );
     }
 
     found
@@ -620,7 +631,10 @@ fn list_usb_devices_inner() -> Vec<UsbDevice> {
     };
 
     let output = match std::process::Command::new(&bin)
-        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        .env(
+            "PATH",
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        )
         .output()
     {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -688,7 +702,10 @@ fn uhubctl_bin() -> Option<std::path::PathBuf> {
 fn which_uhubctl() -> Option<std::path::PathBuf> {
     std::process::Command::new("which")
         .arg("uhubctl")
-        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        .env(
+            "PATH",
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        )
         .output()
         .ok()
         .and_then(|o| {
@@ -709,7 +726,10 @@ fn run_uhubctl_cycle(hub_id: &str, port: &str) -> Result<(), String> {
     let bin = uhubctl_bin().ok_or_else(|| "uhubctl not found on system".to_string())?;
     let mut child = std::process::Command::new(&bin)
         .args(["-l", hub_id, "-p", port, "-a", "cycle", "-d", "3"])
-        .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        .env(
+            "PATH",
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -725,7 +745,10 @@ fn run_uhubctl_cycle(hub_id: &str, port: &str) -> Result<(), String> {
                     let _ = child.wait();
                     return Ok(());
                 }
-                let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "killed by signal".to_string());
+                let code = status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "killed by signal".to_string());
                 return Err(format!("uhubctl exited with {}", code));
             }
             Ok(None) => {
@@ -756,7 +779,10 @@ pub fn ensure_uhubctl_installed() -> bool {
         Ok(output) if output.status.success() => {
             match std::process::Command::new("brew")
                 .args(["install", "uhubctl"])
-                .env("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+                .env(
+                    "PATH",
+                    "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                )
                 .output()
             {
                 Ok(output) => {
@@ -776,5 +802,8 @@ pub fn ensure_uhubctl_installed() -> bool {
 }
 
 fn epoch_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

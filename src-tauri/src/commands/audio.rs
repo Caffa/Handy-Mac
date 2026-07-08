@@ -6,9 +6,9 @@ use crate::managers::transcription::TranscriptionManager;
 use crate::settings::{get_settings_safe, write_settings_safe};
 use crate::usb_watchdog;
 use log::{info, warn};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -148,7 +148,8 @@ fn get_windows_microphone_permission_status_impl() -> WindowsMicrophonePermissio
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_windows_microphone_permission_status() -> Result<WindowsMicrophonePermissionStatus, String> {
+pub fn get_windows_microphone_permission_status(
+) -> Result<WindowsMicrophonePermissionStatus, String> {
     #[cfg(target_os = "windows")]
     {
         Ok(get_windows_microphone_permission_status_impl())

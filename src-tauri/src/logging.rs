@@ -12,11 +12,11 @@
 
 use chrono::Utc;
 use log;
+use parking_lot::Mutex;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use parking_lot::Mutex;
 
 /// Unique identifier for a recording→transcription session.
 /// Generated from a timestamp so it's human-sortable and unique per session.

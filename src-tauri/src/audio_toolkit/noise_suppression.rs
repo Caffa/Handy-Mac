@@ -250,7 +250,11 @@ mod tests {
 
     #[test]
     fn test_gain_floor_values() {
-        assert!(NoiseSuppressionLevel::Low.gain_floor() > NoiseSuppressionLevel::Medium.gain_floor());
-        assert!(NoiseSuppressionLevel::Medium.gain_floor() > NoiseSuppressionLevel::High.gain_floor());
+        assert!(
+            NoiseSuppressionLevel::Low.gain_floor() > NoiseSuppressionLevel::Medium.gain_floor()
+        );
+        assert!(
+            NoiseSuppressionLevel::Medium.gain_floor() > NoiseSuppressionLevel::High.gain_floor()
+        );
     }
 }

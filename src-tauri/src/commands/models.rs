@@ -1,9 +1,9 @@
+use crate::managers::history::HistoryManager;
 use crate::managers::model::{
     BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager,
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings_safe, write_settings_safe, ModelUnloadTimeout};
-use crate::managers::history::HistoryManager;
 use log::{info, warn};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -300,7 +300,8 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
     let Some(history_manager) = app_handle.try_state::<Arc<HistoryManager>>() else {
         return Err("HistoryManager not available".to_string());
     };
-    let Some(transcription_manager) = app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
+    let Some(transcription_manager) = app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>()
+    else {
         warn!("TranscriptionManager not available, cannot benchmark models");
         return Err("TranscriptionManager not available".to_string());
     };
@@ -450,7 +451,10 @@ pub async fn benchmark_models(app_handle: AppHandle) -> Result<BenchmarkResult, 
 
         for (clip_idx, clip) in audio_clips.iter().enumerate() {
             let start = std::time::Instant::now();
-            match transcription_manager.lock().transcribe_for_benchmark(clip.clone()) {
+            match transcription_manager
+                .lock()
+                .transcribe_for_benchmark(clip.clone())
+            {
                 Ok(text) => {
                     // Check if transcription produced actual content (not empty/whitespace)
                     if text.trim().is_empty() {

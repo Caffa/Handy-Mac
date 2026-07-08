@@ -29,12 +29,12 @@
 
 use handy_keys::{Hotkey, HotkeyId, HotkeyManager, HotkeyState, KeyboardListener};
 use log::{debug, error, info, warn};
+use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
@@ -464,7 +464,10 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
                 if let Err(e) = state.register(&cancel_binding) {
                     error!("Failed to register cancel shortcut: {}", e);
                 } else {
-                    debug!("Cancel shortcut registered synchronously: {}", cancel_binding.current_binding);
+                    debug!(
+                        "Cancel shortcut registered synchronously: {}",
+                        cancel_binding.current_binding
+                    );
                 }
             } else {
                 warn!("HandyKeysState not available for cancel shortcut registration");

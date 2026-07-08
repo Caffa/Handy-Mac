@@ -1,7 +1,5 @@
 use crate::audio_toolkit::read_wav_samples;
-use crate::managers::history::{
-    ExperimentGroup, HistoryManager, TranscriptionVariant,
-};
+use crate::managers::history::{ExperimentGroup, HistoryManager, TranscriptionVariant};
 use crate::managers::transcription::TranscriptionManager;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -63,7 +61,14 @@ pub async fn update_experiment_group(
     is_complete: Option<bool>,
 ) -> Result<ExperimentGroup, String> {
     history_manager
-        .update_experiment_group(id, ground_truth, speech_speed, recording_quality, notes, is_complete)
+        .update_experiment_group(
+            id,
+            ground_truth,
+            speech_speed,
+            recording_quality,
+            notes,
+            is_complete,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -79,7 +84,12 @@ pub async fn add_transcription_variant(
     transcription_text: String,
 ) -> Result<TranscriptionVariant, String> {
     history_manager
-        .add_variant(experiment_group_id, model_id, parameters, transcription_text)
+        .add_variant(
+            experiment_group_id,
+            model_id,
+            parameters,
+            transcription_text,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -192,7 +202,10 @@ pub async fn generate_variants(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Transcribe with this model
-        match transcription_manager.lock().transcribe_for_benchmark(audio_samples.clone()) {
+        match transcription_manager
+            .lock()
+            .transcribe_for_benchmark(audio_samples.clone())
+        {
             Ok(text) => {
                 variants.push(GeneratedVariant {
                     model_id: model_id.clone(),

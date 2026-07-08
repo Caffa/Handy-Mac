@@ -76,7 +76,10 @@ fn swizzle_can_become_key_window() {
         // The self and _cmd parameters are implicit in ObjC encoding.
         let types = CStr::from_bytes_with_nul(b"B\0").unwrap();
         let imp: objc2::runtime::Imp = std::mem::transmute::<
-            unsafe extern "C-unwind" fn(*mut objc2::runtime::AnyObject, objc2::runtime::Sel) -> bool,
+            unsafe extern "C-unwind" fn(
+                *mut objc2::runtime::AnyObject,
+                objc2::runtime::Sel,
+            ) -> bool,
             objc2::runtime::Imp,
         >(overlay_can_become_key);
         objc2::ffi::class_replaceMethod(
@@ -359,7 +362,7 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
     let window_height = calculate_overlay_window_height(monitor_height);
 
     let settings = settings::get_settings_safe(app_handle);
-    
+
     debug!(
         "calculate_overlay_position: overlay_position={:?}, monitor=({},{}) {}x{}",
         settings.overlay_position, monitor_x, monitor_y, monitor_width, monitor_height
@@ -381,7 +384,10 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
                 - OVERLAY_PILL_HEIGHT
                 - OVERLAY_BOTTOM_OFFSET
                 - window_extra / 2.0;
-            debug!("calculate_overlay_position: Bottom/None position, y={}", pos_y);
+            debug!(
+                "calculate_overlay_position: Bottom/None position, y={}",
+                pos_y
+            );
             pos_y
         }
     };
@@ -571,7 +577,8 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
         // For all other states, only the CSS pointer-events: none areas are click-through.
         #[cfg(target_os = "macos")]
         {
-            let should_ignore_mouse_events = matches!(mode, OverlayMode::Router) && state == "processing";
+            let should_ignore_mouse_events =
+                matches!(mode, OverlayMode::Router) && state == "processing";
             let window = overlay_window.clone();
             let _ = overlay_window.run_on_main_thread(move || {
                 if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
@@ -654,7 +661,7 @@ fn position_overlay_on_monitor(
     let actual_height = match mode {
         OverlayMode::Router if state == "confirming" || state == "processing" => {
             calculate_overlay_window_height(monitor_height) * overlay_scale
-        },
+        }
         OverlayMode::Router | OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess => {
             // Always use live-captions height so the window never resizes
             // and the pill stays at the same screen position regardless of
@@ -679,16 +686,11 @@ fn position_overlay_on_monitor(
     // regardless of window height.
     let settings = settings::get_settings_safe(app_handle);
     let y = match settings.overlay_position {
-        OverlayPosition::Top => {
-            monitor_y + OVERLAY_TOP_OFFSET
-        }
+        OverlayPosition::Top => monitor_y + OVERLAY_TOP_OFFSET,
         OverlayPosition::Bottom | OverlayPosition::None => {
             let pill_height = OVERLAY_PILL_HEIGHT * overlay_scale;
             let pill_margin = 4.0 * overlay_scale;
-            monitor_y + monitor_height
-                - OVERLAY_BOTTOM_OFFSET
-                - pill_height
-                - pill_margin
+            monitor_y + monitor_height - OVERLAY_BOTTOM_OFFSET - pill_height - pill_margin
         }
     };
 
@@ -701,22 +703,22 @@ fn position_overlay_on_monitor(
     {
         let window = overlay_window.clone();
         let _ = overlay_window.run_on_main_thread(move || {
-            let _ = window.set_position(tauri::Position::Logical(
-                tauri::LogicalPosition { x, y }
-            ));
-            let _ = window.set_size(tauri::Size::Logical(
-                tauri::LogicalSize { width: actual_width, height: actual_height }
-            ));
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: actual_width,
+                height: actual_height,
+            }));
         });
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = overlay_window
-            .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-        let _ = overlay_window.set_size(tauri::Size::Logical(
-            tauri::LogicalSize { width: actual_width, height: actual_height }
-        ));
+        let _ =
+            overlay_window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+        let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: actual_width,
+            height: actual_height,
+        }));
     }
 }
 
@@ -748,16 +750,22 @@ fn position_overlay_fixed(app_handle: &AppHandle, state: &str, mode: &OverlayMod
 
         // Try to get monitor with cursor first
         if let Some(monitor) = get_monitor_with_cursor(app_handle) {
-            debug!("position_overlay_fixed: Using monitor with cursor at ({}, {})",
-                monitor.position().x, monitor.position().y);
+            debug!(
+                "position_overlay_fixed: Using monitor with cursor at ({}, {})",
+                monitor.position().x,
+                monitor.position().y
+            );
             position_overlay_on_monitor(&overlay_window, &monitor, app_handle, state, mode);
         } else {
             // FALLBACK: Use primary monitor when cursor-based detection fails
             debug!("position_overlay_fixed: get_monitor_with_cursor returned None, falling back to primary monitor");
-            
+
             if let Some(primary) = app_handle.primary_monitor().ok().flatten() {
-                debug!("position_overlay_fixed: Using primary monitor at ({}, {})",
-                    primary.position().x, primary.position().y);
+                debug!(
+                    "position_overlay_fixed: Using primary monitor at ({}, {})",
+                    primary.position().x,
+                    primary.position().y
+                );
                 position_overlay_on_monitor(&overlay_window, &primary, app_handle, state, mode);
             } else {
                 log::error!("position_overlay_fixed: CRITICAL - No monitor available for positioning! Window will appear at default position.");
@@ -872,7 +880,8 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
             if session_now != session_at_call {
                 log::info!(
                     "hide_recording_overlay: session changed ({} -> {}), keeping overlay",
-                    session_at_call, session_now
+                    session_at_call,
+                    session_now
                 );
                 return;
             }
@@ -893,17 +902,17 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
 
 /// Force hide the recording overlay, bypassing state checks.
 /// Used for cancel operation where the overlay must close regardless of state.
-/// 
+///
 /// FIXED: Removed thread spawn to prevent orphaned threads on crash.
 pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         // Emit force: true to bypass the frontend state check for cancel
         let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": true }));
-        
+
         // Also emit app-state: Idle for the new frontend state hook.
         // This ensures the frontend resets to Idle even if it misses the hide-overlay event.
         emit_app_state(app_handle, &AppState::Idle);
-        
+
         // Hide immediately on main thread - no thread spawn, safer on crash
         let window_clone = overlay_window.clone();
         let _ = overlay_window.run_on_main_thread(move || {

@@ -3,8 +3,8 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use strsim::levenshtein;
 
+use super::spelling_dictionaries::{convert_us_to_british_with_dict, SpellingDictionary};
 use crate::settings::{CustomWord, WordCorrectionMode, WordReplacement};
-use super::spelling_dictionaries::{SpellingDictionary, convert_us_to_british_with_dict};
 
 /// Builds an n-gram string by cleaning and concatenating words
 ///
@@ -329,7 +329,10 @@ pub fn apply_advanced_custom_words(
 /// - "open a i" → "OpenAI" (with replacement {mistranslation: "open a i", correction: "OpenAI"})
 /// - "the" will NOT match within "there" or "them" (word boundary enforcement)
 /// - Multi-word mistranslations are supported: "charge b" → "ChargeBee"
-pub fn apply_word_replacements(text: &str, replacements: &[crate::settings::WordReplacement]) -> String {
+pub fn apply_word_replacements(
+    text: &str,
+    replacements: &[crate::settings::WordReplacement],
+) -> String {
     if replacements.is_empty() {
         return text.to_string();
     }
@@ -339,7 +342,11 @@ pub fn apply_word_replacements(text: &str, replacements: &[crate::settings::Word
         .iter()
         .map(|r| {
             let mistranslation_lower = r.mistranslation.to_lowercase();
-            (r.mistranslation.as_str(), r.correction.as_str(), mistranslation_lower)
+            (
+                r.mistranslation.as_str(),
+                r.correction.as_str(),
+                mistranslation_lower,
+            )
         })
         .collect();
 
@@ -363,7 +370,7 @@ pub fn apply_word_replacements(text: &str, replacements: &[crate::settings::Word
 
             // Check if the next N words match the mistranslation
             let ngram_words = &words[i..i + num_words];
-            
+
             // Build the n-gram for comparison (lowercase, punctuation-stripped)
             let ngram: String = ngram_words
                 .iter()
@@ -390,7 +397,7 @@ pub fn apply_word_replacements(text: &str, replacements: &[crate::settings::Word
 
             // The mistranslation might be a single word or multiple words
             let mistranslation_normalized = mistranslation_words.join("");
-            
+
             // Match if:
             // 1. Single word: exact alphanumeric match
             // 2. Multiple words: exact sequence match
@@ -726,12 +733,9 @@ const PROTECTED_WORDS: &[&str] = &[
     // Pronouns - common in stuttering/stammering
     "i", "you", "he", "she", "we", "they", "it", "me", "him", "her", "us", "them",
     // Articles
-    "a", "an", "the",
-    // Common intensifiers (often repeated for emphasis)
-    "very", "so", "quite", "really", "too", "just",
-    // Conjunctions
-    "and", "or", "but", "if", "then", "because", "that", "which",
-    // Common prepositions
+    "a", "an", "the", // Common intensifiers (often repeated for emphasis)
+    "very", "so", "quite", "really", "too", "just", // Conjunctions
+    "and", "or", "but", "if", "then", "because", "that", "which", // Common prepositions
     "to", "for", "with", "from", "in", "on", "at", "by",
     // Common verbs that might be repeated
     "is", "was", "are", "were", "be", "been", "have", "has", "had", "do", "does", "did",
@@ -767,10 +771,7 @@ pub fn detect_repeated_words(text: &str) -> Vec<(&str, usize)> {
 
     while i < words.len() {
         // Extract alphabetic part for comparison
-        let current_alpha: String = words[i]
-            .chars()
-            .filter(|c| c.is_alphabetic())
-            .collect();
+        let current_alpha: String = words[i].chars().filter(|c| c.is_alphabetic()).collect();
         let current_lower = current_alpha.to_lowercase();
 
         if current_alpha.is_empty() {
@@ -836,10 +837,7 @@ pub fn suppress_repeated_words(text: &str, level: u8) -> String {
 
     while i < words.len() {
         // Extract alphabetic part for comparison
-        let current_alpha: String = words[i]
-            .chars()
-            .filter(|c| c.is_alphabetic())
-            .collect();
+        let current_alpha: String = words[i].chars().filter(|c| c.is_alphabetic()).collect();
         let current_lower = current_alpha.to_lowercase();
 
         if current_alpha.is_empty() {
@@ -984,7 +982,7 @@ pub fn filter_transcription_output(
 }
 
 /// Converts US English spelling to British English.
-/// 
+///
 /// Uses the DWYL dictionary by default (curated, human-verified, ~180 common pairs).
 /// For speech-to-text, DWYL is recommended as it excludes archaic spellings
 /// and semantic ambiguities.
@@ -2544,7 +2542,10 @@ mod tests {
     fn test_us_to_british_color() {
         assert_eq!(convert_us_to_british("color"), "colour");
         assert_eq!(convert_us_to_british("colors"), "colours");
-        assert_eq!(convert_us_to_british("The color is red"), "The colour is red");
+        assert_eq!(
+            convert_us_to_british("The color is red"),
+            "The colour is red"
+        );
     }
 
     #[test]
@@ -2552,7 +2553,10 @@ mod tests {
         assert_eq!(convert_us_to_british("analyze"), "analyse");
         assert_eq!(convert_us_to_british("analyzed"), "analysed");
         assert_eq!(convert_us_to_british("analyzing"), "analysing");
-        assert_eq!(convert_us_to_british("Please analyze the data"), "Please analyse the data");
+        assert_eq!(
+            convert_us_to_british("Please analyze the data"),
+            "Please analyse the data"
+        );
     }
 
     #[test]
@@ -2560,14 +2564,20 @@ mod tests {
         assert_eq!(convert_us_to_british("center"), "centre");
         assert_eq!(convert_us_to_british("centers"), "centres");
         assert_eq!(convert_us_to_british("centered"), "centred");
-        assert_eq!(convert_us_to_british("The center of the circle"), "The centre of the circle");
+        assert_eq!(
+            convert_us_to_british("The center of the circle"),
+            "The centre of the circle"
+        );
     }
 
     #[test]
     fn test_us_to_british_defense() {
         assert_eq!(convert_us_to_british("defense"), "defence");
         assert_eq!(convert_us_to_british("defenses"), "defences");
-        assert_eq!(convert_us_to_british("The defense was strong"), "The defence was strong");
+        assert_eq!(
+            convert_us_to_british("The defense was strong"),
+            "The defence was strong"
+        );
     }
 
     #[test]
@@ -2578,7 +2588,10 @@ mod tests {
         // Both exist with different meanings, so NO auto-conversion
         assert_eq!(convert_us_to_british("dialog"), "dialog");
         assert_eq!(convert_us_to_british("dialogs"), "dialogs");
-        assert_eq!(convert_us_to_british("Click the dialog box"), "Click the dialog box");
+        assert_eq!(
+            convert_us_to_british("Click the dialog box"),
+            "Click the dialog box"
+        );
         // But "dialogue" (already British) should remain unchanged
         assert_eq!(convert_us_to_british("dialogue"), "dialogue");
         assert_eq!(convert_us_to_british("dialogues"), "dialogues");
@@ -2589,7 +2602,10 @@ mod tests {
         assert_eq!(convert_us_to_british("traveled"), "travelled");
         assert_eq!(convert_us_to_british("traveler"), "traveller");
         assert_eq!(convert_us_to_british("travelers"), "travellers");
-        assert_eq!(convert_us_to_british("I traveled to London"), "I travelled to London");
+        assert_eq!(
+            convert_us_to_british("I traveled to London"),
+            "I travelled to London"
+        );
     }
 
     #[test]
@@ -2605,7 +2621,10 @@ mod tests {
     fn test_us_to_british_case_preservation() {
         assert_eq!(convert_us_to_british("Color"), "Colour");
         assert_eq!(convert_us_to_british("COLOR"), "COLOUR");
-        assert_eq!(convert_us_to_british("Analyze the Data"), "Analyse the Data");
+        assert_eq!(
+            convert_us_to_british("Analyze the Data"),
+            "Analyse the Data"
+        );
         assert_eq!(convert_us_to_british("THE CENTER"), "THE CENTRE");
     }
 
@@ -2634,38 +2653,47 @@ mod tests {
     fn test_us_to_british_semantic_ambiguities_preserved() {
         // Words where BOTH American and British forms exist with different meanings
         // should NOT be auto-converted as context determines which word to use.
-        
+
         // check/cheque: check (verify) vs cheque (payment)
         assert_eq!(convert_us_to_british("check"), "check");
         assert_eq!(convert_us_to_british("checks"), "checks");
         assert_eq!(convert_us_to_british("checked"), "checked");
         assert_eq!(convert_us_to_british("checking"), "checking");
-        assert_eq!(convert_us_to_british("I need to check my email"), "I need to check my email");
-        
+        assert_eq!(
+            convert_us_to_british("I need to check my email"),
+            "I need to check my email"
+        );
+
         // program/programme: program (computer software) vs programme (TV show/schedule)
         assert_eq!(convert_us_to_british("program"), "program");
         assert_eq!(convert_us_to_british("programs"), "programs");
         assert_eq!(convert_us_to_british("programmed"), "programmed");
         assert_eq!(convert_us_to_british("programming"), "programming");
-        assert_eq!(convert_us_to_british("I installed the program"), "I installed the program");
-        
+        assert_eq!(
+            convert_us_to_british("I installed the program"),
+            "I installed the program"
+        );
+
         // tire/tyre: tire (to become weary) vs tyre (wheel)
         assert_eq!(convert_us_to_british("tire"), "tire");
         assert_eq!(convert_us_to_british("tires"), "tires");
         assert_eq!(convert_us_to_british("tired"), "tired");
         assert_eq!(convert_us_to_british("tiring"), "tiring");
         assert_eq!(convert_us_to_british("I began to tire"), "I began to tire");
-        
+
         // catalog/catalogue: catalog (database) vs catalogue (traditional)
         assert_eq!(convert_us_to_british("catalog"), "catalog");
         assert_eq!(convert_us_to_british("catalogs"), "catalogs");
         assert_eq!(convert_us_to_british("cataloged"), "cataloged");
         assert_eq!(convert_us_to_british("cataloging"), "cataloging");
-        
+
         // dialog/dialogue: dialog (UI element) vs dialogue (conversation)
         assert_eq!(convert_us_to_british("dialog"), "dialog");
         assert_eq!(convert_us_to_british("dialogs"), "dialogs");
-        assert_eq!(convert_us_to_british("Click the dialog box"), "Click the dialog box");
+        assert_eq!(
+            convert_us_to_british("Click the dialog box"),
+            "Click the dialog box"
+        );
     }
 
     #[test]
@@ -2675,7 +2703,10 @@ mod tests {
         // - cheque (noun): specifically a written payment order
         // They should NOT be auto-converted as context determines which to use.
         assert_eq!(convert_us_to_british("check"), "check");
-        assert_eq!(convert_us_to_british("I need to check my email"), "I need to check my email");
+        assert_eq!(
+            convert_us_to_british("I need to check my email"),
+            "I need to check my email"
+        );
         assert_eq!(convert_us_to_british("checks"), "checks");
         assert_eq!(convert_us_to_british("checked"), "checked");
         assert_eq!(convert_us_to_british("checking"), "checking");
@@ -2700,7 +2731,10 @@ mod tests {
         assert_eq!(convert_us_to_british("hello"), "hello");
         assert_eq!(convert_us_to_british("world"), "world");
         assert_eq!(convert_us_to_british("hello world"), "hello world");
-        assert_eq!(convert_us_to_british("the quick brown fox"), "the quick brown fox");
+        assert_eq!(
+            convert_us_to_british("the quick brown fox"),
+            "the quick brown fox"
+        );
     }
 
     #[test]
@@ -2888,12 +2922,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_single_word() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "definately".to_string(),
-                correction: "definitely".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "definately".to_string(),
+            correction: "definitely".to_string(),
+        }];
         let text = "I will definately do it";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "I will definitely do it");
@@ -2901,12 +2933,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_case_insensitive() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "openai".to_string(),
-                correction: "OpenAI".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "openai".to_string(),
+            correction: "OpenAI".to_string(),
+        }];
         let text = "I use openai for work";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "I use OpenAI for work");
@@ -2914,12 +2944,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_preserve_case_upper() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "openai".to_string(),
-                correction: "OpenAI".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "openai".to_string(),
+            correction: "OpenAI".to_string(),
+        }];
         let text = "I USE OPENAI FOR WORK";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "I USE OPENAI FOR WORK");
@@ -2927,12 +2955,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_preserve_case_title() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "chargebee".to_string(),
-                correction: "ChargeBee".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "chargebee".to_string(),
+            correction: "ChargeBee".to_string(),
+        }];
         let text = "Chargebee is great";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "ChargeBee is great");
@@ -2940,12 +2966,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_multi_word() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "open a i".to_string(),
-                correction: "OpenAI".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "open a i".to_string(),
+            correction: "OpenAI".to_string(),
+        }];
         let text = "I use open a i every day";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "I use OpenAI every day");
@@ -2953,12 +2977,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_multi_word_with_punctuation() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "charge b".to_string(),
-                correction: "ChargeBee".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "charge b".to_string(),
+            correction: "ChargeBee".to_string(),
+        }];
         let text = "I use charge b, it's great.";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "I use ChargeBee, it's great.");
@@ -2966,12 +2988,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_word_boundary() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "the".to_string(),
-                correction: "a".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "the".to_string(),
+            correction: "a".to_string(),
+        }];
         // "the" should NOT match within "there" or "them"
         let text = "the cat is there with them";
         let result = apply_word_replacements(text, &replacements);
@@ -2997,12 +3017,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_punctuation() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "openai".to_string(),
-                correction: "OpenAI".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "openai".to_string(),
+            correction: "OpenAI".to_string(),
+        }];
         let text = "OpenAI's API is great.";
         let result = apply_word_replacements(text, &replacements);
         // Should match "OpenAI" part but preserve punctuation
@@ -3019,12 +3037,10 @@ mod tests {
 
     #[test]
     fn test_apply_word_replacements_no_match() {
-        let replacements = vec![
-            crate::settings::WordReplacement {
-                mistranslation: "chargebee".to_string(),
-                correction: "ChargeBee".to_string(),
-            },
-        ];
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "chargebee".to_string(),
+            correction: "ChargeBee".to_string(),
+        }];
         let text = "nothing to replace here";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "nothing to replace here");

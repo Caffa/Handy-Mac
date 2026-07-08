@@ -11,49 +11,35 @@
 use anyhow::Result;
 use chrono::Utc;
 use log::{debug, error, info, warn};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
-
 
 /// Classification of transcription failure types.
 /// Different failures require different retry strategies.
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
 pub enum TranscriptionFailure {
     /// Model failed to load (wrong ID, corrupted, missing files)
-    ModelLoadFailure {
-        model_id: String,
-        error: String,
-    },
+    ModelLoadFailure { model_id: String, error: String },
     /// Transcription inference failed (engine error)
-    InferenceFailure {
-        model_id: String,
-        error: String,
-    },
+    InferenceFailure { model_id: String, error: String },
     /// Engine panicked during transcription
-    EnginePanic {
-        model_id: String,
-    },
+    EnginePanic { model_id: String },
     /// Operation timed out (took too long)
     Timeout {
         model_id: String,
         duration_secs: u64,
     },
     /// GPU/memory resource unavailable
-    ResourceUnavailable {
-        resource: String,
-        error: String,
-    },
+    ResourceUnavailable { resource: String, error: String },
     /// Audio was silent/empty (no retry needed)
     SilentAudio,
     /// Unknown/uncategorized failure
-    Unknown {
-        error: String,
-    },
+    Unknown { error: String },
 }
 
 impl TranscriptionFailure {
@@ -62,18 +48,18 @@ impl TranscriptionFailure {
     pub fn should_auto_retry(&self) -> bool {
         match self {
             // These failures might succeed on retry
-            Self::ModelLoadFailure { .. } => true,  // Can succeed with fallback model
+            Self::ModelLoadFailure { .. } => true, // Can succeed with fallback model
             Self::InferenceFailure { .. } => true,
             Self::Timeout { .. } => true,
             Self::ResourceUnavailable { .. } => true,
             Self::Unknown { .. } => true,
-            
+
             // These won't succeed on retry
-            Self::EnginePanic { .. } => false,  // Panic indicates serious issue
+            Self::EnginePanic { .. } => false, // Panic indicates serious issue
             Self::SilentAudio => false,
         }
     }
-    
+
     /// Check if this failure could benefit from trying a different model.
     pub fn should_try_fallback_model(&self) -> bool {
         match self {
@@ -87,7 +73,7 @@ impl TranscriptionFailure {
             Self::SilentAudio => false,
         }
     }
-    
+
     /// Get a human-readable description of the failure.
     pub fn description(&self) -> String {
         match self {
@@ -100,15 +86,16 @@ impl TranscriptionFailure {
             Self::EnginePanic { model_id } => {
                 format!("Model '{}' crashed during transcription", model_id)
             }
-            Self::Timeout { model_id, duration_secs } => {
+            Self::Timeout {
+                model_id,
+                duration_secs,
+            } => {
                 format!("Model '{}' timed out after {}s", model_id, duration_secs)
             }
             Self::ResourceUnavailable { resource, error } => {
                 format!("{} unavailable: {}", resource, error)
             }
-            Self::SilentAudio => {
-                "Audio was silent or empty".to_string()
-            }
+            Self::SilentAudio => "Audio was silent or empty".to_string(),
             Self::Unknown { error } => {
                 format!("Unknown error: {}", error)
             }
@@ -181,25 +168,25 @@ impl RetryableTranscription {
             is_processing: false,
         }
     }
-    
+
     /// Check if this entry is ready for retry.
     pub fn is_ready(&self) -> bool {
         if self.is_processing {
             return false;
         }
-        
+
         if self.retry_count >= self.max_retries {
             return false;
         }
-        
+
         if let Some(next_retry) = self.next_retry_at {
             let now = Utc::now().timestamp();
             return now >= next_retry;
         }
-        
+
         true
     }
-    
+
     /// Get the next model to try.
     /// Returns None if all models have been tried.
     #[allow(dead_code)]
@@ -207,10 +194,10 @@ impl RetryableTranscription {
         let models = std::iter::once(self.model_id.clone())
             .chain(self.fallback_models.clone())
             .collect::<Vec<_>>();
-        
+
         models.into_iter().nth(self.current_model_index)
     }
-    
+
     /// Advance to the next fallback model.
     pub fn advance_to_fallback(&mut self) -> bool {
         if self.current_model_index < self.fallback_models.len() {
@@ -220,21 +207,20 @@ impl RetryableTranscription {
             false
         }
     }
-    
+
     /// Schedule the next retry with exponential backoff.
     pub fn schedule_retry(&mut self, base_delay_secs: u64, multiplier: f64) {
         self.retry_count += 1;
-        
+
         // Exponential backoff: delay * (multiplier ^ retry_count)
-        let delay_secs = (base_delay_secs as f64)
-            * multiplier.powi(self.retry_count as i32 - 1);
-        
+        let delay_secs = (base_delay_secs as f64) * multiplier.powi(self.retry_count as i32 - 1);
+
         // Cap at 5 minutes
         let delay_secs = delay_secs.min(300.0) as u64;
-        
+
         self.next_retry_at = Some(Utc::now().timestamp() + delay_secs as i64);
     }
-    
+
     /// Mark this entry as successfully completed.
     #[allow(dead_code)]
     pub fn mark_completed(&mut self) {
@@ -259,21 +245,21 @@ impl TranscriptionRetryQueue {
             .path()
             .app_data_dir()
             .map_err(|e| anyhow::anyhow!("Failed to get app data dir: {}", e))?;
-        
+
         let queue_file_path = app_data_dir.join("transcription_retry_queue.json");
-        
+
         let queue = Self {
             pending: Arc::new(Mutex::new(VecDeque::new())),
             queue_file_path,
             _app_handle: app_handle,
         };
-        
+
         // Load existing queue from disk
         queue.load_from_disk()?;
-        
+
         Ok(queue)
     }
-    
+
     /// Add a failed transcription to the retry queue.
     /// Returns the retry entry ID.
     pub fn add_failed_transcription(
@@ -295,51 +281,51 @@ impl TranscriptionRetryQueue {
             post_process_prompt,
             history_entry_id,
         );
-        
+
         let entry_id = entry.id.clone();
-        
+
         // Check if we should auto-retry
         let should_retry = entry
             .last_failure
             .as_ref()
             .map(|f| f.should_auto_retry())
             .unwrap_or(false);
-        
+
         if !should_retry {
             debug!(
                 "Failure type {:?} should not auto-retry, but keeping in queue for manual retry",
                 entry.last_failure
             );
         }
-        
+
         {
             let mut pending = self.pending.lock();
             pending.push_back(entry);
         }
-        
+
         self.save_to_disk()?;
-        
+
         info!("Added transcription to retry queue: {}", entry_id);
-        
+
         Ok(entry_id)
     }
-    
+
     /// Get the next entry ready for retry.
     /// Returns None if no entries are ready.
     #[allow(dead_code)]
     pub fn get_next_retry(&self) -> Option<RetryableTranscription> {
         let mut pending = self.pending.lock();
-        
+
         for entry in pending.iter_mut() {
             if entry.is_ready() {
                 entry.is_processing = true;
                 return Some(entry.clone());
             }
         }
-        
+
         None
     }
-    
+
     /// Mark a retry as successfully completed.
     /// Removes the entry from the queue.
     pub fn mark_retry_complete(&self, entry_id: &str) -> Result<()> {
@@ -347,36 +333,29 @@ impl TranscriptionRetryQueue {
             let mut pending = self.pending.lock();
             pending.retain(|e| e.id != entry_id);
         }
-        
+
         self.save_to_disk()?;
-        
+
         info!("Removed completed retry entry: {}", entry_id);
-        
+
         Ok(())
     }
-    
+
     /// Mark a retry as failed and schedule the next attempt.
     /// Returns false if max retries exceeded.
-    pub fn mark_retry_failed(
-        &self,
-        entry_id: &str,
-        failure: TranscriptionFailure,
-    ) -> Result<bool> {
+    pub fn mark_retry_failed(&self, entry_id: &str, failure: TranscriptionFailure) -> Result<bool> {
         let can_retry = {
             let mut pending = self.pending.lock();
-            
+
             if let Some(entry) = pending.iter_mut().find(|e| e.id == entry_id) {
                 entry.is_processing = false;
                 entry.last_failure = Some(failure.clone());
                 entry.last_error = failure.description();
-                
+
                 // Check if we should try a fallback model first
                 if failure.should_try_fallback_model() && entry.advance_to_fallback() {
                     // We have a fallback model to try
-                    debug!(
-                        "Advancing to fallback model for entry {}",
-                        entry_id
-                    );
+                    debug!("Advancing to fallback model for entry {}", entry_id);
                     entry.next_retry_at = None; // Ready immediately
                     true
                 } else if entry.retry_count < entry.max_retries {
@@ -400,18 +379,18 @@ impl TranscriptionRetryQueue {
                 return Ok(false);
             }
         };
-        
+
         self.save_to_disk()?;
-        
+
         Ok(can_retry)
     }
-    
+
     /// Get all pending retry entries (for UI display).
     pub fn get_all_pending(&self) -> Vec<RetryableTranscription> {
         let pending = self.pending.lock();
         pending.iter().cloned().collect()
     }
-    
+
     /// Remove a specific entry from the queue.
     pub fn remove_entry(&self, entry_id: &str) -> Result<bool> {
         let removed = {
@@ -420,40 +399,40 @@ impl TranscriptionRetryQueue {
             pending.retain(|e| e.id != entry_id);
             pending.len() < initial_len
         };
-        
+
         if removed {
             self.save_to_disk()?;
             info!("Manually removed retry entry: {}", entry_id);
         }
-        
+
         Ok(removed)
     }
-    
+
     /// Clear all pending retry entries.
     pub fn clear_all(&self) -> Result<()> {
         {
             let mut pending = self.pending.lock();
             pending.clear();
         }
-        
+
         self.save_to_disk()?;
-        
+
         info!("Cleared all retry entries");
-        
+
         Ok(())
     }
-    
+
     /// Get the count of pending retries.
     pub fn count(&self) -> usize {
         let pending = self.pending.lock();
         pending.len()
     }
-    
+
     /// Persist the queue to disk.
     fn save_to_disk(&self) -> Result<()> {
         let pending = self.pending.lock();
         let entries: Vec<_> = pending.iter().collect();
-        
+
         if let Err(e) = std::fs::write(
             &self.queue_file_path,
             serde_json::to_string_pretty(&entries)?,
@@ -461,19 +440,19 @@ impl TranscriptionRetryQueue {
             error!("Failed to save retry queue to disk: {}", e);
             return Err(anyhow::anyhow!("Failed to save retry queue: {}", e));
         }
-        
+
         debug!("Saved {} retry entries to disk", entries.len());
-        
+
         Ok(())
     }
-    
+
     /// Load the queue from disk.
     fn load_from_disk(&self) -> Result<()> {
         if !self.queue_file_path.exists() {
             debug!("No existing retry queue file found");
             return Ok(());
         }
-        
+
         let contents = match std::fs::read_to_string(&self.queue_file_path) {
             Ok(c) => c,
             Err(e) => {
@@ -481,7 +460,7 @@ impl TranscriptionRetryQueue {
                 return Ok(());
             }
         };
-        
+
         let entries: Vec<RetryableTranscription> = match serde_json::from_str(&contents) {
             Ok(e) => e,
             Err(e) => {
@@ -492,7 +471,7 @@ impl TranscriptionRetryQueue {
                 return Ok(());
             }
         };
-        
+
         {
             let mut pending = self.pending.lock();
             for entry in entries {
@@ -502,12 +481,12 @@ impl TranscriptionRetryQueue {
                 pending.push_back(entry);
             }
         }
-        
+
         info!("Loaded {} retry entries from disk", self.count());
-        
+
         Ok(())
     }
-    
+
     /// Process all pending retries that are ready.
     /// This should be called periodically or after app startup.
     #[allow(dead_code)]
@@ -516,7 +495,7 @@ impl TranscriptionRetryQueue {
         F: FnMut(RetryableTranscription) -> Result<()>,
     {
         let mut processed = Vec::new();
-        
+
         // Keep processing until no more ready entries
         while let Some(entry) = self.get_next_retry() {
             match process_fn(entry.clone()) {
@@ -529,7 +508,7 @@ impl TranscriptionRetryQueue {
                     let failure = TranscriptionFailure::Unknown {
                         error: e.to_string(),
                     };
-                    
+
                     if !self.mark_retry_failed(&entry.id, failure)? {
                         // Max retries exceeded, remove from queue
                         warn!(
@@ -541,7 +520,7 @@ impl TranscriptionRetryQueue {
                 }
             }
         }
-        
+
         Ok(processed)
     }
 }
@@ -556,20 +535,20 @@ mod tests {
             model_id: "turbo".to_string(),
             error: "OOM".to_string(),
         };
-        
+
         assert!(failure.should_auto_retry());
         assert!(failure.should_try_fallback_model());
         assert!(!failure.description().is_empty());
     }
-    
+
     #[test]
     fn test_silent_audio_no_retry() {
         let failure = TranscriptionFailure::SilentAudio;
-        
+
         assert!(!failure.should_auto_retry());
         assert!(!failure.should_try_fallback_model());
     }
-    
+
     #[test]
     fn test_retryable_transcription() {
         let mut entry = RetryableTranscription::new(
@@ -584,22 +563,22 @@ mod tests {
             None,
             None,
         );
-        
+
         // Initially ready
         assert!(entry.is_ready());
-        
+
         // Get next model (primary)
         assert_eq!(entry.get_next_model(), Some("turbo".to_string()));
-        
+
         // Advance to fallback
         assert!(entry.advance_to_fallback());
         assert_eq!(entry.get_next_model(), Some("small".to_string()));
-        
+
         // Schedule retry
         entry.schedule_retry(5, 2.0);
         assert!(entry.next_retry_at.is_some());
     }
-    
+
     #[test]
     fn test_exponential_backoff() {
         let mut entry = RetryableTranscription::new(
@@ -614,21 +593,21 @@ mod tests {
             None,
             None,
         );
-        
+
         entry.max_retries = 5;
-        
+
         // First retry: 5s
         entry.schedule_retry(5, 2.0);
         assert_eq!(entry.retry_count, 1);
-        
+
         // Second retry: 10s
         entry.schedule_retry(5, 2.0);
         assert_eq!(entry.retry_count, 2);
-        
+
         // Third retry: 20s
         entry.schedule_retry(5, 2.0);
         assert_eq!(entry.retry_count, 3);
-        
+
         // Fourth retry: 40s
         entry.schedule_retry(5, 2.0);
         assert_eq!(entry.retry_count, 4);

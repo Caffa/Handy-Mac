@@ -3,12 +3,12 @@
 //! Periodically processes the transcription retry queue on a background thread.
 //! This ensures failed transcriptions are retried automatically without user intervention.
 
+use crate::audio_toolkit::audio::read_wav_samples;
 use crate::managers::transcription::TranscriptionManager;
 use crate::managers::transcription_retry::TranscriptionRetryQueue;
-use crate::audio_toolkit::audio::read_wav_samples;
 use log::{debug, error, info, warn};
-use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -66,13 +66,14 @@ impl RetryWorker {
                 }
 
                 // Get the retry queue
-                let retry_queue = match app_handle.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() {
-                    Some(queue) => queue,
-                    None => {
-                        warn!("Retry queue not available");
-                        continue;
-                    }
-                };
+                let retry_queue =
+                    match app_handle.try_state::<Arc<Mutex<TranscriptionRetryQueue>>>() {
+                        Some(queue) => queue,
+                        None => {
+                            warn!("Retry queue not available");
+                            continue;
+                        }
+                    };
 
                 // Get transcription manager
                 let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
@@ -94,12 +95,14 @@ impl RetryWorker {
 
                 // Get all pending entries
                 let entries = retry_queue.lock().get_all_pending();
-                
+
                 for entry in entries {
                     // Check if entry is ready for retry
                     if !entry.is_ready() {
-                        debug!("Entry {} not ready for retry (retry at {:?})", 
-                               entry.id, entry.next_retry_at);
+                        debug!(
+                            "Entry {} not ready for retry (retry at {:?})",
+                            entry.id, entry.next_retry_at
+                        );
                         continue;
                     }
 
@@ -116,7 +119,7 @@ impl RetryWorker {
                         Ok(samples) => samples,
                         Err(e) => {
                             error!("Failed to load audio for retry {}: {}", entry.id, e);
-                            
+
                             // Remove corrupted entry from queue
                             if let Err(remove_err) = retry_queue.lock().remove_entry(&entry.id) {
                                 error!("Failed to remove corrupted entry: {}", remove_err);
@@ -141,7 +144,9 @@ impl RetryWorker {
 
                             // Update history entry if we have one
                             if let Some(history_id) = entry.history_entry_id {
-                                let hm = match app_handle.try_state::<Arc<crate::managers::history::HistoryManager>>() {
+                                let hm = match app_handle
+                                    .try_state::<Arc<crate::managers::history::HistoryManager>>()
+                                {
                                     Some(hm) => hm,
                                     None => {
                                         warn!("HistoryManager not available");
@@ -167,8 +172,11 @@ impl RetryWorker {
                         }
                         Ok(_) => {
                             // Empty transcription - may indicate silent audio
-                            warn!("Retry transcription returned empty text for entry {}", entry.id);
-                            
+                            warn!(
+                                "Retry transcription returned empty text for entry {}",
+                                entry.id
+                            );
+
                             // Don't retry silent audio
                             if let Err(e) = retry_queue.lock().remove_entry(&entry.id) {
                                 error!("Failed to remove silent audio entry: {}", e);
@@ -176,18 +184,26 @@ impl RetryWorker {
                         }
                         Err(e) => {
                             warn!("Retry transcription failed for entry {}: {}", entry.id, e);
-                            
+
                             // Mark as failed - it will be scheduled for next retry
                             let failure = crate::managers::transcription_retry::TranscriptionFailure::Unknown {
                                 error: e.to_string(),
                             };
-                            
+
                             match retry_queue.lock().mark_retry_failed(&entry.id, failure) {
                                 Ok(can_retry) => {
                                     if !can_retry {
-                                        info!("Entry {} exhausted all retries, removing from queue", entry.id);
-                                        if let Err(remove_err) = retry_queue.lock().remove_entry(&entry.id) {
-                                            error!("Failed to remove exhausted entry: {}", remove_err);
+                                        info!(
+                                            "Entry {} exhausted all retries, removing from queue",
+                                            entry.id
+                                        );
+                                        if let Err(remove_err) =
+                                            retry_queue.lock().remove_entry(&entry.id)
+                                        {
+                                            error!(
+                                                "Failed to remove exhausted entry: {}",
+                                                remove_err
+                                            );
                                         }
                                     }
                                 }
@@ -211,7 +227,7 @@ impl RetryWorker {
     /// Stop the background worker.
     pub fn stop(&self) {
         self.stop_signal.store(true, Ordering::Relaxed);
-        
+
         if let Some(handle) = self.handle.lock().take() {
             if let Err(e) = handle.join() {
                 warn!("Failed to join retry worker thread: {:?}", e);

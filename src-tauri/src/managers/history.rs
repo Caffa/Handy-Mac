@@ -262,7 +262,10 @@ impl HistoryManager {
         }
 
         if cleaned > 0 {
-            info!("Cleaned up {} orphaned temp file(s) from recordings directory", cleaned);
+            info!(
+                "Cleaned up {} orphaned temp file(s) from recordings directory",
+                cleaned
+            );
         }
     }
 
@@ -348,9 +351,8 @@ impl HistoryManager {
         ];
 
         // Get actual columns from the database
-        let mut stmt = conn.prepare(
-            "SELECT name FROM pragma_table_info('transcription_history') ORDER BY cid",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('transcription_history') ORDER BY cid")?;
         let actual_columns: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -396,9 +398,15 @@ impl HistoryManager {
                 }
             };
 
-            info!("Adding missing column '{}' to transcription_history", column);
+            info!(
+                "Adding missing column '{}' to transcription_history",
+                column
+            );
             conn.execute(
-                &format!("ALTER TABLE transcription_history ADD COLUMN {}", column_def),
+                &format!(
+                    "ALTER TABLE transcription_history ADD COLUMN {}",
+                    column_def
+                ),
                 [],
             )?;
         }
@@ -1129,7 +1137,9 @@ impl HistoryManager {
             ])?;
         }
 
-        let csv_bytes = wtr.into_inner().map_err(|e| anyhow!("CSV write error: {}", e))?;
+        let csv_bytes = wtr
+            .into_inner()
+            .map_err(|e| anyhow!("CSV write error: {}", e))?;
         let csv_string = String::from_utf8(csv_bytes)?;
         info!("Exported {} history entries as CSV", entries.len());
         Ok(csv_string)
@@ -1184,12 +1194,18 @@ impl HistoryManager {
             notes: None,
         };
 
-        debug!("Created experiment group {} for recording {}", id, recording_id);
+        debug!(
+            "Created experiment group {} for recording {}",
+            id, recording_id
+        );
         Ok(group)
     }
 
     /// Get experiment group by recording ID
-    pub async fn get_experiment_group_by_recording(&self, recording_id: i64) -> Result<Option<ExperimentGroup>> {
+    pub async fn get_experiment_group_by_recording(
+        &self,
+        recording_id: i64,
+    ) -> Result<Option<ExperimentGroup>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, recording_id, original_transcript, ground_truth, speech_speed, recording_quality, created_at, is_complete, notes
@@ -1261,7 +1277,8 @@ impl HistoryManager {
         }
 
         drop(conn);
-        self.get_experiment_group_by_id(id).await?
+        self.get_experiment_group_by_id(id)
+            .await?
             .ok_or_else(|| anyhow!("Experiment group {} not found after update", id))
     }
 
@@ -1316,7 +1333,13 @@ impl HistoryManager {
                 created_at,
                 notes
             ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0, ?5, NULL)",
-            params![experiment_group_id, model_id, parameters, transcription_text, created_at],
+            params![
+                experiment_group_id,
+                model_id,
+                parameters,
+                transcription_text,
+                created_at
+            ],
         )?;
 
         let id = conn.last_insert_rowid();
@@ -1336,7 +1359,10 @@ impl HistoryManager {
     }
 
     /// Get all variants for an experiment group
-    pub async fn get_variants_for_experiment(&self, experiment_group_id: i64) -> Result<Vec<TranscriptionVariant>> {
+    pub async fn get_variants_for_experiment(
+        &self,
+        experiment_group_id: i64,
+    ) -> Result<Vec<TranscriptionVariant>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, experiment_group_id, model_id, parameters, transcription_text, match_score, ranking, is_acceptable, created_at, notes
@@ -1404,7 +1430,8 @@ impl HistoryManager {
         }
 
         drop(conn);
-        self.get_variant_by_id(id).await?
+        self.get_variant_by_id(id)
+            .await?
             .ok_or_else(|| anyhow!("Variant {} not found after update", id))
     }
 

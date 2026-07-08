@@ -4,6 +4,7 @@ use anyhow::Result;
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use log::{debug, info, warn};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use specta::Type;
@@ -13,7 +14,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tar::Archive;
@@ -722,7 +722,10 @@ impl ModelManager {
         ) {
             Ok(path) => path,
             Err(e) => {
-                warn!("Could not resolve VAD model path for integrity check: {}", e);
+                warn!(
+                    "Could not resolve VAD model path for integrity check: {}",
+                    e
+                );
                 return;
             }
         };
@@ -819,7 +822,9 @@ impl ModelManager {
                 "resources/models/gigaam_vocab.txt",
                 tauri::path::BaseDirectory::Resource,
             )
-            .map_err(|e| AppError::path_resolution(format!("Failed to resolve GigaAM vocab path: {}", e)))?;
+            .map_err(|e| {
+                AppError::path_resolution(format!("Failed to resolve GigaAM vocab path: {}", e))
+            })?;
 
         info!(
             "Resolved vocab path: {:?} (exists: {})",
@@ -1122,8 +1127,7 @@ impl ModelManager {
             models.get(model_id).cloned()
         };
 
-        let model_info =
-            model_info.ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
+        let model_info = model_info.ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
 
         let url = model_info
             .url
@@ -1406,7 +1410,11 @@ impl ModelManager {
                         "error": &error_msg
                     }),
                 );
-                AppError::model_extraction(model_id, error_msg, anyhow::anyhow!("extraction failed"))
+                AppError::model_extraction(
+                    model_id,
+                    error_msg,
+                    anyhow::anyhow!("extraction failed"),
+                )
             })?;
 
             // Find the actual extracted directory (archive might have a nested structure)
@@ -1480,8 +1488,7 @@ impl ModelManager {
             models.get(model_id).cloned()
         };
 
-        let model_info =
-            model_info.ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
+        let model_info = model_info.ok_or_else(|| AppError::ModelNotFound(model_id.to_string()))?;
 
         debug!("ModelManager: Found model info: {:?}", model_info);
 
@@ -1559,10 +1566,7 @@ impl ModelManager {
         let expected_sha256 = match &model_info.sha256 {
             Some(hash) => hash,
             None => {
-                debug!(
-                    "Skipping integrity check for custom model: {}",
-                    model_id
-                );
+                debug!("Skipping integrity check for custom model: {}", model_id);
                 return Ok(());
             }
         };
@@ -1608,9 +1612,7 @@ impl ModelManager {
             self.update_download_status()?;
             return Err(AppError::ModelVerificationFailed {
                 model_id: model_id.to_string(),
-                source: anyhow::anyhow!(
-                    "Model file not found on disk. Please re-download."
-                ),
+                source: anyhow::anyhow!("Model file not found on disk. Please re-download."),
             });
         }
 

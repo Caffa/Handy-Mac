@@ -1,8 +1,8 @@
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings::{get_settings_safe, write_settings_safe, ModelUnloadTimeout};
+use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 

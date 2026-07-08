@@ -9,10 +9,10 @@
 //! The active implementation is determined by the `keyboard_implementation`
 //! setting and can be changed at runtime.
 
+pub mod conflicts;
 mod handler;
 pub mod handy_keys;
 mod tauri_impl;
-pub mod conflicts;
 
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -24,6 +24,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 use conflicts::ConflictInfo;
 
+use crate::managers::transcription::TranscriptionManager;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
@@ -32,7 +33,6 @@ use crate::settings::{
     APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
-use crate::managers::transcription::TranscriptionManager;
 
 // Note: Commands are accessed via shortcut::handy_keys:: in lib.rs
 
@@ -602,7 +602,11 @@ pub fn change_overlay_position_setting(app: AppHandle, position: String) -> Resu
     // Use default Transcribe mode since overlay is likely not visible
     // (position change is a settings operation, not during active recording)
     // State doesn't matter here since mode is Transcribe (always min height)
-    crate::overlay::update_overlay_position(&app, "recording", &crate::overlay::OverlayMode::Transcribe);
+    crate::overlay::update_overlay_position(
+        &app,
+        "recording",
+        &crate::overlay::OverlayMode::Transcribe,
+    );
 
     Ok(())
 }
@@ -724,11 +728,7 @@ pub fn update_advanced_custom_words(app: AppHandle, words: Vec<CustomWord>) -> R
 #[specta::specta]
 pub fn update_custom_filler_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
-    settings.custom_filler_words = if words.is_empty() {
-        None
-    } else {
-        Some(words)
-    };
+    settings.custom_filler_words = if words.is_empty() { None } else { Some(words) };
     settings::write_settings_safe(&app, settings);
     Ok(())
 }
@@ -799,9 +799,14 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
     //
     // The AudioRecordingManager has internal locks for state and recorder,
     // so we don't need an outer Mutex here.
-    if let Some(rm) = app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>() {
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
         if rm.is_stream_open() {
-            info!("Applying pre-recording buffer change ({}ms): stopping stream, recreating recorder", ms);
+            info!(
+                "Applying pre-recording buffer change ({}ms): stopping stream, recreating recorder",
+                ms
+            );
 
             // Stop the current stream
             rm.stop_microphone_stream();
@@ -809,21 +814,33 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
             // Recreate the recorder with the new setting.
             // This must not panic — errors are propagated as Result.
             if let Err(e) = rm.recreate_recorder() {
-                error!("Failed to recreate recorder after pre-recording buffer change: {}", e);
+                error!(
+                    "Failed to recreate recorder after pre-recording buffer change: {}",
+                    e
+                );
                 // Attempt to restart the stream even if recreation failed,
                 // so the app doesn't end up in a dead state with no mic stream.
                 if rm.is_always_on() || rm.is_bt_keep_alive() {
                     if let Err(restart_err) = rm.start_microphone_stream() {
-                        error!("Also failed to restart microphone stream after recreation failure: {}", restart_err);
+                        error!(
+                            "Also failed to restart microphone stream after recreation failure: {}",
+                            restart_err
+                        );
                     }
                 }
-                return Err(format!("Failed to apply pre-recording buffer setting: {}", e));
+                return Err(format!(
+                    "Failed to apply pre-recording buffer setting: {}",
+                    e
+                ));
             }
 
             // Restart the stream if in always-on mode or BT keep-alive
             if rm.is_always_on() || rm.is_bt_keep_alive() {
                 if let Err(e) = rm.start_microphone_stream() {
-                    error!("Failed to restart microphone stream after pre-recording buffer change: {}", e);
+                    error!(
+                        "Failed to restart microphone stream after pre-recording buffer change: {}",
+                        e
+                    );
                     return Err(format!("Failed to restart microphone stream: {}", e));
                 }
             }
@@ -831,7 +848,9 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
             info!("Recreated recorder with pre-recording buffer: {}ms", ms);
         }
     } else {
-        log::warn!("AudioRecordingManager not initialized, skipping pre-recording buffer recreation");
+        log::warn!(
+            "AudioRecordingManager not initialized, skipping pre-recording buffer recreation"
+        );
     }
 
     Ok(())
@@ -1321,7 +1340,8 @@ pub fn change_whisper_gpu_device(app: AppHandle, device: i32) -> Result<(), Stri
 /// stays responsive — see also the startup pre-warm in `lib.rs`.
 #[tauri::command]
 #[specta::specta]
-pub async fn get_available_accelerators() -> Result<crate::managers::transcription::AvailableAccelerators, String> {
+pub async fn get_available_accelerators(
+) -> Result<crate::managers::transcription::AvailableAccelerators, String> {
     tauri::async_runtime::spawn_blocking(crate::managers::transcription::get_available_accelerators)
         .await
         .map_err(|e| format!("get_available_accelerators task failed: {}", e))
@@ -1396,10 +1416,7 @@ pub fn change_verification_mode_setting(app: AppHandle, enabled: bool) -> Result
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_vad_sensitivity_setting(
-    app: AppHandle,
-    sensitivity: String,
-) -> Result<(), String> {
+pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Result<(), String> {
     let vad_sensitivity = match sensitivity.as_str() {
         "very_quick" => settings::VadSensitivity::VeryQuick,
         "quick" => settings::VadSensitivity::Quick,
@@ -1437,10 +1454,7 @@ pub fn change_vad_sensitivity_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_live_captions_enabled_setting(
-    app: AppHandle,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.live_captions_enabled = enabled;
     settings::write_settings_safe(&app, settings.clone());
@@ -1483,13 +1497,13 @@ pub fn change_live_captions_enabled_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_overlay_scale_setting(
-    app: AppHandle,
-    scale: f64,
-) -> Result<(), String> {
+pub fn change_overlay_scale_setting(app: AppHandle, scale: f64) -> Result<(), String> {
     // Validate scale: only allow 1.0 or 2.0
     if scale != 1.0 && scale != 2.0 {
-        return Err(format!("Invalid overlay scale: {}. Must be 1.0 or 2.0", scale));
+        return Err(format!(
+            "Invalid overlay scale: {}. Must be 1.0 or 2.0",
+            scale
+        ));
     }
     let mut settings = settings::get_settings_safe(&app);
     settings.overlay_scale = scale;
@@ -1532,10 +1546,7 @@ pub fn change_noise_suppression_enabled_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_noise_suppression_level_setting(
-    app: AppHandle,
-    level: String,
-) -> Result<(), String> {
+pub fn change_noise_suppression_level_setting(app: AppHandle, level: String) -> Result<(), String> {
     let noise_level = match level.as_str() {
         "low" => settings::NoiseSuppressionLevel::Low,
         "medium" => settings::NoiseSuppressionLevel::Medium,

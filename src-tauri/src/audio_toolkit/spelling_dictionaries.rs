@@ -28,7 +28,7 @@ pub enum SpellingDictionary {
     /// Pros: Human-curated, less noise, well-maintained
     /// Cons: Less comprehensive than CSpell
     Dwyl,
-    
+
     /// CSpell dictionary extraction.
     /// Source: https://github.com/streetsidesoftware/cspell-dicts
     /// Pros: Comprehensive, actively maintained, SCOWL-based filtering
@@ -43,9 +43,9 @@ impl Default for SpellingDictionary {
 }
 
 /// DWYL-based US-to-British spelling dictionary.
-/// 
+///
 /// Curated from https://github.com/dwyl/english-words
-/// 
+///
 /// Excludes semantic ambiguities where context matters:
 /// - check/cheque (verify vs payment)
 /// - tire/tyre (weary vs wheel covering)
@@ -53,7 +53,7 @@ impl Default for SpellingDictionary {
 /// - catalog/catalogue (computing vs traditional)
 /// - dialog/dialogue (UI vs conversation)
 /// - disk/disc (computing vs optical media)
-/// 
+///
 /// Excludes archaic spellings:
 /// - waggon (archaic, modern British uses "wagon")
 /// - instal (incorrect, both use "install")
@@ -61,306 +61,617 @@ impl Default for SpellingDictionary {
 /// - dialogue (modern British accepts "dialog" in computing)
 static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     let mut map = HashMap::new();
-    
+
     // Common -or/-our endings
-    add_pairs(&mut map, &[
-        ("color", "colour"), ("colors", "colours"), ("colored", "coloured"), ("coloring", "colouring"),
-        ("flavor", "flavour"), ("flavors", "flavours"), ("flavored", "flavoured"), ("flavoring", "flavouring"),
-        ("honor", "honour"), ("honors", "honours"), ("honored", "honoured"), ("honoring", "honouring"),
-        ("humor", "humour"), ("humors", "humours"), ("humored", "humoured"), ("humoring", "humouring"),
-        ("labor", "labour"), ("labors", "labours"), ("labored", "laboured"), ("laboring", "labouring"),
-        ("neighbor", "neighbour"), ("neighbors", "neighbours"), ("neighbored", "neighboured"),
-        ("rumor", "rumour"), ("rumors", "rumours"), ("rumored", "rumoured"),
-        ("splendor", "splendour"), ("savor", "savour"), ("savors", "savourings"),
-        ("vigor", "vigour"), ("valor", "valour"), ("vapor", "vapour"), ("vapors", "vapours"),
-        ("ardor", "ardour"), ("clamor", "clamour"), ("demeanor", "demeanour"),
-        ("enamor", "enamour"), ("fervor", "fervour"), ("rancor", "rancour"),
-        ("tumor", "tumour"), ("tumors", "tumours"), ("armor", "armour"), ("armors", "armours"),
-        ("harbor", "harbour"), ("harbors", "harbours"), ("parlor", "parlour"),
-        ("savior", "saviour"), ("saviors", "saviours"), ("odors", "odours"), ("odor", "odour"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("color", "colour"),
+            ("colors", "colours"),
+            ("colored", "coloured"),
+            ("coloring", "colouring"),
+            ("flavor", "flavour"),
+            ("flavors", "flavours"),
+            ("flavored", "flavoured"),
+            ("flavoring", "flavouring"),
+            ("honor", "honour"),
+            ("honors", "honours"),
+            ("honored", "honoured"),
+            ("honoring", "honouring"),
+            ("humor", "humour"),
+            ("humors", "humours"),
+            ("humored", "humoured"),
+            ("humoring", "humouring"),
+            ("labor", "labour"),
+            ("labors", "labours"),
+            ("labored", "laboured"),
+            ("laboring", "labouring"),
+            ("neighbor", "neighbour"),
+            ("neighbors", "neighbours"),
+            ("neighbored", "neighboured"),
+            ("rumor", "rumour"),
+            ("rumors", "rumours"),
+            ("rumored", "rumoured"),
+            ("splendor", "splendour"),
+            ("savor", "savour"),
+            ("savors", "savourings"),
+            ("vigor", "vigour"),
+            ("valor", "valour"),
+            ("vapor", "vapour"),
+            ("vapors", "vapours"),
+            ("ardor", "ardour"),
+            ("clamor", "clamour"),
+            ("demeanor", "demeanour"),
+            ("enamor", "enamour"),
+            ("fervor", "fervour"),
+            ("rancor", "rancour"),
+            ("tumor", "tumour"),
+            ("tumors", "tumours"),
+            ("armor", "armour"),
+            ("armors", "armours"),
+            ("harbor", "harbour"),
+            ("harbors", "harbours"),
+            ("parlor", "parlour"),
+            ("savior", "saviour"),
+            ("saviors", "saviours"),
+            ("odors", "odours"),
+            ("odor", "odour"),
+        ],
+    );
+
     // Common -er/-re endings
-    add_pairs(&mut map, &[
-        ("center", "centre"), ("centers", "centres"), ("centered", "centred"), ("centering", "centring"),
-        ("fiber", "fibre"), ("fibers", "fibres"), ("fiberboard", "fibreboard"), ("fiberglass", "fibreglass"),
-        ("liter", "litre"), ("liters", "litres"), ("meter", "metre"), ("meters", "metres"),
-        ("theater", "theatre"), ("theaters", "theatres"), ("theatrical", "theatrical"),
-        ("specter", "spectre"), ("specters", "spectres"), ("somber", "sombre"),
-        ("luster", "lustre"), ("meager", "meagre"), ("ocher", "ochre"),
-        ("saber", "sabre"), ("sabers", "sabres"), ("miter", "mitre"),
-        ("saltpeter", "saltpetre"), ("goiter", "goitre"), ("reconnoiter", "reconnoitre"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("center", "centre"),
+            ("centers", "centres"),
+            ("centered", "centred"),
+            ("centering", "centring"),
+            ("fiber", "fibre"),
+            ("fibers", "fibres"),
+            ("fiberboard", "fibreboard"),
+            ("fiberglass", "fibreglass"),
+            ("liter", "litre"),
+            ("liters", "litres"),
+            ("meter", "metre"),
+            ("meters", "metres"),
+            ("theater", "theatre"),
+            ("theaters", "theatres"),
+            ("theatrical", "theatrical"),
+            ("specter", "spectre"),
+            ("specters", "spectres"),
+            ("somber", "sombre"),
+            ("luster", "lustre"),
+            ("meager", "meagre"),
+            ("ocher", "ochre"),
+            ("saber", "sabre"),
+            ("sabers", "sabres"),
+            ("miter", "mitre"),
+            ("saltpeter", "saltpetre"),
+            ("goiter", "goitre"),
+            ("reconnoiter", "reconnoitre"),
+        ],
+    );
+
     // Common -ize/-ise endings (STT should use -ise for British)
-    add_pairs(&mut map, &[
-        ("analyze", "analyse"), ("analyzes", "analyses"), ("analyzed", "analysed"), ("analyzing", "analysing"),
-        ("organize", "organise"), ("organizes", "organises"), ("organized", "organised"), ("organizing", "organising"),
-        ("realize", "realise"), ("realizes", "realises"), ("realized", "realised"), ("realizing", "realising"),
-        ("recognize", "recognise"), ("recognizes", "recognises"), ("recognized", "recognised"), ("recognizing", "recognising"),
-        ("characterize", "characterise"), ("characterizes", "characterises"), ("characterized", "characterised"),
-        ("prioritize", "prioritise"), ("prioritizes", "prioritises"), ("prioritized", "prioritised"),
-        ("optimize", "optimise"), ("optimizes", "optimises"), ("optimized", "optimised"),
-        ("maximize", "maximise"), ("minimize", "minimise"), ("normalise", "normalise"),
-        ("socialize", "socialise"), ("specialize", "specialise"), ("stabilize", "stabilise"),
-        ("standardize", "standardise"), ("sympathize", "sympathise"), ("utilize", "utilise"),
-        ("visualize", "visualise"), ("vocalize", "vocalise"), ("vaporize", "vaporise"),
-        ("civilization", "civilisation"), ("civilizations", "civilisations"),
-        ("realization", "realisation"), ("organization", "organisation"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("analyze", "analyse"),
+            ("analyzes", "analyses"),
+            ("analyzed", "analysed"),
+            ("analyzing", "analysing"),
+            ("organize", "organise"),
+            ("organizes", "organises"),
+            ("organized", "organised"),
+            ("organizing", "organising"),
+            ("realize", "realise"),
+            ("realizes", "realises"),
+            ("realized", "realised"),
+            ("realizing", "realising"),
+            ("recognize", "recognise"),
+            ("recognizes", "recognises"),
+            ("recognized", "recognised"),
+            ("recognizing", "recognising"),
+            ("characterize", "characterise"),
+            ("characterizes", "characterises"),
+            ("characterized", "characterised"),
+            ("prioritize", "prioritise"),
+            ("prioritizes", "prioritises"),
+            ("prioritized", "prioritised"),
+            ("optimize", "optimise"),
+            ("optimizes", "optimises"),
+            ("optimized", "optimised"),
+            ("maximize", "maximise"),
+            ("minimize", "minimise"),
+            ("normalise", "normalise"),
+            ("socialize", "socialise"),
+            ("specialize", "specialise"),
+            ("stabilize", "stabilise"),
+            ("standardize", "standardise"),
+            ("sympathize", "sympathise"),
+            ("utilize", "utilise"),
+            ("visualize", "visualise"),
+            ("vocalize", "vocalise"),
+            ("vaporize", "vaporise"),
+            ("civilization", "civilisation"),
+            ("civilizations", "civilisations"),
+            ("realization", "realisation"),
+            ("organization", "organisation"),
+        ],
+    );
+
     // Common -ense/-ence endings
-    add_pairs(&mut map, &[
-        ("defense", "defence"), ("defenses", "defences"), ("defensive", "defensive"),
-        ("offense", "offence"), ("offenses", "offences"), ("offensive", "offensive"),
-        ("pretense", "pretence"), ("pretenses", "pretences"),
-        ("license", "licence"), ("licenses", "licences"), ("licensed", "licenced"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("defense", "defence"),
+            ("defenses", "defences"),
+            ("defensive", "defensive"),
+            ("offense", "offence"),
+            ("offenses", "offences"),
+            ("offensive", "offensive"),
+            ("pretense", "pretence"),
+            ("pretenses", "pretences"),
+            ("license", "licence"),
+            ("licenses", "licences"),
+            ("licensed", "licenced"),
+        ],
+    );
+
     // Gray/grey (very common)
-    add_pairs(&mut map, &[
-        ("gray", "grey"), ("grays", "greys"), ("grayed", "greyed"),
-        ("graying", "greying"), ("grayer", "greyer"), ("grayest", "greyest"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("gray", "grey"),
+            ("grays", "greys"),
+            ("grayed", "greyed"),
+            ("graying", "greying"),
+            ("grayer", "greyer"),
+            ("grayest", "greyest"),
+        ],
+    );
+
     // Travel/travelled (double consonant)
-    add_pairs(&mut map, &[
-        ("traveled", "travelled"), ("traveler", "traveller"), ("traveling", "travelling"),
-        ("labeled", "labelled"), ("labeler", "labeller"), ("labeling", "labelling"),
-        ("canceled", "cancelled"), ("canceling", "cancelling"),
-        ("fueled", "fuelled"), ("fueling", "fuelling"),
-        ("jeweler", "jeweller"), ("jewelry", "jewellery"),
-        ("leveled", "levelled"), ("leveling", "levelling"),
-        ("marveled", "marvelled"), ("marveling", "marvelling"),
-        ("modeled", "modelled"), ("modeling", "modelling"),
-        ("queried", "queried"), ("quarreled", "quarrelled"),
-        ("signaled", "signalled"), ("signaling", "signalling"),
-        ("totaled", "totalled"), ("totaling", "totalling"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("traveled", "travelled"),
+            ("traveler", "traveller"),
+            ("traveling", "travelling"),
+            ("labeled", "labelled"),
+            ("labeler", "labeller"),
+            ("labeling", "labelling"),
+            ("canceled", "cancelled"),
+            ("canceling", "cancelling"),
+            ("fueled", "fuelled"),
+            ("fueling", "fuelling"),
+            ("jeweler", "jeweller"),
+            ("jewelry", "jewellery"),
+            ("leveled", "levelled"),
+            ("leveling", "levelling"),
+            ("marveled", "marvelled"),
+            ("marveling", "marvelling"),
+            ("modeled", "modelled"),
+            ("modeling", "modelling"),
+            ("queried", "queried"),
+            ("quarreled", "quarrelled"),
+            ("signaled", "signalled"),
+            ("signaling", "signalling"),
+            ("totaled", "totalled"),
+            ("totaling", "totalling"),
+        ],
+    );
+
     // Spelling variants (not vocabulary differences)
-    add_pairs(&mut map, &[
-        ("aluminum", "aluminium"), ("airplane", "aeroplane"), ("airplanes", "aeroplanes"),
-        ("mustache", "moustache"), ("mustaches", "moustaches"),
-        ("pajamas", "pyjamas"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("aluminum", "aluminium"),
+            ("airplane", "aeroplane"),
+            ("airplanes", "aeroplanes"),
+            ("mustache", "moustache"),
+            ("mustaches", "moustaches"),
+            ("pajamas", "pyjamas"),
+        ],
+    );
+
     // Common spellings
-    add_pairs(&mut map, &[
-        ("aging", "ageing"), ("aging", "ageing"),
-        ("armor", "armour"), ("armored", "armoured"),
-        ("behavior", "behaviour"), ("behaviors", "behaviours"), ("behavioral", "behavioural"),
-        ("catalog", "catalogue"), // Note: computing context may prefer "catalog"
-        ("counselor", "counsellor"), ("counselors", "counsellors"),
-        ("disk", "disc"), // Note: computing context may prefer "disk"
-        ("donut", "doughnut"), ("donuts", "doughnuts"),
-        ("draft", "draught"), ("drafts", "draughts"), ("draftsman", "draughtsman"),
-        ("encyclopedia", "encyclopaedia"),
-        ("enrollment", "enrolment"), ("enroll", "enrol"),
-        ("fulfill", "fulfil"), ("fulfillment", "fulfilment"),
-        ("instill", "instil"), ("instillment", "instilment"),
-        ("judgment", "judgement"), // Note: both valid in British English
-        ("maneuver", "manoeuvre"), ("maneuvers", "manoeuvres"),
-        ("mold", "mould"), ("molds", "moulds"), ("molded", "moulded"), ("molding", "moulding"),
-        ("molt", "moult"), ("molting", "moulting"),
-        ("omelet", "omelette"), ("omelets", "omelettes"),
-        ("plow", "plough"), ("plows", "ploughs"), ("plowed", "ploughed"),
-        ("skeptic", "sceptic"), ("skeptical", "sceptical"), ("skepticism", "scepticism"),
-        ("skillful", "skilful"), ("willful", "wilful"),
-        ("smolder", "smoulder"), ("smoldering", "smouldering"),
-        ("story", "storey"), ("stories", "storeys"), // Note: building level only
-        ("tidbit", "titbit"), ("tidbits", "titbits"),
-        ("woolen", "woollen"), ("woolens", "woollens"),
-        ("worshiper", "worshipper"), ("worshipers", "worshippers"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("aging", "ageing"),
+            ("aging", "ageing"),
+            ("armor", "armour"),
+            ("armored", "armoured"),
+            ("behavior", "behaviour"),
+            ("behaviors", "behaviours"),
+            ("behavioral", "behavioural"),
+            ("catalog", "catalogue"), // Note: computing context may prefer "catalog"
+            ("counselor", "counsellor"),
+            ("counselors", "counsellors"),
+            ("disk", "disc"), // Note: computing context may prefer "disk"
+            ("donut", "doughnut"),
+            ("donuts", "doughnuts"),
+            ("draft", "draught"),
+            ("drafts", "draughts"),
+            ("draftsman", "draughtsman"),
+            ("encyclopedia", "encyclopaedia"),
+            ("enrollment", "enrolment"),
+            ("enroll", "enrol"),
+            ("fulfill", "fulfil"),
+            ("fulfillment", "fulfilment"),
+            ("instill", "instil"),
+            ("instillment", "instilment"),
+            ("judgment", "judgement"), // Note: both valid in British English
+            ("maneuver", "manoeuvre"),
+            ("maneuvers", "manoeuvres"),
+            ("mold", "mould"),
+            ("molds", "moulds"),
+            ("molded", "moulded"),
+            ("molding", "moulding"),
+            ("molt", "moult"),
+            ("molting", "moulting"),
+            ("omelet", "omelette"),
+            ("omelets", "omelettes"),
+            ("plow", "plough"),
+            ("plows", "ploughs"),
+            ("plowed", "ploughed"),
+            ("skeptic", "sceptic"),
+            ("skeptical", "sceptical"),
+            ("skepticism", "scepticism"),
+            ("skillful", "skilful"),
+            ("willful", "wilful"),
+            ("smolder", "smoulder"),
+            ("smoldering", "smouldering"),
+            ("story", "storey"),
+            ("stories", "storeys"), // Note: building level only
+            ("tidbit", "titbit"),
+            ("tidbits", "titbits"),
+            ("woolen", "woollen"),
+            ("woolens", "woollens"),
+            ("worshiper", "worshipper"),
+            ("worshipers", "worshippers"),
+        ],
+    );
+
     // Additional common words from DWYL
     // NOTE: Excluding semantic ambiguities (check/cheque, tire/tyre, program/programme)
     // because context determines which word to use in British English.
     // NOTE: Excluding archaic spellings (waggon, instal) and computing terms
     // that are spelled the same in both variants (catalog, dialog for computing).
-    add_pairs(&mut map, &[
-        ("accouter", "accoutre"), ("accouterment", "accoutrement"),
-        ("adapter", "adaptor"), ("adapters", "adaptors"),
-        ("aesthetic", "aesthetic"), // Note: both same, but American uses "esthetic" variant
-        ("aging", "ageing"), ("aged", "aged"),
-        ("anemia", "anaemia"), ("anemic", "anaemic"), ("anesthetic", "anaesthetic"),
-        ("anesthetist", "anaesthetist"), ("hemoglobin", "haemoglobin"),
-        ("leukemia", "leukaemia"), ("estrogen", "oestrogen"), ("feces", "faeces"),
-        ("fetus", "foetus"), ("fetal", "foetal"),
-        ("pediatric", "paediatric"), ("pediatrician", "paediatrician"),
-        ("archeology", "archaeology"), ("paleontology", "palaeontology"),
-        ("archeologist", "archaeologist"),
-        ("artifact", "artefact"), ("artifacts", "artefacts"),
-        ("ax", "axe"), // Note: axe plural is axes, same as ax
-        ("balk", "baulk"), ("balking", "baulking"),
-        ("behoove", "behove"), ("behooves", "behoves"),
-        ("benefited", "benefitted"), ("benefiting", "benefitting"),
-        ("caliber", "calibre"), ("calibers", "calibres"),
-        ("caliper", "calliper"), ("calipers", "callipers"),
-        ("carburetor", "carburettor"), ("carburetors", "carburettors"),
-        ("chili", "chilli"), ("chilies", "chillies"),
-        ("cognizance", "cognisance"),
-        ("colonization", "colonisation"), ("colonize", "colonise"),
-        ("colorization", "colourisation"),
-        ("cozy", "cosy"), ("cozier", "cosier"), ("coziest", "cosiest"),
-        // NOTE: curb/kerb excluded - semantic ambiguity (curb=restrain vs kerb=road edge)
-        ("crawfish", "crayfish"),
-        ("dependent", "dependant"), // Note: British distinguishes dependent/dependant
-        ("demeanor", "demeanour"),
-        // NOTE: dialog/dialogue excluded - semantic ambiguity (UI vs conversation)
-        ("distill", "distil"), ("distilled", "distilled"), ("distilling", "distilling"),
-        ("enamor", "enamour"),
-        ("endeavor", "endeavour"), ("endeavors", "endeavours"),
-        ("fervor", "fervour"),
-        ("font", "fount"),
-        ("fueled", "fuelled"), ("fueling", "fuelling"),
-        ("furor", "furore"),
-        ("gage", "gauge"),
-        ("glamor", "glamour"), // Same
-        ("generalization", "generalisation"), ("generalizations", "generalisations"),
-        ("goiter", "goitre"), ("goiters", "goitres"),
-        ("groveling", "grovelling"),
-        ("honorable", "honourable"),
-        ("inflection", "inflexion"), ("inflections", "inflexions"),
-        ("kidnaper", "kidnapper"), ("kidnaping", "kidnapping"),
-        ("kilogram", "kilogramme"), ("kilograms", "kilogrammes"),
-        ("kilometer", "kilometre"), ("kilometers", "kilometres"),
-        ("licorice", "liquorice"),
-        ("maneuver", "manoeuvre"), ("maneuvers", "manoeuvres"), ("maneuvered", "manoeuvred"),
-        ("math", "maths"),
-        ("misdemeanor", "misdemeanour"),
-        ("mustache", "moustache"), ("mustaches", "moustaches"),
-        ("naught", "nought"),
-        ("neighborhood", "neighbourhood"),
-        ("omelet", "omelette"), ("omelets", "omelettes"),
-        ("peddler", "pedlar"), ("peddlers", "pedlars"),
-        ("persnickety", "pernickety"),
-        ("philter", "philtre"),
-        ("plow", "plough"), ("plows", "ploughs"), ("plowing", "ploughing"),
-        ("potter", "putter"), // Note: different meanings
-        ("prize", "prise"), ("prizes", "prises"), // Note: prize = award, prise = leverage
-        // NOTE: program/programme excluded - semantic ambiguity (software vs TV show)
-        // Both spellings are valid in British English with different meanings
-        ("reflection", "reflexion"), ("reflections", "reflexions"),
-        ("rigor", "rigour"),
-        ("saber", "sabre"), ("sabers", "sabres"),
-        ("saltpeter", "saltpetre"),
-        ("skeptical", "sceptical"),
-        ("smolder", "smoulder"), ("smolders", "smoulders"),
-        ("snowplow", "snowplough"),
-        ("siphon", "syphon"), ("siphons", "syphons"),
-        ("specter", "spectre"), ("specters", "spectres"),
-        ("specialty", "speciality"), ("specialties", "specialities"),
-        ("spelled", "spelt"), // Note: both valid in British
-        ("splendor", "splendour"),
-        ("succor", "succour"),
-        ("sulfate", "sulphate"), ("sulfates", "sulphates"),
-        ("sulfide", "sulphide"), ("sulfides", "sulphides"),
-        ("sulfur", "sulphur"), ("sulfurs", "sulphurs"),
-        ("theater", "theatre"), ("theaters", "theatres"),
-        // NOTE: tire/tyre excluded - semantic ambiguity (weary vs wheel)
-        // Both words exist in British English with different meanings
-        ("tsar", "tzar"),
-        ("vapor", "vapour"), ("vapors", "vapours"),
-        // NOTE: wagon/waggon excluded - "waggon" is archaic, modern British uses "wagon"
-        ("whiskey", "whisky"), // Note: Irish = whiskey, Scottish = whisky
-        ("woolen", "woollen"), ("woolens", "woollens"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("accouter", "accoutre"),
+            ("accouterment", "accoutrement"),
+            ("adapter", "adaptor"),
+            ("adapters", "adaptors"),
+            ("aesthetic", "aesthetic"), // Note: both same, but American uses "esthetic" variant
+            ("aging", "ageing"),
+            ("aged", "aged"),
+            ("anemia", "anaemia"),
+            ("anemic", "anaemic"),
+            ("anesthetic", "anaesthetic"),
+            ("anesthetist", "anaesthetist"),
+            ("hemoglobin", "haemoglobin"),
+            ("leukemia", "leukaemia"),
+            ("estrogen", "oestrogen"),
+            ("feces", "faeces"),
+            ("fetus", "foetus"),
+            ("fetal", "foetal"),
+            ("pediatric", "paediatric"),
+            ("pediatrician", "paediatrician"),
+            ("archeology", "archaeology"),
+            ("paleontology", "palaeontology"),
+            ("archeologist", "archaeologist"),
+            ("artifact", "artefact"),
+            ("artifacts", "artefacts"),
+            ("ax", "axe"), // Note: axe plural is axes, same as ax
+            ("balk", "baulk"),
+            ("balking", "baulking"),
+            ("behoove", "behove"),
+            ("behooves", "behoves"),
+            ("benefited", "benefitted"),
+            ("benefiting", "benefitting"),
+            ("caliber", "calibre"),
+            ("calibers", "calibres"),
+            ("caliper", "calliper"),
+            ("calipers", "callipers"),
+            ("carburetor", "carburettor"),
+            ("carburetors", "carburettors"),
+            ("chili", "chilli"),
+            ("chilies", "chillies"),
+            ("cognizance", "cognisance"),
+            ("colonization", "colonisation"),
+            ("colonize", "colonise"),
+            ("colorization", "colourisation"),
+            ("cozy", "cosy"),
+            ("cozier", "cosier"),
+            ("coziest", "cosiest"),
+            // NOTE: curb/kerb excluded - semantic ambiguity (curb=restrain vs kerb=road edge)
+            ("crawfish", "crayfish"),
+            ("dependent", "dependant"), // Note: British distinguishes dependent/dependant
+            ("demeanor", "demeanour"),
+            // NOTE: dialog/dialogue excluded - semantic ambiguity (UI vs conversation)
+            ("distill", "distil"),
+            ("distilled", "distilled"),
+            ("distilling", "distilling"),
+            ("enamor", "enamour"),
+            ("endeavor", "endeavour"),
+            ("endeavors", "endeavours"),
+            ("fervor", "fervour"),
+            ("font", "fount"),
+            ("fueled", "fuelled"),
+            ("fueling", "fuelling"),
+            ("furor", "furore"),
+            ("gage", "gauge"),
+            ("glamor", "glamour"), // Same
+            ("generalization", "generalisation"),
+            ("generalizations", "generalisations"),
+            ("goiter", "goitre"),
+            ("goiters", "goitres"),
+            ("groveling", "grovelling"),
+            ("honorable", "honourable"),
+            ("inflection", "inflexion"),
+            ("inflections", "inflexions"),
+            ("kidnaper", "kidnapper"),
+            ("kidnaping", "kidnapping"),
+            ("kilogram", "kilogramme"),
+            ("kilograms", "kilogrammes"),
+            ("kilometer", "kilometre"),
+            ("kilometers", "kilometres"),
+            ("licorice", "liquorice"),
+            ("maneuver", "manoeuvre"),
+            ("maneuvers", "manoeuvres"),
+            ("maneuvered", "manoeuvred"),
+            ("math", "maths"),
+            ("misdemeanor", "misdemeanour"),
+            ("mustache", "moustache"),
+            ("mustaches", "moustaches"),
+            ("naught", "nought"),
+            ("neighborhood", "neighbourhood"),
+            ("omelet", "omelette"),
+            ("omelets", "omelettes"),
+            ("peddler", "pedlar"),
+            ("peddlers", "pedlars"),
+            ("persnickety", "pernickety"),
+            ("philter", "philtre"),
+            ("plow", "plough"),
+            ("plows", "ploughs"),
+            ("plowing", "ploughing"),
+            ("potter", "putter"), // Note: different meanings
+            ("prize", "prise"),
+            ("prizes", "prises"), // Note: prize = award, prise = leverage
+            // NOTE: program/programme excluded - semantic ambiguity (software vs TV show)
+            // Both spellings are valid in British English with different meanings
+            ("reflection", "reflexion"),
+            ("reflections", "reflexions"),
+            ("rigor", "rigour"),
+            ("saber", "sabre"),
+            ("sabers", "sabres"),
+            ("saltpeter", "saltpetre"),
+            ("skeptical", "sceptical"),
+            ("smolder", "smoulder"),
+            ("smolders", "smoulders"),
+            ("snowplow", "snowplough"),
+            ("siphon", "syphon"),
+            ("siphons", "syphons"),
+            ("specter", "spectre"),
+            ("specters", "spectres"),
+            ("specialty", "speciality"),
+            ("specialties", "specialities"),
+            ("spelled", "spelt"), // Note: both valid in British
+            ("splendor", "splendour"),
+            ("succor", "succour"),
+            ("sulfate", "sulphate"),
+            ("sulfates", "sulphates"),
+            ("sulfide", "sulphide"),
+            ("sulfides", "sulphides"),
+            ("sulfur", "sulphur"),
+            ("sulfurs", "sulphurs"),
+            ("theater", "theatre"),
+            ("theaters", "theatres"),
+            // NOTE: tire/tyre excluded - semantic ambiguity (weary vs wheel)
+            // Both words exist in British English with different meanings
+            ("tsar", "tzar"),
+            ("vapor", "vapour"),
+            ("vapors", "vapours"),
+            // NOTE: wagon/waggon excluded - "waggon" is archaic, modern British uses "wagon"
+            ("whiskey", "whisky"), // Note: Irish = whiskey, Scottish = whisky
+            ("woolen", "woollen"),
+            ("woolens", "woollens"),
+        ],
+    );
+
     map
 });
 
 /// CSpell-based US-to-British spelling dictionary.
-/// 
+///
 /// Extracted from CSpell dictionaries which use SCOWL word lists
 /// with modern spellings only (level >= 60, excludes archaic).
-/// 
+///
 /// Source: https://github.com/streetsidesoftware/cspell-dicts
-/// 
+///
 /// This dictionary is more comprehensive than DWYL and actively maintained.
 static CSPELL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     let mut map = HashMap::new();
-    
+
     // CSpell dictionary contains the same core words as DWYL
     // but with additional technical terms and variations.
     // For now, we use the DWYL set as the base and add CSpell-specific entries.
-    
+
     // Core conversions (same as DWYL)
-    add_pairs(&mut map, &[
-        ("color", "colour"), ("colors", "colours"), ("colored", "coloured"), ("coloring", "colouring"),
-        ("flavor", "flavour"), ("flavors", "flavours"), ("flavored", "flavoured"), ("flavoring", "flavouring"),
-        ("honor", "honour"), ("honors", "honours"), ("honored", "honoured"), ("honoring", "honouring"),
-        ("humor", "humour"), ("humors", "humours"), ("humored", "humoured"),
-        ("labor", "labour"), ("labors", "labours"), ("labored", "laboured"), ("laboring", "labouring"),
-        ("neighbor", "neighbour"), ("neighbors", "neighbours"), ("neighbored", "neighboured"),
-        ("rumor", "rumour"), ("rumors", "rumours"), ("rumored", "rumoured"),
-        ("vapor", "vapour"), ("vapors", "vapours"),
-        ("tumor", "tumour"), ("tumors", "tumours"),
-        ("armor", "armour"), ("armors", "armours"), ("armored", "armoured"),
-        ("harbor", "harbour"), ("harbors", "harbours"),
-        ("savor", "savour"), ("savors", "savourings"),
-        ("vigor", "vigour"), ("valor", "valour"), ("ardor", "ardour"),
-        ("clamor", "clamour"), ("demeanor", "demeanour"),
-        ("enamor", "enamour"), ("fervor", "fervour"), ("rancor", "rancour"),
-        ("splendor", "splendour"), ("savior", "saviour"), ("odor", "odour"), ("odors", "odours"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("color", "colour"),
+            ("colors", "colours"),
+            ("colored", "coloured"),
+            ("coloring", "colouring"),
+            ("flavor", "flavour"),
+            ("flavors", "flavours"),
+            ("flavored", "flavoured"),
+            ("flavoring", "flavouring"),
+            ("honor", "honour"),
+            ("honors", "honours"),
+            ("honored", "honoured"),
+            ("honoring", "honouring"),
+            ("humor", "humour"),
+            ("humors", "humours"),
+            ("humored", "humoured"),
+            ("labor", "labour"),
+            ("labors", "labours"),
+            ("labored", "laboured"),
+            ("laboring", "labouring"),
+            ("neighbor", "neighbour"),
+            ("neighbors", "neighbours"),
+            ("neighbored", "neighboured"),
+            ("rumor", "rumour"),
+            ("rumors", "rumours"),
+            ("rumored", "rumoured"),
+            ("vapor", "vapour"),
+            ("vapors", "vapours"),
+            ("tumor", "tumour"),
+            ("tumors", "tumours"),
+            ("armor", "armour"),
+            ("armors", "armours"),
+            ("armored", "armoured"),
+            ("harbor", "harbour"),
+            ("harbors", "harbours"),
+            ("savor", "savour"),
+            ("savors", "savourings"),
+            ("vigor", "vigour"),
+            ("valor", "valour"),
+            ("ardor", "ardour"),
+            ("clamor", "clamour"),
+            ("demeanor", "demeanour"),
+            ("enamor", "enamour"),
+            ("fervor", "fervour"),
+            ("rancor", "rancour"),
+            ("splendor", "splendour"),
+            ("savior", "saviour"),
+            ("odor", "odour"),
+            ("odors", "odours"),
+        ],
+    );
+
     // -er/-re endings
-    add_pairs(&mut map, &[
-        ("center", "centre"), ("centers", "centres"), ("centered", "centred"),
-        ("fiber", "fibre"), ("fibers", "fibres"),
-        ("liter", "litre"), ("meters", "metres"),
-        ("theater", "theatre"), ("theaters", "theatres"),
-        ("specter", "spectre"), ("luster", "lustre"), ("meager", "meagre"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("center", "centre"),
+            ("centers", "centres"),
+            ("centered", "centred"),
+            ("fiber", "fibre"),
+            ("fibers", "fibres"),
+            ("liter", "litre"),
+            ("meters", "metres"),
+            ("theater", "theatre"),
+            ("theaters", "theatres"),
+            ("specter", "spectre"),
+            ("luster", "lustre"),
+            ("meager", "meagre"),
+        ],
+    );
+
     // -ize/-ise
-    add_pairs(&mut map, &[
-        ("analyze", "analyse"), ("analyzes", "analyses"), ("analyzed", "analysed"), ("analyzing", "analysing"),
-        ("organize", "organise"), ("organizes", "organises"), ("organized", "organised"), ("organizing", "organising"),
-        ("realize", "realise"), ("realizes", "realises"), ("realized", "realised"), ("realizing", "realising"),
-        ("recognize", "recognise"), ("recognizes", "recognises"), ("recognized", "recognised"),
-        ("prioritize", "prioritise"), ("optimize", "optimise"),
-        ("maximize", "maximise"), ("minimize", "minimise"),
-        ("civilization", "civilisation"), ("organization", "organisation"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("analyze", "analyse"),
+            ("analyzes", "analyses"),
+            ("analyzed", "analysed"),
+            ("analyzing", "analysing"),
+            ("organize", "organise"),
+            ("organizes", "organises"),
+            ("organized", "organised"),
+            ("organizing", "organising"),
+            ("realize", "realise"),
+            ("realizes", "realises"),
+            ("realized", "realised"),
+            ("realizing", "realising"),
+            ("recognize", "recognise"),
+            ("recognizes", "recognises"),
+            ("recognized", "recognised"),
+            ("prioritize", "prioritise"),
+            ("optimize", "optimise"),
+            ("maximize", "maximise"),
+            ("minimize", "minimise"),
+            ("civilization", "civilisation"),
+            ("organization", "organisation"),
+        ],
+    );
+
     // -ense/-ence
-    add_pairs(&mut map, &[
-        ("defense", "defence"), ("defenses", "defences"),
-        ("offense", "offence"), ("offenses", "offences"),
-        ("license", "licence"), ("licenses", "licences"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("defense", "defence"),
+            ("defenses", "defences"),
+            ("offense", "offence"),
+            ("offenses", "offences"),
+            ("license", "licence"),
+            ("licenses", "licences"),
+        ],
+    );
+
     // gray/grey
-    add_pairs(&mut map, &[
-        ("gray", "grey"), ("grays", "greys"), ("grayed", "greyed"),
-        ("graying", "greying"), ("grayer", "greyer"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("gray", "grey"),
+            ("grays", "greys"),
+            ("grayed", "greyed"),
+            ("graying", "greying"),
+            ("grayer", "greyer"),
+        ],
+    );
+
     // Double consonants
-    add_pairs(&mut map, &[
-        ("traveled", "travelled"), ("traveler", "traveller"), ("traveling", "travelling"),
-        ("labeled", "labelled"), ("labeling", "labelling"),
-        ("canceled", "cancelled"), ("canceling", "cancelling"),
-        ("fueled", "fuelled"), ("fueling", "fuelling"),
-        ("jeweler", "jeweller"), ("jewelry", "jewellery"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("traveled", "travelled"),
+            ("traveler", "traveller"),
+            ("traveling", "travelling"),
+            ("labeled", "labelled"),
+            ("labeling", "labelling"),
+            ("canceled", "cancelled"),
+            ("canceling", "cancelling"),
+            ("fueled", "fuelled"),
+            ("fueling", "fuelling"),
+            ("jeweler", "jeweller"),
+            ("jewelry", "jewellery"),
+        ],
+    );
+
     // Common
-    add_pairs(&mut map, &[
-        ("aluminum", "aluminium"), ("airplane", "aeroplane"),
-        ("mustache", "moustache"), ("pajamas", "pyjamas"),
-        ("donut", "doughnut"), ("disk", "disc"),
-        ("aging", "ageing"), ("encyclopedia", "encyclopaedia"),
-        ("maneuver", "manoeuvre"), ("mold", "mould"),
-        ("skeptic", "sceptic"), ("smolder", "smoulder"),
-        ("woolen", "woollen"), ("tidbit", "titbit"),
-        ("story", "storey"), ("stories", "storeys"),
-        ("fulfill", "fulfil"), ("enrollment", "enrolment"),
-    ]);
-    
+    add_pairs(
+        &mut map,
+        &[
+            ("aluminum", "aluminium"),
+            ("airplane", "aeroplane"),
+            ("mustache", "moustache"),
+            ("pajamas", "pyjamas"),
+            ("donut", "doughnut"),
+            ("disk", "disc"),
+            ("aging", "ageing"),
+            ("encyclopedia", "encyclopaedia"),
+            ("maneuver", "manoeuvre"),
+            ("mold", "mould"),
+            ("skeptic", "sceptic"),
+            ("smolder", "smoulder"),
+            ("woolen", "woollen"),
+            ("tidbit", "titbit"),
+            ("story", "storey"),
+            ("stories", "storeys"),
+            ("fulfill", "fulfil"),
+            ("enrollment", "enrolment"),
+        ],
+    );
+
     // CSpell adds these technical terms
     // NOTE: Excluding semantic ambiguities (catalog, dialog, program) for STT
     // add_pairs(&mut map, &[
@@ -369,12 +680,15 @@ static CSPELL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(
     //     ("dialog", "dialogue"), ("dialogs", "dialogues"),
     //     ("program", "programme"),
     // ]);
-    
+
     map
 });
 
 /// Helper to add multiple word pairs to the map.
-fn add_pairs(map: &mut HashMap<&'static str, &'static str>, pairs: &[(&'static str, &'static str)]) {
+fn add_pairs(
+    map: &mut HashMap<&'static str, &'static str>,
+    pairs: &[(&'static str, &'static str)],
+) {
     for (us, uk) in pairs {
         map.insert(us, uk);
     }
@@ -389,11 +703,11 @@ pub fn get_dictionary(source: SpellingDictionary) -> &'static HashMap<&'static s
 }
 
 /// Convert US English spelling to British English using the specified dictionary.
-/// 
+///
 /// # Arguments
 /// * `text` - The input text with US English spelling
 /// * `source` - Which dictionary to use (DWYL or CSpell)
-/// 
+///
 /// # Returns
 /// Text with British English spelling applied
 pub fn convert_us_to_british_with_dict(text: &str, source: SpellingDictionary) -> String {
@@ -409,9 +723,9 @@ fn convert_with_dictionary(text: &str, dictionary: &HashMap<&'static str, &'stat
     for word in words {
         let (prefix, core, suffix) = extract_word_parts(word);
         let core_lower = core.to_lowercase();
-        
+
         let converted = dictionary.get(core_lower.as_str());
-        
+
         let result_word = if let Some(&british) = converted {
             preserve_case_pattern(core, british)
         } else if core_lower.ends_with("es") {
@@ -445,7 +759,10 @@ fn convert_with_dictionary(text: &str, dictionary: &HashMap<&'static str, &'stat
             } else if core_lower.ends_with("ied") {
                 let base = format!("{}y", &core_lower[..core_lower.len() - 3]);
                 if let Some(&british_base) = dictionary.get(base.as_str()) {
-                    let british_form = format!("{}ied", british_base.strip_suffix('e').unwrap_or(british_base));
+                    let british_form = format!(
+                        "{}ied",
+                        british_base.strip_suffix('e').unwrap_or(british_base)
+                    );
                     preserve_case_pattern(core, &british_form)
                 } else {
                     core.to_string()
@@ -462,7 +779,10 @@ fn convert_with_dictionary(text: &str, dictionary: &HashMap<&'static str, &'stat
             } else if core_lower.ends_with("ying") {
                 let base = format!("{}y", &core_lower[..core_lower.len() - 4]);
                 if let Some(&british_base) = dictionary.get(base.as_str()) {
-                    let british_form = format!("{}ying", british_base.strip_suffix('e').unwrap_or(british_base));
+                    let british_form = format!(
+                        "{}ying",
+                        british_base.strip_suffix('e').unwrap_or(british_base)
+                    );
                     preserve_case_pattern(core, &british_form)
                 } else {
                     core.to_string()
@@ -567,7 +887,10 @@ mod tests {
     fn test_cspell_basic_conversion() {
         let dict = SpellingDictionary::Cspell;
         assert_eq!(convert_us_to_british_with_dict("color", dict), "colour");
-        assert_eq!(convert_us_to_british_with_dict("organize", dict), "organise");
+        assert_eq!(
+            convert_us_to_british_with_dict("organize", dict),
+            "organise"
+        );
     }
 
     #[test]
@@ -582,15 +905,27 @@ mod tests {
     fn test_punctuation() {
         let dict = SpellingDictionary::Dwyl;
         assert_eq!(convert_us_to_british_with_dict("color.", dict), "colour.");
-        assert_eq!(convert_us_to_british_with_dict("\"color\"", dict), "\"colour\"");
+        assert_eq!(
+            convert_us_to_british_with_dict("\"color\"", dict),
+            "\"colour\""
+        );
     }
 
     #[test]
     fn test_plural_forms() {
         let dict = SpellingDictionary::Dwyl;
-        assert_eq!(convert_us_to_british_with_dict("analyzed", dict), "analysed");
-        assert_eq!(convert_us_to_british_with_dict("analyzing", dict), "analysing");
-        assert_eq!(convert_us_to_british_with_dict("traveled", dict), "travelled");
+        assert_eq!(
+            convert_us_to_british_with_dict("analyzed", dict),
+            "analysed"
+        );
+        assert_eq!(
+            convert_us_to_british_with_dict("analyzing", dict),
+            "analysing"
+        );
+        assert_eq!(
+            convert_us_to_british_with_dict("traveled", dict),
+            "travelled"
+        );
     }
 
     #[test]
@@ -608,14 +943,20 @@ mod tests {
         let expected = "The grey colour of the centre was organised.";
         assert_eq!(convert_us_to_british_with_dict(input, dict), expected);
     }
-    
+
     #[test]
     fn test_dictionary_size() {
         // DWYL should have more entries than the minimal set
         let dwyl = get_dictionary(SpellingDictionary::Dwyl);
-        assert!(dwyl.len() > 100, "DWYL dictionary should have at least 100 entries");
-        
+        assert!(
+            dwyl.len() > 100,
+            "DWYL dictionary should have at least 100 entries"
+        );
+
         let cspell = get_dictionary(SpellingDictionary::Cspell);
-        assert!(cspell.len() > 50, "CSpell dictionary should have at least 50 entries");
+        assert!(
+            cspell.len() > 50,
+            "CSpell dictionary should have at least 50 entries"
+        );
     }
 }
