@@ -203,9 +203,18 @@ const RecordingOverlay: React.FC = () => {
   });
 
   // ─── Cancel handler ───────────────────────────────────────────────────
-  const handleCancel = useCallback(() => {
-    commands.cancelOperation();
-  }, []);
+  const handleCancel = useCallback(async () => {
+    try {
+      await commands.cancelOperation();
+    } catch (err) {
+      console.error("[Overlay] cancelOperation command failed:", err);
+    }
+    // ALWAYS reset local UI state as a fallback, even if the backend
+    // command failed or crashed. This ensures the overlay hides.
+    setIsVisible(false);
+    setStreamingText("");
+    setTranscriptionPreview("");
+  }, [setIsVisible, setStreamingText, setTranscriptionPreview]);
 
   // ─── Icon selection ───────────────────────────────────────────────────
   const getIcon = () => {

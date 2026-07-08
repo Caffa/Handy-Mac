@@ -69,31 +69,38 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
 }
 
 pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
-    // Acquire the global tray lock to prevent concurrent RefCell borrows
-    // This prevents the "RefCell already borrowed" panic from tray-icon
-    let _guard = TRAY_LOCK.lock();
+    // Wrap in catch_unwind so any unexpected panic in tray operations
+    // doesn't crash the app. The cancel button calls this, and a crash
+    // here would leave the recording stuck with no way to recover.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Acquire the global tray lock to prevent concurrent RefCell borrows
+        let _guard = TRAY_LOCK.lock();
 
-    let Some(tray) = app.try_state::<TrayIcon>() else {
-        warn!("TrayIcon not available for icon change");
-        return;
-    };
-    let theme = get_current_theme(app);
+        let Some(tray) = app.try_state::<TrayIcon>() else {
+            warn!("TrayIcon not available for icon change");
+            return;
+        };
+        let theme = get_current_theme(app);
+        let icon_path = get_icon_path(theme, icon.clone());
 
-    let icon_path = get_icon_path(theme, icon.clone());
+        let resolved = app
+            .path()
+            .resolve(icon_path, tauri::path::BaseDirectory::Resource);
+        match resolved {
+            Ok(path) => match Image::from_path(&path) {
+                Ok(img) => {
+                    if let Err(e) = tray.set_icon(Some(img)) {
+                        error!("Failed to set tray icon: {}", e);
+                    }
+                }
+                Err(e) => error!("Failed to load tray icon image: {}", e),
+            },
+            Err(e) => error!("Failed to resolve tray icon path: {}", e),
+        }
 
-    if let Err(e) = tray.set_icon(Some(
-        Image::from_path(
-            app.path()
-                .resolve(icon_path, tauri::path::BaseDirectory::Resource)
-                .expect("failed to resolve"),
-        )
-        .expect("failed to set icon"),
-    )) {
-        error!("Failed to set tray icon: {}", e);
-    }
-
-    // Update menu based on state (internal version that doesn't re-acquire lock)
-    update_tray_menu_internal(app, &icon, None);
+        // Update menu based on state (internal version that doesn't re-acquire lock)
+        update_tray_menu_internal(app, &icon, None);
+    }));
 }
 
 pub fn tray_tooltip() -> String {
@@ -124,35 +131,63 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
 
     // Create common menu items
     let version_label = version_label();
-    let version_i = MenuItem::with_id(app, "version", &version_label, false, None::<&str>)
-        .expect("failed to create version item");
-    let settings_i = MenuItem::with_id(
+    let version_i = match MenuItem::with_id(app, "version", &version_label, false, None::<&str>) {
+        Ok(item) => item,
+        Err(e) => {
+            error!("Failed to create version menu item: {}", e);
+            return;
+        }
+    };
+    let settings_i = match MenuItem::with_id(
         app,
         "settings",
         &strings.settings,
         true,
         settings_accelerator,
-    )
-    .expect("failed to create settings item");
-    let check_updates_i = MenuItem::with_id(
+    ) {
+        Ok(item) => item,
+        Err(e) => {
+            error!("Failed to create settings menu item: {}", e);
+            return;
+        }
+    };
+    let check_updates_i = match MenuItem::with_id(
         app,
         "check_updates",
         &strings.check_updates,
         settings.update_checks_enabled,
         None::<&str>,
-    )
-    .expect("failed to create check updates item");
-    let copy_last_transcript_i = MenuItem::with_id(
+    ) {
+        Ok(item) => item,
+        Err(e) => {
+            error!("Failed to create check updates menu item: {}", e);
+            return;
+        }
+    };
+    let copy_last_transcript_i = match MenuItem::with_id(
         app,
         "copy_last_transcript",
         &strings.copy_last_transcript,
         true,
         None::<&str>,
-    )
-    .expect("failed to create copy last transcript item");
-    let model_loaded = app.try_state::<Arc<Mutex<TranscriptionManager>>>().map(|tm| tm.lock().is_model_loaded()).unwrap_or(false);
-    let quit_i = MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator)
-        .expect("failed to create quit item");
+    ) {
+        Ok(item) => item,
+        Err(e) => {
+            error!("Failed to create copy last transcript menu item: {}", e);
+            return;
+        }
+    };
+    let model_loaded = app
+        .try_state::<Arc<Mutex<TranscriptionManager>>>()
+        .map(|tm| tm.lock().is_model_loaded())
+        .unwrap_or(false);
+    let quit_i = match MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator) {
+        Ok(item) => item,
+        Err(e) => {
+            error!("Failed to create quit menu item: {}", e);
+            return;
+        }
+    };
     let separator = || PredefinedMenuItem::separator(app).expect("failed to create separator");
 
     // Build model submenu — label is the active model name
@@ -173,35 +208,62 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
         .unwrap_or_else(|| strings.model.clone());
 
     let model_submenu = {
-        let submenu = Submenu::with_id(app, "model_submenu", &submenu_label, true)
-            .expect("failed to create model submenu");
+        let submenu = match Submenu::with_id(app, "model_submenu", &submenu_label, true) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to create model submenu: {}", e);
+                return;
+            }
+        };
 
         for model in &downloaded {
             let is_active = model.id == *current_model_id;
             let item_id = format!("model_select:{}", model.id);
-            let item =
-                CheckMenuItem::with_id(app, &item_id, &model.name, true, is_active, None::<&str>)
-                    .expect("failed to create model item");
+            let item = match CheckMenuItem::with_id(
+                app,
+                &item_id,
+                &model.name,
+                true,
+                is_active,
+                None::<&str>,
+            ) {
+                Ok(i) => i,
+                Err(e) => {
+                    error!("Failed to create model menu item: {}", e);
+                    continue;
+                }
+            };
             let _ = submenu.append(&item);
         }
 
         submenu
     };
 
-    let unload_model_i = MenuItem::with_id(
+    let unload_model_i = match MenuItem::with_id(
         app,
         "unload_model",
         &strings.unload_model,
         model_loaded,
         None::<&str>,
-    )
-    .expect("failed to create unload model item");
+    ) {
+        Ok(item) => item,
+        Err(e) => {
+            error!("Failed to create unload model menu item: {}", e);
+            return;
+        }
+    };
 
     let menu = match state {
         TrayIconState::Recording | TrayIconState::Transcribing => {
-            let cancel_i = MenuItem::with_id(app, "cancel", &strings.cancel, true, None::<&str>)
-                .expect("failed to create cancel item");
-            Menu::with_items(
+            let cancel_i =
+                match MenuItem::with_id(app, "cancel", &strings.cancel, true, None::<&str>) {
+                    Ok(item) => item,
+                    Err(e) => {
+                        error!("Failed to create cancel menu item: {}", e);
+                        return;
+                    }
+                };
+            match Menu::with_items(
                 app,
                 &[
                     &version_i,
@@ -215,10 +277,15 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
                     &separator(),
                     &quit_i,
                 ],
-            )
-            .expect("failed to create menu")
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    error!("Failed to create recording/transcribing menu: {}", e);
+                    return;
+                }
+            }
         }
-        TrayIconState::Idle => Menu::with_items(
+        TrayIconState::Idle => match Menu::with_items(
             app,
             &[
                 &version_i,
@@ -233,8 +300,13 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
                 &separator(),
                 &quit_i,
             ],
-        )
-        .expect("failed to create menu"),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                error!("Failed to create idle menu: {}", e);
+                return;
+            }
+        },
     };
 
     let Some(tray) = app.try_state::<TrayIcon>() else {
@@ -249,10 +321,13 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
 /// Public function to update tray menu. Acquires the global TRAY_LOCK to prevent
 /// concurrent RefCell borrows that would cause panics.
 pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
-    // Acquire the global tray lock to prevent concurrent RefCell borrows
-    let _guard = TRAY_LOCK.lock();
-
-    update_tray_menu_internal(app, state, locale);
+    // Wrap in catch_unwind so any unexpected panic in menu operations
+    // doesn't crash the app. Defense-in-depth with the individual match/return
+    // error handling in update_tray_menu_internal.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = TRAY_LOCK.lock();
+        update_tray_menu_internal(app, state, locale);
+    }));
 }
 
 fn last_transcript_text(entry: &HistoryEntry) -> &str {

@@ -15,7 +15,7 @@ pub use crate::tray::*;
 
 /// Centralized cancellation function that can be called from anywhere in the app.
 /// Handles cancelling both recording and transcription operations and updates UI state.
-/// 
+///
 /// FIXED: Added defensive checks to ensure we don't try to cancel when already idle,
 /// and proper logging of state transitions for debugging freeze issues.
 pub fn cancel_current_operation(app: &AppHandle) {
@@ -44,59 +44,43 @@ pub fn cancel_current_operation(app: &AppHandle) {
     info!("Unregistering cancel shortcut...");
     shortcut::unregister_cancel_shortcut(app);
 
-    // Cancel any ongoing recording
-    let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() else {
-        warn!("AudioRecordingManager not available for cancellation");
-        return;
-    };
-    
-    let recording_was_active = audio_manager.is_recording();
-    if !recording_was_active {
-        info!("No active recording to cancel, but proceeding with cleanup");
-    } else {
-        info!("Cancelling active recording");
-        audio_manager.cancel_recording();
-    }
+    // 3. Cancel recording FIRST — must never fail
+    let recording_was_active =
+        if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
+            let active = audio_manager.is_recording();
+            if active {
+                info!("Cancelling active recording");
+                audio_manager.cancel_recording();
+            } else {
+                info!("No active recording to cancel, but proceeding with cleanup");
+            }
+            active
+        } else {
+            warn!("AudioRecordingManager not available for cancellation");
+            false
+        };
 
-    // Update tray icon and force-hide overlay (bypass state check for cancel)
-    info!("Updating UI state...");
-    change_tray_icon(app, crate::tray::TrayIconState::Idle);
-    force_hide_recording_overlay(app);
-
-    // NOTE: We intentionally do NOT call tm.lock().maybe_unload_immediately() here.
-    // The streaming transcription callback holds the TM lock for seconds during GPU work.
-    // If we try to acquire the TM lock here, the cancel hotkey would block for the
-    // entire transcription duration, making the app feel frozen.
-    // 
-    // The model will be unloaded by the idle watcher when appropriate, or on the
-    // next transcription start if memory pressure demands it. Model unloading is
-    // not time-critical - immediate user feedback is.
-    //
-    // See: audio.rs streaming callback acquires tm.lock() for GPU transcription,
-    // which blocks any code path that needs the TM lock (including this cancel path).
-
-    // Notify coordinator so it can keep lifecycle state coherent.
+    // 4. Notify coordinator (non-blocking, ignores closed channel)
     if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
-        info!("Notifying transcription coordinator (recording_was_active={})", recording_was_active);
         coordinator.notify_cancel(recording_was_active);
     } else {
         warn!("TranscriptionCoordinator not available");
     }
-
-    // Set the non-blocking cancel flag so the coordinator thread transitions
-    // to Idle on its next loop iteration. This is the critical fix for the
-    // visualizer frozen bug: the cancel hotkey handler must return immediately
-    // without waiting for the coordinator to process the cancel command.
-    // The coordinator thread polls this flag at the top of every loop iteration.
     if let Some(cancel_signal) = app.try_state::<CancelSignal>() {
         cancel_signal.send_cancel();
         info!("Cancel signal sent via CancelSignal flag");
     }
 
-    // Emit unified app-state: Idle so frontend knows the app has returned to idle.
-    // This is the single source of truth for state — it supplements the existing
-    // hide-overlay event to prevent state desync during cancel.
+    // 5. Emit Idle state (safe — uses let _ = on emits)
     emit_app_state(app, &AppState::Idle);
+
+    // 6. UI cleanup LAST — wrapped so a tray panic can't abort the cancel.
+    // The tray icon change has 14 .expect() calls that can panic; wrapping
+    // it ensures the cancel completes even if the tray is in a bad state.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        change_tray_icon(app, crate::tray::TrayIconState::Idle);
+    }));
+    force_hide_recording_overlay(app);
 
     info!("Operation cancellation completed - returned to idle state");
 }

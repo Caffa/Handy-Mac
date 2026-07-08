@@ -420,9 +420,24 @@ impl TranscriptionCoordinator {
                 if let Err(e) = panic_result {
                     error!("Transcription coordinator iteration panicked: {:?}", e);
                     error!("Recovering: resetting state to Idle and continuing");
-                    // Clean up after panic: hide overlay, reset tray, reset shared state
-                    crate::utils::hide_recording_overlay(&app);
-                    crate::utils::change_tray_icon(&app, crate::utils::TrayIconState::Idle);
+
+                    // Wrap ALL recovery work in catch_unwind so a secondary panic
+                    // (e.g. in change_tray_icon) doesn't kill the coordinator thread.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        // Reset audio recorder if it's stuck in Recording state.
+                        // This is the key fix for "stop doesn't work after a panic" —
+                        // without this, the recorder keeps recording while the coordinator
+                        // thinks it's Idle, so stop commands are ignored.
+                        if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
+                            if rm.is_recording() {
+                                warn!("Coordinator panic recovery: cancelling stale recording");
+                                rm.cancel_recording();
+                            }
+                        }
+                        crate::utils::hide_recording_overlay(&app);
+                        crate::utils::change_tray_icon(&app, crate::utils::TrayIconState::Idle);
+                    }));
+
                     active_use_clone.store(false, Ordering::SeqCst);
                     if let Ok(mut guard) = current_state_clone.write() {
                         *guard = AppState::Idle;
