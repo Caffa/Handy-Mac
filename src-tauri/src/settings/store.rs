@@ -5,6 +5,7 @@ use log::{debug, error, warn};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
+use std::sync::RwLock;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
@@ -12,6 +13,32 @@ use tokio::task::JoinHandle;
 
 use super::defaults::get_default_settings;
 use super::types::*;
+
+/// In-memory cache of the current settings. This is the single source of truth
+/// for all reads — `get_settings_safe` reads from here, not from the store.
+/// `write_settings_safe` updates this cache immediately and schedules a debounced
+/// disk flush. This eliminates the read-modify-write race where a quick second
+/// settings change could read stale data from the store before the first
+/// debounced write flushed.
+pub struct SettingsCache {
+    settings: RwLock<AppSettings>,
+}
+
+impl SettingsCache {
+    pub fn new(settings: AppSettings) -> Self {
+        Self {
+            settings: RwLock::new(settings),
+        }
+    }
+
+    pub fn get(&self) -> AppSettings {
+        self.settings.read().unwrap().clone()
+    }
+
+    pub fn update(&self, settings: AppSettings) {
+        *self.settings.write().unwrap() = settings;
+    }
+}
 
 /// Validate that float fields are not NaN before serialization.
 pub(crate) fn sanitize_floats(settings: &mut AppSettings) {
@@ -144,24 +171,46 @@ pub fn load_or_create_app_settings_safe(app: &AppHandle) -> AppSettings {
 }
 
 /// Safe wrapper around [`get_settings`] that catches panics and falls back to defaults.
+/// Reads from the in-memory cache when available, eliminating the read-modify-write
+/// race with the debounced disk writer.
 pub fn get_settings_safe(app: &AppHandle) -> AppSettings {
-    safe_settings_operation("get_settings", || get_settings(app)).unwrap_or_else(|| {
+    safe_settings_operation("get_settings", || {
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            return cache.get();
+        }
+        get_settings(app)
+    })
+    .unwrap_or_else(|| {
         error!("Falling back to default settings after panic in get_settings");
         get_default_settings()
     })
 }
 
 /// Safe wrapper around [`write_settings`] that catches panics.
+/// Updates the in-memory cache immediately so that subsequent reads see the
+/// new value, then schedules a debounced disk write.
 pub fn write_settings_safe(app: &AppHandle, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings", || {
+        // Update the in-memory cache immediately — this is the key fix.
+        // All subsequent reads will see the new value, eliminating the
+        // read-modify-write race with the debounced disk writer.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            cache.update(settings.clone());
+        }
+        // Then schedule the debounced disk write (or immediate if no writer).
         write_settings(app, settings);
     });
 }
 
 /// Safe wrapper around [`write_settings_immediate`] that catches panics.
+/// Also updates the in-memory cache to keep it consistent with disk.
 #[allow(dead_code)]
 pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings_immediate", || {
+        // Update the in-memory cache first so reads stay consistent.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            cache.update(settings.clone());
+        }
         write_settings_immediate(app, settings);
     });
 }
@@ -347,8 +396,14 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
 }
 
 /// Write settings to disk immediately, bypassing the debounce timer.
+/// Also updates the in-memory cache if available, to keep reads consistent.
 pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
     let _ = safe_settings_operation("write_settings_immediate", || {
+        // Update the in-memory cache so reads reflect the immediate write.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            cache.update(settings.clone());
+        }
+
         let Some(store) = open_settings_store(app) else {
             error!("Cannot write settings: store initialization failed, settings not saved");
             return;

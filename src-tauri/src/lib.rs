@@ -62,6 +62,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
 use crate::settings::get_settings_safe;
+use crate::settings::SettingsCache;
 use crate::settings::SettingsWriter;
 
 // Global atomic to store the file log level filter
@@ -229,6 +230,15 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(Arc::new(session::SessionTracker::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
     app_handle.manage(Arc::new(SettingsWriter::new()));
+
+    // Initialize the in-memory settings cache with settings loaded from disk.
+    // This must happen AFTER the store plugin is initialized and AFTER
+    // SettingsWriter is managed, so that get_settings_safe can fall back
+    // to disk reads if the cache is not yet available.
+    // The cache is the single source of truth for all reads — eliminating the
+    // read-modify-write race with the debounced disk writer.
+    let initial_settings = settings::load_or_create_app_settings_safe(app_handle);
+    app_handle.manage(Arc::new(SettingsCache::new(initial_settings)));
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
