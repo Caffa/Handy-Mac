@@ -1,3 +1,5 @@
+<!-- Status: Historical — One-time UI/UX audit from June 2026. Read for context, not as a current TODO list. -->
+
 # Handy-Mac UI/UX Review Report
 
 **Date:** June 28, 2026  

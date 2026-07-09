@@ -1,3 +1,5 @@
+<!-- Status: Stale — Analysis of live captions data flow. Some fixes have been applied since (commit 8ad290f decoupled captions from mic warnings, fixed stale closure, cached enabled setting). Verify against code before trusting failure point descriptions. -->
+
 # Handy Live Captions Not Displaying - Detailed Analysis
 
 ## Executive Summary
