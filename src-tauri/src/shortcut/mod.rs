@@ -29,7 +29,7 @@ use crate::managers::transcription::TranscriptionManager;
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
     self, get_settings, AutoSubmitKey, ClipboardHandling, CustomWord, KeyboardImplementation,
-    LLMPrompt, OverlayPosition, PasteMethod, ShortcutBinding, SoundTheme, TypingTool,
+    LLMPrompt, OverlayPosition, OverlayScreenTarget, PasteMethod, ShortcutBinding, SoundTheme, TypingTool,
     APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
@@ -608,6 +608,28 @@ pub fn change_overlay_position_setting(app: AppHandle, position: String) -> Resu
         &crate::overlay::OverlayMode::Transcribe,
     );
 
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_overlay_screen_target_setting(app: AppHandle, target: String) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    let parsed = match target.as_str() {
+        "cursor" => OverlayScreenTarget::Cursor,
+        "side_screen" => OverlayScreenTarget::SideScreen,
+        other => {
+            warn!("Invalid overlay screen target '{}', defaulting to cursor", other);
+            OverlayScreenTarget::Cursor
+        }
+    };
+    settings.overlay_screen_target = parsed;
+    settings::write_settings_safe(&app, settings);
+    crate::overlay::update_overlay_position(
+        &app,
+        "recording",
+        &crate::overlay::OverlayMode::Transcribe,
+    );
     Ok(())
 }
 

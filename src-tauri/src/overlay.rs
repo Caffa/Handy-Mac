@@ -1,6 +1,6 @@
 use crate::input;
 use crate::settings;
-use crate::settings::OverlayPosition;
+use crate::settings::{OverlayPosition, OverlayScreenTarget};
 use crate::transcription_coordinator::{emit_app_state, AppState};
 use log::{debug, info};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -312,6 +312,54 @@ fn get_monitor_with_cursor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
     app_handle.primary_monitor().ok().flatten()
 }
 
+/// Returns the monitor on which the overlay should appear, based on the
+/// `overlay_screen_target` setting:
+/// - `Cursor` (default): same monitor as the mouse cursor.
+/// - `SideScreen`: the first monitor that is NOT the cursor's monitor.
+///   Falls back to the cursor monitor (then primary) if no other monitor exists.
+fn get_target_overlay_monitor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
+    let screen_target = settings::get_settings_safe(app_handle).overlay_screen_target;
+
+    match screen_target {
+        OverlayScreenTarget::Cursor => {
+            let monitor = get_monitor_with_cursor(app_handle);
+            debug!(
+                "get_target_overlay_monitor: Cursor target, using monitor at ({:?})",
+                monitor.as_ref().map(|m| m.position())
+            );
+            monitor
+        }
+        OverlayScreenTarget::SideScreen => {
+            let cursor_monitor = get_monitor_with_cursor(app_handle);
+
+            if let Some(ref cm) = cursor_monitor {
+                // Find the first monitor whose position differs from the cursor monitor
+                if let Ok(monitors) = app_handle.available_monitors() {
+                    for monitor in &monitors {
+                        if monitor.position() != cm.position() {
+                            debug!(
+                                "get_target_overlay_monitor: SideScreen target, cursor at ({}, {}), using side monitor at ({}, {})",
+                                cm.position().x, cm.position().y,
+                                monitor.position().x, monitor.position().y
+                            );
+                            return Some(monitor.clone());
+                        }
+                    }
+                }
+                debug!(
+                    "get_target_overlay_monitor: SideScreen target but no other monitor found, falling back to cursor monitor"
+                );
+                cursor_monitor
+            } else {
+                debug!(
+                    "get_target_overlay_monitor: SideScreen target but cursor monitor unknown, falling back to primary"
+                );
+                app_handle.primary_monitor().ok().flatten()
+            }
+        }
+    }
+}
+
 /// Calculate the overlay window height based on monitor height.
 /// Uses a percentage of screen height to accommodate variable-length
 /// transcription text without clipping, with a minimum for the pill.
@@ -351,7 +399,7 @@ fn is_mouse_within_monitor(
 /// converts PhysicalPosition using the scale factor of the monitor the window
 /// is *currently* on, which is wrong when moving cross-monitor.
 fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)> {
-    let monitor = get_monitor_with_cursor(app_handle)?;
+    let monitor = get_target_overlay_monitor(app_handle)?;
     let scale = monitor.scale_factor();
     let monitor_x = monitor.position().x as f64 / scale;
     let monitor_y = monitor.position().y as f64 / scale;
@@ -400,7 +448,7 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
 #[cfg(not(target_os = "macos"))]
 pub fn create_recording_overlay(app_handle: &AppHandle) {
     // Get initial monitor to determine window height
-    let (initial_height, has_monitor) = match get_monitor_with_cursor(app_handle) {
+    let (initial_height, has_monitor) = match get_target_overlay_monitor(app_handle) {
         Some(monitor) => {
             let scale = monitor.scale_factor();
             let monitor_height = monitor.size().height as f64 / scale;
@@ -748,17 +796,17 @@ fn position_overlay_fixed(app_handle: &AppHandle, state: &str, mode: &OverlayMod
         // See learning-log.md "Visualizer Positioning Bug — Center Screen After Router"
         // for full documentation.
 
-        // Try to get monitor with cursor first
-        if let Some(monitor) = get_monitor_with_cursor(app_handle) {
+        // Try to get the target overlay monitor (respects overlay_screen_target setting)
+        if let Some(monitor) = get_target_overlay_monitor(app_handle) {
             debug!(
-                "position_overlay_fixed: Using monitor with cursor at ({}, {})",
+                "position_overlay_fixed: Using target monitor at ({}, {})",
                 monitor.position().x,
                 monitor.position().y
             );
             position_overlay_on_monitor(&overlay_window, &monitor, app_handle, state, mode);
         } else {
-            // FALLBACK: Use primary monitor when cursor-based detection fails
-            debug!("position_overlay_fixed: get_monitor_with_cursor returned None, falling back to primary monitor");
+            // FALLBACK: Use primary monitor when target-based detection fails
+            debug!("position_overlay_fixed: get_target_overlay_monitor returned None, falling back to primary monitor");
 
             if let Some(primary) = app_handle.primary_monitor().ok().flatten() {
                 debug!(

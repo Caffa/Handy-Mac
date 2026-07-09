@@ -363,6 +363,14 @@
           "top": "Top"
         }
       },
+      "overlayScreenTarget": {
+        "title": "Overlay Screen",
+        "description": "Choose which screen the visualizer appears on. 'Side Screen' shows it on the screen your mouse is NOT on (requires multiple monitors).",
+        "options": {
+          "cursor": "Follow Cursor",
+          "sideScreen": "Side Screen"
+        }
+      },
       "pasteMethod": {
         "title": "Paste Method",
         "description": "Choose how text is inserted. Direct: simulates typing via system input. None: skips paste, only updates history/clipboard.",

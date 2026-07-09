@@ -122,6 +122,13 @@ pub enum OverlayPosition {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
 #[serde(rename_all = "snake_case")]
+pub enum OverlayScreenTarget {
+    Cursor,
+    SideScreen,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelUnloadTimeout {
     Never,
     Immediately,
@@ -490,6 +497,8 @@ pub struct AppSettings {
     pub selected_language: String,
     #[serde(default = "default_overlay_position")]
     pub overlay_position: OverlayPosition,
+    #[serde(default = "default_overlay_screen_target")]
+    pub overlay_screen_target: OverlayScreenTarget,
     #[serde(default = "default_debug_mode")]
     pub debug_mode: bool,
     #[serde(default = "default_log_level")]
@@ -672,6 +681,10 @@ fn default_overlay_position() -> OverlayPosition {
     return OverlayPosition::None;
     #[cfg(not(target_os = "linux"))]
     return OverlayPosition::Bottom;
+}
+
+fn default_overlay_screen_target() -> OverlayScreenTarget {
+    OverlayScreenTarget::Cursor
 }
 
 fn default_debug_mode() -> bool {
@@ -1039,6 +1052,7 @@ pub fn get_default_settings() -> AppSettings {
         translate_to_english: false,
         selected_language: "auto".to_string(),
         overlay_position: default_overlay_position(),
+        overlay_screen_target: default_overlay_screen_target(),
         debug_mode: false,
         log_level: default_log_level(),
         custom_words: Vec::new(),
