@@ -9,8 +9,8 @@
  * - editedText: The edited text value
  * - isFadingOut: Whether the preview is fading out
  *
- * The state values are owned by the parent (useOverlayState) and updated via
- * setters — this ensures that resets from show-overlay events propagate correctly.
+ * The state values are owned by the parent (useOverlaySharedState) and updated via
+ * setters — this ensures that resets propagate correctly.
  *
  * Scope: Router confirmation flow (preview → edit → send).
  * Dependencies: @tauri-apps/api/event, @/bindings.

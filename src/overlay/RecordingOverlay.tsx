@@ -2,7 +2,11 @@
  * RecordingOverlay — Main coordinator for the recording overlay window.
  *
  * This component composes extracted hooks and presentational components:
- * - useOverlayState: Visibility, state machine, settings, and all shared state
+ * - useAppState: Sole source of truth for visibility and state machine.
+ *   Listens to `app-state` events from the Rust TranscriptionCoordinator.
+ *   Visibility is a pure function of AppState: Idle = hidden, else = visible.
+ * - useOverlaySharedState: Shared mutable UI state (transcription preview,
+ *   streaming text, mic warnings, etc.) and settings. Does NOT own visibility.
  * - useVisualizer: Audio level bars, mic health warnings
  * - useLiveCaptions: Streaming transcription display
  * - useRouterPreview: Router confirmation/editing flow
@@ -14,7 +18,7 @@
  * Scope: Coordination only — delegates all logic to hooks.
  * Dependencies: All hooks, all components, icons, i18n, commands.
  */
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CancelIcon,
@@ -24,7 +28,7 @@ import {
 } from "../components/icons";
 import "./RecordingOverlay.css";
 import { commands } from "@/bindings";
-import { useOverlayState } from "./hooks/useOverlayState";
+import { useOverlaySharedState } from "./hooks/useOverlayState";
 import { useAppState } from "./hooks/useAppState";
 import { useVisualizer } from "./hooks/useVisualizer";
 import { useLiveCaptions } from "./hooks/useLiveCaptions";
@@ -42,20 +46,21 @@ import type { OverlayState } from "./hooks/useOverlayState";
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
 
-  // ─── Core overlay state (legacy, kept for migration) ─────────────────
-  const overlayState = useOverlayState();
+  // ─── Backend-driven state — SOLE source of truth for visibility ──────
+  const backendState = useAppState();
+
+  // ─── Shared overlay UI state (NOT visibility) ───────────────────────
+  const sharedState = useOverlaySharedState();
   const {
-    isVisible,
     setIsVisible,
     state: legacyState,
     setState,
-    isRouter: legacyIsRouter,
     overlayScale,
     direction,
     hybridEnabled,
     hybridThresholdSecs,
     recordingElapsedSecs,
-    // State owned by useOverlayState, shared with sub-hooks
+    // State owned by useOverlaySharedState, shared with sub-hooks
     transcriptionPreview,
     streamingText,
     routerResult,
@@ -87,44 +92,53 @@ const RecordingOverlay: React.FC = () => {
     smoothedLevelsRef,
     usbCyclingActiveRef,
     transcriptionPreviewRef,
-  } = overlayState;
+    // Reset function for new recordings
+    resetRecordingState,
+  } = sharedState;
 
-  // ─── Backend-driven state (new, gradually becomes primary) ──────────
-  const backendState = useAppState();
+  // ─── Derived state from backend (sole source of truth) ──────────────
+  const isVisible = backendState.isVisible;
+  const state: OverlayState = backendState.overlayState;
+  const isRouter = backendState.isRouter;
+  const isRecording = backendState.isRecording;
+  const isConfirming = backendState.isConfirming;
+  const isUsbCycling = backendState.isUsbCycling;
 
-  // ─── Dual-listening: prefer backend state when available ────────────
-  // During migration, both sources are active. We use the backend state
-  // as the primary source when it reports a non-Idle state, and fall
-  // back to the legacy overlay state otherwise. This ensures no
-  // regressions during the transition period.
-  const state: OverlayState = useMemo(() => {
-    if (backendState.isVisible) {
-      return backendState.overlayState;
+  // ─── Sync backend visibility to legacy setIsVisible ─────────────────
+  // Sub-hooks like useUSBRecovery and useRouterPreview still use
+  // setIsVisible for edge cases (USB cycling flash, router result timeout).
+  // Keep it in sync with the backend authority.
+  useEffect(() => {
+    setIsVisible(backendState.isVisible);
+  }, [backendState.isVisible, setIsVisible]);
+
+  // ─── Sync backend state to legacy setState ───────────────────────────
+  // Sub-hooks like useUSBRecovery and useRouterPreview still use setState
+  // for USB cycling transitions and router result timeout. Keep it in
+  // sync with the backend authority.
+  useEffect(() => {
+    setState(backendState.overlayState);
+  }, [backendState.overlayState, setState]);
+
+  // ─── Reset on new recording ──────────────────────────────────────────
+  // When the backend transitions to Recording from any other state,
+  // reset all mutable UI state (streaming text, warnings, etc.).
+  const prevStateRef = useRef(backendState.appState.state);
+  useEffect(() => {
+    const currentState = backendState.appState.state;
+    const prevState = prevStateRef.current;
+    prevStateRef.current = currentState;
+
+    if (currentState === "Recording" && prevState !== "Recording") {
+      resetRecordingState();
     }
-    return legacyState;
-  }, [backendState.isVisible, backendState.overlayState, legacyState]);
-
-  const isRouter = useMemo(() => {
-    // During migration: prefer backend's isRouter when backend reports a Recording
-    // state (which carries binding_id). For Processing/Confirming/UsbCycling states,
-    // the backend doesn't carry mode info, so fall back to legacy isRouter from
-    // the show-overlay event payload.
-    if (backendState.isVisible && backendState.isRecording) {
-      return backendState.isRouter;
-    }
-    return legacyIsRouter;
-  }, [backendState.isVisible, backendState.isRecording, backendState.isRouter, legacyIsRouter]);
+  }, [backendState.appState.state, resetRecordingState]);
 
   // ─── Visualizer (audio levels + mic warnings) ──────────────────────────
-  // During migration: use isRecording from backend state when available
-  const backendIsRecording = backendState.isVisible
-    ? backendState.isRecording
-    : state === "recording";
-
   const { levels } = useVisualizer({
     state,
     isVisible,
-    isRecording: backendIsRecording,
+    isRecording,
     lastLevelTimeRef,
     recordingStartTimeRef,
     lowAudioHistoryRef,
@@ -138,7 +152,7 @@ const RecordingOverlay: React.FC = () => {
   useLiveCaptions({
     state,
     isVisible,
-    isRecording: backendIsRecording,
+    isRecording,
     liveCaptionsEnabled,
     micDeadWarning,
     lowAudioWarning,
@@ -148,11 +162,6 @@ const RecordingOverlay: React.FC = () => {
   });
 
   // ─── Router preview (confirmation, editing, result) ───────────────────
-  // During migration: use isConfirming from backend state when available
-  const backendIsConfirming = backendState.isVisible
-    ? backendState.isConfirming
-    : state === "confirming";
-
   const {
     handleTranscriptionClick,
     handleSendEdited,
@@ -165,7 +174,7 @@ const RecordingOverlay: React.FC = () => {
     setState,
     setIsVisible,
     isRouter,
-    isConfirming: backendIsConfirming,
+    isConfirming,
     transcriptionPreview,
     transcriptionPreviewRef,
     routerResult,
@@ -182,16 +191,11 @@ const RecordingOverlay: React.FC = () => {
   });
 
   // ─── USB recovery (power cycling state) ───────────────────────────────
-  // During migration: use isUsbCycling from backend state when available
-  const backendIsUsbCycling = backendState.isVisible
-    ? backendState.isUsbCycling
-    : state === "usb-cycling";
-
   const { usbCyclingElapsed } = useUSBRecovery({
     state,
     setState,
     setIsVisible,
-    isUsbCycling: backendIsUsbCycling,
+    isUsbCycling,
     setMicDeadWarning,
     setLowAudioWarning,
     setUsbCycleStage,
@@ -203,18 +207,21 @@ const RecordingOverlay: React.FC = () => {
   });
 
   // ─── Cancel handler ───────────────────────────────────────────────────
+  // Send cancel to the backend. The backend will emit AppState::Idle,
+  // which useAppState will pick up and set isVisible=false.
+  // No need to set visibility locally — the state machine handles it.
   const handleCancel = useCallback(async () => {
     try {
       await commands.cancelOperation();
     } catch (err) {
       console.error("[Overlay] cancelOperation command failed:", err);
     }
-    // ALWAYS reset local UI state as a fallback, even if the backend
-    // command failed or crashed. This ensures the overlay hides.
-    setIsVisible(false);
+    // Reset local UI state as a precaution, but do NOT set visibility.
+    // The backend's cancelOperation will emit AppState::Idle which
+    // useAppState will receive, setting isVisible=false.
     setStreamingText("");
     setTranscriptionPreview("");
-  }, [setIsVisible, setStreamingText, setTranscriptionPreview]);
+  }, [setStreamingText, setTranscriptionPreview]);
 
   // ─── Icon selection ───────────────────────────────────────────────────
   const getIcon = () => {

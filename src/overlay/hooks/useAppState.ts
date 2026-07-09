@@ -3,9 +3,11 @@
  * single source of truth. Listens to "app-state" events emitted by
  * the Rust TranscriptionCoordinator.
  *
- * During migration, this hook runs alongside useOverlayState.
- * Once migration is complete, useOverlayState will be removed and
- * this hook becomes the sole state authority.
+ * This hook is the SOLE authority for overlay visibility and state.
+ * Visibility is a pure function of AppState: Idle = hidden, anything
+ * else = visible. The useOverlaySharedState hook manages mutable UI
+ * state (transcription preview, streaming text, etc.) but does NOT
+ * own visibility.
  *
  * Scope: Backend-driven app state (recording, processing, etc.).
  * Dependencies: @tauri-apps/api/event.
@@ -71,12 +73,13 @@ export function isConfirming(s: AppState): s is AppStateConfirming {
   return s.state === "Confirming";
 }
 
-// ─── Map AppState to legacy OverlayState for gradual migration ───────
+// ─── Map AppState to OverlayState ─────────────────────────────────────
 
 /**
- * Maps the backend-driven AppState to the legacy OverlayState string.
- * Used during the dual-listening migration period so that existing
- * components that expect OverlayState can work with the new source.
+ * Maps the backend-driven AppState to the OverlayState string used by
+ * sub-hooks and presentational components. Now that useAppState is the
+ * sole visibility authority, this mapping is the canonical way to convert
+ * backend state to the frontend OverlayState type.
  *
  * Note: "Processing" maps to "processing" (not "transcribing") because
  * the backend does not distinguish the two — the frontend can infer
@@ -96,7 +99,7 @@ export function appStateToOverlayState(appState: AppState): OverlayState {
     default:
       // When Idle, the overlay should not be visible, so the state
       // value doesn't matter much. Return "recording" as a safe default
-      // that matches the initial state in useOverlayState.
+      // that matches the initial state in useOverlaySharedState.
       return "recording";
   }
 }
@@ -108,7 +111,7 @@ export interface UseAppStateReturn {
   appState: AppState;
   /** Ref-stored AppState for access in callbacks without stale closures */
   appStateRef: React.MutableRefObject<AppState>;
-  /** Legacy OverlayState mapping for gradual migration */
+  /** OverlayState mapping from backend AppState (canonical state type) */
   overlayState: OverlayState;
   /** Whether the overlay should be visible (any state other than Idle) */
   isVisible: boolean;

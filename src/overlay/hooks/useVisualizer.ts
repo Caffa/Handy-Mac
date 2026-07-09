@@ -4,12 +4,12 @@
  * Manages:
  * - levels: Array of audio bar heights for the visualizer
  * - Mic dead/low audio detection: Sets micDeadWarning and lowAudioWarning
- *   in the parent (useOverlayState) via provided setters.
+ *   in the parent (useOverlaySharedState) via provided setters.
  *
  * Includes smooth bar decay, cold-start boost, and low-audio detection history.
  *
  * Scope: Audio visualization and mic health detection.
- * Dependencies: React hooks, overlay state from useOverlayState.
+ * Dependencies: React hooks, overlay state from useOverlaySharedState.
  * Side effects: Decay timer interval, mic dead timer interval, mic-level event listener.
  */
 import { listen } from "@tauri-apps/api/event";

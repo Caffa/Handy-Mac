@@ -3,8 +3,8 @@
  *
  * Manages the partial-transcription event listener and segment merging.
  * The streamingText and streamingSegments state are owned by the parent
- * (useOverlayState) and updated via setters — this ensures that resets
- * from show-overlay events propagate correctly.
+ * (useOverlaySharedState) and updated via setters — this ensures that resets
+ * propagate correctly.
  *
  * Scope: Live caption display during recording.
  * Dependencies: React hooks, PartialTranscriptionEvent type.
