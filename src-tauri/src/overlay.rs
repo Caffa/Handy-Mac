@@ -137,6 +137,45 @@ pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Resul
     }
 }
 
+/// Tauri command to toggle whether the overlay panel accepts mouse events.
+///
+/// When `enabled` is true, the overlay panel accepts mouse events (for interactive
+/// elements like buttons and textareas). When `enabled` is false, all mouse events
+/// (clicks, scrolls, hovers) pass through to apps below the overlay.
+///
+/// This implements the standard macOS pattern for click-through overlays:
+/// - Default: ignores_mouse_events = true (click-through)
+/// - Mouse enters interactive element: ignores_mouse_events = false (accept events)
+/// - Mouse leaves interactive element: ignores_mouse_events = true (click-through)
+///
+/// On non-macOS platforms, this is a no-op (CSS pointer-events handles this).
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_mouse_passthrough(app: AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(overlay_window) = app.get_webview_window("recording_overlay") {
+            let window = overlay_window.clone();
+            let _ = overlay_window.run_on_main_thread(move || {
+                if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
+                    // When enabled=true, the panel should accept mouse events
+                    // (ignores_mouse_events = false).
+                    // When enabled=false, mouse events pass through
+                    // (ignores_mouse_events = true).
+                    panel.set_ignores_mouse_events(!enabled);
+                }
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, enabled);
+        Ok(())
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 use tauri::WebviewWindowBuilder;
 
@@ -619,18 +658,17 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
         #[cfg(target_os = "windows")]
         force_overlay_topmost(&overlay_window);
 
-        // On macOS, update click-through state based on current overlay state.
-        // During router "processing" state, the entire window should be click-through
-        // (OS-level) so users can click on apps below the transparent overlay.
-        // For all other states, only the CSS pointer-events: none areas are click-through.
+        // On macOS, always set the entire overlay to click-through at the OS level.
+        // This allows clicks and scrolls on transparent areas to pass through to apps
+        // below. Interactive elements (cancel button, edit textarea) temporarily
+        // disable click-through via set_overlay_mouse_passthrough when the mouse
+        // enters them, and re-enable it when the mouse leaves.
         #[cfg(target_os = "macos")]
         {
-            let should_ignore_mouse_events =
-                matches!(mode, OverlayMode::Router) && state == "processing";
             let window = overlay_window.clone();
             let _ = overlay_window.run_on_main_thread(move || {
                 if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
-                    panel.set_ignores_mouse_events(should_ignore_mouse_events);
+                    panel.set_ignores_mouse_events(true);
                 }
             });
         }
@@ -940,6 +978,16 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
                 .map_or(false, |coord| coord.is_active_use());
 
             if !is_active {
+                // On macOS, reset ignores_mouse_events to false (accept events)
+                // before hiding, so the next show starts with a clean state.
+                // show_overlay_state will set ignores_mouse_events(true) again
+                // when the overlay reappears.
+                #[cfg(target_os = "macos")]
+                {
+                    if let Ok(panel) = window_clone.to_panel::<RecordingOverlayPanel>() {
+                        panel.set_ignores_mouse_events(false);
+                    }
+                }
                 let _ = window_clone.hide();
             } else {
                 log::info!("hide_recording_overlay: keeping overlay — new recording active");
@@ -964,6 +1012,14 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
         // Hide immediately on main thread - no thread spawn, safer on crash
         let window_clone = overlay_window.clone();
         let _ = overlay_window.run_on_main_thread(move || {
+            // On macOS, reset ignores_mouse_events to false before hiding,
+            // so the next show starts with a clean state.
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(panel) = window_clone.to_panel::<RecordingOverlayPanel>() {
+                    panel.set_ignores_mouse_events(false);
+                }
+            }
             let _ = window_clone.hide();
         });
     }

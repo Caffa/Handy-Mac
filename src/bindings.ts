@@ -1347,6 +1347,20 @@ async setOverlayCanBecomeKey(canBecomeKey: boolean) : Promise<Result<null, strin
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Toggle whether the overlay panel accepts mouse events.
+ * When enabled=true, the overlay accepts mouse events (for interactive elements).
+ * When enabled=false, all mouse events pass through to apps below.
+ * On non-macOS platforms, this is a no-op.
+ */
+async setOverlayMousePassthrough(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_overlay_mouse_passthrough", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

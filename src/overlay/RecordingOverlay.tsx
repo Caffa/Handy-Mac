@@ -301,7 +301,12 @@ const RecordingOverlay: React.FC = () => {
 
         <div className="overlay-right">
           {state === "recording" && (
-            <div className="cancel-button" onClick={handleCancel}>
+            <div
+              className="cancel-button"
+              onClick={handleCancel}
+              onMouseEnter={() => commands.setOverlayMousePassthrough(true).catch(() => {})}
+              onMouseLeave={() => commands.setOverlayMousePassthrough(false).catch(() => {})}
+            >
               <CancelIcon
                 width={33}
                 height={33}
