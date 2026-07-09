@@ -16,10 +16,17 @@
  * Side effects: Event listeners for show-overlay and hide-overlay.
  */
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
+
+/// Module-level cache for liveCaptionsEnabled so that subsequent recordings
+/// can start with the cached value immediately instead of waiting for an
+/// async fetch. The first recording after app launch may still miss captions
+/// if the fetch hasn't resolved, but every recording after that will have the
+/// value instantly available.
+let cachedLiveCaptionsEnabled: boolean | undefined = undefined;
 
 /// Overlay state phases
 export type OverlayState =
@@ -126,8 +133,10 @@ export function useOverlayState(
   const [hybridEnabled, setHybridEnabled] = useState(false);
   const [hybridThresholdSecs, setHybridThresholdSecs] = useState(20);
 
-  // Live captions setting
-  const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(false);
+  // Live captions setting — initialize from module cache if available
+  const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(
+    cachedLiveCaptionsEnabled ?? false,
+  );
 
   const [recordingElapsedSecs, setRecordingElapsedSecs] = useState(0);
   const recordingStartRef = useRef<number>(0);
@@ -188,6 +197,27 @@ export function useOverlayState(
 
   const isRouter = action === "router";
 
+  // Proactively fetch live captions setting on mount so the cache is warm
+  // before the first recording starts. Without this, the setting defaults
+  // to false and partial-transcription events are ignored until the
+  // isVisible-triggered fetch resolves.
+  useEffect(() => {
+    const prefetch = async () => {
+      try {
+        const result = await commands.getAppSettings();
+        if (result.status === "ok" && result.data) {
+          const enabled = result.data.live_captions_enabled ?? false;
+          cachedLiveCaptionsEnabled = enabled;
+          setLiveCaptionsEnabled(enabled);
+          console.log("[Live Captions] Prefetched setting on mount:", enabled);
+        }
+      } catch {
+        // Silently ignore — will retry when overlay becomes visible
+      }
+    };
+    prefetch();
+  }, []);
+
   // Fetch hybrid mode + live captions settings when overlay becomes visible
   useEffect(() => {
     if (!isVisible) return;
@@ -198,6 +228,8 @@ export function useOverlayState(
           setHybridEnabled(result.data.hybrid_mode_enabled ?? false);
           setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
           const captionsEnabled = result.data.live_captions_enabled ?? false;
+          // Update both React state and module-level cache
+          cachedLiveCaptionsEnabled = captionsEnabled;
           setLiveCaptionsEnabled(captionsEnabled);
           console.log("[Live Captions] Settings loaded:", {
             enabled: captionsEnabled,

@@ -313,12 +313,15 @@ const RecordingOverlay: React.FC = () => {
         </div>
       </div>
 
-      {/* Live captions */}
+      {/* Live captions — decoupled from mic warnings: captions and mic warnings
+          are independent concerns. The MicDeadWarning component is already
+          rendered separately above, so removing these gates here does NOT
+          suppress the mic warning. Previously, lowAudioWarning (triggered
+          during 2+ second speech pauses) would kill captions even though
+          transcription was still producing text. */}
       {isVisible &&
         state === "recording" &&
         liveCaptionsEnabled &&
-        !micDeadWarning &&
-        !lowAudioWarning &&
         streamingText &&
         streamingText.trim() && (
           <LiveCaptionsBox
