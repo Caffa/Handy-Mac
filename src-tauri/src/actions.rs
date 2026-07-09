@@ -1283,6 +1283,10 @@ impl ShortcutAction for TranscribeWithRouterAction {
                     {
                         tracker.fail_session(s, "No audio samples from recording stop");
                     }
+                    // Clean up overlay and tray — without this the visualizer freezes
+                    // on "Routing…" forever because the UI was set to transcribing above.
+                    utils::hide_recording_overlay(&ah);
+                    change_tray_icon(&ah, TrayIconState::Idle);
                     return;
                 }
 
