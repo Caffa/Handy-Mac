@@ -146,6 +146,13 @@ export function useOverlayState(
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
   const usbCyclingActiveRef = useRef(false);
 
+  // Mirror the latest backend app-state so the hide-overlay handler can
+  // tell whether the backend has legitimately gone Idle (in which case a
+  // hide must proceed even if the legacy state still says "recording").
+  // This fixes the stop-button freeze: the legacy guard refused to hide
+  // because legacy state was stale, leaving the visualizer frozen.
+  const backendAppStateRef = useRef<{ state: string } | null>(null);
+
   // State setters needed by the show-overlay handler for reset
   const [transcriptionPreview, setTranscriptionPreview] = useState<string>("");
   const [streamingText, setStreamingText] = useState<string>("");
@@ -296,11 +303,20 @@ export function useOverlayState(
             // Don't hide if a recording/transcription/processing/confirming
             // state is active — this guards against the race condition where
             // a hide event arrives after a new recording has started.
+            //
+            // EXCEPTION: if the backend has already gone Idle (tracked in
+            // backendAppStateRef), the legacy state is stale and we MUST
+            // allow the hide. This fixes the freeze that occurs when the
+            // user presses the stop button: cancel_current_operation()
+            // resets the backend to Idle, but the legacy hide-overlay guard
+            // refused to hide because legacy state was still "recording".
+            const backendIsIdle = backendAppStateRef.current?.state === "Idle";
             if (
-              current === "recording" ||
-              current === "transcribing" ||
-              current === "processing" ||
-              current === "confirming"
+              !backendIsIdle &&
+              (current === "recording" ||
+                current === "transcribing" ||
+                current === "processing" ||
+                current === "confirming")
             ) {
               console.log("[Overlay] Ignoring hide-overlay: active state =", current);
               return current;
@@ -319,9 +335,17 @@ export function useOverlayState(
         },
       );
 
+      const unlistenAppState = await listen<{ state: string }>(
+        "app-state",
+        (event) => {
+          backendAppStateRef.current = event.payload;
+        },
+      );
+
       return () => {
         unlistenShow();
         unlistenHide();
+        unlistenAppState();
       };
     };
 
