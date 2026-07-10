@@ -1,10 +1,20 @@
 use rustfft::{num_complex::Complex32, Fft, FftPlanner};
 use std::sync::Arc;
 
-const DB_MIN: f32 = -55.0;
-const DB_MAX: f32 = -8.0;
 const GAIN: f32 = 1.3;
 const CURVE_POWER: f32 = 0.7;
+/// Minimum width of the normalization window (dB) — prevents divide-by-zero
+/// and jitter when the signal is flat.
+const MIN_WINDOW_DB: f32 = 15.0;
+/// Initial peak offset above the default noise floor, so bars respond quickly
+/// on startup before the peak tracker has seen real speech.
+const INITIAL_PEAK_OFFSET_DB: f32 = 25.0;
+/// Peak tracker: how fast it rises when signal exceeds the tracked peak.
+/// Higher = faster snap-up. 0.7 means new peak dominates quickly.
+const PEAK_RISE_ALPHA: f32 = 0.7;
+/// Peak tracker: how slowly it decays when signal is below the tracked peak.
+/// Very small = slow decay, so brief pauses don't collapse the window.
+const PEAK_DECAY_ALPHA: f32 = 0.001;
 
 pub struct AudioVisualiser {
     fft: Arc<dyn Fft<f32>>,
@@ -12,6 +22,7 @@ pub struct AudioVisualiser {
     bucket_ranges: Vec<(usize, usize)>,
     fft_input: Vec<Complex32>,
     noise_floor: Vec<f32>,
+    peak_db: Vec<f32>,
     buffer: Vec<f32>,
     window_size: usize,
     buckets: usize,
@@ -71,6 +82,7 @@ impl AudioVisualiser {
             bucket_ranges,
             fft_input: vec![Complex32::new(0.0, 0.0); window_size],
             noise_floor: vec![-40.0; buckets], // Initialize to reasonable noise floor
+            peak_db: vec![-40.0 + INITIAL_PEAK_OFFSET_DB; buckets], // Warm start above noise floor
             buffer: Vec::with_capacity(window_size * 2),
             window_size,
             buckets,
@@ -132,16 +144,28 @@ impl AudioVisualiser {
                     NOISE_ALPHA * db + (1.0 - NOISE_ALPHA) * self.noise_floor[bucket_idx];
             }
 
-            // Map configurable dB range to 0-1 with gain and curve shaping
-            let normalized = ((db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0.0, 1.0);
+            // Track peak level: snap up fast, decay slow
+            if db > self.peak_db[bucket_idx] {
+                self.peak_db[bucket_idx] =
+                    PEAK_RISE_ALPHA * db + (1.0 - PEAK_RISE_ALPHA) * self.peak_db[bucket_idx];
+            } else {
+                self.peak_db[bucket_idx] =
+                    PEAK_DECAY_ALPHA * db + (1.0 - PEAK_DECAY_ALPHA) * self.peak_db[bucket_idx];
+            }
+
+            // Adaptive normalization: map dB relative to noise floor, scaled by peak range
+            let db_above_floor = db - self.noise_floor[bucket_idx];
+            let window_width =
+                (self.peak_db[bucket_idx] - self.noise_floor[bucket_idx]).max(MIN_WINDOW_DB);
+            let normalized = (db_above_floor / window_width).clamp(0.0, 1.0);
             let bucket_value = (normalized * GAIN).powf(CURVE_POWER).clamp(0.0, 1.0);
             buckets[bucket_idx] = bucket_value;
 
             // Debug: Log first bucket value periodically to track signal levels
             if bucket_idx == 0 {
                 log::debug!(
-                    "[visualizer] bucket_0: db={:.1} normalized={:.3} value={:.3} noise_floor={:.1}",
-                    db, normalized, bucket_value, self.noise_floor[bucket_idx]
+                    "[visualizer] bucket_0: db={:.1} db_above_floor={:.1} normalized={:.3} value={:.3} noise_floor={:.1} peak_db={:.1}",
+                    db, db_above_floor, normalized, bucket_value, self.noise_floor[bucket_idx], self.peak_db[bucket_idx]
                 );
             }
         }
@@ -161,6 +185,10 @@ impl AudioVisualiser {
         self.buffer.clear();
         // Reset noise floor to initial values
         self.noise_floor.fill(-40.0);
-        log::debug!("AudioVisualiser reset: noise floor initialized to -40dB");
+        self.peak_db.fill(-40.0 + INITIAL_PEAK_OFFSET_DB);
+        log::debug!(
+            "AudioVisualiser reset: noise floor initialized to -40dB, peak to {:.1}dB",
+            -40.0 + INITIAL_PEAK_OFFSET_DB
+        );
     }
 }

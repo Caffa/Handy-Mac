@@ -568,3 +568,29 @@ Added `is_saved_app_desktop_like()` to `focus.rs` that checks if the saved front
 ### Key Insight
 
 On macOS, Cmd+V has different behaviors depending on the target application. Finder interprets it as file paste, not text paste. When the user's target app is a file manager, always fall back to clipboard-only mode with a toast notification — pasting to the desktop is never the user's intent.
+
+## Visualizer Bar Sensitivity — No Adaptive Gain (2026-07-11)
+
+### Problem
+
+- User reports microphone clearly hears them, but the volume bars only move a little bit when they should move much more
+- They asked whether a detection mechanism exists to fix this
+
+### Root Cause
+
+- `AudioVisualiser` in `audio_toolkit/audio/visualizer.rs` used **fixed hardcoded scaling**: `DB_MIN = -55.0`, `DB_MAX = -8.0`, applied as `((db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0,1)` for every bucket
+- For a quiet mic, speech lands at ~-58dB to -50dB. The fixed -55dB floor clamps this into the bottom ~10% of the visual range, so bars barely twitch despite clear audio
+- A `noise_floor` per-bucket tracker already existed and was being updated (slow EMA, `NOISE_ALPHA = 0.001`), but it was **never used for output** — only logged. Dead data.
+- No AGC, no normalization, no auto-calibration existed anywhere in the pipeline (backend or frontend). The frontend `useVisualizer.ts` only has a low-audio *warning* (threshold 0.05), not gain.
+
+### Fix
+
+- Replaced the fixed `DB_MIN`/`DB_MAX` absolute dB window with **adaptive normalization relative to the noise floor**, plus a new per-bucket **peak tracker** (`peak_db`) that snaps up fast (`PEAK_RISE_ALPHA = 0.7`) and decays slowly (`PEAK_DECAY_ALPHA = 0.001`).
+- New normalization: `db_above_floor = db - noise_floor`; `window_width = max(peak_db - noise_floor, MIN_WINDOW_DB=15)`; `normalized = (db_above_floor / window_width).clamp(0,1)`. Then the existing `GAIN`/`CURVE_POWER` curve shaping still applies on top.
+- This auto-calibrates to any mic: a quiet mic has a low noise floor, so even quiet speech sits well above the floor and fills the bar range. No user action or settings UI needed.
+- Removed `DB_MIN` and `DB_MAX` constants (now unused). Added `MIN_WINDOW_DB`, `INITIAL_PEAK_OFFSET_DB`, `PEAK_RISE_ALPHA`, `PEAK_DECAY_ALPHA`. Added `peak_db` field to `AudioVisualiser`, initialized in `new()` and reset in `reset()`.
+- Output contract unchanged: `feed()` still returns `Option<Vec<f32>>` with values 0..1, 16 buckets.
+
+### Key Insight
+
+When a tracked statistic (noise floor) already exists in the code but isn't wired to output, the cheapest correct fix is to wire it in rather than add a new mechanism. The noise floor was free data being discarded. Pairing it with a peak tracker turns the fixed absolute dB window into a per-mic adaptive window — fixing quiet-mic sensitivity without any settings UI work.
