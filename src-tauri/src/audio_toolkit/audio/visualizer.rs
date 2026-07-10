@@ -3,26 +3,29 @@ use std::sync::Arc;
 
 const GAIN: f32 = 1.3;
 const CURVE_POWER: f32 = 0.7;
-/// Minimum width of the normalization window (dB) — prevents divide-by-zero
-/// and jitter when the signal is flat.
-const MIN_WINDOW_DB: f32 = 15.0;
-/// Initial peak offset above the default noise floor, so bars respond quickly
-/// on startup before the peak tracker has seen real speech.
-const INITIAL_PEAK_OFFSET_DB: f32 = 25.0;
-/// Peak tracker: how fast it rises when signal exceeds the tracked peak.
-/// Higher = faster snap-up. 0.7 means new peak dominates quickly.
-const PEAK_RISE_ALPHA: f32 = 0.7;
-/// Peak tracker: how slowly it decays when signal is below the tracked peak.
-/// Very small = slow decay, so brief pauses don't collapse the window.
-const PEAK_DECAY_ALPHA: f32 = 0.001;
+/// Fixed normalization window — wide enough to cover any mic from very
+/// quiet (-70 dB) to loud (-5 dB).  This is the base range; the peak
+/// boost below auto-amplifies quiet mics so their speech fills the bars.
+const DB_MIN: f32 = -70.0;
+const DB_MAX: f32 = -5.0;
+/// Maximum gain boost applied to quiet mics.  If the user's peak speech
+/// only reaches 25 % of the fixed window, the boost is 4× so their bars
+/// still move meaningfully.  Capped to prevent noise amplification.
+const MAX_BOOST: f32 = 4.0;
+/// Peak tracker decay rate.  The peak snaps up instantly when speech
+/// exceeds it, and decays slowly so brief pauses don't collapse the
+/// boost.  At ~30 fps, 0.003 gives a half-life of ~4 s.
+const PEAK_DECAY_ALPHA: f32 = 0.003;
 
 pub struct AudioVisualiser {
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
     bucket_ranges: Vec<(usize, usize)>,
     fft_input: Vec<Complex32>,
-    noise_floor: Vec<f32>,
-    peak_db: Vec<f32>,
+    /// Running peak of the *normalized* 0..1 level per bucket.  Snaps up
+    /// instantly, decays slowly.  Used to compute a gain boost so quiet
+    /// mics fill the bar range.
+    peak_normalized: Vec<f32>,
     buffer: Vec<f32>,
     window_size: usize,
     buckets: usize,
@@ -81,8 +84,7 @@ impl AudioVisualiser {
             window,
             bucket_ranges,
             fft_input: vec![Complex32::new(0.0, 0.0); window_size],
-            noise_floor: vec![-40.0; buckets], // Initialize to reasonable noise floor
-            peak_db: vec![-40.0 + INITIAL_PEAK_OFFSET_DB; buckets], // Warm start above noise floor
+            peak_normalized: vec![0.0; buckets], // Start at zero — first speech frame snaps it up
             buffer: Vec::with_capacity(window_size * 2),
             window_size,
             buckets,
@@ -137,35 +139,36 @@ impl AudioVisualiser {
                 -80.0 // Very low floor for zero power
             };
 
-            // Only update noise floor when signal is quiet (below current floor + 10dB)
-            if db < self.noise_floor[bucket_idx] + 10.0 {
-                const NOISE_ALPHA: f32 = 0.001; // Very slow adaptation
-                self.noise_floor[bucket_idx] =
-                    NOISE_ALPHA * db + (1.0 - NOISE_ALPHA) * self.noise_floor[bucket_idx];
-            }
+            // Fixed-window normalization (base level, 0..1)
+            let normalized = ((db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0.0, 1.0);
 
-            // Track peak level: snap up fast, decay slow
-            if db > self.peak_db[bucket_idx] {
-                self.peak_db[bucket_idx] =
-                    PEAK_RISE_ALPHA * db + (1.0 - PEAK_RISE_ALPHA) * self.peak_db[bucket_idx];
+            // Peak tracking: instant snap up, slow decay.
+            // The peak is tracked on the *normalized* value so the boost
+            // auto-calibrates to the mic's loudness.
+            if normalized > self.peak_normalized[bucket_idx] {
+                self.peak_normalized[bucket_idx] = normalized; // instant snap
             } else {
-                self.peak_db[bucket_idx] =
-                    PEAK_DECAY_ALPHA * db + (1.0 - PEAK_DECAY_ALPHA) * self.peak_db[bucket_idx];
+                self.peak_normalized[bucket_idx] = PEAK_DECAY_ALPHA * normalized
+                    + (1.0 - PEAK_DECAY_ALPHA) * self.peak_normalized[bucket_idx];
             }
 
-            // Adaptive normalization: map dB relative to noise floor, scaled by peak range
-            let db_above_floor = db - self.noise_floor[bucket_idx];
-            let window_width =
-                (self.peak_db[bucket_idx] - self.noise_floor[bucket_idx]).max(MIN_WINDOW_DB);
-            let normalized = (db_above_floor / window_width).clamp(0.0, 1.0);
-            let bucket_value = (normalized * GAIN).powf(CURVE_POWER).clamp(0.0, 1.0);
+            // Gain boost: scale up so the peak fills the bar range.
+            // A quiet mic whose peak is at 0.3 gets a 3.3× boost, making
+            // their bars move as if they had a loud mic.
+            let boost = if self.peak_normalized[bucket_idx] > 0.05 {
+                (1.0 / self.peak_normalized[bucket_idx]).min(MAX_BOOST)
+            } else {
+                1.0
+            };
+            let boosted = (normalized * boost).clamp(0.0, 1.0);
+            let bucket_value = (boosted * GAIN).powf(CURVE_POWER).clamp(0.0, 1.0);
             buckets[bucket_idx] = bucket_value;
 
             // Debug: Log first bucket value periodically to track signal levels
             if bucket_idx == 0 {
                 log::debug!(
-                    "[visualizer] bucket_0: db={:.1} db_above_floor={:.1} normalized={:.3} value={:.3} noise_floor={:.1} peak_db={:.1}",
-                    db, db_above_floor, normalized, bucket_value, self.noise_floor[bucket_idx], self.peak_db[bucket_idx]
+                    "[visualizer] bucket_0: db={:.1} normalized={:.3} peak={:.3} boost={:.2} value={:.3}",
+                    db, normalized, self.peak_normalized[bucket_idx], boost, bucket_value
                 );
             }
         }
@@ -183,12 +186,7 @@ impl AudioVisualiser {
 
     pub fn reset(&mut self) {
         self.buffer.clear();
-        // Reset noise floor to initial values
-        self.noise_floor.fill(-40.0);
-        self.peak_db.fill(-40.0 + INITIAL_PEAK_OFFSET_DB);
-        log::debug!(
-            "AudioVisualiser reset: noise floor initialized to -40dB, peak to {:.1}dB",
-            -40.0 + INITIAL_PEAK_OFFSET_DB
-        );
+        self.peak_normalized.fill(0.0);
+        log::debug!("AudioVisualiser reset: peak_normalized reset to 0");
     }
 }

@@ -594,3 +594,22 @@ On macOS, Cmd+V has different behaviors depending on the target application. Fin
 ### Key Insight
 
 When a tracked statistic (noise floor) already exists in the code but isn't wired to output, the cheapest correct fix is to wire it in rather than add a new mechanism. The noise floor was free data being discarded. Pairing it with a peak tracker turns the fixed absolute dB window into a per-mic adaptive window — fixing quiet-mic sensitivity without any settings UI work.
+
+### Correction — noise floor in the output path caused cold-start failure
+
+The first attempt wired `noise_floor` into the normalization formula: `db_above_floor = db - noise_floor`. This made the cold-start **worse**:
+
+- `noise_floor` initialized to `-40dB`
+- Quiet mic speech at `-55dB` → `db_above_floor = -55 - (-40) = -15` → **negative** → clamps to 0.0 → bars don't move at all at startup
+- `noise_floor` adapts at `0.001/frame` (0.1%) → takes ~30 seconds to drop from -40 to -55
+- Peak tracker also started too high (`-15dB`) and decayed too slowly (`0.001`) → couldn't come down to meet a `-50dB` signal
+- User reported bars barely moving at the start of transcription plus false low-audio warnings
+
+**Root cause:** putting an *adaptation* variable (noise floor) in the *output path* means cold-start values directly gate the output. Until the adaptation converges, the output is wrong. And at 0.1%/frame, convergence takes ~30 seconds.
+
+**Fixed by removing `noise_floor` from the output entirely** and using:
+1. A **fixed wide window** (`-70` to `-5`, 65dB range) — any mic's speech falls within the visible range from frame 1. A quiet mic at -55dB → normalized = 15/65 = 0.23 (visible, not zero).
+2. A **peak-based gain boost** on the normalized value. Peak **snaps up instantly** (not EMA) when speech exceeds it, so the boost is computed on the very first speech frame. Peak decays slowly (`0.003`, half-life ~4s) so brief pauses don't collapse it.
+3. Peak starts at **0.0** — so the first speech frame immediately sets it and bars fill. No cold-start delay.
+
+**Key insight:** never put a slowly-adapting variable directly in the output path. Use a fixed window for the base (so cold-start is always visible) and apply adaptation as a *boost on top* (so it only improves things, never gates them). Instant snap-up for peaks avoids the EMA convergence delay entirely.
