@@ -9,9 +9,10 @@ const CURVE_POWER: f32 = 0.7;
 const DB_MIN: f32 = -70.0;
 const DB_MAX: f32 = -5.0;
 /// Maximum gain boost applied to quiet mics.  If the user's peak speech
-/// only reaches 25 % of the fixed window, the boost is 4× so their bars
-/// still move meaningfully.  Capped to prevent noise amplification.
-const MAX_BOOST: f32 = 4.0;
+/// only reaches 40% of the fixed window, the boost is 2.5× so their bars
+/// still move meaningfully without all bars maxing out.  Capped to prevent
+/// noise amplification while preserving spectral variation.
+const MAX_BOOST: f32 = 2.5;
 /// Peak tracker decay rate.  The peak snaps up instantly when speech
 /// exceeds it, and decays slowly so brief pauses don't collapse the
 /// boost.  At ~30 fps, 0.003 gives a half-life of ~4 s.
@@ -173,9 +174,12 @@ impl AudioVisualiser {
             }
         }
 
-        // Apply minimal smoothing to reduce jitter while maintaining responsiveness
+        // Apply light smoothing to reduce jitter while preserving spectral variation.
+        // Each bucket keeps 90% of its own value and blends 5% from each neighbor.
+        // This maintains the differences between frequency bands (e.g., bass vs treble)
+        // so bars show meaningful height variation instead of a uniform wall.
         for i in 1..buckets.len() - 1 {
-            buckets[i] = buckets[i] * 0.85 + buckets[i - 1] * 0.075 + buckets[i + 1] * 0.075;
+            buckets[i] = buckets[i] * 0.9 + buckets[i - 1] * 0.05 + buckets[i + 1] * 0.05;
         }
 
         // Clear processed samples from buffer

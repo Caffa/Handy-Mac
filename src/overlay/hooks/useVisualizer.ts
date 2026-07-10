@@ -183,7 +183,10 @@ export function useVisualizer(
         lastLevelTimeRef.current = Date.now();
         const newLevels = event.payload as number[];
 
-        // Apply minimal smoothing for responsiveness
+        // Apply smoothing with adaptive alpha for responsive yet fluid motion.
+        // Higher alpha = snappier response; lower = smoother.
+        // 0.6 base gives good responsiveness while CSS easing handles the
+        // visual smoothness (asymmetric rise/fall cubic-bezier curves).
         const smoothed = smoothedLevelsRef.current.map((prev, i) => {
           const target = newLevels[i] || 0;
           const delta = Math.abs(target - prev);
@@ -192,11 +195,11 @@ export function useVisualizer(
 
           let alpha: number;
           if (prev < 0.05) {
-            alpha = 0.8;
+            alpha = 0.75; // fast rise from silence
           } else if (isBarelyMoving) {
-            alpha = 0.7;
+            alpha = 0.65; // moderate — reduces jitter
           } else {
-            alpha = 0.6;
+            alpha = 0.6; // responsive default
           }
 
           return prev * (1 - alpha) + target * alpha;
