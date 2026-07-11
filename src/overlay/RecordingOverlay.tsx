@@ -97,12 +97,20 @@ const RecordingOverlay: React.FC = () => {
   } = sharedState;
 
   // ─── Derived state from backend (sole source of truth) ──────────────
-  const isVisible = backendState.isVisible;
   const state: OverlayState = backendState.overlayState;
-  const isRouter = backendState.isRouter;
   const isRecording = backendState.isRecording;
   const isConfirming = backendState.isConfirming;
   const isUsbCycling = backendState.isUsbCycling;
+
+  // BUGFIX (router regressions from commit 2255ae8):
+  // After the router subprocess is spawned, FinishGuard drops immediately,
+  // freeing the coordinator and setting backend state to Idle. At that point
+  // backendState.isRouter becomes false (binding_id is null for Idle) even
+  // though the router result hasn't arrived yet. Use routerResult as a
+  // fallback signal — it's only non-null during router flows and persists
+  // for the full 10-second display window.
+  const isRouter = backendState.isRouter || routerResult !== null;
+  const isVisible = backendState.isVisible || routerResult !== null;
 
   // ─── Sync backend visibility to legacy setIsVisible ─────────────────
   // Sub-hooks like useUSBRecovery and useRouterPreview still use
@@ -271,13 +279,7 @@ const RecordingOverlay: React.FC = () => {
             : state === "recording" && (
                 <VisualizerBars levels={levels} isRouter={isRouter} />
               )}
-          {state === "transcribing" && (
-            <div
-              className={`transcribing-text${isRouter ? " routing-text" : ""}`}
-            >
-              {isRouter ? t("overlay.routing") : t("overlay.transcribing")}
-            </div>
-          )}
+          {/* Processing state: "Filing..." for router, "Processing..." for normal */}
           {state === "processing" && (
             <div
               className={`transcribing-text${isRouter ? " routing-text" : ""}`}

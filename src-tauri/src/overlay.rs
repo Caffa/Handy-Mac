@@ -30,6 +30,20 @@ pub fn bump_overlay_session() -> u64 {
 #[cfg(target_os = "macos")]
 static OVERLAY_CAN_BECOME_KEY: AtomicBool = AtomicBool::new(false);
 
+/// Global flag for cursor tracking on macOS.
+/// When the cursor enters the overlay (via NSTrackingArea), this flag is set
+/// to true and `ignoresMouseEvents` is disabled, allowing mouse events to
+/// reach the webview for interactive elements (cancel button, edit textarea).
+/// When the cursor exits the overlay, the flag is set to false and
+/// `ignoresMouseEvents` is re-enabled, making the panel click-through.
+///
+/// BUGFIX (Fix 5): This replaces the React onMouseEnter/onMouseLeave approach,
+/// which has a chicken-and-egg problem: the panel is click-through, so mouse
+/// events can't reach the webview to trigger the handlers. NSTrackingArea with
+/// ActiveAlways fires cursor-tracking events even for click-through panels.
+#[cfg(target_os = "macos")]
+static OVERLAY_CURSOR_IN_PANEL: AtomicBool = AtomicBool::new(false);
+
 /// Swizzle the `canBecomeKeyWindow` method on the RecordingOverlayPanel class
 /// to check the `OVERLAY_CAN_BECOME_KEY` global flag instead of always returning false.
 /// This must be called once after the RecordingOverlayPanel class is registered
@@ -93,6 +107,195 @@ fn swizzle_can_become_key_window() {
     log::info!("swizzle_can_become_key_window: Successfully swizzled canBecomeKeyWindow on RecordingOverlayPanel");
 }
 
+/// Swizzle `mouseEntered:` and `mouseExited:` on RecordingOverlayPanel to handle
+/// cursor tracking for click-through overlays.
+///
+/// BUGFIX (Fix 5): The cancel button on the overlay relies on React `onMouseEnter`
+/// to toggle click-through off, but `onMouseEnter` can't fire while the NSPanel is
+/// click-through (`ignoresMouseEvents = true`). This is a chicken-and-egg problem.
+///
+/// The solution uses macOS's NSTrackingArea with `NSTrackingActiveAlways`, which
+/// fires `mouseEntered:` and `mouseExited:` events even for click-through panels.
+/// When the cursor enters the panel, we temporarily disable `ignoresMouseEvents`
+/// so interactive elements can receive events. When the cursor exits, we re-enable
+/// `ignoresMouseEvents` for click-through.
+///
+/// This is the standard pattern used by macOS HUD/floating-overlay apps.
+#[cfg(target_os = "macos")]
+fn swizzle_mouse_tracking() {
+    use objc2::runtime::AnyClass;
+    use std::ffi::CStr;
+
+    let class_name = CStr::from_bytes_with_nul(b"RecordingOverlayPanel\0").unwrap();
+    let Some(class) = AnyClass::get(class_name) else {
+        log::error!("swizzle_mouse_tracking: RecordingOverlayPanel class not found");
+        return;
+    };
+
+    unsafe {
+        // Swizzle mouseEntered: — called when the cursor enters the tracking area.
+        // When the cursor enters the panel, we disable ignoresMouseEvents so the
+        // webview can receive mouse events for interactive elements.
+        unsafe extern "C-unwind" fn overlay_mouse_entered(
+            this: &objc2::runtime::AnyObject,
+            _cmd: objc2::runtime::Sel,
+            _event: &objc2::runtime::AnyObject,
+        ) {
+            OVERLAY_CURSOR_IN_PANEL.store(true, Ordering::SeqCst);
+
+            // Disable ignoresMouseEvents so interactive elements (buttons,
+            // textareas) can receive mouse events.
+            let _: () = objc2::msg_send![this, setIgnoresMouseEvents: false];
+
+            log::debug!("Overlay mouse entered: disabled ignoresMouseEvents");
+        }
+
+        let mouse_entered_sel = objc2::sel!(mouseEntered:);
+        let types = CStr::from_bytes_with_nul(b"v@:@\0").unwrap();
+        let imp: objc2::runtime::Imp = std::mem::transmute::<
+            unsafe extern "C-unwind" fn(
+                &objc2::runtime::AnyObject,
+                objc2::runtime::Sel,
+                &objc2::runtime::AnyObject,
+            ),
+            objc2::runtime::Imp,
+        >(overlay_mouse_entered);
+        objc2::ffi::class_replaceMethod(
+            class as *const AnyClass as *mut AnyClass,
+            mouse_entered_sel,
+            imp,
+            types.as_ptr(),
+        );
+
+        // Swizzle mouseExited: — called when the cursor exits the tracking area.
+        // When the cursor exits the panel, we re-enable ignoresMouseEvents for
+        // click-through behavior.
+        unsafe extern "C-unwind" fn overlay_mouse_exited(
+            this: &objc2::runtime::AnyObject,
+            _cmd: objc2::runtime::Sel,
+            _event: &objc2::runtime::AnyObject,
+        ) {
+            OVERLAY_CURSOR_IN_PANEL.store(false, Ordering::SeqCst);
+
+            // Only re-enable click-through if the overlay doesn't need keyboard focus.
+            // If the user is editing text (can_become_key), we keep mouse events enabled
+            // so they can continue interacting with the text area.
+            if !OVERLAY_CAN_BECOME_KEY.load(Ordering::SeqCst) {
+                let _: () = objc2::msg_send![this, setIgnoresMouseEvents: true];
+            }
+
+            log::debug!("Overlay mouse exited: re-enabled ignoresMouseEvents");
+        }
+
+        let mouse_exited_sel = objc2::sel!(mouseExited:);
+        let types = CStr::from_bytes_with_nul(b"v@:@\0").unwrap();
+        let imp: objc2::runtime::Imp = std::mem::transmute::<
+            unsafe extern "C-unwind" fn(
+                &objc2::runtime::AnyObject,
+                objc2::runtime::Sel,
+                &objc2::runtime::AnyObject,
+            ),
+            objc2::runtime::Imp,
+        >(overlay_mouse_exited);
+        objc2::ffi::class_replaceMethod(
+            class as *const AnyClass as *mut AnyClass,
+            mouse_exited_sel,
+            imp,
+            types.as_ptr(),
+        );
+    }
+
+    log::info!("swizzle_mouse_tracking: Successfully swizzled mouseEntered:/mouseExited: on RecordingOverlayPanel");
+}
+
+/// Add an NSTrackingArea to the overlay panel so that mouseEntered:/mouseExited:
+/// are called even when the panel is click-through (ignoresMouseEvents = true).
+///
+/// BUGFIX (Fix 5): Without this tracking area, the swizzled mouseEntered:/mouseExited:
+/// methods would never be called, and we'd have no way to detect when the cursor
+/// enters/exits the overlay while it's click-through.
+///
+/// The NSTrackingActiveAlways option ensures tracking works regardless of the
+/// panel's active state, which is critical for a floating overlay that should
+/// work even when another app is frontmost.
+#[cfg(target_os = "macos")]
+fn add_cursor_tracking_area(app_handle: &AppHandle) {
+    use objc2_app_kit::NSTrackingAreaOptions;
+
+    let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") else {
+        log::debug!("add_cursor_tracking_area: overlay window not found");
+        return;
+    };
+
+    let Ok(panel) = overlay_window.to_panel::<RecordingOverlayPanel>() else {
+        log::debug!("add_cursor_tracking_area: could not convert to panel");
+        return;
+    };
+
+    // Get the content view of the panel. This is the NSView that fills the
+    // panel and is where we add the tracking area.
+    let content_view = panel.content_view();
+
+    // Get the window (panel) from the content view. The window IS the
+    // RecordingOverlayPanel, which is where we swizzled mouseEntered:/mouseExited:.
+    // We set the window as the tracking area's owner so that mouse tracking events
+    // are delivered to the panel (where our swizzled handlers are), not to the
+    // content view.
+    //
+    // BUGFIX: Previously, the content_view was set as the owner, which meant
+    // mouseEntered:/mouseExited: were delivered to the content view (NSView).
+    // But we swizzled these methods on RecordingOverlayPanel (NSPanel), so the
+    // events never reached our handlers. Setting the panel as the owner ensures
+    // the events go to the right place.
+    let window: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> =
+        unsafe { objc2::msg_send![&content_view, window] };
+    let Some(window) = window else {
+        log::error!("add_cursor_tracking_area: content view has no window");
+        return;
+    };
+
+    // Create NSTrackingArea options:
+    // MouseEnteredAndExited: fire when cursor enters/exits the tracking rect
+    // ActiveAlways: fire even when the app is inactive or the panel is click-through
+    // InVisibleRect: automatically update the tracking rect when the view resizes
+    let options = NSTrackingAreaOptions::MouseEnteredAndExited
+        | NSTrackingAreaOptions::ActiveAlways
+        | NSTrackingAreaOptions::InVisibleRect;
+
+    // Create the tracking area covering the entire content view.
+    // The window (panel) is the owner — mouseEntered:/mouseExited: messages will be
+    // delivered to the panel, where our swizzled handlers will toggle ignoresMouseEvents.
+    //
+    // NOTE: The owner is NOT retained by the tracking area on macOS 10.10+.
+    // The window outlives the tracking area (the tracking area is added to the
+    // content view, which is owned by the window), so this is safe.
+    //
+    // We use raw msg_send! because NSTrackingArea::alloc() requires a
+    // MainThreadMarker which is awkward to obtain in this context.
+    // Since this code runs on the main thread (via run_on_main_thread), this is safe.
+    let bounds: objc2_foundation::NSRect = unsafe { objc2::msg_send![&content_view, bounds] };
+    let tracking_area: objc2::rc::Retained<objc2_app_kit::NSTrackingArea> = unsafe {
+        let alloc: *mut objc2_app_kit::NSTrackingArea =
+            objc2::msg_send![objc2_app_kit::NSTrackingArea::class(), alloc];
+        let area: *mut objc2_app_kit::NSTrackingArea = objc2::msg_send![
+            alloc,
+            initWithRect: bounds,
+            options: options.bits(),
+            owner: &*window as *const _,
+            userInfo: objc2::ffi::nil
+        ];
+        objc2::rc::Retained::from_raw(area).expect("NSTrackingArea init failed")
+    };
+
+    // Add the tracking area to the content view.
+    // SAFETY: addTrackingArea retains the tracking area for the view's lifetime.
+    unsafe {
+        let _: () = objc2::msg_send![&content_view, addTrackingArea: &*tracking_area];
+    }
+
+    log::info!("add_cursor_tracking_area: added NSTrackingArea to overlay panel");
+}
+
 /// Tauri command to toggle the overlay window's ability to become the key window
 /// (accept keyboard input). On macOS, this swizzles the RecordingOverlayPanel's
 /// `canBecomeKeyWindow` method to check a global flag.
@@ -147,6 +350,12 @@ pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Resul
 /// - Default: ignores_mouse_events = true (click-through)
 /// - Mouse enters interactive element: ignores_mouse_events = false (accept events)
 /// - Mouse leaves interactive element: ignores_mouse_events = true (click-through)
+///
+/// BUGFIX (Fix 5): On macOS, the previous approach relied on React onMouseEnter/
+/// onMouseLeave to toggle click-through. This has a chicken-and-egg problem: the
+/// panel is click-through, so mouse events can't reach the webview to trigger
+/// onMouseEnter. The NSTrackingArea approach works at the OS level and fires
+/// cursorUpdate: events even for click-through panels.
 ///
 /// On non-macOS platforms, this is a no-op (CSS pointer-events handles this).
 #[tauri::command]
@@ -588,6 +797,23 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
                 // This must happen after the class is registered by PanelBuilder::build()
                 // which triggers define_class! registration.
                 swizzle_can_become_key_window();
+
+                // BUGFIX (Fix 5): Swizzle mouseEntered:/mouseExited: on the
+                // RecordingOverlayPanel to handle cursor tracking for click-through.
+                // When the cursor enters the panel, we temporarily disable
+                // ignoresMouseEvents so interactive elements (cancel button,
+                // edit textarea) can receive mouse events. When the cursor
+                // exits, we re-enable click-through.
+                //
+                // NSTrackingArea with ActiveAlways fires these events even for
+                // click-through panels, solving the chicken-and-egg problem
+                // where onMouseEnter can't fire because the panel is click-through.
+                swizzle_mouse_tracking();
+
+                // Add an NSTrackingArea to the panel's content view so that
+                // mouseEntered:/mouseExited: are called even when the panel
+                // is click-through.
+                add_cursor_tracking_area(app_handle);
             }
             Err(e) => {
                 log::error!("Failed to create recording overlay panel: {}", e);
@@ -676,22 +902,12 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
         let payload = format_overlay_payload(state, mode);
         let _ = overlay_window.emit("show-overlay", payload);
 
-        // Also emit app-state for the new frontend state hook (Phase 1 backward compat).
-        // This supplements the existing show-overlay event with a structured AppState.
-        let app_state = match state {
-            "recording" => AppState::Recording {
-                binding_id: String::new(), // Will be updated by coordinator
-            },
-            "transcribing" | "processing" => AppState::Processing,
-            "usb-cycling" => AppState::UsbCycling {
-                stage: String::new(),
-            },
-            "confirming" => AppState::Confirming {
-                text: String::new(),
-            },
-            _ => AppState::Idle,
-        };
-        emit_app_state(app_handle, &app_state);
+        // NOTE: We intentionally do NOT emit an app-state event here.
+        // The TranscriptionCoordinator is the single source of truth for
+        // AppState. Emitting from show_overlay_state would overwrite the
+        // coordinator's state with incomplete data (e.g., missing binding_id).
+        // The coordinator emits app-state for all transitions: Recording,
+        // Processing, Confirming, UsbCycling, and Idle.
     }
 }
 
@@ -943,12 +1159,15 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
         // force: false means the frontend will check state before hiding
         let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": false }));
 
-        // Also emit app-state: Idle for the new frontend state hook.
-        // This supplements the existing hide-overlay event. Note: the coordinator
-        // also emits Idle on ProcessingFinished, so this may be a duplicate emission,
-        // but duplicate Idle emissions are harmless and ensure the frontend always
-        // receives the state transition even if one event is lost.
-        emit_app_state(app_handle, &AppState::Idle);
+        // NOTE: We intentionally do NOT emit AppState::Idle here.
+        // The coordinator is the sole authority for state transitions, and it
+        // already emits Idle on ProcessingFinished. Emitting Idle from here
+        // causes Bug 2: when the router's delayed hide fires while a second
+        // transcription is active, the spurious Idle emission overrides the
+        // frontend's Recording state, collapsing the visualizer/volume bar.
+        // The session guard below prevents the OS-level hide; the frontend
+        // hide-overlay event (emitted above) is also gated by its own state
+        // checks, so no explicit Idle emission is needed.
 
         // Capture session ID at call time — if a new recording starts between
         // now and the closure executing, the session will have been bumped.
