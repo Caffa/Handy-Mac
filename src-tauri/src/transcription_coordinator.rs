@@ -68,9 +68,9 @@ const PROCESSING_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum AppState {
     Idle,
     Recording { binding_id: String },
-    Processing,
+    Processing { binding_id: Option<String> },
     UsbCycling { stage: String },
-    Confirming { text: String },
+    Confirming { text: String, binding_id: Option<String> },
 }
 
 /// Emit an `app-state` event to both the overlay window and the main window.
@@ -97,6 +97,12 @@ enum Command {
         recording_was_active: bool,
     },
     ProcessingFinished,
+    /// Transition from Processing to a new Processing stage with fresh timer
+    /// and binding_id. Used by the router action after user confirmation so
+    /// the coordinator's internal Stage stays in sync with the shared AppState.
+    SetProcessingWithBinding {
+        binding_id: Option<String>,
+    },
     /// Internal: the processing-timeout timer fired.
     ProcessingTimeout,
 }
@@ -105,7 +111,7 @@ enum Command {
 enum Stage {
     Idle,
     Recording(String), // binding_id
-    Processing { since: Instant },
+    Processing { since: Instant, binding_id: Option<String> },
 }
 
 impl Stage {
@@ -133,7 +139,9 @@ fn set_stage(
         Stage::Recording(id) => AppState::Recording {
             binding_id: id.clone(),
         },
-        Stage::Processing { .. } => AppState::Processing,
+        Stage::Processing { binding_id, .. } => AppState::Processing {
+            binding_id: binding_id.clone(),
+        },
     };
 
     if let Ok(mut guard) = current_state.write() {
@@ -203,7 +211,7 @@ impl TranscriptionCoordinator {
 
                     // Calculate recv timeout: if in Processing, wake up to check the timeout.
                     let timeout = match &stage {
-                        Stage::Processing { since } => {
+                        Stage::Processing { since, .. } => {
                             let elapsed = since.elapsed();
                             if elapsed >= PROCESSING_TIMEOUT {
                                 // Already past the deadline — reset immediately.
@@ -390,6 +398,25 @@ impl TranscriptionCoordinator {
                                 );
                             }
                         }
+                        Command::SetProcessingWithBinding { binding_id } => {
+                            // Reset the Stage to Processing with a fresh timer.
+                            // This is called by the router action after user confirmation
+                            // so the 30s timeout restarts for the router subprocess phase.
+                            info!(
+                                "Coordinator: set processing with binding_id={:?}, resetting timer",
+                                binding_id
+                            );
+                            set_stage(
+                                &mut stage,
+                                Stage::Processing {
+                                    since: Instant::now(),
+                                    binding_id,
+                                },
+                                &active_use_clone,
+                                &current_state_clone,
+                                &app,
+                            );
+                        }
                         Command::ProcessingTimeout => {
                             // Handled above in the timeout calculation, but
                             // also reachable if the timer fires exactly. Reset
@@ -496,8 +523,29 @@ impl TranscriptionCoordinator {
 
     /// Set the application state to Confirming and emit an app-state event.
     /// Called when the router preview is shown for user confirmation.
-    pub fn set_confirming(&self, app: &AppHandle, text: String) {
-        let new_state = AppState::Confirming { text };
+    /// The `binding_id` identifies the originating action (e.g. "transcribe_with_router").
+    pub fn set_confirming(&self, app: &AppHandle, text: String, binding_id: Option<String>) {
+        let new_state = AppState::Confirming { text, binding_id };
+        if let Ok(mut guard) = self.current_state.write() {
+            *guard = new_state.clone();
+        }
+        emit_app_state(app, &new_state);
+    }
+
+    /// Transition the coordinator's internal Stage to Processing with a fresh
+    /// timer and the given binding_id. This is critical for the router flow:
+    /// after user confirmation, the router subprocess runs asynchronously, so
+    /// we need the coordinator's Stage to reflect Processing with a fresh
+    /// timeout timer (otherwise the 30s timeout from the initial stop() would
+    /// fire too early). Also updates the shared AppState and emits the event.
+    pub fn set_processing_with_binding(&self, app: &AppHandle, binding_id: Option<String>) {
+        let _ = self
+            .tx
+            .send(Command::SetProcessingWithBinding { binding_id: binding_id.clone() });
+        // Also update the shared AppState immediately so the frontend
+        // transitions to the correct visualizer without waiting for the
+        // coordinator thread to process the command.
+        let new_state = AppState::Processing { binding_id };
         if let Ok(mut guard) = self.current_state.write() {
             *guard = new_state.clone();
         }
@@ -603,6 +651,7 @@ fn stop(
         stage,
         Stage::Processing {
             since: Instant::now(),
+            binding_id: Some(binding_id.to_string()),
         },
         active_use,
         current_state,

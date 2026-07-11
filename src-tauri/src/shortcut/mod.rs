@@ -829,45 +829,23 @@ pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<()
     {
         if rm.is_stream_open() {
             info!(
-                "Applying pre-recording buffer change ({}ms): stopping stream, recreating recorder",
+                "Applying pre-recording buffer change ({}ms): recreating recorder",
                 ms
             );
 
-            // Stop the current stream
-            rm.stop_microphone_stream();
-
-            // Recreate the recorder with the new setting.
-            // This must not panic — errors are propagated as Result.
+            // recreate_recorder() now self-heals: if the stream was open and
+            // should still be running (always-on or BT keep-alive), it
+            // automatically restarts the stream after recreation. No need for
+            // manual stop/restart here.
             if let Err(e) = rm.recreate_recorder() {
                 error!(
                     "Failed to recreate recorder after pre-recording buffer change: {}",
                     e
                 );
-                // Attempt to restart the stream even if recreation failed,
-                // so the app doesn't end up in a dead state with no mic stream.
-                if rm.is_always_on() || rm.is_bt_keep_alive() {
-                    if let Err(restart_err) = rm.start_microphone_stream() {
-                        error!(
-                            "Also failed to restart microphone stream after recreation failure: {}",
-                            restart_err
-                        );
-                    }
-                }
                 return Err(format!(
                     "Failed to apply pre-recording buffer setting: {}",
                     e
                 ));
-            }
-
-            // Restart the stream if in always-on mode or BT keep-alive
-            if rm.is_always_on() || rm.is_bt_keep_alive() {
-                if let Err(e) = rm.start_microphone_stream() {
-                    error!(
-                        "Failed to restart microphone stream after pre-recording buffer change: {}",
-                        e
-                    );
-                    return Err(format!("Failed to restart microphone stream: {}", e));
-                }
             }
 
             info!("Recreated recorder with pre-recording buffer: {}ms", ms);
@@ -1494,27 +1472,33 @@ pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Re
         }
     }
 
-    // Recreate the AudioRecorder so the streaming callback is attached/detached
-    // based on the new live_captions_enabled setting. Without this, the recorder
-    // keeps the old configuration (no streaming callback if live captions was
-    // off when the recorder was first created — which is the default).
-    // The streaming callback that emits "partial-transcription" events is only
-    // attached in create_audio_recorder() (audio.rs), which reads this setting
-    // at recorder creation time.
+    // Toggle streaming transcription at runtime via the Strategy pattern.
+    // Instead of recreating the entire AudioRecorder (which tears down the mic
+    // stream and requires manual restart), we just toggle the streaming_enabled
+    // flag on the existing recorder. This eliminates Bug 1 where toggling live
+    // captions could leave the always-on mic stream dead.
+    //
+    // If the recorder doesn't have a streaming callback (e.g., TranscriptionManager
+    // wasn't available at startup), set_streaming_enabled() will fall back to
+    // recreating the recorder, which now self-heals the stream (RAII guard).
     if let Some(rm) =
         app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
     {
-        if let Err(e) = rm.recreate_recorder() {
+        if let Err(e) = rm.set_streaming_enabled(enabled) {
             warn!(
-                "Failed to recreate recorder after live captions toggle: {}",
+                "Failed to toggle streaming transcription after live captions toggle: {}",
                 e
             );
         } else {
             debug!(
-                "Recorder recreated for live captions toggle (enabled={})",
+                "Streaming transcription toggled for live captions (enabled={})",
                 enabled
             );
         }
+    } else {
+        log::warn!(
+            "AudioRecordingManager not initialized, skipping live captions streaming toggle"
+        );
     }
 
     Ok(())

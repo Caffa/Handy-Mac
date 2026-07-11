@@ -613,3 +613,69 @@ The first attempt wired `noise_floor` into the normalization formula: `db_above_
 3. Peak starts at **0.0** — so the first speech frame immediately sets it and bars fill. No cold-start delay.
 
 **Key insight:** never put a slowly-adapting variable directly in the output path. Use a fixed window for the base (so cold-start is always visible) and apply adaptation as a *boost on top* (so it only improves things, never gates them). Instant snap-up for peaks avoids the EMA convergence delay entirely.
+
+## Router Post-Filing Bugs — Stuck Coordinator + Instant Hide (2026-07-11)
+
+### Problem
+
+Two related bugs in the router flow after filing:
+
+1. **No visualizer indication after filing**: After routing text is sent for filing, the overlay disappears almost immediately — the router result (✅/❌) is visible for milliseconds before the overlay hides.
+2. **Transcription gets stuck after routing**: After routing completes, starting a new recording fails with "pipeline busy" in the logs. The stop recording button doesn't work because the coordinator stays in `Processing` state.
+
+### Root Cause
+
+Both bugs share the same root cause: `notify_processing_finished()` was called at the **end** of the router subprocess thread (after all result handling), keeping the coordinator in `Processing` state for the entire subprocess duration.
+
+**Bug 1 (Instant Hide):**
+- Router finishes → `is_active_use()` returns `true` (coordinator still Processing) → skip hide
+- `notify_processing_finished()` fires → coordinator transitions to Idle → `app-state: Idle` emitted
+- Frontend receives Idle → `isVisible = false` → overlay hides immediately
+- User sees the result for milliseconds at most
+
+**Bug 2 (Stuck Coordinator):**
+- Router subprocess runs for 5-30 seconds (boss_router.py is synchronous)
+- During this entire time, coordinator is in `Processing` → `active_use = true`
+- User tries to start new recording → coordinator rejects with "pipeline busy"
+- `FinishGuard` was deliberately dropped before the router subprocess (correct — it shouldn't fire while routing), but `notify_processing_finished()` was the only thing that could free the coordinator, and it was at the end of the thread
+
+### Fixes
+
+**Backend (`router.rs`):**
+
+1. **Immediate `notify_processing_finished()`**: Move the call to fire right after the router subprocess completes (both success and error paths), before result handling. This frees the coordinator immediately, allowing new recordings.
+
+2. **Delayed `hide_recording_overlay()`**: After freeing the coordinator, spawn a 5-second delayed hide in a new thread. `hide_recording_overlay()` has built-in session guards (`OVERLAY_SESSION` counter + `is_active_use()` check) that prevent hiding if a new recording starts during the delay.
+
+**Frontend (`RecordingOverlay.tsx`):**
+
+3. **Router result visibility override**: Change `isVisible` from `backendState.isVisible` to `backendState.isVisible || (isRouter && routerResult !== null)`. This keeps the overlay visible when a router result is being displayed, even after the backend transitions to Idle. The frontend's existing 10-second `ROUTER_RESULT_DISPLAY_MS` timeout clears `routerResult`, at which point `isVisible` re-evaluates to `false` and the overlay hides.
+
+### Timing Diagram
+
+```
+Router subprocess finishes
+  │
+  ├─► emit router-result event (frontend shows result)
+  ├─► send macOS notification
+  ├─► notify_processing_finished() (coordinator → Idle, active_use = false)
+  │     └─► User can now start new recording immediately!
+  │
+  └─► spawn delayed hide thread (5 seconds)
+        └─► hide_recording_overlay() (with session guard)
+              └─► If no new recording: overlay hides
+              └─► If new recording started: session mismatch, skip hide
+
+Frontend:
+  t=0s:  routerResult arrives → isVisible = true (backend or routerResult)
+  t=10s: ROUTER_RESULT_DISPLAY_MS timeout → routerResult = null → isVisible = false
+```
+
+### Key Insight
+
+When a long-running background operation (like a subprocess) needs to both (a) free the coordinator for new operations and (b) keep the UI visible for result display, **decouple the two concerns**: immediately free the coordinator (`notify_processing_finished()`), then use a separate delayed mechanism for the UI hide. The frontend can independently control visibility based on its own state (`routerResult`), while the backend handles the coordinator lifecycle.
+
+### Files Changed
+
+- `src-tauri/src/actions/router.rs` — Restructured router subprocess thread: immediate `notify_processing_finished()` + delayed `hide_recording_overlay()`
+- `src/overlay/RecordingOverlay.tsx` — `isVisible` override for router result display period

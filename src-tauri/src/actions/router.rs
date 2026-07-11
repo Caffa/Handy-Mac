@@ -255,7 +255,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         let binding_id = binding_id.to_string(); // Clone for async task
 
         tauri::async_runtime::spawn(async move {
-            let _guard = super::transcribe::FinishGuard(ah.clone());
+            let mut finish_guard = Some(super::transcribe::FinishGuard(ah.clone()));
             debug!("Starting async router task for binding: {}", binding_id);
 
             let stop_recording_time = Instant::now();
@@ -427,7 +427,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                         // ── Set coordinator state to Confirming ──
                         if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
-                            coordinator.set_confirming(&ah, transcription_text.clone());
+                            coordinator.set_confirming(&ah, transcription_text.clone(), Some("transcribe_with_router".to_string()));
                         }
 
                         // ── Wait for user confirmation (with countdown) before routing ──
@@ -465,6 +465,15 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         // ── Show "Filing…" overlay while routing ──
                         show_processing_overlay_with_mode(&ah, OverlayMode::Router);
 
+                        // ── Transition coordinator from Confirming to Processing ──
+                        // This ensures the frontend knows we're still in a router flow
+                        // during the filing/routing phase, so it shows the blue
+                        // visualizer and "Filing…" text instead of the default
+                        // transcribe-mode visualizer and "Processing…" text.
+                        if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
+                            coordinator.set_processing_with_binding(&ah, Some("transcribe_with_router".to_string()));
+                        }
+
                         // Use the confirmed (possibly edited) text for routing
                         let transcription_text = confirmed_text;
 
@@ -492,6 +501,14 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             } else {
                                 None
                             };
+
+                            // Drop the FinishGuard BEFORE spawning the router subprocess.
+                            // The async block is about to exit (the subprocess runs in a
+                            // separate thread), so FinishGuard would fire immediately and
+                            // reset the coordinator to Idle — hiding the overlay before
+                            // the router result is shown. Instead, the router subprocess
+                            // thread will call notify_processing_finished() when done.
+                            finish_guard.take();
 
                             // Spawn the router as a subprocess
                             std::thread::spawn(move || {
@@ -556,20 +573,9 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                         };
                                         send_macos_notification("Handy Router", &notification_text);
 
-                                        // Check is_active_use() before hiding overlay
-                                        let is_active = ah_for_router
-                                            .try_state::<Arc<TranscriptionCoordinator>>()
-                                            .map_or(false, |coord| coord.is_active_use());
-                                        info!(
-                                            "Router completion: is_active_use={}, will_hide={}",
-                                            is_active, !is_active
-                                        );
-                                        if !is_active {
-                                            utils::hide_recording_overlay(&ah_for_router);
-                                            change_tray_icon(&ah_for_router, TrayIconState::Idle);
-                                        } else {
-                                            info!("Router finished but transcription pipeline is active — keeping overlay");
-                                        }
+                                        // NOTE: Overlay hide is now handled AFTER notify_processing_finished()
+                                        // below, with a 5-second delay so the user can see the result.
+                                        info!("Router completion: success, scheduling delayed hide");
                                     }
                                     Err(e) => {
                                         error!("Router subprocess failed: {}", e);
@@ -613,20 +619,35 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                             &error_display,
                                         );
 
-                                        let is_other_active = ah_for_router
-                                            .try_state::<Arc<TranscriptionCoordinator>>()
-                                            .map_or(false, |coord| coord.is_active_use());
-                                        info!(
-                                            "Router failure: is_active_use={}, will_hide={}",
-                                            is_other_active, !is_other_active
-                                        );
-                                        if !is_other_active {
-                                            utils::hide_recording_overlay(&ah_for_router);
-                                            change_tray_icon(&ah_for_router, TrayIconState::Idle);
-                                        } else {
-                                            info!("Router failed but transcription pipeline is active — keeping overlay visible");
-                                        }
+                                        // NOTE: Overlay hide is now handled AFTER notify_processing_finished()
+                                        // below, with a 5-second delay so the user can see the result.
+                                        info!("Router completion: failure, scheduling delayed hide");
                                     }
+                                }
+
+                                // ── IMMEDIATELY free the coordinator ──
+                                // This allows the user to start a new recording right away,
+                                // even while the router result is still being displayed.
+                                // Previously, notify_processing_finished() was called at the
+                                // end of the thread, keeping the coordinator in Processing
+                                // (and rejecting new recordings) for the entire subprocess
+                                // duration.
+                                if let Some(coord) = ah_for_router.try_state::<TranscriptionCoordinator>() {
+                                    coord.notify_processing_finished();
+                                }
+
+                                // ── Schedule delayed overlay hide ──
+                                // Give the user 5 seconds to see the router result before
+                                // the overlay hides. hide_recording_overlay() has built-in
+                                // session guards that prevent hiding if a new recording
+                                // starts during the delay.
+                                {
+                                    let app_delayed = ah_for_router.clone();
+                                    std::thread::spawn(move || {
+                                        std::thread::sleep(Duration::from_secs(5));
+                                        utils::hide_recording_overlay(&app_delayed);
+                                        change_tray_icon(&app_delayed, TrayIconState::Idle);
+                                    });
                                 }
 
                                 // ── Finish session after routing ──

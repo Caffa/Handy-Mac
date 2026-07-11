@@ -12,6 +12,67 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 #[cfg(target_os = "linux")]
 use crate::utils::{is_kde_wayland, is_wayland};
 
+// ── macOS Accessibility API bindings for paste verification ─────────────
+//
+// These are raw FFI bindings to the macOS Accessibility API (HIServices).
+// They allow us to check whether a Cmd+V paste actually landed in the
+// target text field, implementing the "verify-then-commit" pattern for
+// clipboard restore. Without this, we'd unconditionally restore the
+// clipboard content even if the paste failed, destroying the transcription
+// text (Bug 3).
+#[cfg(target_os = "macos")]
+mod macos_ax {
+    use std::os::raw::c_int;
+
+    // Opaque types from ApplicationServices.framework
+    #[repr(C)]
+    pub struct AXUIElement(pub *mut std::ffi::c_void);
+    #[repr(C)]
+    pub struct CFString(pub *mut std::ffi::c_void);
+    #[repr(C)]
+    pub struct CFType(pub *mut std::ffi::c_void);
+
+    pub type AXUIElementRef = *const AXUIElement;
+    pub type CFTypeRef = *const CFType;
+    pub type CFStringRef = *const CFString;
+    pub type AXError = c_int;
+    pub type CFStringEncoding = u32;
+
+    // AXError codes
+    pub const KAX_ERROR_SUCCESS: i32 = 0;
+
+    // AX attribute names
+    pub const KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE: *const i8 =
+        b"AXFocusedUIElement\0".as_ptr() as *const i8;
+    pub const KAX_VALUE_ATTRIBUTE: *const i8 = b"AXValue\0".as_ptr() as *const i8;
+
+    // CoreFoundation encoding
+    pub const K_CFSTRING_ENCODING_UTF8: u32 = 0x08000100;
+
+    #[link(kind = "framework", name = "ApplicationServices")]
+    extern "C" {
+        pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+        pub fn AXUIElementCopyAttributeValue(
+            element: AXUIElementRef,
+            attribute: *const i8,
+            value: *mut *mut std::ffi::c_void,
+        ) -> AXError;
+        pub fn CFGetTypeID(cf: CFTypeRef) -> usize;
+        pub fn CFStringGetTypeID() -> usize;
+        pub fn CFStringGetLength(theString: CFStringRef) -> isize;
+        pub fn CFStringGetCString(
+            theString: CFStringRef,
+            buffer: *mut i8,
+            bufferSize: isize,
+            encoding: CFStringEncoding,
+        ) -> bool;
+        pub fn CFRelease(cf: CFTypeRef);
+    }
+}
+
+#[cfg(target_os = "macos")]
+use macos_ax::*;
+
 /// Writes text to the system clipboard without pasting or restoring the previous content.
 /// Used as a fallback when the paste keystroke fails, so the user can manually paste.
 pub fn write_to_clipboard(text: &str, app_handle: &AppHandle) -> Result<(), String> {
@@ -34,6 +95,159 @@ pub fn write_to_clipboard(text: &str, app_handle: &AppHandle) -> Result<(), Stri
         .map_err(|e| format!("Failed to write to clipboard: {}", e));
 
     write_result
+}
+
+/// Verifies that a paste operation landed in the target application.
+///
+/// Implements the "verify-then-commit" pattern (Bug 3 fix): we don't
+/// restore the original clipboard content until we have some confidence
+/// that the paste was consumed by the target app. If verification fails,
+/// we keep the transcription text on the clipboard so the user can
+/// manually Cmd+V again.
+///
+/// On macOS, uses the Accessibility API (AXValue) to check if the focused
+/// text field's value contains the pasted text. Falls back to a conservative
+/// heuristic on other platforms.
+///
+/// Returns true if the paste was verified (safe to restore clipboard),
+/// false if verification failed or is unavailable (keep transcription text).
+fn verify_paste_landed(_app_handle: &AppHandle, _pasted_text: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        verify_paste_landed_macos(_pasted_text)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // On non-macOS platforms, we can't use AX to verify.
+        // Conservatively return false to keep transcription text on clipboard
+        // so the user can manually paste again if needed.
+        info!("Paste verification: not available on this platform — keeping transcription text on clipboard");
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn verify_paste_landed_macos(pasted_text: &str) -> bool {
+    use objc2::rc::autoreleasepool;
+    use objc2_app_kit::NSWorkspace;
+
+    autoreleasepool(|_| {
+        let workspace = NSWorkspace::sharedWorkspace();
+        let Some(app) = workspace.frontmostApplication() else {
+            info!("Paste verification: no frontmost app — assuming paste failed");
+            return false;
+        };
+
+        let pid = app.processIdentifier();
+
+        // Use the macOS Accessibility API to check the focused element.
+        // This works at the window-server level, independent of whether
+        // our panel is click-through.
+        let ax_app: AXUIElementRef = unsafe { AXUIElementCreateApplication(pid) };
+
+        let mut focused_element_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let result = unsafe {
+            AXUIElementCopyAttributeValue(
+                ax_app,
+                KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE as *const i8,
+                &mut focused_element_ptr as *mut _,
+            )
+        };
+
+        if result != KAX_ERROR_SUCCESS {
+            info!(
+                "Paste verification: could not get focused AX element (error={}) — assuming paste failed",
+                result
+            );
+            // Release ax_app (Create Rule: caller must release).
+            unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+            return false;
+        }
+
+        let focused_element: AXUIElementRef = focused_element_ptr as AXUIElementRef;
+
+        // Get the AXValue of the focused element
+        let mut value_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let value_result = unsafe {
+            AXUIElementCopyAttributeValue(
+                focused_element,
+                KAX_VALUE_ATTRIBUTE as *const i8,
+                &mut value_ptr as *mut _,
+            )
+        };
+
+        if value_result != KAX_ERROR_SUCCESS {
+            // Element has no AXValue — might be a non-text field (terminal, etc.)
+            // In this case, we can't verify, so assume the paste landed since
+            // many terminal apps don't expose AXValue.
+            info!(
+                "Paste verification: focused element has no AXValue (error={}) — assuming paste succeeded (terminal-like app)",
+                value_result
+            );
+            // Release the focused element (Create-rule +1 reference)
+            unsafe { macos_ax::CFRelease(focused_element_ptr as macos_ax::CFTypeRef) };
+            unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+            return true;
+        }
+
+        // Check if the AXValue contains the pasted text
+        // Release the focused element (Create-rule +1 reference) now that
+        // we no longer need it.
+        unsafe { macos_ax::CFRelease(focused_element_ptr as macos_ax::CFTypeRef) };
+
+        let type_id = unsafe { CFGetTypeID(value_ptr as CFTypeRef) };
+        let string_type_id = unsafe { CFStringGetTypeID() };
+
+        if type_id == string_type_id {
+            let cf_string: CFStringRef = value_ptr as CFStringRef;
+            let len = unsafe { CFStringGetLength(cf_string) };
+            // Allocate buffer for UTF-8 string + null terminator
+            // Each UTF-16 code unit can expand to up to 3 UTF-8 bytes
+            let buffer_size = (len as usize) * 3 + 1;
+            let mut buffer = vec![0u8; buffer_size];
+
+            let success = unsafe {
+                CFStringGetCString(
+                    cf_string,
+                    buffer.as_mut_ptr() as *mut i8,
+                    buffer_size as isize,
+                    K_CFSTRING_ENCODING_UTF8,
+                )
+            };
+
+            if success {
+                // Remove trailing null bytes
+                let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+                let s = String::from_utf8_lossy(&buffer[..end]);
+                let contains = s.contains(pasted_text);
+                if contains {
+                    info!("Paste verification: AXValue contains pasted text — paste confirmed");
+                } else {
+                    info!("Paste verification: AXValue does NOT contain pasted text — paste may have failed");
+                }
+                // Release the CFString object obtained from AXUIElementCopyAttributeValue
+                // (Core Foundation Create Rule: caller must release).
+                unsafe { macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef) };
+                // Release ax_app (Create Rule: caller must release).
+                unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+                contains
+            } else {
+                info!("Paste verification: could not extract string from AXValue — assuming paste failed");
+                unsafe { macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef) };
+                unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+                false
+            }
+        } else {
+            info!(
+                "Paste verification: AXValue is not a string (type={}) — assuming paste failed",
+                type_id
+            );
+            unsafe { macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef) };
+            unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+            false
+        }
+    })
 }
 
 /// Pastes text using the clipboard: saves current content, writes text, sends paste keystroke, restores clipboard.
@@ -85,19 +299,48 @@ fn paste_via_clipboard(
         }
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Verify-then-commit: wait for the paste to land before restoring clipboard.
+    // This fixes Bug 3 where the clipboard was restored too eagerly,
+    // destroying the transcription text before the target app had a chance
+    // to read it. If the paste might have failed (e.g., focus was lost),
+    // we keep the transcription text on the clipboard so the user can
+    // manually paste it.
+    //
+    // Phase 1: Give the target app time to process Cmd+V.
+    // 150ms is generous — most apps process Cmd+V within 1 frame (16ms).
+    std::thread::sleep(std::time::Duration::from_millis(150));
 
-    // Restore original clipboard content
-    // On Wayland, prefer wl-copy for better compatibility
-    #[cfg(target_os = "linux")]
-    if is_wayland() && is_wl_copy_available() {
-        let _ = write_clipboard_via_wl_copy(&clipboard_content);
-    } else {
+    // Phase 2: Verify the paste landed (macOS only, using Accessibility API).
+    // If verification is available and confirms the paste succeeded, we
+    // can safely restore the original clipboard content.
+    // If verification fails or is unavailable, we err on the side of
+    // caution: keep the transcription text on the clipboard so the user
+    // can manually Cmd+V again.
+    let paste_verified = verify_paste_landed(app_handle, text);
+
+    if paste_verified {
+        // Paste verified — safe to restore original clipboard content
+        info!("Paste verified — restoring original clipboard content");
+
+        #[cfg(target_os = "linux")]
+        if is_wayland() && is_wl_copy_available() {
+            let _ = write_clipboard_via_wl_copy(&clipboard_content);
+        } else {
+            let _ = clipboard.write_text(&clipboard_content);
+        }
+
+        #[cfg(not(target_os = "linux"))]
         let _ = clipboard.write_text(&clipboard_content);
+    } else {
+        // Paste NOT verified — keep transcription text on clipboard.
+        // The user can manually Cmd+V to paste again. The transcription
+        // text stays available on the clipboard until the user copies
+        // something else or the next transcription overwrites it.
+        //
+        // This is the "verify-then-commit" pattern: we don't destroy the
+        // transcription text (commit) until we verify the paste landed.
+        info!("Paste not verified — keeping transcription text on clipboard for manual paste");
     }
-
-    #[cfg(not(target_os = "linux"))]
-    let _ = clipboard.write_text(&clipboard_content);
 
     Ok(())
 }

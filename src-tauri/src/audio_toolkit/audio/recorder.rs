@@ -113,6 +113,12 @@ pub struct AudioRecorder {
     /// The callback receives a clone of the current audio buffer for streaming transcription.
     /// Called approximately every 2-3 seconds of recording.
     streaming_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
+    /// Runtime flag to enable/disable streaming callback invocation.
+    /// When false, the streaming callback is still attached but not invoked,
+    /// allowing live captions to be toggled without recreating the recorder.
+    /// This implements the Strategy pattern: the callback is a runtime-swappable
+    /// dependency rather than a construction-time decision.
+    streaming_enabled: Arc<AtomicBool>,
     /// Timestamp (ms since epoch) of the last audio chunk received by
     /// the consumer thread. Used to detect dead microphone streams.
     last_chunk_ms: Arc<AtomicU64>,
@@ -140,6 +146,7 @@ impl AudioRecorder {
             noise_suppressor: None,
             level_cb: None,
             streaming_cb: None,
+            streaming_enabled: Arc::new(AtomicBool::new(false)),
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
             opened_at_ms: Arc::new(AtomicU64::new(0)),
             max_level: Arc::new(AtomicU32::new(0)),
@@ -177,6 +184,37 @@ impl AudioRecorder {
     {
         self.streaming_cb = Some(Arc::new(cb));
         self
+    }
+
+    /// Set whether streaming transcription is enabled.
+    /// When enabled and a streaming callback is attached, the callback
+    /// will be invoked periodically during recording.
+    /// When disabled, the callback exists but is not invoked, allowing
+    /// runtime toggling without recreating the recorder.
+    /// This implements the Strategy pattern for the streaming callback.
+    pub fn with_streaming_enabled(self, enabled: bool) -> Self {
+        self.streaming_enabled.store(enabled, Ordering::Release);
+        self
+    }
+
+    /// Runtime toggle for streaming transcription. When disabled, the
+    /// streaming callback is still attached but not invoked, allowing
+    /// instant toggling without recreating the recorder.
+    /// Returns the previous value.
+    pub fn set_streaming_enabled(&self, enabled: bool) -> bool {
+        self.streaming_enabled.swap(enabled, Ordering::AcqRel)
+    }
+
+    /// Check whether streaming transcription is currently enabled.
+    pub fn is_streaming_enabled(&self) -> bool {
+        self.streaming_enabled.load(Ordering::Acquire)
+    }
+
+    /// Check whether a streaming callback is attached.
+    /// Used by AudioRecordingManager to decide whether recreation is needed
+    /// when enabling streaming (if no callback exists, we must recreate).
+    pub fn has_streaming_callback(&self) -> bool {
+        self.streaming_cb.is_some()
     }
 
     /// Set the pre-recording buffer duration in milliseconds.
@@ -222,6 +260,9 @@ impl AudioRecorder {
         let level_cb = self.level_cb.clone();
         // Move the optional streaming callback into the worker thread
         let streaming_cb = self.streaming_cb.clone();
+        // Pass the streaming_enabled flag so the consumer can gate the callback
+        // at runtime without recreating the recorder (Strategy pattern).
+        let streaming_enabled = self.streaming_enabled.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
         let pre_buffer_ms = self.pre_buffer_ms.load(Ordering::Relaxed);
@@ -322,6 +363,7 @@ impl AudioRecorder {
                         cmd_rx,
                         level_cb,
                         streaming_cb,
+                        streaming_enabled,
                         stop_flag,
                         last_chunk_ms,
                         max_level,
@@ -379,7 +421,46 @@ impl AudioRecorder {
         Ok(())
     }
 
+    /// Send a Stop command to the consumer thread and return a receiver for
+    /// the result, without blocking. The caller can drop locks before calling
+    /// `wait_for_stop_result()` to avoid lock contention.
+    ///
+    /// BUGFIX (Fix 6): Previously, `stop()` held the recorder lock for the
+    /// entire duration of the wait (up to 5 seconds), blocking other operations
+    /// like cancel, level callbacks, and streaming callbacks. By splitting into
+    /// send + wait phases, the caller can release the lock between sending the
+    /// command and waiting for the response.
+    pub fn stop_send(&self) -> Result<mpsc::Receiver<Vec<f32>>, Box<dyn std::error::Error>> {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        if let Some(tx) = &self.cmd_tx {
+            tx.send(Cmd::Stop(resp_tx))?;
+        }
+        Ok(resp_rx)
+    }
+
+    /// Wait for the result of a Stop command sent via `stop_send()`.
+    /// Returns the audio samples on success, or an empty vector on timeout.
+    pub fn wait_for_stop_result(
+        resp_rx: mpsc::Receiver<Vec<f32>>,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        match resp_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(samples) => Ok(samples),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                log::warn!(
+                    "Timeout waiting for audio samples after 5 seconds - stream may be frozen"
+                );
+                Ok(Vec::new())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Audio consumer thread disconnected".into())
+            }
+        }
+    }
+
     /// Stop recording and return the audio samples.
+    ///
+    /// Convenience method that combines `stop_send()` + `wait_for_stop_result()`.
+    /// For lock-free waiting, use the split methods instead.
     ///
     /// FIXED: Added a 5-second timeout to prevent infinite blocking if the
     /// audio stream is frozen (e.g., zombie device, CoreAudio hang). If the
@@ -409,9 +490,57 @@ impl AudioRecorder {
         }
     }
 
+    /// Send a SmartStop command to the consumer thread and return a receiver for
+    /// the result, without blocking. The caller can drop locks before calling
+    /// `wait_for_smart_stop_result()` to avoid lock contention.
+    ///
+    /// BUGFIX (Fix 6): Previously, `smart_stop()` held the recorder lock for the
+    /// entire duration of the wait (up to max_buffer_ms + 2s), blocking other
+    /// operations. By splitting into send + wait phases, the caller can release
+    /// the lock between sending the command and waiting for the response.
+    pub fn smart_stop_send(
+        &self,
+        max_buffer_ms: u64,
+    ) -> Result<mpsc::Receiver<Vec<f32>>, Box<dyn std::error::Error>> {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        if let Some(tx) = &self.cmd_tx {
+            tx.send(Cmd::SmartStop {
+                max_buffer_ms,
+                reply_tx: resp_tx,
+            })?;
+        }
+        Ok(resp_rx)
+    }
+
+    /// Wait for the result of a SmartStop command sent via `smart_stop_send()`.
+    /// Returns the audio samples on success, or an empty vector on timeout.
+    pub fn wait_for_smart_stop_result(
+        resp_rx: mpsc::Receiver<Vec<f32>>,
+        max_buffer_ms: u64,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let timeout = Duration::from_millis(max_buffer_ms) + Duration::from_secs(2);
+        match resp_rx.recv_timeout(timeout) {
+            Ok(samples) => Ok(samples),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                log::warn!(
+                    "Timeout waiting for smart_stop samples after {}ms - stream may be frozen",
+                    timeout.as_millis()
+                );
+                Ok(Vec::new())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Audio consumer thread disconnected".into())
+            }
+        }
+    }
+
     /// Volume-aware stop: continues recording for up to `max_buffer_ms`
     /// after the hotkey is released, but stops early when the microphone
     /// level drops below the noise floor for a sustained period.
+    ///
+    /// Convenience method that combines `smart_stop_send()` +
+    /// `wait_for_smart_stop_result()`. For lock-free waiting, use the split
+    /// methods instead.
     ///
     /// The noise floor is estimated from VAD-classified "noise" frames
     /// collected during the preceding recording, so noisy environments
@@ -775,6 +904,7 @@ fn run_consumer(
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     streaming_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
+    streaming_enabled: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
     last_chunk_ms: Arc<AtomicU64>,
     max_level: Arc<AtomicU32>,
@@ -933,7 +1063,10 @@ fn run_consumer(
         // to enable real-time partial transcription display.
         // We wait for several consecutive speech frames before starting to
         // avoid false starts where VAD briefly flags noise as speech.
+        // The streaming_enabled flag allows runtime toggling (Strategy pattern)
+        // without recreating the recorder.
         if recording
+            && streaming_enabled.load(Ordering::Acquire)
             && streaming_cb.is_some()
             && consecutive_speech_frames >= MIN_SPEECH_FRAMES_BEFORE_STREAMING
         {

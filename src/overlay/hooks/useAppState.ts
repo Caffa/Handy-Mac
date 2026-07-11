@@ -28,8 +28,11 @@ export type AppStateRecording = {
   data: { binding_id: string };
 };
 
-/** Processing — transcribing or routing */
-export type AppStateProcessing = { state: "Processing" };
+/** Processing — transcribing or routing (binding_id identifies the originating action) */
+export type AppStateProcessing = {
+  state: "Processing";
+  data: { binding_id: string | null };
+};
 
 /** UsbCycling — USB device power cycling */
 export type AppStateUsbCycling = {
@@ -37,10 +40,10 @@ export type AppStateUsbCycling = {
   data: { stage: string };
 };
 
-/** Confirming — awaiting user confirmation (router) */
+/** Confirming — awaiting user confirmation (router), binding_id identifies the originating action */
 export type AppStateConfirming = {
   state: "Confirming";
-  data: { text: string };
+  data: { text: string; binding_id: string | null };
 };
 
 /** Union type mirroring the Rust AppState enum */
@@ -175,9 +178,21 @@ export function useAppState(): UseAppStateReturn {
   const isUsbCyclingState = appState.state === "UsbCycling";
   const isConfirmingState = appState.state === "Confirming";
 
-  // Extract data from variant states
-  const bindingId =
-    appState.state === "Recording" ? appState.data.binding_id : null;
+  // Extract data from variant states.
+  // binding_id persists across Recording → Processing → Confirming states
+  // so isRouter remains true throughout the entire router flow.
+  const bindingId = (() => {
+    switch (appState.state) {
+      case "Recording":
+        return appState.data.binding_id;
+      case "Processing":
+        return appState.data.binding_id;
+      case "Confirming":
+        return appState.data.binding_id;
+      default:
+        return null;
+    }
+  })();
   const isRouter = bindingId === "transcribe_with_router";
   const routerText =
     appState.state === "Confirming" ? appState.data.text : null;

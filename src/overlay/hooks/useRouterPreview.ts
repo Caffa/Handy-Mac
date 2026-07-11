@@ -228,14 +228,19 @@ export function useRouterPreview(
     }
   }, [routerResult]);
 
-  // Handle transcription preview fade-out when entering processing state
+  // Handle transcription preview fade-out when entering processing state.
+  // For router mode, we keep the preview visible until routerResult arrives —
+  // fading out mid-routing would make the transcribed text disappear before
+  // the routing result is shown.
+  // For normal transcribe mode, the preview fades out after 2 seconds since
+  // there's no routing result to follow.
   useEffect(() => {
     if (fadeOutTimerRef.current) {
       clearTimeout(fadeOutTimerRef.current);
       fadeOutTimerRef.current = null;
     }
 
-    if (state === "processing" && transcriptionPreview && !routerResult) {
+    if (state === "processing" && transcriptionPreview && !routerResult && !isRouter) {
       fadeOutTimerRef.current = setTimeout(() => {
         setIsFadingOut(true);
         setTimeout(() => {
@@ -252,13 +257,12 @@ export function useRouterPreview(
         clearTimeout(fadeOutTimerRef.current);
       }
     };
-  }, [state, transcriptionPreview, routerResult]);
+  }, [state, transcriptionPreview, routerResult, isRouter]);
 
-  // Event listeners for transcription preview, router result, routing state
+  // Event listeners for transcription preview and router result
   useEffect(() => {
     let unlistenTranscriptionPreview: (() => void) | null = null;
     let unlistenRouterResult: (() => void) | null = null;
-    let unlistenRoutingState: (() => void) | null = null;
 
     const setup = async () => {
       unlistenTranscriptionPreview = await listen<string>(
@@ -273,13 +277,6 @@ export function useRouterPreview(
         },
       );
 
-      unlistenRoutingState = await listen<string>("routing-state", (event) => {
-        const newState = event.payload;
-        if (newState === "processing") {
-          setState("processing");
-        }
-      });
-
       unlistenRouterResult = await listen<RouterResultEvent>(
         "router-result",
         (event) => {
@@ -293,7 +290,6 @@ export function useRouterPreview(
     return () => {
       unlistenTranscriptionPreview?.();
       unlistenRouterResult?.();
-      unlistenRoutingState?.();
     };
   }, []);
 

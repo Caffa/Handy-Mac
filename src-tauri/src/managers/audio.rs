@@ -197,148 +197,149 @@ fn create_audio_recorder(
         recorder = recorder.with_noise_suppressor(noise_suppression_level);
     }
 
-    // Add streaming callback if enabled
-    let recorder = if live_captions_enabled {
-        // Clone the cancel flag Arc for non-locking cancellation checks.
-        // This is critical: the streaming callback runs on the audio thread,
-        // and acquiring the TranscriptionManager mutex just to check an
-        // AtomicBool creates unnecessary lock contention. By sharing the
-        // Arc<AtomicBool> directly, we can check cancellation without any lock.
-        // Use try_state to avoid panicking if TranscriptionManager isn't initialized yet.
-        let cancel_flag = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-            Some(tm_state) => {
-                let flag = tm_state.lock().streaming_cancel_flag();
-                info!("[Live Captions] Streaming callback: TranscriptionManager available, cancel flag acquired");
-                flag
-            }
-            None => {
-                warn!("[Live Captions] TranscriptionManager not available yet — live captions will NOT work until it initializes");
-                return Ok(recorder);
-            }
-        };
+    // Always create the streaming callback so it can be enabled/disabled
+    // at runtime via the streaming_enabled flag (Strategy pattern). This
+    // eliminates the need to recreate the entire AudioRecorder when toggling
+    // live captions, avoiding stream teardown/restart that causes Bug 1.
+    //
+    // If TranscriptionManager isn't available yet, skip the callback but
+    // still create the recorder — the callback can be attached later via
+    // recreate_recorder() when TM becomes available.
+    let cancel_flag = app_handle
+        .try_state::<Arc<Mutex<TranscriptionManager>>>()
+        .map(|tm_state| tm_state.lock().streaming_cancel_flag());
 
-        info!("[Live Captions] Setting up streaming callback for live captions");
-        recorder.with_streaming_callback({
-            let app_handle = app_handle.clone();
-            let cancel_flag = cancel_flag.clone();
-            move |samples| {
-                // Check cancellation WITHOUT lock (atomic load).
-                // This avoids acquiring the TranscriptionManager mutex on
-                // every streaming callback, which would cause lock contention
-                // with the main transcription path.
-                if cancel_flag.load(Ordering::Acquire) {
-                    debug!("Skipping streaming transcription - cancellation requested");
-                    return;
-                }
-
-                // This callback runs in the audio thread, so we need to spawn
-                // a blocking task to avoid blocking audio capture.
-                let app_handle = app_handle.clone();
-                let cancel_flag = cancel_flag.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    // Re-check cancellation after acquiring blocking thread
-                    if cancel_flag.load(Ordering::Acquire) {
-                        debug!("Skipping streaming transcription (blocking) - cancellation requested");
-                        return;
-                    }
-
-                    // Get the transcription manager from app state
-                    let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-                        Some(tm) => tm,
-                        None => {
-                            warn!("[Live Captions] TranscriptionManager not available for streaming callback — cannot transcribe");
+    let recorder = match cancel_flag {
+        Some(cancel_flag) => {
+            info!(
+                "[Live Captions] Setting up streaming callback (enabled={})",
+                live_captions_enabled
+            );
+            recorder
+                .with_streaming_callback({
+                    let app_handle = app_handle.clone();
+                    let cancel_flag = cancel_flag.clone();
+                    move |samples| {
+                        // Check cancellation WITHOUT lock (atomic load).
+                        // This avoids acquiring the TranscriptionManager mutex on
+                        // every streaming callback, which would cause lock contention
+                        // with the main transcription path.
+                        if cancel_flag.load(Ordering::Acquire) {
+                            debug!("Skipping streaming transcription - cancellation requested");
                             return;
                         }
-                    };
 
-                    // Transcribe the audio samples
-                    let transcription_result = tm.lock().transcribe(samples);
-                    match transcription_result {
-                        Ok(mut result) if !result.text.is_empty() => {
-                            info!(
-                                "[Live Captions] Streaming transcription succeeded: text_len={}, segments={}",
-                                result.text.len(),
-                                result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
-                            );
-                            // Check again after transcription in case it was cancelled mid-work
-                            // Using the Arc<AtomicBool> to avoid lock contention
+                        // This callback runs in the audio thread, so we need to spawn
+                        // a blocking task to avoid blocking audio capture.
+                        let app_handle = app_handle.clone();
+                        let cancel_flag = cancel_flag.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            // Re-check cancellation after acquiring blocking thread
                             if cancel_flag.load(Ordering::Acquire) {
-                                debug!("Discarding streaming transcription result - cancelled");
+                                debug!("Skipping streaming transcription (blocking) - cancellation requested");
                                 return;
                             }
 
-                            // Apply text post-processing to live captions so they
-                            // benefit from the same pipeline as final transcriptions:
-                            // word corrections, filler removal, spelling conversion,
-                            // and repetition suppression.
-                            let settings = get_settings(&app_handle);
-                            let is_whisper = app_handle
-                                .try_state::<Arc<ModelManager>>()
-                                .map(|mm| {
-                                    mm.get_model_info(&result.model_id)
-                                        .map(|info| matches!(info.engine_type, EngineType::Whisper))
-                                        .unwrap_or(false)
-                                })
-                                .unwrap_or(false);
+                            // Get the transcription manager from app state
+                            let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
+                                Some(tm) => tm,
+                                None => {
+                                    warn!("[Live Captions] TranscriptionManager not available for streaming callback — cannot transcribe");
+                                    return;
+                                }
+                            };
 
-                            // Process each segment's text individually.
-                            // The top-level `result.text` is already processed by
-                            // TranscriptionManager::transcribe(), but segment texts
-                            // are raw from the engine. The frontend uses segment
-                            // texts for live caption display when available.
-                            if let Some(ref mut segments) = result.segments {
-                                for segment in segments.iter_mut() {
-                                    if segment.text.is_empty() {
-                                        continue;
-                                    }
-                                    segment.text = process_transcription_text(
-                                        &segment.text,
-                                        settings.word_correction_mode.clone(),
-                                        &settings.custom_words,
-                                        &settings.advanced_custom_words,
-                                        &settings.word_replacements,
-                                        settings.word_correction_threshold,
-                                        is_whisper,
-                                        &settings.app_language,
-                                        &settings.custom_filler_words,
-                                        settings.convert_us_to_british,
-                                        settings.spelling_dictionary,
-                                        settings.repetition_suppression_level,
+                            // Transcribe the audio samples
+                            let transcription_result = tm.lock().transcribe(samples);
+                            match transcription_result {
+                                Ok(mut result) if !result.text.is_empty() => {
+                                    info!(
+                                        "[Live Captions] Streaming transcription succeeded: text_len={}, segments={}",
+                                        result.text.len(),
+                                        result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
                                     );
+                                    // Check again after transcription in case it was cancelled mid-work
+                                    // Using the Arc<AtomicBool> to avoid lock contention
+                                    if cancel_flag.load(Ordering::Acquire) {
+                                        debug!("Discarding streaming transcription result - cancelled");
+                                        return;
+                                    }
+
+                                    // Apply text post-processing to live captions so they
+                                    // benefit from the same pipeline as final transcriptions:
+                                    // word corrections, filler removal, spelling conversion,
+                                    // and repetition suppression.
+                                    let settings = get_settings(&app_handle);
+                                    let is_whisper = app_handle
+                                        .try_state::<Arc<ModelManager>>()
+                                        .map(|mm| {
+                                            mm.get_model_info(&result.model_id)
+                                                .map(|info| matches!(info.engine_type, EngineType::Whisper))
+                                                .unwrap_or(false)
+                                        })
+                                        .unwrap_or(false);
+
+                                    // Process each segment's text individually.
+                                    // The top-level `result.text` is already processed by
+                                    // TranscriptionManager::transcribe(), but segment texts
+                                    // are raw from the engine. The frontend uses segment
+                                    // texts for live caption display when available.
+                                    if let Some(ref mut segments) = result.segments {
+                                        for segment in segments.iter_mut() {
+                                            if segment.text.is_empty() {
+                                                continue;
+                                            }
+                                            segment.text = process_transcription_text(
+                                                &segment.text,
+                                                settings.word_correction_mode.clone(),
+                                                &settings.custom_words,
+                                                &settings.advanced_custom_words,
+                                                &settings.word_replacements,
+                                                settings.word_correction_threshold,
+                                                is_whisper,
+                                                &settings.app_language,
+                                                &settings.custom_filler_words,
+                                                settings.convert_us_to_british,
+                                                settings.spelling_dictionary,
+                                                settings.repetition_suppression_level,
+                                            );
+                                        }
+                                    }
+
+                                    // Emit partial transcription event with segments for frontend merge
+                                    info!(
+                                        "[Live Captions] Emitting partial-transcription event: text_len={}, segments={}",
+                                        result.text.len(),
+                                        result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
+                                    );
+                                    if let Err(e) = app_handle.emit("partial-transcription", &result) {
+                                        warn!("Failed to emit partial-transcription event: {}", e);
+                                    }
+                                }
+                                Ok(_) => {
+                                    // Empty transcription - skip
+                                    debug!("[Live Captions] Streaming transcription returned empty text");
+                                }
+                                Err(e) => {
+                                    if matches!(e, AppError::ModelNotLoaded) {
+                                        info!("[Live Captions] Model not loaded — initiating model load for next streaming cycle");
+                                        tm.lock().initiate_model_load();
+                                    } else if matches!(e, AppError::TranscriptionBusy) {
+                                        debug!("[Live Captions] Streaming transcription skipped (busy): {}", e);
+                                    } else {
+                                        warn!("[Live Captions] Streaming transcription failed: {}", e);
+                                    }
                                 }
                             }
-
-                            // Emit partial transcription event with segments for frontend merge
-                            info!(
-                                "[Live Captions] Emitting partial-transcription event: text_len={}, segments={}",
-                                result.text.len(),
-                                result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
-                            );
-                            if let Err(e) = app_handle.emit("partial-transcription", &result) {
-                                warn!("Failed to emit partial-transcription event: {}", e);
-                            }
-                        }
-                        Ok(_) => {
-                            // Empty transcription - skip
-                            debug!("[Live Captions] Streaming transcription returned empty text");
-                        }
-                        Err(e) => {
-                            if matches!(e, AppError::ModelNotLoaded) {
-                                info!("[Live Captions] Model not loaded — initiating model load for next streaming cycle");
-                                tm.lock().initiate_model_load();
-                            } else if matches!(e, AppError::TranscriptionBusy) {
-                                debug!("[Live Captions] Streaming transcription skipped (busy): {}", e);
-                            } else {
-                                warn!("[Live Captions] Streaming transcription failed: {}", e);
-                            }
-                        }
+                        });
                     }
-                });
-            }
-        })
-    } else {
-        info!("[Live Captions] Streaming callback NOT attached — live_captions_enabled is false");
-        recorder
+                })
+                .with_streaming_enabled(live_captions_enabled)
+        }
+        None => {
+            warn!("[Live Captions] TranscriptionManager not available yet — streaming callback will not be attached; live captions will work after next recorder recreation");
+            recorder
+        }
     };
 
     // Add pre-buffer for always-on mode (captures audio before hotkey press)
@@ -477,6 +478,7 @@ impl AudioRecordingManager {
         let app_handle = self.app_handle.clone();
         let stop_flag = self.liveness_stop.clone();
         let usb_watchdog = self.usb_watchdog.clone();
+        let bt_keep_alive = self.bt_keep_alive.clone();
 
         let handle = std::thread::spawn(move || {
             loop {
@@ -488,19 +490,36 @@ impl AudioRecordingManager {
                     break;
                 }
 
-                // Only monitor in always-on mode
+                // Only monitor when always-on or BT keep-alive is active
                 let is_always_on = {
                     let guard = mode.lock();
                     matches!(*guard, MicrophoneMode::AlwaysOn)
                 };
+                let bt_keep_alive_flag = bt_keep_alive.load(Ordering::Acquire);
 
-                if !is_always_on {
+                if !is_always_on && !bt_keep_alive_flag {
                     continue;
                 }
 
-                // Check if stream is open
+                // Invariant watchdog: check that the stream is open when it should be.
+                // This self-heals the "always-on stream died and wasn't restarted" bug
+                // (Bug 1) — if the stream SHOULD be open but isn't, restart it.
                 let stream_open = is_open.load(Ordering::Acquire);
+
                 if !stream_open {
+                    // Invariant violation: stream should be open but isn't.
+                    // Self-heal by restarting it.
+                    warn!(
+                        "Liveness monitor: invariant violation — always-on stream is not open. Self-healing by restarting"
+                    );
+
+                    if let Some(rm) = app_handle.try_state::<Arc<AudioRecordingManager>>() {
+                        if let Err(e) = rm.start_microphone_stream() {
+                            error!("Liveness monitor failed to self-heal dead stream: {}", e);
+                        } else {
+                            info!("Liveness monitor: self-healed always-on stream (was not open)");
+                        }
+                    }
                     continue;
                 }
 
@@ -930,9 +949,19 @@ impl AudioRecordingManager {
     pub fn recreate_recorder(&self) -> Result<(), anyhow::Error> {
         info!("Recreating AudioRecorder to discard stale device handles");
 
+        // RAII transaction guard: capture the stream's open state and whether
+        // it *should* be running before we tear it down. After recreation, we
+        // self-heal by restarting the stream if it was open and should still
+        // be running (always-on or BT keep-alive). This makes it impossible
+        // for callers to forget the restart step — the function that breaks
+        // the invariant is responsible for restoring it.
+        let was_open = self.is_open.load(Ordering::Acquire);
+        let should_be_running = was_open
+            && (matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn)
+                || self.bt_keep_alive.load(Ordering::Acquire));
+
         // Mark the stream as closed before tearing down — prevents concurrent
         // operations from acting on a recorder that is about to be replaced.
-        let was_open = self.is_open.load(Ordering::Acquire);
         if was_open {
             self.is_open.store(false, Ordering::Release);
         }
@@ -980,9 +1009,22 @@ impl AudioRecordingManager {
         *recorder_opt = Some(new_recorder);
         drop(recorder_opt);
 
-        // is_open was already set to false above before recreation.
-        // Callers that need the stream running will call start_microphone_stream()
-        // after this method returns successfully.
+        // RAII self-healing: if the stream was open and should still be
+        // running (always-on or BT keep-alive), restart it automatically.
+        // This ensures that recreate_recorder() never leaves the system in
+        // a state where the "stream is open if always-on" invariant is
+        // violated — the function that breaks it also restores it.
+        if should_be_running {
+            info!("Recreate_recorder: stream was running before recreation, self-healing by restarting");
+            if let Err(e) = self.start_microphone_stream() {
+                error!(
+                    "Recreate_recorder: failed to self-heal stream restart: {}",
+                    e
+                );
+                return Err(e);
+            }
+            info!("Recreate_recorder: stream self-healed successfully");
+        }
 
         info!("AudioRecorder recreated successfully");
         Ok(())
@@ -1379,10 +1421,13 @@ impl AudioRecordingManager {
                 // new recordings while we are still capturing trailing audio.
                 drop(state);
 
-                // Use volume-aware stop when an extra recording buffer is
-                // configured.  This continues recording for up to the configured
-                // time but stops early when the microphone level drops below the
-                // estimated noise floor, avoiding unnecessary waiting.
+                // BUGFIX (Fix 6): Use split send/wait pattern for both smart_stop
+                // and stop. Previously, the recorder lock was held for the entire
+                // duration of the wait (up to 5 seconds for stop, up to
+                // max_buffer_ms + 2s for smart_stop), blocking cancel_recording(),
+                // level callbacks, and streaming callbacks. Now we send the
+                // command while holding the lock, drop the lock, then wait for
+                // the response — allowing other operations to proceed during the wait.
                 let settings = get_settings(&self.app_handle);
 
                 let samples = if settings.extra_recording_buffer_ms > 0 {
@@ -1390,30 +1435,65 @@ impl AudioRecordingManager {
                         "Smart-stop: starting volume-aware buffer (max {}ms)",
                         settings.extra_recording_buffer_ms
                     );
-                    if let Some(rec) = self.recorder.lock().as_ref() {
-                        match rec.smart_stop(settings.extra_recording_buffer_ms) {
-                            Ok(buf) => buf,
-                            Err(e) => {
-                                error!("smart_stop() failed: {e}");
-                                Vec::new()
+                    // Phase 1: Send the smart_stop command while holding the lock.
+                    // This is instantaneous — it just sends a message through the channel.
+                    let resp_rx = {
+                        let guard = self.recorder.lock();
+                        match guard.as_ref() {
+                            Some(rec) => rec
+                                .smart_stop_send(settings.extra_recording_buffer_ms)
+                                .map_err(|e| {
+                                    error!("smart_stop_send() failed: {e}");
+                                    e
+                                })
+                                .ok(),
+                            None => {
+                                error!("Recorder not available for smart_stop");
+                                None
                             }
                         }
-                    } else {
-                        error!("Recorder not available for smart_stop");
-                        Vec::new()
+                    };
+                    // Lock is now dropped. Other operations can proceed.
+
+                    // Phase 2: Wait for the response without holding the lock.
+                    match resp_rx {
+                        Some(rx) => AudioRecorder::wait_for_smart_stop_result(
+                            rx,
+                            settings.extra_recording_buffer_ms,
+                        )
+                        .unwrap_or_else(|e| {
+                            error!("smart_stop wait failed: {e}");
+                            Vec::new()
+                        }),
+                        None => Vec::new(),
                     }
                 } else {
-                    if let Some(rec) = self.recorder.lock().as_ref() {
-                        match rec.stop() {
-                            Ok(buf) => buf,
-                            Err(e) => {
-                                error!("stop() failed: {e}");
-                                Vec::new()
+                    // Phase 1: Send the stop command while holding the lock.
+                    let resp_rx = {
+                        let guard = self.recorder.lock();
+                        match guard.as_ref() {
+                            Some(rec) => rec
+                                .stop_send()
+                                .map_err(|e| {
+                                    error!("stop_send() failed: {e}");
+                                    e
+                                })
+                                .ok(),
+                            None => {
+                                error!("Recorder not available");
+                                None
                             }
                         }
-                    } else {
-                        error!("Recorder not available");
-                        Vec::new()
+                    };
+                    // Lock is now dropped.
+
+                    // Phase 2: Wait for the response without holding the lock.
+                    match resp_rx {
+                        Some(rx) => AudioRecorder::wait_for_stop_result(rx).unwrap_or_else(|e| {
+                            error!("stop wait failed: {e}");
+                            Vec::new()
+                        }),
+                        None => Vec::new(),
                     }
                 };
 
@@ -1527,7 +1607,18 @@ impl AudioRecordingManager {
         self.bt_keep_alive.load(Ordering::Acquire)
     }
 
-    /// Cancel any ongoing recording without returning audio samples
+    /// Cancel any ongoing recording without returning audio samples.
+    ///
+    /// BUGFIX (Fix 6): Uses the split send/wait pattern to avoid holding the
+    /// recorder lock during the blocking stop() call. This prevents lock contention
+    /// where stop_recording's smart_stop holds the lock for seconds while
+    /// cancel_recording tries to acquire it.
+    ///
+    /// Phase 1: Send the stop command while holding the lock (instant).
+    /// Phase 2: Drop the lock, then wait for the response (up to 5 seconds).
+    /// If the lock can't be acquired within 1 second (stop_recording is likely
+    /// holding it during smart_stop), proceed without stopping the recorder —
+    /// it will stop on its own when the current operation completes.
     pub fn cancel_recording(&self) {
         let mut state = self.state.lock();
 
@@ -1535,9 +1626,41 @@ impl AudioRecordingManager {
             *state = RecordingState::Idle;
             drop(state);
 
-            if let Some(rec) = self.recorder.lock().as_ref() {
-                if let Err(e) = rec.stop() {
-                    warn!("Error stopping recorder during cancel: {}", e);
+            // Phase 1: Send the stop command while holding the lock.
+            // Try to acquire the lock with a timeout. If stop_recording is
+            // currently holding the lock during a smart_stop send phase, this
+            // should succeed quickly. If it's in the wait phase, the lock is
+            // already dropped and we can proceed.
+            let resp_rx = {
+                let guard = self
+                    .recorder
+                    .try_lock_for(std::time::Duration::from_secs(1));
+                match guard {
+                    Some(guard) => match guard.as_ref() {
+                        Some(rec) => rec.stop_send().ok(),
+                        None => {
+                            warn!("Recorder not available during cancel");
+                            None
+                        }
+                    },
+                    None => {
+                        // Couldn't acquire the lock within timeout. The stop_recording
+                        // is likely in its wait phase. We've already set the state
+                        // to Idle, so the recording will end when stop_recording
+                        // completes. The CancelSignal also prevents transcription.
+                        warn!("Could not acquire recorder lock for cancel — recording will stop on its own");
+                        None
+                    }
+                }
+            };
+            // Lock is now dropped.
+
+            // Phase 2: Wait for the stop response without holding the lock.
+            // This can block for up to 5 seconds, but other operations can
+            // now proceed since we've dropped the lock.
+            if let Some(rx) = resp_rx {
+                if let Err(e) = AudioRecorder::wait_for_stop_result(rx) {
+                    warn!("Error waiting for recorder stop during cancel: {}", e);
                 }
             }
 
@@ -1582,6 +1705,55 @@ impl AudioRecordingManager {
             debug!("Microphone stream not needed (not always-on, no BT keep-alive)");
             Ok(())
         }
+    }
+
+    /// Runtime toggle for streaming transcription (Strategy pattern).
+    /// When enabled and a streaming callback is attached, the callback
+    /// will be invoked periodically during recording to produce live captions.
+    /// When disabled, the callback exists but is not invoked, allowing
+    /// instant toggling without recreating the recorder.
+    ///
+    /// This eliminates Bug 1 where toggling live captions required
+    /// destroying and recreating the AudioRecorder, which tore down the
+    /// mic stream. Callers who forgot to restart the stream after
+    /// recreation ended up with a dead always-on mic.
+    ///
+    /// If the recorder doesn't have a streaming callback (e.g., TranscriptionManager
+    /// wasn't available at creation time), this method will recreate the recorder
+    /// to attach the callback.
+    pub fn set_streaming_enabled(&self, enabled: bool) -> Result<(), anyhow::Error> {
+        let needs_recreation = {
+            let recorder_guard = self.recorder.lock();
+            match recorder_guard.as_ref() {
+                Some(rec) => {
+                    let has_callback = rec.is_streaming_enabled() || rec.has_streaming_callback();
+                    // If the recorder already has a streaming callback, just toggle the flag
+                    !has_callback && enabled
+                    // No callback but trying to enable — need to recreate to attach it
+                }
+                None => enabled, // No recorder at all, need to create one
+            }
+        };
+
+        if needs_recreation {
+            info!("[Live Captions] Recorder has no streaming callback — recreating to attach it");
+            // recreate_recorder() will self-heal the stream if needed (RAII guard)
+            return self.recreate_recorder();
+        }
+
+        // Toggle the flag — no stream recreation needed
+        let recorder_guard = self.recorder.lock();
+        if let Some(rec) = recorder_guard.as_ref() {
+            let previous = rec.set_streaming_enabled(enabled);
+            info!(
+                "[Live Captions] Streaming {} (was {})",
+                if enabled { "enabled" } else { "disabled" },
+                if previous { "enabled" } else { "disabled" }
+            );
+        } else {
+            warn!("[Live Captions] No recorder available to toggle streaming");
+        }
+        Ok(())
     }
 
     /// Check if the microphone stream is currently open and alive.
