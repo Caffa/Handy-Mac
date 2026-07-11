@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use csv::Writer;
 use log::{debug, error, info, warn};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1494,6 +1494,170 @@ impl HistoryManager {
 
         Ok(groups)
     }
+
+    /// Compute usage statistics from the transcription history.
+    pub fn get_usage_stats(&self) -> Result<UsageStats> {
+        let conn = self.get_connection()?;
+        let now = Utc::now();
+        let today_start = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("valid midnight time");
+        let today_timestamp = today_start.and_utc().timestamp();
+
+        // Total transcriptions with non-empty text
+        let total_transcriptions: usize = conn.query_row(
+            "SELECT COUNT(*) FROM transcription_history WHERE LENGTH(transcription_text) > 0",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Total words (space-separated count)
+        let total_words: usize = conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(TRIM(transcription_text)) - LENGTH(REPLACE(TRIM(transcription_text), ' ', '')) + 1), 0)
+             FROM transcription_history WHERE LENGTH(transcription_text) > 0",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Today's transcriptions
+        let today_transcriptions: usize = conn.query_row(
+            "SELECT COUNT(*) FROM transcription_history WHERE LENGTH(transcription_text) > 0 AND timestamp >= ?1",
+            params![today_timestamp],
+            |row| row.get(0),
+        )?;
+
+        // Today's words
+        let today_words: usize = conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(TRIM(transcription_text)) - LENGTH(REPLACE(TRIM(transcription_text), ' ', '')) + 1), 0)
+             FROM transcription_history WHERE LENGTH(transcription_text) > 0 AND timestamp >= ?1",
+            params![today_timestamp],
+            |row| row.get(0),
+        )?;
+
+        // Daily stats for last 30 days
+        let thirty_days_ago = now - chrono::Duration::days(30);
+        let thirty_days_ago_ts = thirty_days_ago.timestamp();
+
+        let mut stmt = conn.prepare(
+            "SELECT DATE(timestamp, 'unixepoch') as day, COUNT(*),
+                    COALESCE(SUM(LENGTH(TRIM(transcription_text)) - LENGTH(REPLACE(TRIM(transcription_text), ' ', '')) + 1), 0)
+             FROM transcription_history
+             WHERE LENGTH(transcription_text) > 0 AND timestamp >= ?1
+             GROUP BY day ORDER BY day",
+        )?;
+
+        let daily_stats: Vec<(String, usize, usize)> = stmt
+            .query_map(params![thirty_days_ago_ts], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, usize>(1)?,
+                    row.get::<_, usize>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Get all distinct days with transcriptions, ordered descending
+        let mut streak_stmt = conn.prepare(
+            "SELECT DISTINCT DATE(timestamp, 'unixepoch') as day
+             FROM transcription_history WHERE LENGTH(transcription_text) > 0
+             ORDER BY day DESC",
+        )?;
+
+        let all_days: Vec<String> = streak_stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let today_str = now.date_naive().format("%Y-%m-%d").to_string();
+
+        // Current streak: count consecutive days ending today (or yesterday if today is empty)
+        let mut current_streak = 0usize;
+        let mut expected_date = now.date_naive();
+
+        // Check if today has entries; if not, start from yesterday
+        if all_days.first().map(|d| d.as_str()) != Some(&today_str) {
+            expected_date = expected_date - chrono::Duration::days(1);
+        }
+
+        let expected_str_first = expected_date.format("%Y-%m-%d").to_string();
+        if all_days.first().map(|d| d.as_str()) == Some(&expected_str_first) {
+            current_streak = 1;
+            let mut prev_expected = expected_date - chrono::Duration::days(1);
+            for day_str in all_days.iter().skip(1) {
+                let expected = prev_expected.format("%Y-%m-%d").to_string();
+                if day_str == &expected {
+                    current_streak += 1;
+                    prev_expected = prev_expected - chrono::Duration::days(1);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Longest streak
+        let mut longest_streak = 0usize;
+        let mut streak = 0usize;
+        let mut prev_date: Option<NaiveDate> = None;
+
+        for day_str in all_days.iter().rev() {
+            if let Ok(date) = NaiveDate::parse_from_str(day_str, "%Y-%m-%d") {
+                if let Some(prev) = prev_date {
+                    if (date - prev).num_days() == 1 {
+                        streak += 1;
+                    } else {
+                        streak = 1;
+                    }
+                } else {
+                    streak = 1;
+                }
+                if streak > longest_streak {
+                    longest_streak = streak;
+                }
+                prev_date = Some(date);
+            }
+        }
+        longest_streak = longest_streak.max(current_streak);
+
+        // Estimated minutes saved:
+        // Average typing speed: ~40 WPM  → time to type N words = N / 40 minutes
+        // Average speech speed: ~130 WPM  → time to speak N words = N / 130 minutes
+        // Time saved per word = 1/40 - 1/130 ≈ 0.0173 minutes
+        let estimated_minutes_saved = total_words as f64 * (1.0 / 40.0 - 1.0 / 130.0);
+
+        Ok(UsageStats {
+            total_transcriptions,
+            total_words,
+            today_transcriptions,
+            today_words,
+            estimated_minutes_saved,
+            current_streak_days: current_streak,
+            longest_streak_days: longest_streak,
+            daily_stats,
+        })
+    }
+}
+
+/// Usage statistics computed from the transcription history.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct UsageStats {
+    /// Total number of transcriptions ever completed (non-empty text)
+    pub total_transcriptions: usize,
+    /// Total words transcribed across all sessions
+    pub total_words: usize,
+    /// Number of transcriptions today (UTC)
+    pub today_transcriptions: usize,
+    /// Words transcribed today
+    pub today_words: usize,
+    /// Estimated minutes saved (words / 40 typing WPM − words / 130 speech WPM)
+    pub estimated_minutes_saved: f64,
+    /// Consecutive days with at least one transcription (counting back from today/yesterday)
+    pub current_streak_days: usize,
+    /// Longest streak ever
+    pub longest_streak_days: usize,
+    /// Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
+    pub daily_stats: Vec<(String, usize, usize)>,
 }
 
 #[cfg(test)]

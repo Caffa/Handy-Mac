@@ -15,6 +15,7 @@
     "advanced": "Advanced",
     "postProcessing": "Post Process",
     "history": "History",
+    "usage": "Usage",
     "debug": "Debug",
     "about": "About",
     "debugHint": "Debug settings:"
@@ -565,6 +566,19 @@
       "exportCsv": "Export CSV",
       "exportSuccess": "History exported successfully!",
       "exportError": "Failed to export history. Please try again."
+    },
+    "usage": {
+      "title": "Usage Statistics",
+      "today": "Today",
+      "last30Days": "Last 30 Days",
+      "totalTranscriptions": "Total transcriptions",
+      "totalWords": "Words transcribed",
+      "timeSaved": "Time saved",
+      "timeSavedSub": "vs. typing at 40 WPM",
+      "currentStreak": "Current streak",
+      "bestStreak": "Best",
+      "transcriptions": "Transcriptions",
+      "words": "Words"
     },
     "debug": {
       "title": "Debug",

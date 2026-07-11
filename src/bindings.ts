@@ -1147,6 +1147,14 @@ async exportHistoryCsv() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getUsageStats() : Promise<Result<UsageStats, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_usage_stats") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Get all pending retry entries.
  */
@@ -1747,6 +1755,42 @@ hub: string;
  * Port number on the hub (e.g. "1")
  */
 port: string }
+/**
+ * Usage statistics computed from the transcription history.
+ */
+export type UsageStats = { 
+/**
+ * Total number of transcriptions ever completed (non-empty text)
+ */
+total_transcriptions: number; 
+/**
+ * Total words transcribed across all sessions
+ */
+total_words: number; 
+/**
+ * Number of transcriptions today (UTC)
+ */
+today_transcriptions: number; 
+/**
+ * Words transcribed today
+ */
+today_words: number; 
+/**
+ * Estimated minutes saved (words / 40 typing WPM − words / 130 speech WPM)
+ */
+estimated_minutes_saved: number; 
+/**
+ * Consecutive days with at least one transcription (counting back from today/yesterday)
+ */
+current_streak_days: number; 
+/**
+ * Longest streak ever
+ */
+longest_streak_days: number; 
+/**
+ * Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
+ */
+daily_stats: [string, number, number][] }
 export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }

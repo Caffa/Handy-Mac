@@ -1,6 +1,6 @@
 use crate::actions::process_transcription_output;
 use crate::managers::{
-    history::{HistoryManager, PaginatedHistory},
+    history::{HistoryManager, PaginatedHistory, UsageStats},
     transcription::TranscriptionManager,
 };
 use parking_lot::Mutex;
@@ -204,5 +204,16 @@ pub async fn export_history_csv(
 ) -> Result<String, String> {
     history_manager
         .export_history_csv()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_usage_stats(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+) -> Result<UsageStats, String> {
+    history_manager
+        .get_usage_stats()
         .map_err(|e| e.to_string())
 }

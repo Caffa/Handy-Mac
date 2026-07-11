@@ -458,8 +458,6 @@ fn is_query_only_flag(cli_args: &CliArgs) -> bool {
 /// This uses libc's atexit to ensure the handler runs even with std::process::exit.
 #[cfg(target_os = "macos")]
 fn setup_query_flag_handler(is_active_use: bool, is_recording: bool) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     // Store flags for the atexit handler
     static QUERY_FLAGS: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     QUERY_FLAGS.set((is_active_use, is_recording)).ok();
@@ -647,6 +645,7 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_history_entry_metadata,
             commands::history::export_history_json,
             commands::history::export_history_csv,
+            commands::history::get_usage_stats,
             commands::transcription_retry::get_retry_queue,
             commands::transcription_retry::retry_transcription,
             commands::transcription_retry::remove_from_retry_queue,
