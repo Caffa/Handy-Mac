@@ -114,18 +114,18 @@ export function RouterResultDisplay({
         <div className="router-result">
           {routerResult.success ? (
             <div className="router-success">
-              <div className="result-icons">
+              <div className="handler-cards">
                 {parseHandlerNames(routerResult.summary).map(
                   (handlerName, idx) => (
-                    <span key={idx} className="handler-icon">
-                      {getHandlerIcon(handlerName)}
-                    </span>
+                    <div key={idx} className="handler-card">
+                      <span className="handler-icon">
+                        {getHandlerIcon(handlerName)}
+                      </span>
+                      <span className="handler-label">{handlerName}</span>
+                    </div>
                   ),
                 )}
               </div>
-              {routerResult.summary && (
-                <div className="result-summary">{routerResult.summary}</div>
-              )}
             </div>
           ) : (
             <div className="router-error">
