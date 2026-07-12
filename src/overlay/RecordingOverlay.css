@@ -594,6 +594,11 @@
 
 .transcription-preview.has-result {
   pointer-events: none;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border: none;
 }
 
 /* Fade-out animation for transcription preview dismissal */
