@@ -332,12 +332,14 @@ const RecordingOverlay: React.FC = () => {
           rendered separately above, so removing these gates here does NOT
           suppress the mic warning. Previously, lowAudioWarning (triggered
           during 2+ second speech pauses) would kill captions even though
-          transcription was still producing text. */}
+          transcription was still producing text.
+          Hide when router result is showing — the handler cards replace them. */}
       {isVisible &&
         state === "recording" &&
         liveCaptionsEnabled &&
         streamingText &&
-        streamingText.trim() && (
+        streamingText.trim() &&
+        !routerResult && (
           <LiveCaptionsBox
             text={streamingText}
             direction={direction}
