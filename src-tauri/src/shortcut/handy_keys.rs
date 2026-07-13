@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::settings::{self, get_settings, ShortcutBinding};
+use crate::settings::{self, get_settings, KeyboardImplementation, ShortcutBinding};
 
 use super::handler::handle_shortcut_event;
 
@@ -542,4 +542,61 @@ pub fn stop_handy_keys_recording(app: AppHandle) -> Result<(), String> {
         .try_state::<HandyKeysState>()
         .ok_or("HandyKeysState not initialized")?;
     state.stop_recording()
+}
+
+/// Reset hotkey state after macOS wake-from-sleep.
+///
+/// After wake, key release events are missed by the OS, so `HotkeyManager`'s
+/// internal `pressed_hotkeys` set retains stale hotkey IDs. This causes the
+/// next press to be silently swallowed. By unregistering and re-registering
+/// each shortcut, we get fresh `HotkeyId` values that aren't in the stale set,
+/// restoring normal shortcut behavior.
+pub fn reset_hotkey_state_after_wake(app: &AppHandle) {
+    let settings = get_settings(app);
+    if settings.keyboard_implementation != KeyboardImplementation::HandyKeys {
+        // Tauri implementation uses a different mechanism; nothing to reset.
+        return;
+    }
+
+    let state = match app.try_state::<HandyKeysState>() {
+        Some(s) => s,
+        None => {
+            warn!("HandyKeysState not available during hotkey reset after wake");
+            return;
+        }
+    };
+
+    let default_bindings = settings::get_default_settings().bindings;
+    let user_settings = settings::load_or_create_app_settings_safe(app);
+
+    info!("Resetting hotkey state after wake-from-sleep (unregister + re-register all shortcuts)");
+
+    for (id, default_binding) in default_bindings {
+        // Cancel shortcut is dynamically registered/unregistered during recording;
+        // skip it here to avoid interference with the recording state machine.
+        if id == "cancel" {
+            continue;
+        }
+        // Skip post-processing shortcut when the feature is disabled.
+        if id == "transcribe_with_post_process" && !user_settings.post_process_enabled {
+            continue;
+        }
+
+        let binding = user_settings
+            .bindings
+            .get(&id)
+            .cloned()
+            .unwrap_or(default_binding);
+
+        if let Err(e) = state.unregister(&binding) {
+            warn!("Failed to unregister hotkey '{}' during wake reset: {}", id, e);
+        }
+        if let Err(e) = state.register(&binding) {
+            error!("Failed to re-register hotkey '{}' during wake reset: {}", id, e);
+        } else {
+            debug!("Re-registered hotkey '{}' with fresh ID after wake", id);
+        }
+    }
+
+    info!("Hotkey state reset complete after wake-from-sleep");
 }

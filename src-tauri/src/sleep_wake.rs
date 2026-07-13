@@ -75,8 +75,13 @@ pub fn start_sleep_wake_listener(app_handle: tauri::AppHandle) {
 /// Handle macOS wake-from-sleep event.
 #[cfg(target_os = "macos")]
 fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
-    info!("Handling system wake event — checking USB watchdog settings");
+    info!("Handling system wake event...");
 
+    // Reset hotkey state first — this is independent of USB watchdog settings
+    // and should happen immediately so shortcuts work right after wake.
+    crate::shortcut::handy_keys::reset_hotkey_state_after_wake(app_handle);
+
+    // USB watchdog recovery
     let settings = crate::settings::get_settings_safe(app_handle);
     let cycle_on_wake = settings.usb_watchdog_enabled && settings.usb_watchdog_cycle_on_wake;
 
