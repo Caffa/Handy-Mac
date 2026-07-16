@@ -522,7 +522,7 @@
 .handler-label {
   font-size: calc(11px * var(--overlay-scale, 1));
   font-weight: 500;
-  color: #374151;
+  color: #ffffff;
   text-align: center;
   line-height: 1.2;
   word-break: break-word;
@@ -535,7 +535,7 @@
 
 .result-message {
   font-size: 14px;
-  color: #374151;
+  color: #ffffff;
   text-align: center;
 }
 
