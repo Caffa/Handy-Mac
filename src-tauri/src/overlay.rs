@@ -1253,3 +1253,294 @@ pub fn emit_levels(app_handle: &AppHandle, levels: &Vec<f32>) {
         let _ = overlay_window.emit("mic-level", levels);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test seams and test module for overlay session-guard logic.
+//
+// The session-guard in `hide_recording_overlay` prevents a stale hide from
+// closing the overlay when a new recording has started.  The core logic is:
+//
+//   1. Capture OVERLAY_SESSION at call time.
+//   2. In the closure, compare the captured value against the current value.
+//   3. If they differ, a new recording started → skip the hide.
+//
+// Because `hide_recording_overlay` needs a full `AppHandle` (which can't be
+// created in a unit test), we extract the session-guard decision into a pure
+// function `should_hide_with_session` and test that.
+//
+// Test seams added:
+// - `reset_overlay_session()` — resets the atomic counter to 0 for isolation.
+// - `should_hide_with_session(session_at_call, is_active)` — pure function
+//   implementing the same guard logic as `hide_recording_overlay`'s closure.
+// ---------------------------------------------------------------------------
+
+/// Test seam: Reset OVERLAY_SESSION to 0 for test isolation.
+/// Production code never resets the counter (it only increments), so this is
+/// strictly a `#[cfg(test)]` entry point.
+#[cfg(test)]
+fn reset_overlay_session() {
+    OVERLAY_SESSION.store(0, Ordering::SeqCst);
+}
+
+/// Test seam: Pure decision function that mirrors the session-guard logic in
+/// `hide_recording_overlay`'s `run_on_main_thread` closure.
+///
+/// Returns `true` if the hide should proceed (no session change, no active use),
+/// or `false` if the hide should be suppressed (session bumped = new recording,
+/// or still active).
+///
+/// This is the same logic as lines 1184–1213 of `hide_recording_overlay`, but
+/// extracted into a testable pure function without AppHandle/NSWindow deps.
+#[cfg(test)]
+fn should_hide_with_session(session_at_call: u64, is_active: bool) -> bool {
+    // GUARD 1: Session changed — a new recording started, keep overlay visible
+    let session_now = OVERLAY_SESSION.load(Ordering::SeqCst);
+    if session_now != session_at_call {
+        return false;
+    }
+
+    // GUARD 2: Active use check at the latest possible moment
+    if is_active {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::thread;
+
+    // -----------------------------------------------------------------------
+    // Test 1: Session counter increments after bump_overlay_session
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1 (session counter)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn session_counter_increments_on_bump() {
+        reset_overlay_session();
+        let before = OVERLAY_SESSION.load(Ordering::SeqCst);
+        let returned = bump_overlay_session();
+        let after = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // bump_overlay_session returns the *previous* value (fetch_add semantics)
+        assert_eq!(returned, before, "bump_overlay_session should return the value before increment");
+        assert_eq!(after, before + 1, "OVERLAY_SESSION should increment by 1 after bump");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2: Stale hide is suppressed (the core race fix)
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1, learning-log 2026-06-15 and
+    //         2026-06-17 (router filing race condition)
+    //
+    // Simulates the race: capture session, bump (new recording starts), then
+    // attempt hide with the stale session. The hide must be suppressed.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn stale_hide_suppressed_when_session_changed() {
+        reset_overlay_session();
+
+        // Simulate: show overlay for recording #1 (session = 0)
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // Simulate: new recording starts — session bumps to 1
+        bump_overlay_session();
+
+        // Simulate: stale hide arrives with session_at_call = 0
+        let should_hide = should_hide_with_session(session_at_call, false);
+
+        assert!(!should_hide, "Stale hide must be suppressed when session has changed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: Non-stale hide succeeds (session unchanged, not active)
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1 (happy path)
+    //
+    // When session hasn't changed and no recording is active, hide should
+    // proceed normally.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn non_stale_hide_succeeds_when_session_unchanged() {
+        reset_overlay_session();
+
+        // Simulate: show overlay for recording (session = 0)
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // No new recording — session stays at 0
+        // No active recording — is_active = false
+        let should_hide = should_hide_with_session(session_at_call, false);
+
+        assert!(should_hide, "Non-stale hide should succeed when session unchanged and not active");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: New recording keeps visualizer visible (exact checklist scenario)
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1, learning-log 2026-07-11
+    //         (router post-filing bugs)
+    //
+    // Scenario: Start recording with routing → while routing is filing, start
+    // a NEW recording → verify the NEW visualizer STAYS visible.
+    //
+    // Reproduces the session-counter logic: show overlay (session=N), start
+    // new recording (session=N+1), stale hide arrives referencing session=N
+    // → assert overlay is still visible (hide suppressed).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn new_recording_preserves_overlay_after_stale_hide() {
+        reset_overlay_session();
+
+        // Step 1: First recording starts — overlay shown, session bumps to 1
+        let session_first = bump_overlay_session(); // returns 0, session now 1
+        assert_eq!(session_first, 0);
+
+        // Step 2: While routing is filing, a stale hide arrives from the first
+        // recording's completion. It captured session = 0 (before the bump).
+        let stale_hide_session = session_first; // 0
+
+        // Step 3: New recording starts — session bumps to 2
+        let session_second = bump_overlay_session(); // returns 1, session now 2
+        assert_eq!(session_second, 1);
+
+        // Step 4: Stale hide from first recording arrives with session_at_call = 0
+        let should_hide = should_hide_with_session(stale_hide_session, false);
+        assert!(!should_hide, "Stale hide from first recording must not dismiss second recording's overlay");
+
+        // Step 5: The new recording's own hide (with correct session) should work
+        let current_session = OVERLAY_SESSION.load(Ordering::SeqCst);
+        let should_hide_current = should_hide_with_session(current_session, false);
+        assert!(should_hide_current, "Current recording's hide should succeed when recording finishes");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: Active-use guard also suppresses hide
+    // Guards: learning-log 2026-06-15 (is_active_use guard)
+    //
+    // Even if the session matches, if is_active_use() returns true (a recording
+    // is still in progress), the hide must be suppressed.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn active_use_guard_suppresses_hide() {
+        reset_overlay_session();
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // Session hasn't changed, but recording is still active
+        let should_hide = should_hide_with_session(session_at_call, true);
+
+        assert!(!should_hide, "Hide must be suppressed when recording is still active (is_active_use = true)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: Both guards combine — session changed AND active
+    // Even if only one guard fires, the result should be suppressed.
+    // Tests that both guards work together.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn both_guards_suppress_hide() {
+        reset_overlay_session();
+
+        // Session changes AND recording is active — both guards fire
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+        bump_overlay_session(); // session changed
+
+        assert!(!should_hide_with_session(session_at_call, true), "Both guards: session changed + active → suppress");
+        assert!(!should_hide_with_session(session_at_call, false), "One guard: session changed → suppress");
+
+        // Reset, now test session unchanged but active
+        reset_overlay_session();
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert!(!should_hide_with_session(session_at_call, true), "One guard: active → suppress");
+        assert!(should_hide_with_session(session_at_call, false), "No guards: session same + not active → proceed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7: Concurrent show/hide interleaving
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1, learning-log 2026-06-17
+    //
+    // Spawns threads that concurrently bump (show) and check (hide) the
+    // session counter. Verifies no panic, no deadlock, and final consistency.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn concurrent_bump_and_check_no_panic_or_deadlock() {
+        reset_overlay_session();
+
+        const ITERATIONS: u64 = 1000;
+        let bump_handles: Vec<_> = (0..2).map(|_| {
+            thread::spawn(|| {
+                for _ in 0..ITERATIONS {
+                    bump_overlay_session();
+                }
+            })
+        }).collect();
+
+        let check_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let check_handles: Vec<_> = (0..2).map(|_| {
+            let counter = Arc::clone(&check_counter);
+            thread::spawn(move || {
+                for _ in 0..ITERATIONS {
+                    let session = OVERLAY_SESSION.load(Ordering::SeqCst);
+                    // The session value should always be >= 0 and non-decreasing
+                    // (we can't check monotonicity perfectly due to races, but
+                    // we can check it never overflows or wraps)
+                    assert!(session < u64::MAX / 2, "Session counter should not overflow");
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        }).collect();
+
+        for h in bump_handles {
+            h.join().expect("Bump thread should not panic");
+        }
+        for h in check_handles {
+            h.join().expect("Check thread should not panic");
+        }
+
+        // Final session should be >= 2 * ITERATIONS (two bump threads)
+        let final_session = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert!(
+            final_session >= 2 * ITERATIONS,
+            "Final session ({}) should be >= {} (2 threads × {} iterations)",
+            final_session, 2 * ITERATIONS, ITERATIONS
+        );
+
+        // All check iterations should have completed (2 check threads × ITERATIONS each)
+        assert_eq!(
+            check_counter.load(Ordering::SeqCst),
+            2 * ITERATIONS,
+            "All check iterations should complete"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: Multiple bumps — session is strictly monotonic
+    // Verifies that sequential bumps produce strictly increasing session IDs.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn session_is_strictly_monotonic_across_bumps() {
+        reset_overlay_session();
+
+        let mut prev = OVERLAY_SESSION.load(Ordering::SeqCst);
+        for i in 1..=100 {
+            let returned = bump_overlay_session();
+            assert_eq!(returned, prev, "bump_overlay_session should return the previous value");
+            let current = OVERLAY_SESSION.load(Ordering::SeqCst);
+            assert_eq!(current, prev + 1, "After bump #{}, session should be {}", i, prev + 1);
+            prev = current;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 9: Reset overlay session for test isolation
+    // Verifies that reset_overlay_session correctly resets the counter,
+    // ensuring test isolation between test runs.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn reset_overlay_session_works() {
+        OVERLAY_SESSION.store(42, Ordering::SeqCst);
+        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 42, "Precondition: session should be 42");
+
+        reset_overlay_session();
+        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 0, "After reset, session should be 0");
+    }
+}
