@@ -707,3 +707,40 @@ When a long-running background operation (like a subprocess) needs to both (a) f
 - **Synchronous Tauri commands run on the main thread.** Any sync command that takes a `parking_lot::Mutex::lock()` with no timeout is a deadlock risk. The stop handler (`actions/transcribe.rs`) already does this correctly via `tauri::async_runtime::spawn` + `tm.try_lock_for(10s)` — the cancel handler was the inconsistency.
 - `parking_lot::Mutex` only removes *poisoning*; it does **not** add timeouts. An unbounded `lock()` on the main thread is still a deadlock hazard. Always use `try_lock_for` on code paths reachable from the main thread.
 - "Not responding" + visualizer freeze + zero log output = main-thread deadlock, not a crash. A crash terminates the process; a deadlock leaves it alive but frozen (requiring force-quit, which is why the next log entry is a fresh `AppStarted`).
+
+## Lock Hazard Audit + 4 Fixes (2026-07-17)
+
+### Problem
+After fixing the cancel-button deadlock, a comprehensive audit of all unbounded `parking_lot::Mutex::lock()` calls in the Rust backend revealed 4 additional lock hazards — including a latent AB-BA deadlock that could still freeze the app in always-on mode even after the cancel fix.
+
+### Root Causes + Fixes
+
+**1. AB-BA lock-ordering inversion (CRITICAL):**
+- `try_start_recording` takes locks **state → recorder** (nested, `audio.rs:1345-1347`).
+- `stop_microphone_stream` took locks **recorder → state** (nested, opposite order) — it held `recorder.lock()` across `state.lock()`.
+- The **liveness monitor** (`audio.rs:474`) wakes every 3s in always-on mode and calls `stop_microphone_stream`. If a recording start and a liveness check run concurrently → classic AB-BA deadlock.
+- This explains why the original freeze happened during an always-on recording: the liveness monitor is only active in always-on/BT-keep-alive mode (`audio.rs:500`), so the inversion can't trigger in on-demand mode.
+- **Fix:** Restructured `stop_microphone_stream` to drop the recorder lock before taking the state lock — no nested locks, no inversion possible.
+
+**2. `update_microphone_mode` on main thread (CRITICAL):**
+- Sync Tauri command (`commands/audio.rs:191`) ran on the main thread, called `rm.update_mode()` which can trigger `start_microphone_stream()` → USB power cycle (10+ seconds blocking).
+- **Fix:** Made it `async` + `spawn_blocking`, mirroring the `cancel_operation` fix pattern.
+
+**3. `paste` Enigo lock held across sleep (MEDIUM):**
+- `paste` (`clipboard.rs:858`) acquired `enigo_state.0.lock()` then held it across `std::thread::sleep(paste_delay_ms)` inside `paste_via_clipboard`. Starves other Enigo users on the main thread.
+- **Fix:** Split into `prepare_clipboard_for_paste` (clipboard write + sleep, no lock) and `send_paste_keys_and_verify` (key-sending, needs lock). Lock acquired only for the brief key-send phase.
+
+**4. Unbounded transcription manager locks (MEDIUM):**
+- `get_model_load_status` and `unload_model_manually` (`commands/transcription.rs`) used unbounded `.lock()` while `load_model` on another thread holds the same lock for seconds.
+- **Fix:** Replaced with `try_lock_for(2s)` (status) and `try_lock_for(5s)` (unload), returning an error on timeout.
+
+### Files Changed
+- `src-tauri/src/managers/audio.rs` — Fix 1 (AB-BA inversion)
+- `src-tauri/src/commands/audio.rs` — Fix 2 (async update_microphone_mode)
+- `src-tauri/src/clipboard.rs` — Fix 3 (paste lock scope)
+- `src-tauri/src/commands/transcription.rs` — Fix 4 (bounded try_lock_for)
+- 5 additional files touched by `cargo fmt` (formatting-only, zero functional changes)
+
+### Lesson
+- **Lock-ordering inversions are silent killers.** Two functions each taking two locks in opposite order won't deadlock until they run concurrently — which may only happen under specific conditions (always-on mode enabling the liveness monitor). Always audit for consistent lock ordering when two functions take the same pair of locks.
+- **The liveness monitor is the always-on-specific risk multiplier.** It's a background thread that takes manager locks every 3s, creating concurrent lock contention that on-demand mode never sees. Any new always-on-related lock analysis must account for the liveness thread.

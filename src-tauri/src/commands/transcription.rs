@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, State};
 
 #[derive(Serialize, Type)]
@@ -36,7 +37,9 @@ pub fn set_repetition_suppression_level(app: AppHandle, level: u8) -> Result<(),
 pub fn get_model_load_status(
     transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
 ) -> Result<ModelLoadStatus, String> {
-    let tm = transcription_manager.lock();
+    let tm = transcription_manager
+        .try_lock_for(Duration::from_secs(2))
+        .ok_or("Transcription manager is busy (lock timeout after 2s)")?;
     Ok(ModelLoadStatus {
         is_loaded: tm.is_model_loaded(),
         current_model: tm.get_current_model(),
@@ -48,8 +51,9 @@ pub fn get_model_load_status(
 pub fn unload_model_manually(
     transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
 ) -> Result<(), String> {
-    transcription_manager
-        .lock()
-        .unload_model()
+    let tm = transcription_manager
+        .try_lock_for(Duration::from_secs(5))
+        .ok_or("Transcription manager is busy (lock timeout after 5s)")?;
+    tm.unload_model()
         .map_err(|e| format!("Failed to unload model: {}", e))
 }

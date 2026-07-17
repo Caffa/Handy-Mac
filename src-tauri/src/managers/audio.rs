@@ -1141,24 +1141,31 @@ impl AudioRecordingManager {
             set_mute(false);
         }
 
-        if let Some(rec) = self.recorder.lock().as_mut() {
-            // If still recording, stop first and reset state.
-            if self.is_recording.load(Ordering::Acquire) {
-                if let Err(e) = rec.stop() {
-                    warn!("Error stopping recorder during stream shutdown: {}", e);
-                    // Continue with close — the recorder may be in an inconsistent
-                    // state, but we still want to release resources.
+        // Phase 1: Stop the recorder if recording, then close it.
+        // Hold the recorder lock only for the stop+close (device I/O),
+        // NOT across the state lock. This avoids an AB-BA deadlock with
+        // try_start_recording which takes state → recorder.
+        {
+            let mut rec_guard = self.recorder.lock();
+            if let Some(rec) = rec_guard.as_mut() {
+                if self.is_recording.load(Ordering::Acquire) {
+                    if let Err(e) = rec.stop() {
+                        warn!("Error stopping recorder during stream shutdown: {}", e);
+                        // Continue with close — the recorder may be in an inconsistent
+                        // state, but we still want to release resources.
+                    }
+                    self.is_recording.store(false, Ordering::Release);
                 }
-                self.is_recording.store(false, Ordering::Release);
+                if let Err(e) = rec.close() {
+                    warn!("Error closing recorder during stream shutdown: {}", e);
+                    // State will be reset below — the recorder will be recreated on
+                    // the next start_microphone_stream() call if needed.
+                }
             }
-            // Reset state to Idle regardless of stop outcome
-            *self.state.lock() = RecordingState::Idle;
-            if let Err(e) = rec.close() {
-                warn!("Error closing recorder during stream shutdown: {}", e);
-                // State is already reset — the recorder will be recreated on
-                // the next start_microphone_stream() call if needed.
-            }
-        }
+        } // recorder lock dropped HERE
+
+        // Phase 2: Transition state to Idle (separate lock, no recorder lock held).
+        *self.state.lock() = RecordingState::Idle;
 
         self.is_open.store(false, Ordering::Release);
         debug!("Microphone stream stopped");
@@ -1620,12 +1627,18 @@ impl AudioRecordingManager {
     /// holding it during smart_stop), proceed without stopping the recorder —
     /// it will stop on its own when the current operation completes.
     pub fn cancel_recording(&self) {
-        info!("[CANCEL-TIMING] cancel_recording START on thread {:?}", std::thread::current().id());
+        info!(
+            "[CANCEL-TIMING] cancel_recording START on thread {:?}",
+            std::thread::current().id()
+        );
 
         let t_state_lock = std::time::Instant::now();
         let mut state = match self.state.try_lock_for(std::time::Duration::from_secs(2)) {
             Some(guard) => {
-                info!("[CANCEL-TIMING] cancel_recording: state.try_lock_for(2s) acquired in {:?}", t_state_lock.elapsed());
+                info!(
+                    "[CANCEL-TIMING] cancel_recording: state.try_lock_for(2s) acquired in {:?}",
+                    t_state_lock.elapsed()
+                );
                 guard
             }
             None => {
@@ -1680,7 +1693,10 @@ impl AudioRecordingManager {
                 if let Err(e) = AudioRecorder::wait_for_stop_result(rx) {
                     warn!("Error waiting for recorder stop during cancel: {}", e);
                 }
-                info!("[CANCEL-TIMING] cancel_recording: wait_for_stop_result took {:?}", t_wait.elapsed());
+                info!(
+                    "[CANCEL-TIMING] cancel_recording: wait_for_stop_result took {:?}",
+                    t_wait.elapsed()
+                );
             }
 
             self.is_recording.store(false, Ordering::Release);
@@ -1691,7 +1707,10 @@ impl AudioRecordingManager {
             // alive permanently to prevent the A2DP↔HFP profile switch.
             let t_mode_lock = std::time::Instant::now();
             if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) {
-                info!("[CANCEL-TIMING] cancel_recording: mode.lock() acquired in {:?}", t_mode_lock.elapsed());
+                info!(
+                    "[CANCEL-TIMING] cancel_recording: mode.lock() acquired in {:?}",
+                    t_mode_lock.elapsed()
+                );
                 let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
                 if bt_keep_alive {
                     debug!("BT keep-alive active: keeping mic stream open");
@@ -1701,7 +1720,10 @@ impl AudioRecordingManager {
                     self.stop_microphone_stream();
                 }
             } else {
-                info!("[CANCEL-TIMING] cancel_recording: mode.lock() (not OnDemand) took {:?}", t_mode_lock.elapsed());
+                info!(
+                    "[CANCEL-TIMING] cancel_recording: mode.lock() (not OnDemand) took {:?}",
+                    t_mode_lock.elapsed()
+                );
             }
         }
 

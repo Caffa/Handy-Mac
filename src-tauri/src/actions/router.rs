@@ -427,7 +427,11 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                         // ── Set coordinator state to Confirming ──
                         if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
-                            coordinator.set_confirming(&ah, transcription_text.clone(), Some("transcribe_with_router".to_string()));
+                            coordinator.set_confirming(
+                                &ah,
+                                transcription_text.clone(),
+                                Some("transcribe_with_router".to_string()),
+                            );
                         }
 
                         // ── Wait for user confirmation (with countdown) before routing ──
@@ -471,7 +475,10 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         // visualizer and "Filing…" text instead of the default
                         // transcribe-mode visualizer and "Processing…" text.
                         if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
-                            coordinator.set_processing_with_binding(&ah, Some("transcribe_with_router".to_string()));
+                            coordinator.set_processing_with_binding(
+                                &ah,
+                                Some("transcribe_with_router".to_string()),
+                            );
                         }
 
                         // Use the confirmed (possibly edited) text for routing
@@ -575,7 +582,9 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                                         // NOTE: Overlay hide is now handled AFTER notify_processing_finished()
                                         // below, with a 5-second delay so the user can see the result.
-                                        info!("Router completion: success, scheduling delayed hide");
+                                        info!(
+                                            "Router completion: success, scheduling delayed hide"
+                                        );
                                     }
                                     Err(e) => {
                                         error!("Router subprocess failed: {}", e);
@@ -621,7 +630,9 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                                         // NOTE: Overlay hide is now handled AFTER notify_processing_finished()
                                         // below, with a 5-second delay so the user can see the result.
-                                        info!("Router completion: failure, scheduling delayed hide");
+                                        info!(
+                                            "Router completion: failure, scheduling delayed hide"
+                                        );
                                     }
                                 }
 
@@ -632,7 +643,9 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 // end of the thread, keeping the coordinator in Processing
                                 // (and rejecting new recordings) for the entire subprocess
                                 // duration.
-                                if let Some(coord) = ah_for_router.try_state::<TranscriptionCoordinator>() {
+                                if let Some(coord) =
+                                    ah_for_router.try_state::<TranscriptionCoordinator>()
+                                {
                                     coord.notify_processing_finished();
                                 }
 

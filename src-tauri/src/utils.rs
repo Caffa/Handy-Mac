@@ -21,7 +21,10 @@ pub use crate::tray::*;
 /// INSTRUMENTED: Each step is timed so that if the freeze recurs, the log shows
 /// exactly which call blocked.
 pub fn cancel_current_operation(app: &AppHandle) {
-    info!("[CANCEL-TIMING] cancel_current_operation START on thread {:?}", std::thread::current().id());
+    info!(
+        "[CANCEL-TIMING] cancel_current_operation START on thread {:?}",
+        std::thread::current().id()
+    );
     let total_start = std::time::Instant::now();
 
     // CRITICAL: Cancel streaming transcription FIRST (uses AtomicBool, no lock needed).
@@ -44,7 +47,10 @@ pub fn cancel_current_operation(app: &AppHandle) {
         } else {
             warn!("Streaming cancel flag not available in app state");
         }
-        info!("[CANCEL-TIMING] step 1 (streaming cancel flag swap) took {:?}", t.elapsed());
+        info!(
+            "[CANCEL-TIMING] step 1 (streaming cancel flag swap) took {:?}",
+            t.elapsed()
+        );
     }
 
     // Unregister the cancel shortcut (synchronously now, not async)
@@ -52,27 +58,32 @@ pub fn cancel_current_operation(app: &AppHandle) {
         let t = std::time::Instant::now();
         info!("Unregistering cancel shortcut...");
         shortcut::unregister_cancel_shortcut(app);
-        info!("[CANCEL-TIMING] step 2 (unregister_cancel_shortcut) took {:?}", t.elapsed());
+        info!(
+            "[CANCEL-TIMING] step 2 (unregister_cancel_shortcut) took {:?}",
+            t.elapsed()
+        );
     }
 
     // 3. Cancel recording FIRST — must never fail
     let recording_was_active = {
         let t = std::time::Instant::now();
-        let active =
-            if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
-                let active = audio_manager.is_recording();
-                if active {
-                    info!("Cancelling active recording");
-                    audio_manager.cancel_recording();
-                } else {
-                    info!("No active recording to cancel, but proceeding with cleanup");
-                }
-                active
+        let active = if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
+            let active = audio_manager.is_recording();
+            if active {
+                info!("Cancelling active recording");
+                audio_manager.cancel_recording();
             } else {
-                warn!("AudioRecordingManager not available for cancellation");
-                false
-            };
-        info!("[CANCEL-TIMING] step 3 (cancel_recording) took {:?}", t.elapsed());
+                info!("No active recording to cancel, but proceeding with cleanup");
+            }
+            active
+        } else {
+            warn!("AudioRecordingManager not available for cancellation");
+            false
+        };
+        info!(
+            "[CANCEL-TIMING] step 3 (cancel_recording) took {:?}",
+            t.elapsed()
+        );
         active
     };
 
@@ -84,7 +95,10 @@ pub fn cancel_current_operation(app: &AppHandle) {
         } else {
             warn!("TranscriptionCoordinator not available");
         }
-        info!("[CANCEL-TIMING] step 4 (notify_cancel) took {:?}", t.elapsed());
+        info!(
+            "[CANCEL-TIMING] step 4 (notify_cancel) took {:?}",
+            t.elapsed()
+        );
     }
     {
         let t = std::time::Instant::now();
@@ -92,14 +106,20 @@ pub fn cancel_current_operation(app: &AppHandle) {
             cancel_signal.send_cancel();
             info!("Cancel signal sent via CancelSignal flag");
         }
-        info!("[CANCEL-TIMING] step 5 (send_cancel) took {:?}", t.elapsed());
+        info!(
+            "[CANCEL-TIMING] step 5 (send_cancel) took {:?}",
+            t.elapsed()
+        );
     }
 
     // 5. Emit Idle state (safe — uses let _ = on emits)
     {
         let t = std::time::Instant::now();
         emit_app_state(app, &AppState::Idle);
-        info!("[CANCEL-TIMING] step 6 (emit_app_state Idle) took {:?}", t.elapsed());
+        info!(
+            "[CANCEL-TIMING] step 6 (emit_app_state Idle) took {:?}",
+            t.elapsed()
+        );
     }
 
     // 6. UI cleanup LAST — wrapped so a tray panic can't abort the cancel.
@@ -110,15 +130,24 @@ pub fn cancel_current_operation(app: &AppHandle) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             change_tray_icon(app, crate::tray::TrayIconState::Idle);
         }));
-        info!("[CANCEL-TIMING] step 7 (change_tray_icon) took {:?}", t.elapsed());
+        info!(
+            "[CANCEL-TIMING] step 7 (change_tray_icon) took {:?}",
+            t.elapsed()
+        );
     }
     {
         let t = std::time::Instant::now();
         force_hide_recording_overlay(app);
-        info!("[CANCEL-TIMING] step 8 (force_hide_recording_overlay) took {:?}", t.elapsed());
+        info!(
+            "[CANCEL-TIMING] step 8 (force_hide_recording_overlay) took {:?}",
+            t.elapsed()
+        );
     }
 
-    info!("[CANCEL-TIMING] cancel_current_operation COMPLETE, total {:?}", total_start.elapsed());
+    info!(
+        "[CANCEL-TIMING] cancel_current_operation COMPLETE, total {:?}",
+        total_start.elapsed()
+    );
 }
 
 /// Show the recording overlay in "USB cycling" mode.

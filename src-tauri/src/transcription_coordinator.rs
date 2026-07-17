@@ -67,10 +67,19 @@ const PROCESSING_TIMEOUT: Duration = Duration::from_secs(30);
 #[serde(tag = "state", content = "data")]
 pub enum AppState {
     Idle,
-    Recording { binding_id: String },
-    Processing { binding_id: Option<String> },
-    UsbCycling { stage: String },
-    Confirming { text: String, binding_id: Option<String> },
+    Recording {
+        binding_id: String,
+    },
+    Processing {
+        binding_id: Option<String>,
+    },
+    UsbCycling {
+        stage: String,
+    },
+    Confirming {
+        text: String,
+        binding_id: Option<String>,
+    },
 }
 
 /// Emit an `app-state` event to both the overlay window and the main window.
@@ -111,7 +120,10 @@ enum Command {
 enum Stage {
     Idle,
     Recording(String), // binding_id
-    Processing { since: Instant, binding_id: Option<String> },
+    Processing {
+        since: Instant,
+        binding_id: Option<String>,
+    },
 }
 
 impl Stage {
@@ -539,9 +551,9 @@ impl TranscriptionCoordinator {
     /// timeout timer (otherwise the 30s timeout from the initial stop() would
     /// fire too early). Also updates the shared AppState and emits the event.
     pub fn set_processing_with_binding(&self, app: &AppHandle, binding_id: Option<String>) {
-        let _ = self
-            .tx
-            .send(Command::SetProcessingWithBinding { binding_id: binding_id.clone() });
+        let _ = self.tx.send(Command::SetProcessingWithBinding {
+            binding_id: binding_id.clone(),
+        });
         // Also update the shared AppState immediately so the frontend
         // transitions to the correct visualizer without waiting for the
         // coordinator thread to process the command.

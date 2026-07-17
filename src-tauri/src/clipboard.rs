@@ -251,6 +251,10 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
 }
 
 /// Pastes text using the clipboard: saves current content, writes text, sends paste keystroke, restores clipboard.
+///
+/// This function is split into two phases to avoid holding the Enigo lock during the
+/// paste-delay sleep. Phase 1 (clipboard write + delay) requires no Enigo lock. Phase 2
+/// (key-sending + verify-then-commit) requires the Enigo lock only briefly.
 fn paste_via_clipboard(
     enigo: &mut Enigo,
     text: &str,
@@ -258,6 +262,21 @@ fn paste_via_clipboard(
     paste_method: &PasteMethod,
     paste_delay_ms: u64,
 ) -> Result<(), String> {
+    // Phase 1: Write text to clipboard + delay (no Enigo lock needed).
+    let clipboard_content = prepare_clipboard_for_paste(text, app_handle, paste_delay_ms)?;
+
+    // Phase 2: Send paste key combo + verify (Enigo lock held by caller).
+    send_paste_keys_and_verify(enigo, text, app_handle, paste_method, &clipboard_content)
+}
+
+/// Phase 1 of clipboard paste: write text to clipboard and sleep for paste_delay_ms.
+/// Returns the original clipboard content for later restoration.
+/// Does NOT require the Enigo lock — safe to call before acquiring it.
+fn prepare_clipboard_for_paste(
+    text: &str,
+    app_handle: &AppHandle,
+    paste_delay_ms: u64,
+) -> Result<String, String> {
     let clipboard = app_handle.clipboard();
     let clipboard_content = clipboard.read_text().unwrap_or_default();
 
@@ -280,8 +299,24 @@ fn paste_via_clipboard(
 
     write_result?;
 
+    // Sleep to let the clipboard update propagate before sending the key combo.
+    // This is done WITHOUT holding the Enigo lock, so other Enigo users
+    // are not starved during the delay.
     std::thread::sleep(Duration::from_millis(paste_delay_ms));
 
+    Ok(clipboard_content)
+}
+
+/// Phase 2 of clipboard paste: send the paste key combo, verify it landed,
+/// and optionally restore the original clipboard content.
+/// Requires the Enigo lock to be held by the caller for key-sending operations.
+fn send_paste_keys_and_verify(
+    enigo: &mut Enigo,
+    text: &str,
+    app_handle: &AppHandle,
+    paste_method: &PasteMethod,
+    clipboard_content: &str,
+) -> Result<(), String> {
     // Send paste key combo
     #[cfg(target_os = "linux")]
     let key_combo_sent = try_send_key_combo_linux(paste_method)?;
@@ -318,19 +353,21 @@ fn paste_via_clipboard(
     // can manually Cmd+V again.
     let paste_verified = verify_paste_landed(app_handle, text);
 
+    let clipboard = app_handle.clipboard();
+
     if paste_verified {
         // Paste verified — safe to restore original clipboard content
         info!("Paste verified — restoring original clipboard content");
 
         #[cfg(target_os = "linux")]
         if is_wayland() && is_wl_copy_available() {
-            let _ = write_clipboard_via_wl_copy(&clipboard_content);
+            let _ = write_clipboard_via_wl_copy(clipboard_content);
         } else {
-            let _ = clipboard.write_text(&clipboard_content);
+            let _ = clipboard.write_text(clipboard_content);
         }
 
         #[cfg(not(target_os = "linux"))]
-        let _ = clipboard.write_text(&clipboard_content);
+        let _ = clipboard.write_text(clipboard_content);
     } else {
         // Paste NOT verified — keep transcription text on clipboard.
         // The user can manually Cmd+V to paste again. The transcription
@@ -903,7 +940,22 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
         text.len()
     );
 
-    // Get the managed Enigo instance
+    // ── Clipboard-based methods: do clipboard write + delay BEFORE Enigo lock ──
+    // The Enigo lock is only needed for key-sending, not for clipboard I/O or
+    // sleep delays. Holding it across paste_delay_ms starves other Enigo users.
+    let clipboard_saved_content: Option<String> = match paste_method {
+        PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
+            info!("Pasting via clipboard method (preparing clipboard)");
+            Some(prepare_clipboard_for_paste(
+                &text,
+                &app_handle,
+                paste_delay_ms,
+            )?)
+        }
+        _ => None,
+    };
+
+    // Get the managed Enigo instance and acquire lock ONLY for key-sending operations.
     let enigo_state = app_handle
         .try_state::<EnigoState>()
         .ok_or("Enigo state not initialized")?;
@@ -928,13 +980,15 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
             )
         }
         PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
-            info!("Pasting via clipboard method");
-            paste_via_clipboard(
+            info!("Pasting via clipboard method (sending keys)");
+            // Clipboard was already prepared and delay was already slept —
+            // just send the key combo and verify.
+            send_paste_keys_and_verify(
                 &mut enigo,
                 &text,
                 &app_handle,
                 &paste_method,
-                paste_delay_ms,
+                clipboard_saved_content.as_deref().unwrap_or(""),
             )
         }
         PasteMethod::ExternalScript => {

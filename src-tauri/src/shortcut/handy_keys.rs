@@ -589,10 +589,16 @@ pub fn reset_hotkey_state_after_wake(app: &AppHandle) {
             .unwrap_or(default_binding);
 
         if let Err(e) = state.unregister(&binding) {
-            warn!("Failed to unregister hotkey '{}' during wake reset: {}", id, e);
+            warn!(
+                "Failed to unregister hotkey '{}' during wake reset: {}",
+                id, e
+            );
         }
         if let Err(e) = state.register(&binding) {
-            error!("Failed to re-register hotkey '{}' during wake reset: {}", id, e);
+            error!(
+                "Failed to re-register hotkey '{}' during wake reset: {}",
+                id, e
+            );
         } else {
             debug!("Re-registered hotkey '{}' with fresh ID after wake", id);
         }
