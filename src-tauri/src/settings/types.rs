@@ -2,6 +2,7 @@
 // Separated for readability; all items are re-exported from the parent module.
 
 use crate::audio_toolkit::SpellingDictionary;
+use super::defaults::get_default_settings;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -486,6 +487,7 @@ impl std::ops::DerefMut for SecretMap {
 
 /* still handy for composing the initial JSON in the store ------------- */
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
+#[serde(default)]
 pub struct AppSettings {
     pub bindings: HashMap<String, ShortcutBinding>,
     pub push_to_talk: bool,
@@ -633,6 +635,12 @@ pub struct AppSettings {
     pub noise_suppression_enabled: bool,
     #[serde(default)]
     pub noise_suppression_level: NoiseSuppressionLevel,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        get_default_settings()
+    }
 }
 
 impl AppSettings {
