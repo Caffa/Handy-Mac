@@ -47,16 +47,28 @@ use std::time::Duration;
 #[derive(Clone, Debug, PartialEq)]
 enum AppState {
     Idle,
-    Recording { binding_id: String },
-    Processing { binding_id: Option<String> },
-    UsbCycling { stage: String },
-    Confirming { text: String, binding_id: Option<String> },
+    Recording {
+        binding_id: String,
+    },
+    Processing {
+        binding_id: Option<String>,
+    },
+    UsbCycling {
+        stage: String,
+    },
+    Confirming {
+        text: String,
+        binding_id: Option<String>,
+    },
 }
 
 impl AppState {
     /// Returns true if this state represents active use (Recording or Processing).
     fn is_active(&self) -> bool {
-        matches!(self, AppState::Recording { .. } | AppState::Processing { .. })
+        matches!(
+            self,
+            AppState::Recording { .. } | AppState::Processing { .. }
+        )
     }
 }
 
@@ -82,15 +94,21 @@ fn test_rwlock_concurrent_read_write_app_state() {
                 let mut guard = state.write().unwrap();
                 match cycle {
                     0 => *guard = AppState::Idle,
-                    1 => *guard = AppState::Recording {
-                        binding_id: format!("bind-{i}-{j}"),
-                    },
-                    2 => *guard = AppState::Processing {
-                        binding_id: Some(format!("bind-{i}-{j}")),
-                    },
-                    3 => *guard = AppState::UsbCycling {
-                        stage: format!("stage-{i}-{j}"),
-                    },
+                    1 => {
+                        *guard = AppState::Recording {
+                            binding_id: format!("bind-{i}-{j}"),
+                        }
+                    }
+                    2 => {
+                        *guard = AppState::Processing {
+                            binding_id: Some(format!("bind-{i}-{j}")),
+                        }
+                    }
+                    3 => {
+                        *guard = AppState::UsbCycling {
+                            stage: format!("stage-{i}-{j}"),
+                        }
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -249,10 +267,7 @@ fn test_mpsc_channel_all_commands_received() {
         .iter()
         .filter(|c| matches!(c, Command::Input { .. }))
         .count();
-    let cancels = received
-        .iter()
-        .filter(|c| c == &Command::Cancel)
-        .count();
+    let cancels = received.iter().filter(|c| c == &Command::Cancel).count();
     let finished = received
         .iter()
         .filter(|c| c == &Command::ProcessingFinished)
@@ -444,9 +459,7 @@ fn test_coordinator_pattern_concurrent_access() {
     assert!(
         matches!(
             final_state,
-            AppState::Idle
-                | AppState::Recording { .. }
-                | AppState::Processing { .. }
+            AppState::Idle | AppState::Recording { .. } | AppState::Processing { .. }
         ),
         "Final state should be valid, got {final_state:?}"
     );

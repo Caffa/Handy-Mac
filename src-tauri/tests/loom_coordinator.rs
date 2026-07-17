@@ -162,7 +162,10 @@ fn loom_cancel_flag_pattern() {
         // After both threads finish, the state must be valid.
         let final_state = state.read().unwrap().clone();
         assert!(
-            matches!(final_state, State::Idle | State::Recording | State::Processing),
+            matches!(
+                final_state,
+                State::Idle | State::Recording | State::Processing
+            ),
             "Final state must be valid, got {final_state:?}"
         );
 
@@ -235,7 +238,10 @@ fn loom_channel_command_dispatch() {
         // After both threads finish, state must be valid and consistent.
         let final_state = state.read().unwrap().clone();
         assert!(
-            matches!(final_state, State::Idle | State::Recording | State::Processing),
+            matches!(
+                final_state,
+                State::Idle | State::Recording | State::Processing
+            ),
             "Final state must be valid, got {final_state:?}"
         );
 

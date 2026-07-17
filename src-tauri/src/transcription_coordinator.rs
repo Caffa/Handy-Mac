@@ -59,7 +59,6 @@ const DEBOUNCE: Duration = Duration::from_millis(30);
 /// the `FinishGuard`).
 const PROCESSING_TIMEOUT: Duration = Duration::from_secs(30);
 
-
 /// Unified application state. This is the single source of truth
 /// for the frontend to render the overlay. Emitted via `app-state` events
 /// alongside existing `show-overlay`/`hide-overlay` events for backward
@@ -157,9 +156,15 @@ enum StageAction {
     /// No action needed (command was ignored, e.g. debounce or wrong state).
     None,
     /// Call the `start` action for this binding_id, then check if recording began.
-    StartRecording { binding_id: String, hotkey_string: String },
+    StartRecording {
+        binding_id: String,
+        hotkey_string: String,
+    },
     /// Call the `stop` action for this binding_id, then transition to Processing.
-    StopRecording { binding_id: String, hotkey_string: String },
+    StopRecording {
+        binding_id: String,
+        hotkey_string: String,
+    },
     /// Processing timeout fired — the thread must hide the overlay and reset
     /// the tray icon to Idle. Mirrors the pre-refactor ProcessingTimeout arm
     /// which called `hide_recording_overlay()` + `change_tray_icon(Idle)`.
@@ -269,7 +274,10 @@ impl CoordinatorCore {
                 // Releases always pass through for push-to-talk.
                 if is_pressed {
                     let now = Instant::now();
-                    if self.last_press.map_or(false, |t| now.duration_since(t) < DEBOUNCE) {
+                    if self
+                        .last_press
+                        .map_or(false, |t| now.duration_since(t) < DEBOUNCE)
+                    {
                         debug!("Debounced press for '{binding_id}'");
                         return StageAction::None;
                     }
@@ -555,7 +563,10 @@ impl TranscriptionCoordinator {
 
                     // Perform side effects based on the action returned by the core.
                     match action {
-                        StageAction::StartRecording { binding_id, hotkey_string } => {
+                        StageAction::StartRecording {
+                            binding_id,
+                            hotkey_string,
+                        } => {
                             start(
                                 &app,
                                 &mut core.stage,
@@ -565,7 +576,10 @@ impl TranscriptionCoordinator {
                                 &current_state_clone,
                             );
                         }
-                        StageAction::StopRecording { binding_id, hotkey_string } => {
+                        StageAction::StopRecording {
+                            binding_id,
+                            hotkey_string,
+                        } => {
                             stop(
                                 &app,
                                 &mut core.stage,
@@ -581,10 +595,7 @@ impl TranscriptionCoordinator {
                             // process_command, but the overlay window and tray
                             // icon side effects must run on the thread loop.
                             crate::utils::hide_recording_overlay(&app);
-                            crate::utils::change_tray_icon(
-                                &app,
-                                crate::utils::TrayIconState::Idle,
-                            );
+                            crate::utils::change_tray_icon(&app, crate::utils::TrayIconState::Idle);
                         }
                         StageAction::None => {}
                     }
@@ -791,13 +802,7 @@ fn start(
         // to record with no active capture. Without this, a failed start leaves
         // active_use=true and AppState=Recording with no way to recover.
         if matches!(*stage, Stage::Recording(_)) {
-            set_stage(
-                stage,
-                Stage::Idle,
-                active_use,
-                current_state,
-                app,
-            );
+            set_stage(stage, Stage::Idle, active_use, current_state, app);
         }
     }
 }
