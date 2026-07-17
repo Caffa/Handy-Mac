@@ -10,6 +10,9 @@
     "tauri": "tauri",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
+    "lint:biome": "biome check src",
+    "lint:biome:fix": "biome check --write src",
+    "lint:all": "bun run lint && bun run lint:biome",
     "format": "prettier --write . && cd src-tauri && cargo fmt",
     "format:check": "prettier --check . && cd src-tauri && cargo fmt -- --check",
     "format:frontend": "prettier --write .",
@@ -17,7 +20,11 @@
     "test:playwright": "playwright test",
     "test:playwright:ui": "playwright test --ui",
     "check:translations": "bun scripts/check-translations.ts",
-    "postinstall": "bun scripts/check-nix-deps.ts"
+    "postinstall": "bun scripts/check-nix-deps.ts",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
+    "test:visual": "loki",
+    "test:visual:update": "loki update"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.16",
@@ -47,7 +54,14 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.4",
+    "@chromatic-com/storybook": "^5.2.1",
     "@playwright/test": "^1.58.0",
+    "@storybook/addon-a11y": "^10.5.2",
+    "@storybook/addon-docs": "^10.5.2",
+    "@storybook/addon-mcp": "^0.7.0",
+    "@storybook/addon-vitest": "^10.5.2",
+    "@storybook/react-vite": "^10.5.2",
     "@tauri-apps/cli": "^2.10.0",
     "@types/node": "^24.9.1",
     "@types/react": "^18.3.26",
@@ -56,10 +70,27 @@
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
     "@vitejs/plugin-react": "^4.7.0",
+    "@vitest/browser-playwright": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.1",
     "eslint-plugin-i18next": "^6.1.3",
+    "eslint-plugin-storybook": "^10.5.2",
+    "loki": "0.35.1",
+    "playwright": "^1.61.1",
     "prettier": "^3.6.2",
+    "storybook": "^10.5.2",
     "typescript": "~5.6.3",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "vitest": "^4.1.10"
+  },
+  "loki": {
+    "configurations": {
+      "chrome.local": {
+        "target": "chrome.app",
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 2
+      }
+    }
   }
 }
