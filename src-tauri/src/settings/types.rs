@@ -1,8 +1,8 @@
 // Settings types: enums, structs, and their impl blocks.
 // Separated for readability; all items are re-exported from the parent module.
 
-use crate::audio_toolkit::SpellingDictionary;
 use super::defaults::get_default_settings;
+use crate::audio_toolkit::SpellingDictionary;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
 use specta::Type;

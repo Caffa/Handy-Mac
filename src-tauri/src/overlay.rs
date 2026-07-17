@@ -651,10 +651,12 @@ fn is_mouse_within_monitor(
 
 /// Returns overlay position and window height in logical coordinates (points on macOS).
 ///
-/// Uses monitor position/size directly rather than work_area(), which can
-/// return incorrect coordinates on macOS for monitors with negative positions.
-/// The per-platform OVERLAY_TOP_OFFSET / OVERLAY_BOTTOM_OFFSET constants
-/// already account for system chrome (menu bar, taskbar).
+/// On macOS, the Bottom anchor uses the work area (visibleFrame) so the overlay
+/// tracks the Dock — above it when shown, at the screen edge when hidden. This
+/// relies on tauri 2.11's work_area.position.y fix (#14655), the same bug that
+/// led PR #969 to abandon work_area for full monitor bounds. Top and the other
+/// platforms keep full monitor bounds plus the fixed offsets (work_area is
+/// unreliable on Wayland; Windows' offset clears the taskbar).
 ///
 /// We must use LogicalPosition (not PhysicalPosition) because Tauri/tao
 /// converts PhysicalPosition using the scale factor of the monitor the window
@@ -689,10 +691,20 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
             // Use pill height for positioning so the visible content sits at
             // the same screen position regardless of the taller transparent window.
             let window_extra = window_height - OVERLAY_PILL_HEIGHT;
-            let pos_y = monitor_y + monitor_height
-                - OVERLAY_PILL_HEIGHT
-                - OVERLAY_BOTTOM_OFFSET
-                - window_extra / 2.0;
+
+            // On macOS, use the work area (visibleFrame) so the overlay
+            // tracks the Dock — above it when shown, at the screen edge
+            // when hidden. work_area shares monitor.position's global
+            // coordinate space, so no monitor offset is added.
+            #[cfg(target_os = "macos")]
+            let bottom = {
+                let wa = monitor.work_area();
+                (wa.position.y as f64 + wa.size.height as f64) / scale
+            };
+            #[cfg(not(target_os = "macos"))]
+            let bottom = monitor_y + monitor_height;
+
+            let pos_y = bottom - OVERLAY_PILL_HEIGHT - OVERLAY_BOTTOM_OFFSET - window_extra / 2.0;
             debug!(
                 "calculate_overlay_position: Bottom/None position, y={}",
                 pos_y
@@ -1374,8 +1386,15 @@ mod tests {
         let after = OVERLAY_SESSION.load(Ordering::SeqCst);
 
         // bump_overlay_session returns the *previous* value (fetch_add semantics)
-        assert_eq!(returned, before, "bump_overlay_session should return the value before increment");
-        assert_eq!(after, before + 1, "OVERLAY_SESSION should increment by 1 after bump");
+        assert_eq!(
+            returned, before,
+            "bump_overlay_session should return the value before increment"
+        );
+        assert_eq!(
+            after,
+            before + 1,
+            "OVERLAY_SESSION should increment by 1 after bump"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1400,7 +1419,10 @@ mod tests {
         // Simulate: stale hide arrives with session_at_call = 0
         let should_hide = should_hide_with_session(session_at_call, false);
 
-        assert!(!should_hide, "Stale hide must be suppressed when session has changed");
+        assert!(
+            !should_hide,
+            "Stale hide must be suppressed when session has changed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1422,7 +1444,10 @@ mod tests {
         // No active recording — is_active = false
         let should_hide = should_hide_with_session(session_at_call, false);
 
-        assert!(should_hide, "Non-stale hide should succeed when session unchanged and not active");
+        assert!(
+            should_hide,
+            "Non-stale hide should succeed when session unchanged and not active"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1456,12 +1481,18 @@ mod tests {
 
         // Step 4: Stale hide from first recording arrives with session_at_call = 0
         let should_hide = should_hide_with_session(stale_hide_session, false);
-        assert!(!should_hide, "Stale hide from first recording must not dismiss second recording's overlay");
+        assert!(
+            !should_hide,
+            "Stale hide from first recording must not dismiss second recording's overlay"
+        );
 
         // Step 5: The new recording's own hide (with correct session) should work
         let current_session = OVERLAY_SESSION.load(Ordering::SeqCst);
         let should_hide_current = should_hide_with_session(current_session, false);
-        assert!(should_hide_current, "Current recording's hide should succeed when recording finishes");
+        assert!(
+            should_hide_current,
+            "Current recording's hide should succeed when recording finishes"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1480,7 +1511,10 @@ mod tests {
         // Session hasn't changed, but recording is still active
         let should_hide = should_hide_with_session(session_at_call, true);
 
-        assert!(!should_hide, "Hide must be suppressed when recording is still active (is_active_use = true)");
+        assert!(
+            !should_hide,
+            "Hide must be suppressed when recording is still active (is_active_use = true)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1497,14 +1531,26 @@ mod tests {
         let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
         bump_overlay_session(); // session changed
 
-        assert!(!should_hide_with_session(session_at_call, true), "Both guards: session changed + active → suppress");
-        assert!(!should_hide_with_session(session_at_call, false), "One guard: session changed → suppress");
+        assert!(
+            !should_hide_with_session(session_at_call, true),
+            "Both guards: session changed + active → suppress"
+        );
+        assert!(
+            !should_hide_with_session(session_at_call, false),
+            "One guard: session changed → suppress"
+        );
 
         // Reset, now test session unchanged but active
         reset_overlay_session();
         let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
-        assert!(!should_hide_with_session(session_at_call, true), "One guard: active → suppress");
-        assert!(should_hide_with_session(session_at_call, false), "No guards: session same + not active → proceed");
+        assert!(
+            !should_hide_with_session(session_at_call, true),
+            "One guard: active → suppress"
+        );
+        assert!(
+            should_hide_with_session(session_at_call, false),
+            "No guards: session same + not active → proceed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1520,28 +1566,35 @@ mod tests {
         reset_overlay_session();
 
         const ITERATIONS: u64 = 1000;
-        let bump_handles: Vec<_> = (0..2).map(|_| {
-            thread::spawn(|| {
-                for _ in 0..ITERATIONS {
-                    bump_overlay_session();
-                }
+        let bump_handles: Vec<_> = (0..2)
+            .map(|_| {
+                thread::spawn(|| {
+                    for _ in 0..ITERATIONS {
+                        bump_overlay_session();
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         let check_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let check_handles: Vec<_> = (0..2).map(|_| {
-            let counter = Arc::clone(&check_counter);
-            thread::spawn(move || {
-                for _ in 0..ITERATIONS {
-                    let session = OVERLAY_SESSION.load(Ordering::SeqCst);
-                    // The session value should always be >= 0 and non-decreasing
-                    // (we can't check monotonicity perfectly due to races, but
-                    // we can check it never overflows or wraps)
-                    assert!(session < u64::MAX / 2, "Session counter should not overflow");
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
+        let check_handles: Vec<_> = (0..2)
+            .map(|_| {
+                let counter = Arc::clone(&check_counter);
+                thread::spawn(move || {
+                    for _ in 0..ITERATIONS {
+                        let session = OVERLAY_SESSION.load(Ordering::SeqCst);
+                        // The session value should always be >= 0 and non-decreasing
+                        // (we can't check monotonicity perfectly due to races, but
+                        // we can check it never overflows or wraps)
+                        assert!(
+                            session < u64::MAX / 2,
+                            "Session counter should not overflow"
+                        );
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         for h in bump_handles {
             h.join().expect("Bump thread should not panic");
@@ -1555,7 +1608,9 @@ mod tests {
         assert!(
             final_session >= 2 * ITERATIONS,
             "Final session ({}) should be >= {} (2 threads × {} iterations)",
-            final_session, 2 * ITERATIONS, ITERATIONS
+            final_session,
+            2 * ITERATIONS,
+            ITERATIONS
         );
 
         // All check iterations should have completed (2 check threads × ITERATIONS each)
@@ -1578,9 +1633,18 @@ mod tests {
         let mut prev = OVERLAY_SESSION.load(Ordering::SeqCst);
         for i in 1..=100 {
             let returned = bump_overlay_session();
-            assert_eq!(returned, prev, "bump_overlay_session should return the previous value");
+            assert_eq!(
+                returned, prev,
+                "bump_overlay_session should return the previous value"
+            );
             let current = OVERLAY_SESSION.load(Ordering::SeqCst);
-            assert_eq!(current, prev + 1, "After bump #{}, session should be {}", i, prev + 1);
+            assert_eq!(
+                current,
+                prev + 1,
+                "After bump #{}, session should be {}",
+                i,
+                prev + 1
+            );
             prev = current;
         }
     }
@@ -1594,9 +1658,17 @@ mod tests {
     fn reset_overlay_session_works() {
         let _guard = TEST_LOCK.lock();
         OVERLAY_SESSION.store(42, Ordering::SeqCst);
-        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 42, "Precondition: session should be 42");
+        assert_eq!(
+            OVERLAY_SESSION.load(Ordering::SeqCst),
+            42,
+            "Precondition: session should be 42"
+        );
 
         reset_overlay_session();
-        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 0, "After reset, session should be 0");
+        assert_eq!(
+            OVERLAY_SESSION.load(Ordering::SeqCst),
+            0,
+            "After reset, session should be 0"
+        );
     }
 }
