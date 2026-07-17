@@ -1,0 +1,17 @@
+# Clippy configuration for Handy
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# Minimum Supported Rust Version — edition 2021, no rust-version in Cargo.toml
+msrv = "1.80"
+
+# Cognitive complexity — codebase has complex state machines, be lenient
+cognitive-complexity-threshold = 50
+
+# Too many arguments — Tauri commands often have many args
+too-many-arguments-threshold = 10
+
+# Type complexity — Tauri state types can be complex
+type-complexity-threshold = 300
+
+# Too many lines — generous threshold for impl blocks
+too-many-lines-threshold = 200

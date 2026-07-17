@@ -1,0 +1,106 @@
+# cargo-deny configuration for Handy
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Only check crates that actually compile for our targets
+targets = [
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+# The RustSec advisory database URL
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Ignore advisories for transitive deps we can't directly fix.
+# These should be periodically reviewed and removed when upstream updates are available.
+ignore = [
+    # quick-xml: quadratic runtime in attribute duplicate checking (transitive via plist → tauri)
+    { id = "RUSTSEC-2026-0194", reason = "Transitive dep via plist → tauri. Cannot fix directly; track for Tauri update." },
+    # quick-xml: unbounded namespace allocation in NsReader (transitive via plist → tauri)
+    { id = "RUSTSEC-2026-0195", reason = "Transitive dep via plist → tauri. Cannot fix directly; track for Tauri update." },
+    # rustls-webpki: CRL distribution point matching (transitive via rustls → reqwest/tauri)
+    { id = "RUSTSEC-2026-0049", reason = "Transitive dep via rustls → reqwest/tauri. Cannot fix directly; track for update." },
+    # rustls-webpki: URI name constraints incorrectly accepted (transitive)
+    { id = "RUSTSEC-2026-0098", reason = "Transitive dep via rustls → reqwest/tauri. Cannot fix directly; track for update." },
+    # rustls-webpki: wildcard name constraints incorrectly accepted (transitive)
+    { id = "RUSTSEC-2026-0099", reason = "Transitive dep via rustls → reqwest/tauri. Cannot fix directly; track for update." },
+    # rustls-webpki: CRL parsing panic (transitive)
+    { id = "RUSTSEC-2026-0104", reason = "Transitive dep via rustls → reqwest/tauri. Cannot fix directly; track for update." },
+    # tar: symlink chmod and PAX size header issues (direct dep, but no fix release yet in our lock)
+    { id = "RUSTSEC-2026-0067", reason = "Direct dep. Upgrade tar to >=0.4.45 when available via cargo update." },
+    { id = "RUSTSEC-2026-0068", reason = "Direct dep. Upgrade tar to >=0.4.45 when available via cargo update." },
+    # unic-* crates: unmaintained (transitive via urlpattern → tauri-utils)
+    { id = "RUSTSEC-2025-0075", reason = "Transitive dep via urlpattern → tauri-utils. No safe upgrade available; track for Tauri update." },
+    { id = "RUSTSEC-2025-0080", reason = "Transitive dep via urlpattern → tauri-utils. No safe upgrade available; track for Tauri update." },
+    { id = "RUSTSEC-2025-0081", reason = "Transitive dep via urlpattern → tauri-utils. No safe upgrade available; track for Tauri update." },
+    { id = "RUSTSEC-2025-0098", reason = "Transitive dep via urlpattern → tauri-utils. No safe upgrade available; track for Tauri update." },
+    { id = "RUSTSEC-2025-0100", reason = "Transitive dep via urlpattern → tauri-utils. No safe upgrade available; track for Tauri update." },
+    # anyhow: unsound downcast_mut (direct dep, fix available in >=1.0.103)
+    { id = "RUSTSEC-2026-0190", reason = "Direct dep. Upgrade anyhow to >=1.0.103 via cargo update." },
+    # bincode: unmaintained (transitive via ferrous-opencc)
+    { id = "RUSTSEC-2025-0141", reason = "Transitive dep via ferrous-opencc. No safe upgrade available; track for upstream fix." },
+    # fxhash: unmaintained (transitive via selectors → kuchikiki → tauri-utils)
+    { id = "RUSTSEC-2025-0057", reason = "Transitive dep via selectors → tauri-utils. No safe upgrade available; track for Tauri update." },
+    # paste: unmaintained (transitive via specta)
+    { id = "RUSTSEC-2024-0436", reason = "Transitive dep via specta. No safe upgrade available; track for upstream fix." },
+]
+
+[licenses]
+# Only allow these explicitly permitted licenses
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+]
+# Confidence threshold for license detection (0.0–1.0)
+confidence-threshold = 0.8
+
+# Allow per-crate license exceptions
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[licenses.private]
+# Ignore workspace crates that aren't published
+ignore = true
+
+[bans]
+# Warn on duplicate versions — Tauri has many transitive deps, don't deny
+multiple-versions = "warn"
+# Wildcard version requirements
+wildcards = "allow"
+# Highlight duplicates in the graph
+highlight = "all"
+# No banned crates yet — add entries as needed
+deny = []
+# Skip specific duplicate version crates if needed
+skip = []
+
+[sources]
+# Allow crates.io as the primary registry
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Allow specific git sources used in Cargo.toml
+allow-git = [
+    "https://github.com/cjpais/vad-rs",
+    "https://github.com/cjpais/rodio",
+    "https://github.com/cjpais/tauri",
+    "https://github.com/rustdesk-org/rdev",
+    "https://github.com/ahkohd/tauri-nspanel",
+]
+# Deny unknown registries and git sources
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[sources.allow-org]
+# Allow all repos from cjpais on GitHub
+github = ["cjpais"]
