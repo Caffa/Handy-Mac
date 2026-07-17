@@ -160,6 +160,10 @@ enum StageAction {
     StartRecording { binding_id: String, hotkey_string: String },
     /// Call the `stop` action for this binding_id, then transition to Processing.
     StopRecording { binding_id: String, hotkey_string: String },
+    /// Processing timeout fired — the thread must hide the overlay and reset
+    /// the tray icon to Idle. Mirrors the pre-refactor ProcessingTimeout arm
+    /// which called `hide_recording_overlay()` + `change_tray_icon(Idle)`.
+    ProcessingTimeoutExpired,
 }
 
 /// Pure state machine for the transcription coordinator pipeline.
@@ -374,8 +378,10 @@ impl CoordinatorCore {
                     );
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
+                    StageAction::ProcessingTimeoutExpired
+                } else {
+                    StageAction::None
                 }
-                StageAction::None
             }
         }
     }
@@ -569,13 +575,25 @@ impl TranscriptionCoordinator {
                                 &current_state_clone,
                             );
                         }
+                        StageAction::ProcessingTimeoutExpired => {
+                            // Mirrors the pre-refactor ProcessingTimeout arm:
+                            // the stage has already been reset to Idle by
+                            // process_command, but the overlay window and tray
+                            // icon side effects must run on the thread loop.
+                            crate::utils::hide_recording_overlay(&app);
+                            crate::utils::change_tray_icon(
+                                &app,
+                                crate::utils::TrayIconState::Idle,
+                            );
+                        }
                         StageAction::None => {}
                     }
 
-                    // Emit app-state event for the current stage (non-action commands
-                    // like Cancel, ProcessingFinished, SetProcessingWithBinding, and
-                    // ProcessingTimeout have already updated the stage via process_command).
-                    // Only emit if the stage changed — avoid redundant Idle→Idle events.
+                    // Emit app-state event for the current stage. Non-action
+                    // commands (Cancel, ProcessingFinished, SetProcessingWithBinding)
+                    // have already updated the stage via process_command. The
+                    // ProcessingTimeoutExpired arm ran its own side effects above
+                    // but still benefits from this emit to broadcast AppState::Idle.
                     let new_app_state = core.stage.to_app_state();
                     emit_app_state(&app, &new_app_state);
                 }));
@@ -767,6 +785,20 @@ fn start(
         crate::overlay::bump_overlay_session();
     } else {
         debug!("Start for '{binding_id}' did not begin recording; staying idle");
+        // process_command optimistically transitioned to Recording before
+        // dispatching StartRecording. If the audio device failed to start,
+        // roll the stage back to Idle so the coordinator isn't stuck claiming
+        // to record with no active capture. Without this, a failed start leaves
+        // active_use=true and AppState=Recording with no way to recover.
+        if matches!(*stage, Stage::Recording(_)) {
+            set_stage(
+                stage,
+                Stage::Idle,
+                active_use,
+                current_state,
+                app,
+            );
+        }
     }
 }
 

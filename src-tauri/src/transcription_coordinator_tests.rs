@@ -231,6 +231,60 @@ fn test_processing_timeout_auto_resets_to_idle() {
     assert!(!h.is_active());
 }
 
+// ── Test 5b: ProcessingTimeout returns ProcessingTimeoutExpired action ──
+// Guards against the regression where the refactor routed ProcessingTimeout
+// through process_command() returning StageAction::None, which caused the
+// thread loop to skip hide_recording_overlay() + change_tray_icon(Idle).
+// The thread loop MUST see ProcessingTimeoutExpired to dispatch those side
+// effects; this test locks that contract down.
+
+#[test]
+fn test_processing_timeout_returns_expired_action() {
+    let mut h = TestHarness::with_timeout(Duration::from_millis(100));
+
+    // Enter Processing via: Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // ProcessingTimeout while in Processing MUST return the expired action
+    // so the thread loop dispatches the overlay/tray side effects.
+    let action = h.core.process_command(
+        Command::ProcessingTimeout,
+        &h.active_use,
+        &h.current_state,
+    );
+    assert!(
+        matches!(action, StageAction::ProcessingTimeoutExpired),
+        "ProcessingTimeout while in Processing must return \
+         StageAction::ProcessingTimeoutExpired so the thread loop hides the \
+         overlay and resets the tray icon; got {:?}",
+        action
+    );
+
+    // ProcessingTimeout while NOT in Processing must remain a no-op.
+    let action = h.core.process_command(
+        Command::ProcessingTimeout,
+        &h.active_use,
+        &h.current_state,
+    );
+    assert!(
+        matches!(action, StageAction::None),
+        "ProcessingTimeout while Idle must be a no-op; got {:?}",
+        action
+    );
+}
+
 // ── Test 6: SetProcessingWithBinding (router mode) ──
 
 #[test]
