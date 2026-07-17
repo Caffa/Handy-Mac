@@ -1314,12 +1314,19 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
+    /// Serialize all overlay tests so they don't race on the global
+    /// OVERLAY_SESSION counter. Each test acquires this lock as its
+    /// first action, runs reset_overlay_session(), and holds the lock
+    /// for the entire test body.
+    static TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     // -----------------------------------------------------------------------
     // Test 1: Session counter increments after bump_overlay_session
     // Guards: RECURRING_BUGS_CHECKLIST Bug #1 (session counter)
     // -----------------------------------------------------------------------
     #[test]
     fn session_counter_increments_on_bump() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
         let before = OVERLAY_SESSION.load(Ordering::SeqCst);
         let returned = bump_overlay_session();
@@ -1340,6 +1347,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn stale_hide_suppressed_when_session_changed() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
 
         // Simulate: show overlay for recording #1 (session = 0)
@@ -1363,6 +1371,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn non_stale_hide_succeeds_when_session_unchanged() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
 
         // Simulate: show overlay for recording (session = 0)
@@ -1389,6 +1398,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn new_recording_preserves_overlay_after_stale_hide() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
 
         // Step 1: First recording starts — overlay shown, session bumps to 1
@@ -1422,6 +1432,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn active_use_guard_suppresses_hide() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
         let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
 
@@ -1438,6 +1449,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn both_guards_suppress_hide() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
 
         // Session changes AND recording is active — both guards fire
@@ -1463,6 +1475,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn concurrent_bump_and_check_no_panic_or_deadlock() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
 
         const ITERATIONS: u64 = 1000;
@@ -1518,6 +1531,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn session_is_strictly_monotonic_across_bumps() {
+        let _guard = TEST_LOCK.lock();
         reset_overlay_session();
 
         let mut prev = OVERLAY_SESSION.load(Ordering::SeqCst);
@@ -1537,6 +1551,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn reset_overlay_session_works() {
+        let _guard = TEST_LOCK.lock();
         OVERLAY_SESSION.store(42, Ordering::SeqCst);
         assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 42, "Precondition: session should be 42");
 
