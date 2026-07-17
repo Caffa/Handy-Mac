@@ -771,3 +771,23 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - **Debounced writes + multiple sources of truth = stale-struct clobber.** The debounce itself wasn't the bug (each write is a full-struct snapshot, so coalescing is fine); the bug was that a stale snapshot could be queued AFTER a fresh one because the non-safe path didn't read the fresh cache.
 - **`let _ = result;` is a silent-failure antipattern** for persistence operations. Always log disk-write errors.
 - **Diagnostic logging is cheap insurance.** The `[settings]` prefix lets us grep `~/Library/Logs/com.pais.handy/handy.log` for the full settings trace if this ever recurs.
+
+## Lock-Ordering Invariant Test + CI (2026-07-17)
+
+### Problem
+- The 2026-07-17 Lock Hazard Audit found an AB-BA deadlock in `stop_microphone_stream` (recorder → state) vs `try_start_recording` (state → recorder). The fix restructured `stop_microphone_stream` to drop the recorder lock before taking the state lock.
+- No automated test existed to catch regressions of this class.
+
+### Fix
+- Created `src-tauri/tests/lock_ordering.rs` with 5 tests:
+  1. `test_lock_ordering_consistent_no_deadlock` — 16 threads × 500 iterations, all 4 lock paths (start, stop, cancel, lazy_close). Verifies no deadlock with the CURRENT (fixed) order.
+  2. `test_concurrent_start_stop_stress` — 8 threads × 1000 iterations, alternating start/stop paths.
+  3. `buggy_order_deadlock` (#[ignore]) — deliberately uses the OLD inverted order (recorder → state nested) to prove the test can detect AB-BA inversions.
+  4. `test_stop_order_no_nesting` — single-threaded 1000-iteration check that stop order uses separate lock acquisitions.
+  5. `test_lock_ordering_cross_product` — pairwise concurrent test of all 4 lock acquisition patterns.
+- Created `.github/workflows/ci.yml` with 3 jobs: `rust-check`, `rust-test`, `frontend-build`.
+
+### Key Insight
+- Lock-ordering tests should replicate the lock STRUCTURE (which `parking_lot::Mutex<()>` pair), not the full production types. This makes tests independent of AppHandle, audio devices, or other heavy infrastructure.
+- `std::thread::JoinHandle` has no `join_timeout()`. Use a helper that spawns a watcher thread + `mpsc::channel` with `recv_timeout` to detect hung threads.
+- AB-BA deadlock tests must be `#[ignore]`d — they genuinely hang forever when the bug exists.
