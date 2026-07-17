@@ -12,8 +12,17 @@ use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 #[specta::specta]
-pub fn cancel_operation(app: AppHandle) -> Result<(), String> {
-    cancel_current_operation(&app);
+pub async fn cancel_operation(app: AppHandle) -> Result<(), String> {
+    // Offload the potentially-blocking cancel work to a blocking thread
+    // so the main thread (which runs the webview event loop and delivers
+    // global shortcut events) never wedges. The synchronous cancel path
+    // can block on parking_lot Mutex locks and shortcut unregister;
+    // running it on the main thread caused app-wide "not responding" freezes.
+    tauri::async_runtime::spawn_blocking(move || {
+        cancel_current_operation(&app);
+    })
+    .await
+    .map_err(|e| format!("Cancel task panicked: {e}"))?;
     Ok(())
 }
 

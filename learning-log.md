@@ -679,3 +679,31 @@ When a long-running background operation (like a subprocess) needs to both (a) f
 
 - `src-tauri/src/actions/router.rs` — Restructured router subprocess thread: immediate `notify_processing_finished()` + delayed `hide_recording_overlay()`
 - `src/overlay/RecordingOverlay.tsx` — `isVisible` override for router result display period
+
+## Cancel Button Main-Thread Deadlock (2026-07-17)
+
+### Problem
+- User clicks cancel button (or stop hotkey) during recording → app goes "not responding" (beachball), visualizer freezes at that instant, requires force-quit.
+- Forensic evidence from `~/Library/Logs/com.pais.handy/handy-events.jsonl`: a `RecordingStarted` event with **no corresponding `RecordingStopped`**, no `ShortcutTriggered` for cancel, no `AppCrashed` — the structured logger (which needs the main thread) went silent the moment the cancel click arrived.
+- Visualizer (separate audio thread) kept moving right up until the cancel click, then froze — signature of main-thread deadlock, not a crash.
+
+### Root Cause
+- `cancel_operation` was a **synchronous** Tauri command (`pub fn`, not `async`). In Tauri 2.x, sync commands run on the **main thread**.
+- `cancel_current_operation` → `audio_manager.cancel_recording()` did `self.state.lock()` (parking_lot, **no timeout**, blocks forever) on the main thread.
+- Once the main thread wedged: the webview event loop stopped (visualizer froze because `emit_levels` events stopped being delivered), the HandyKeys global shortcut event tap stopped (subsequent stop hotkey presses couldn't be delivered — explaining "stop didn't register"), and the structured logger stopped.
+- This **invalidates** the #1 hypothesis in `research/overlay-freeze-bug-investigation-report-2025-07-09.md` ("Optimistic Cancel Desync"). That report assumed cancel *succeeded* and the frontend hid too eagerly. The logs show cancel **never returned** — it deadlocked the main thread.
+
+### Fix
+1. **`commands/mod.rs`**: Made `cancel_operation` `async` + offloaded to `tauri::async_runtime::spawn_blocking`. The blocking cancel work now runs on a worker thread, never the main thread. Frontend `await commands.cancelOperation()` was already compatible (tauri-specta generates async functions regardless).
+2. **`managers/audio.rs` `cancel_recording()`**: Replaced unbounded `self.state.lock()` with `self.state.try_lock_for(2s)`. On timeout, forces `is_recording=false` and returns (lets the app recover instead of hanging forever).
+3. **Instrumentation**: Added `[CANCEL-TIMING]` logs to `cancel_current_operation` (8 steps timed) and `cancel_recording` (every lock acquisition + wait timed, with thread ids). If the freeze recurs, `grep CANCEL-TIMING handy.log` pinpoints the exact blocking call.
+
+### Files Changed
+- `src-tauri/src/commands/mod.rs` — `cancel_operation` async + `spawn_blocking`
+- `src-tauri/src/utils.rs` — `[CANCEL-TIMING]` instrumentation on all 8 steps
+- `src-tauri/src/managers/audio.rs` — `cancel_recording` bounded `try_lock_for(2s)` + instrumentation
+
+### Lesson
+- **Synchronous Tauri commands run on the main thread.** Any sync command that takes a `parking_lot::Mutex::lock()` with no timeout is a deadlock risk. The stop handler (`actions/transcribe.rs`) already does this correctly via `tauri::async_runtime::spawn` + `tm.try_lock_for(10s)` — the cancel handler was the inconsistency.
+- `parking_lot::Mutex` only removes *poisoning*; it does **not** add timeouts. An unbounded `lock()` on the main thread is still a deadlock hazard. Always use `try_lock_for` on code paths reachable from the main thread.
+- "Not responding" + visualizer freeze + zero log output = main-thread deadlock, not a crash. A crash terminates the process; a deadlock leaves it alive but frozen (requiring force-quit, which is why the next log entry is a fresh `AppStarted`).

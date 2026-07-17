@@ -1620,7 +1620,22 @@ impl AudioRecordingManager {
     /// holding it during smart_stop), proceed without stopping the recorder —
     /// it will stop on its own when the current operation completes.
     pub fn cancel_recording(&self) {
-        let mut state = self.state.lock();
+        info!("[CANCEL-TIMING] cancel_recording START on thread {:?}", std::thread::current().id());
+
+        let t_state_lock = std::time::Instant::now();
+        let mut state = match self.state.try_lock_for(std::time::Duration::from_secs(2)) {
+            Some(guard) => {
+                info!("[CANCEL-TIMING] cancel_recording: state.try_lock_for(2s) acquired in {:?}", t_state_lock.elapsed());
+                guard
+            }
+            None => {
+                warn!("[CANCEL-TIMING] Could not acquire state lock within 2s — forcing is_recording=false and proceeding");
+                // Force the recording flag off even if we can't get the state lock,
+                // so the app can recover. The recorder will stop on its own.
+                self.is_recording.store(false, Ordering::Release);
+                return;
+            }
+        };
 
         if let RecordingState::Recording { .. } = *state {
             *state = RecordingState::Idle;
@@ -1632,9 +1647,11 @@ impl AudioRecordingManager {
             // should succeed quickly. If it's in the wait phase, the lock is
             // already dropped and we can proceed.
             let resp_rx = {
+                let t_recorder_lock = std::time::Instant::now();
                 let guard = self
                     .recorder
                     .try_lock_for(std::time::Duration::from_secs(1));
+                info!("[CANCEL-TIMING] cancel_recording: recorder.try_lock_for(1s) took {:?}, acquired={}", t_recorder_lock.elapsed(), guard.is_some());
                 match guard {
                     Some(guard) => match guard.as_ref() {
                         Some(rec) => rec.stop_send().ok(),
@@ -1659,9 +1676,11 @@ impl AudioRecordingManager {
             // This can block for up to 5 seconds, but other operations can
             // now proceed since we've dropped the lock.
             if let Some(rx) = resp_rx {
+                let t_wait = std::time::Instant::now();
                 if let Err(e) = AudioRecorder::wait_for_stop_result(rx) {
                     warn!("Error waiting for recorder stop during cancel: {}", e);
                 }
+                info!("[CANCEL-TIMING] cancel_recording: wait_for_stop_result took {:?}", t_wait.elapsed());
             }
 
             self.is_recording.store(false, Ordering::Release);
@@ -1670,7 +1689,9 @@ impl AudioRecordingManager {
 
             // When a Bluetooth output device is active, we keep the stream
             // alive permanently to prevent the A2DP↔HFP profile switch.
+            let t_mode_lock = std::time::Instant::now();
             if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) {
+                info!("[CANCEL-TIMING] cancel_recording: mode.lock() acquired in {:?}", t_mode_lock.elapsed());
                 let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
                 if bt_keep_alive {
                     debug!("BT keep-alive active: keeping mic stream open");
@@ -1679,8 +1700,12 @@ impl AudioRecordingManager {
                 } else {
                     self.stop_microphone_stream();
                 }
+            } else {
+                info!("[CANCEL-TIMING] cancel_recording: mode.lock() (not OnDemand) took {:?}", t_mode_lock.elapsed());
             }
         }
+
+        info!("[CANCEL-TIMING] cancel_recording COMPLETE");
     }
 
     /// Restart the microphone stream if it should be active.
