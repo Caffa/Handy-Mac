@@ -5,6 +5,7 @@ use crate::transcription_coordinator::{emit_app_state, AppState};
 use log::{debug, info};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 use crate::transcription_coordinator::TranscriptionCoordinator;
@@ -43,6 +44,18 @@ static OVERLAY_CAN_BECOME_KEY: AtomicBool = AtomicBool::new(false);
 /// ActiveAlways fires cursor-tracking events even for click-through panels.
 #[cfg(target_os = "macos")]
 static OVERLAY_CURSOR_IN_PANEL: AtomicBool = AtomicBool::new(false);
+
+// Cached "overlay is enabled" flag, kept in sync with the overlay_position
+// setting. Avoids reading the Tauri store on every audio callback (~24 Hz
+// during recording). Defaults to false so the audio path doesn't emit until
+// lib.rs::setup populates the cache from initial settings.
+static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(false);
+
+// Throttle mic-level emission to ~30 FPS to mitigate the WebKitWebProcess
+// memory leak (tauri-apps/wry#1489). The raw audio callback fires far faster
+// than the UI needs; capping the rate cuts per-frame eval_script/IPC volume.
+static LAST_MIC_LEVEL_EMIT: AtomicU64 = AtomicU64::new(0);
+const EMIT_THROTTLE_MS: u64 = 33; // ~30 FPS
 
 /// Swizzle the `canBecomeKeyWindow` method on the RecordingOverlayPanel class
 /// to check the `OVERLAY_CAN_BECOME_KEY` global flag instead of always returning false.
@@ -1244,14 +1257,42 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
     }
 }
 
-pub fn emit_levels(app_handle: &AppHandle, levels: &Vec<f32>) {
-    // emit levels to main app
-    let _ = app_handle.emit("mic-level", levels);
+/// Update the cached overlay-enabled flag. Called from `lib.rs` at
+/// startup after settings load, and from `change_overlay_position_setting`
+/// whenever the user changes the overlay position.
+pub fn update_overlay_enabled_cache(enabled: bool) {
+    OVERLAY_ENABLED.store(enabled, Ordering::Relaxed);
+}
 
-    // also emit to the recording overlay if it's open
-    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
-        let _ = overlay_window.emit("mic-level", levels);
+pub fn emit_levels(app_handle: &AppHandle, levels: &Vec<f32>) {
+    // Skip emission when the overlay is disabled. The recording_overlay
+    // window is created at boot regardless of overlay_position, so
+    // without this guard a hidden overlay's WebKit subprocess still
+    // processes every event, driving unbounded memory growth (#1279).
+    if !OVERLAY_ENABLED.load(Ordering::Relaxed) {
+        return;
     }
+
+    // Throttle to ~30 FPS. Even with the overlay enabled, the raw audio
+    // callback fires far faster than the UI needs; capping emission rate
+    // cuts the per-frame `eval_script`/IPC volume that drives the wry
+    // memory growth in issue #1279 (upstream tauri-apps/wry#1489).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let last = LAST_MIC_LEVEL_EMIT.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < EMIT_THROTTLE_MS {
+        return;
+    }
+    LAST_MIC_LEVEL_EMIT.store(now, Ordering::Relaxed);
+
+    // Target only the overlay window. In Tauri 2 both `AppHandle::emit`
+    // and `WebviewWindow::emit` broadcast to all webviews; Tauri's
+    // listener filter then skips webviews with no registered listener
+    // for the event. `emit_to` produces a single eval_script call per
+    // callback, cutting per-callback WebKit dispatch work in half.
+    let _ = app_handle.emit_to("recording_overlay", "mic-level", levels);
 }
 
 // ---------------------------------------------------------------------------
