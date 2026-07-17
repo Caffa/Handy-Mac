@@ -1234,6 +1234,7 @@ fn run_consumer(
                     noise_floor_initialised = false;
                     smart_stop = None;
                     visualizer.reset();
+                    frame_resampler.reset();
                     max_level.store(0, Ordering::Relaxed); // Reset max level for new recording
                     streaming_last_invoked = None; // Reset streaming timer for new recording
                     consecutive_speech_frames = 0; // Reset speech frame counter for new recording
