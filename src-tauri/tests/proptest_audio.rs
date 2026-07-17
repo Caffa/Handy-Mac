@@ -6,22 +6,13 @@
 //! **Approach for NaN/inf**: We filter out NaN and infinity from strategies
 //! where they would produce undefined metrics (log10 of NaN, etc.).
 //! For the no-panic tests, we use `std::panic::catch_unwind` and assert
-//! no panic occurs. This caught a real bug (see below).
+//! no panic occurs.
 //!
-//! **BUG FOUND BY PROPFUZZ**: `AudioQualityMetrics::compute` panics on
-//! NaN input. Root cause: `utils.rs:69` calls `.partial_cmp(b).unwrap()`
-//! during `sort_unstable_by`, which returns `None` when either operand is
-//! NaN. When `f32::ANY` strategy produces a sample containing NaN, the
-//! abs() of that sample is also NaN, and sorting NaN values via partial_cmp
-//! fails with `unwrap()` on `None`.
-//!
-//! **Minimal reproduction**: a non-empty `Vec<f32>` containing at least
-//! one `NaN` value triggers the panic in `AudioQualityMetrics::compute`.
-//!
-//! **Recommended fix** (not applied per instructions): Replace the
-//! `partial_cmp(b).unwrap()` in `utils.rs:69` with
-//! `partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)` to sort NaN
-//! values as equal, or filter NaN from the input before sorting.
+//! **Bug found and fixed**: `AudioQualityMetrics::compute` previously panicked
+//! on NaN input because `sort_unstable_by` used `.partial_cmp(b).unwrap()`,
+//! which returns `None` for NaN. Fixed by switching to `total_cmp()`, which
+//! provides a total order including NaN. See `compute_nan_does_not_panic`
+//! regression test.
 
 use handy_app_lib::audio_toolkit::audio::{AudioQualityMetrics, AudioVisualiser};
 use handy_app_lib::audio_toolkit::{validate_audio, AudioValidationResult, NoiseSuppressor, NOISE_SUPPRESSION_FRAME_SIZE};
@@ -42,7 +33,7 @@ fn audio_samples_any() -> impl Strategy<Value = Vec<f32>> {
 }
 
 /// Generate f32 samples excluding NaN and infinity (finite values only).
-/// Used for tests where NaN would trigger known bugs or undefined behavior.
+/// Used for tests where NaN/inf would produce undefined metrics.
 fn audio_samples_finite() -> impl Strategy<Value = Vec<f32>> {
     prop::collection::vec(
         prop::num::f32::ANY.prop_filter("finite", |v| v.is_finite()),
@@ -97,9 +88,7 @@ proptest! {
 
     /// Invariant: compute never panics on well-behaved (finite) input.
     ///
-    /// NOTE: A known bug exists where `AudioQualityMetrics::compute` panics
-    /// on NaN input (see module-level docs). We use a finite-only strategy
-    /// here and test NaN behavior separately in `compute_nan_panics_is_known_bug`.
+    /// NaN behavior is tested separately in `compute_nan_does_not_panic`.
     #[test]
     fn proptest_compute_no_panic(samples in audio_samples_finite()) {
         let result = std::panic::catch_unwind(|| {
@@ -120,34 +109,25 @@ fn compute_empty_input_metrics() {
     assert_eq!(metrics.duration_secs, 0.0);
 }
 
-// ─── Known Bug Documentation ────────────────────────────────────────────
+// ─── NaN Regression Test ────────────────────────────────────────────────
 
-/// KNOWN BUG: `AudioQualityMetrics::compute` panics on NaN input.
+/// Regression test: `compute` must NOT panic on NaN input.
 ///
-/// The panic occurs at `utils.rs:69` where `partial_cmp(b).unwrap()` is called
-/// during `sort_unstable_by`. When a sample is NaN, `abs()` also returns NaN,
-/// and `partial_cmp(NaN, x)` returns `None`, causing `unwrap()` to panic.
+/// Previously, `sort_unstable_by(|a, b| a.partial_cmp(b).unwrap())` would
+/// panic because `partial_cmp(NaN, x)` returns `None`. This was fixed by
+/// switching to `total_cmp`, which handles NaN deterministically.
 ///
 /// We need ≥101 samples so that `step_by(100)` yields ≥2 elements for sorting.
-/// Otherwise the sort comparator is never invoked and the bug doesn't trigger.
-///
-/// This test documents the bug. Once fixed, it should be updated to assert
-/// that `compute` does NOT panic (i.e., change `assert!(result.is_err())` to
-/// `assert!(result.is_ok())`).
 #[test]
-fn compute_nan_panics_is_known_bug() {
-    // 200 samples, two of which are NaN — enough to trigger sort_unstable_by
+fn compute_nan_does_not_panic() {
     let mut samples = vec![0.0f32; 200];
     samples[0] = f32::NAN;
     samples[100] = f32::NAN;
     let result = std::panic::catch_unwind(|| {
         AudioQualityMetrics::compute(&samples)
     });
-    // BUG: This should be is_ok() once the NaN handling is fixed.
-    // For now, we document that it panics.
-    assert!(result.is_err(),
-        "KNOWN BUG: AudioQualityMetrics::compute should handle NaN but currently panics. \
-         If this assertion fails, the bug has been fixed — update this test.");
+    assert!(result.is_ok(),
+        "AudioQualityMetrics::compute panicked on NaN input — regression of the total_cmp fix.");
 }
 
 // ─── validate_audio ─────────────────────────────────────────────────────

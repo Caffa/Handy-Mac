@@ -66,7 +66,10 @@ impl AudioQualityMetrics {
             .step_by(sample_step)
             .map(|s| s.abs())
             .collect();
-        amps.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        // Use total_cmp instead of partial_cmp().unwrap() to handle NaN
+        // values deterministically — NaN sorts as the smallest value.
+        // Without this, a corrupted audio buffer containing NaN would panic.
+        amps.sort_unstable_by(|a, b| a.total_cmp(b));
 
         let n = amps.len();
         let signal_end = (n * 90 / 100).max(1); // top 10%
