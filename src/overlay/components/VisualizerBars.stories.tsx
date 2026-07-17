@@ -5,6 +5,18 @@ const meta: Meta<typeof VisualizerBars> = {
   title: "Overlay/VisualizerBars",
   component: VisualizerBars,
   tags: ["autodocs"],
+  parameters: {
+    // The visualizer bars are designed for dark overlay backgrounds —
+    // default to the overlay background so they're always readable.
+    backgrounds: {
+      default: "overlay",
+      values: [
+        { name: "light", value: "#fbfbfb" },
+        { name: "dark", value: "#2c2b29" },
+        { name: "overlay", value: "#000000cc" },
+      ],
+    },
+  },
   argTypes: {
     levels: {
       control: "object",

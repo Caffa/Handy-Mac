@@ -685,6 +685,10 @@
     url = "https://registry.npmjs.org/@standard-schema/spec/-/spec-1.1.0.tgz";
     hash = "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==";
   };
+  "@storybook/addon-a11y@8.6.18" = fetchurl {
+    url = "https://registry.npmjs.org/@storybook/addon-a11y/-/addon-a11y-8.6.18.tgz";
+    hash = "sha512-LFvudttdIfDTNWprA8/N1vbiWbJRrNscyt2OP9Qwi85E1d3LKLy+e8AWiqY08gpy2OUYujK7AjxfpKtNeddrxw==";
+  };
   "@storybook/addon-actions@8.6.18" = fetchurl {
     url = "https://registry.npmjs.org/@storybook/addon-actions/-/addon-actions-8.6.18.tgz";
     hash = "sha512-GcYhtE91GjIQTuZlwpTJ8jfMp6NC79nkpe1DGe0eetTpyQqLq1WUt+ACkk0Z5lqq2u8HBc09zCCGw+D8iCLpYQ==";
@@ -1252,6 +1256,10 @@
   "aws-sdk@2.1693.0" = fetchurl {
     url = "https://registry.npmjs.org/aws-sdk/-/aws-sdk-2.1693.0.tgz";
     hash = "sha512-cJmb8xEnVLT+R6fBS5sn/EFJiX7tUnDaPtOPZ1vFbOJtd0fnZn/Ky2XGgsvvoeliWeH7mL3TWSX5zXXGSQV6gQ==";
+  };
+  "axe-core@4.12.1" = fetchurl {
+    url = "https://registry.npmjs.org/axe-core/-/axe-core-4.12.1.tgz";
+    hash = "sha512-s7iGf5GaVMxEG0ENN9x+xTr7GFZCb1ZP/1uATUpCEK2X78nDB3RwbtFCo9pGAf9ru+VwoQ464DkaLEeRM08wJA==";
   };
   "babel-plugin-macros@3.1.0" = fetchurl {
     url = "https://registry.npmjs.org/babel-plugin-macros/-/babel-plugin-macros-3.1.0.tgz";
