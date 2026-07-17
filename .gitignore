@@ -64,4 +64,3 @@ storybook-static
 # Loki visual regression
 .loki/difference
 .loki/current
-.loki/reference

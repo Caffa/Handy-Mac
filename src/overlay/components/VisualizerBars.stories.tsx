@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { Meta, StoryObj } from "@storybook/react";
 import { VisualizerBars } from "./VisualizerBars";
 
 const meta: Meta<typeof VisualizerBars> = {
