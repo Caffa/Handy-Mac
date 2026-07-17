@@ -57,3 +57,10 @@ result
 
 # Local update backup
 tauri.conf.json.local-update-backup
+
+*storybook.log
+storybook-static
+
+# Loki visual regression
+.loki/difference
+.loki/current

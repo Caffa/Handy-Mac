@@ -2,9 +2,8 @@
  * useUSBRecovery — USB power cycling state management.
  *
  * Manages USB power-cycle event handling and elapsed time tracking.
- * The usbCycleStage state is owned by the parent (useOverlayState) and
- * updated via setters — this ensures that resets from show-overlay events
- * propagate correctly.
+ * The usbCycleStage state is owned by the parent (useOverlaySharedState) and
+ * updated via setters — this ensures that resets propagate correctly.
  *
  * Scope: USB device power cycling recovery flow.
  * Dependencies: @tauri-apps/api/event.

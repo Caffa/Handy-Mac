@@ -1,27 +1,37 @@
 /**
- * useOverlayState — Core overlay visibility and state machine management.
+ * useOverlaySharedState — Shared overlay state (NOT visibility).
  *
- * Manages:
- * - isVisible: Whether the overlay is shown
- * - state: Current overlay phase (recording, transcribing, processing, etc.)
- * - action: Current action type (transcribe, post_process, router)
- * - overlayScale: Display scaling factor
- * - hybridEnabled/hybridThresholdSecs: Hybrid mode settings
- * - recordingElapsedSecs: Seconds elapsed during recording
+ * Manages the shared mutable state needed by overlay sub-hooks and
+ * presentational components:
+ * - Transcription preview, streaming text, router result
+ * - Mic health warnings, USB cycling stage
+ * - Overlay settings (scale, hybrid mode, live captions)
+ * - Recording elapsed timer
+ * - Refs for audio level tracking, timing, etc.
  *
- * Listens for show-overlay and hide-overlay events from the Rust backend.
+ * Visibility and state machine logic are owned by useAppState, which
+ * listens to `app-state` events from the Rust TranscriptionCoordinator.
+ * This hook provides `resetRecordingState()` for use when the backend
+ * transitions to Recording from Idle, resetting all mutable UI state.
  *
- * Scope: Overlay lifecycle — show, hide, state transitions.
- * Dependencies: @tauri-apps/api/event, @/bindings, @/i18n
- * Side effects: Event listeners for show-overlay and hide-overlay.
+ * Scope: Shared overlay UI state only (not visibility).
+ * Dependencies: @/bindings, @/i18n.
+ * Side effects: Settings fetch on mount, recording elapsed timer, language sync.
  */
-import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
-/// Overlay state phases
+/// Module-level cache for liveCaptionsEnabled so that subsequent recordings
+/// can start with the cached value immediately instead of waiting for an
+/// async fetch. The first recording after app launch may still miss captions
+/// if the fetch hasn't resolved, but every recording after that will have the
+/// value instantly available.
+let cachedLiveCaptionsEnabled: boolean | undefined = undefined;
+
+/// Overlay state phases — re-exported for use by sub-hooks and useAppState.
+/// Visibility is derived from AppState (Idle = hidden, anything else = visible).
 export type OverlayState =
   | "recording"
   | "transcribing"
@@ -51,23 +61,22 @@ export function parseOverlayPayload(payload: string): {
   };
 }
 
-interface UseOverlayStateOptions {
-  /** Called when overlay resets (new recording, cancel, etc.) */
-  onReset?: () => void;
+/// Router result event from backend
+export interface RouterResultEvent {
+  success: boolean;
+  summary: string | null;
+  error: string | null;
+  transcription_text: string;
 }
 
-interface UseOverlayStateReturn {
-  isVisible: boolean;
-  setIsVisible: React.Dispatch<React.SetStateAction<boolean>>;
-  state: OverlayState;
-  setState: React.Dispatch<React.SetStateAction<OverlayState>>;
-  action: OverlayAction;
-  isRouter: boolean;
+interface UseOverlaySharedStateReturn {
+  // Overlay settings
   overlayScale: number;
   direction: "ltr" | "rtl";
   hybridEnabled: boolean;
   hybridThresholdSecs: number;
   recordingElapsedSecs: number;
+  liveCaptionsEnabled: boolean;
   // State values shared with sub-hooks and components
   transcriptionPreview: string;
   streamingText: string;
@@ -97,6 +106,7 @@ interface UseOverlayStateReturn {
     React.SetStateAction<{ stage: string; message: string } | null>
   >;
   setIsFadingOut: React.Dispatch<React.SetStateAction<boolean>>;
+  // Refs shared across hooks
   lastLevelTimeRef: React.MutableRefObject<number>;
   recordingStartTimeRef: React.MutableRefObject<number>;
   lowAudioHistoryRef: React.MutableRefObject<number[]>;
@@ -104,30 +114,30 @@ interface UseOverlayStateReturn {
   smoothedLevelsRef: React.MutableRefObject<number[]>;
   usbCyclingActiveRef: React.MutableRefObject<boolean>;
   transcriptionPreviewRef: React.MutableRefObject<string>;
-  liveCaptionsEnabled: boolean;
+  // Reset function: call when a new recording starts (transition to Recording)
+  resetRecordingState: () => void;
+  // Expose setState for sub-hooks that still need it (USB recovery, router preview)
+  setState: React.Dispatch<React.SetStateAction<OverlayState>>;
+  setIsVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  state: OverlayState;
+  isVisible: boolean;
 }
 
-/// Router result event from backend
-export interface RouterResultEvent {
-  success: boolean;
-  summary: string | null;
-  error: string | null;
-  transcription_text: string;
-}
-
-export function useOverlayState(
-  options?: UseOverlayStateOptions,
-): UseOverlayStateReturn {
+export function useOverlaySharedState(): UseOverlaySharedStateReturn {
+  // ─── Visibility state — driven by useAppState in RecordingOverlay, ───
+  // ─── but kept here for sub-hooks that need setIsVisible/setState.     ───
+  // ─── These are set from RecordingOverlay via props, not from events.  ───
   const [isVisible, setIsVisible] = useState(false);
   const [state, setState] = useState<OverlayState>("recording");
-  const [action, setAction] = useState<OverlayAction>("transcribe");
 
   // Hybrid mode indicator state
   const [hybridEnabled, setHybridEnabled] = useState(false);
   const [hybridThresholdSecs, setHybridThresholdSecs] = useState(20);
 
-  // Live captions setting
-  const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(false);
+  // Live captions setting — initialize from module cache if available
+  const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(
+    cachedLiveCaptionsEnabled ?? false,
+  );
 
   const [recordingElapsedSecs, setRecordingElapsedSecs] = useState(0);
   const recordingStartRef = useRef<number>(0);
@@ -138,7 +148,7 @@ export function useOverlayState(
 
   const direction = getLanguageDirection(i18n.language);
 
-  // Refs shared across hooks (needed for reset in show-overlay handler)
+  // Refs shared across hooks (needed for reset when recording starts)
   const lastLevelTimeRef = useRef<number>(Date.now());
   const recordingStartTimeRef = useRef<number>(0);
   const lowAudioHistoryRef = useRef<number[]>([]);
@@ -146,7 +156,7 @@ export function useOverlayState(
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
   const usbCyclingActiveRef = useRef(false);
 
-  // State setters needed by the show-overlay handler for reset
+  // State setters needed by the reset logic
   const [transcriptionPreview, setTranscriptionPreview] = useState<string>("");
   const [streamingText, setStreamingText] = useState<string>("");
   const [streamingSegments, setStreamingSegments] = useState<
@@ -179,7 +189,46 @@ export function useOverlayState(
     editedTextRef.current = editedText;
   }, [editedText]);
 
-  const isRouter = action === "router";
+  // ─── Reset function ─────────────────────────────────────────────────────
+  // Called when the backend transitions to Recording from Idle.
+  // Replaces the old show-overlay handler's reset logic.
+  const resetRecordingState = () => {
+    usbCyclingActiveRef.current = false;
+    setTranscriptionPreview("");
+    setStreamingText("");
+    setStreamingSegments([]);
+    setRouterResult(null);
+    setIsEditing(false);
+    setEditedText("");
+    setCountdown(0);
+    lastLevelTimeRef.current = Date.now();
+    recordingStartTimeRef.current = Date.now();
+    setMicDeadWarning(false);
+    setLowAudioWarning(false);
+    lowAudioHistoryRef.current = [];
+    hadGoodAudioRef.current = false;
+  };
+
+  // Proactively fetch live captions setting on mount so the cache is warm
+  // before the first recording starts. Without this, the setting defaults
+  // to false and partial-transcription events are ignored until the
+  // isVisible-triggered fetch resolves.
+  useEffect(() => {
+    const prefetch = async () => {
+      try {
+        const result = await commands.getAppSettings();
+        if (result.status === "ok" && result.data) {
+          const enabled = result.data.live_captions_enabled ?? false;
+          cachedLiveCaptionsEnabled = enabled;
+          setLiveCaptionsEnabled(enabled);
+          console.log("[Live Captions] Prefetched setting on mount:", enabled);
+        }
+      } catch {
+        // Silently ignore — will retry when overlay becomes visible
+      }
+    };
+    prefetch();
+  }, []);
 
   // Fetch hybrid mode + live captions settings when overlay becomes visible
   useEffect(() => {
@@ -191,6 +240,8 @@ export function useOverlayState(
           setHybridEnabled(result.data.hybrid_mode_enabled ?? false);
           setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
           const captionsEnabled = result.data.live_captions_enabled ?? false;
+          // Update both React state and module-level cache
+          cachedLiveCaptionsEnabled = captionsEnabled;
           setLiveCaptionsEnabled(captionsEnabled);
           console.log("[Live Captions] Settings loaded:", {
             enabled: captionsEnabled,
@@ -243,103 +294,25 @@ export function useOverlayState(
     };
   }, [state, isVisible]);
 
-  // Listen for show-overlay and hide-overlay events
+  // ─── Language sync on overlay show ─────────────────────────────────────
+  // Sync language when overlay becomes visible. Previously this was done in
+  // the show-overlay handler; now it's triggered by visibility from useAppState.
   useEffect(() => {
-    const setupEventListeners = async () => {
-      const unlistenShow = await listen("show-overlay", async (event) => {
-        await syncLanguageFromSettings();
-        const payload = event.payload as string;
-        const parsed = parseOverlayPayload(payload);
-        setState(parsed.state);
-        setAction(parsed.action);
-        setIsVisible(true);
-
-        if (parsed.state === "recording") {
-          console.log(
-            "[Live Captions] Recording started — liveCaptionsEnabled:",
-            liveCaptionsEnabled,
-          );
-          usbCyclingActiveRef.current = false;
-          setTranscriptionPreview("");
-          setStreamingText("");
-          setStreamingSegments([]);
-          setRouterResult(null);
-          setIsEditing(false);
-          setEditedText("");
-          setCountdown(0);
-          lastLevelTimeRef.current = Date.now();
-          recordingStartTimeRef.current = Date.now();
-          setMicDeadWarning(false);
-          setLowAudioWarning(false);
-          lowAudioHistoryRef.current = [];
-          hadGoodAudioRef.current = false;
-        }
-      });
-
-      const unlistenHide = await listen<{ force?: boolean }>(
-        "hide-overlay",
-        (event) => {
-          const { force } = event.payload || {};
-
-          setState((current) => {
-            if (force) {
-              setIsVisible(false);
-              setTranscriptionPreview("");
-              setStreamingText("");
-              setStreamingSegments([]);
-              setRouterResult(null);
-              setIsEditing(false);
-              setCountdown(0);
-              return current;
-            }
-
-            // Don't hide if a recording/transcription/processing/confirming
-            // state is active — this guards against the race condition where
-            // a hide event arrives after a new recording has started.
-            if (
-              current === "recording" ||
-              current === "transcribing" ||
-              current === "processing" ||
-              current === "confirming"
-            ) {
-              console.log("[Overlay] Ignoring hide-overlay: active state =", current);
-              return current;
-            }
-            if (current !== "usb-cycling") {
-              setIsVisible(false);
-              setTranscriptionPreview("");
-              setStreamingText("");
-              setStreamingSegments([]);
-              setRouterResult(null);
-              setIsEditing(false);
-              setCountdown(0);
-            }
-            return current;
-          });
-        },
-      );
-
-      return () => {
-        unlistenShow();
-        unlistenHide();
-      };
-    };
-
-    setupEventListeners();
-  }, []);
+    if (!isVisible) return;
+    syncLanguageFromSettings();
+  }, [isVisible]);
 
   return {
     isVisible,
     setIsVisible,
     state,
     setState,
-    action,
-    isRouter,
     overlayScale,
     direction,
     hybridEnabled,
     hybridThresholdSecs,
     recordingElapsedSecs,
+    liveCaptionsEnabled,
     // State values shared with sub-hooks and components
     transcriptionPreview,
     streamingText,
@@ -371,6 +344,7 @@ export function useOverlayState(
     smoothedLevelsRef,
     usbCyclingActiveRef,
     transcriptionPreviewRef,
-    liveCaptionsEnabled,
+    // Reset function
+    resetRecordingState,
   };
 }

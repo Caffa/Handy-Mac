@@ -188,24 +188,33 @@ pub fn open_microphone_privacy_settings() -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), String> {
-    // Update settings
+pub async fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), String> {
+    // Update settings — this is fast and can stay on the async runtime
     let mut settings = get_settings_safe(&app);
     settings.always_on_microphone = always_on;
     write_settings_safe(&app, settings);
 
-    // Update the audio manager mode
-    let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
-        return Err("AudioRecordingManager not available".to_string());
-    };
+    // Clone the Arc out of Tauri state before the closure, so the
+    // State borrow is dropped before we enter spawn_blocking.
+    let rm: Arc<AudioRecordingManager> = app
+        .try_state::<Arc<AudioRecordingManager>>()
+        .ok_or("AudioRecordingManager not available")?
+        .inner()
+        .clone();
     let new_mode = if always_on {
         MicrophoneMode::AlwaysOn
     } else {
         MicrophoneMode::OnDemand
     };
-
-    let result = rm.update_mode(new_mode);
-    result.map_err(|e| format!("Failed to update microphone mode: {}", e))
+    // Offload the potentially-blocking mode switch to a blocking thread.
+    // update_mode can call start_microphone_stream which blocks for 10+ seconds
+    // during USB power cycling — running it on the main thread wedges the app.
+    tauri::async_runtime::spawn_blocking(move || {
+        rm.update_mode(new_mode)
+            .map_err(|e| format!("Failed to update microphone mode: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]

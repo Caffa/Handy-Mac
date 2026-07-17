@@ -326,7 +326,7 @@ const LINUX_RESERVED: &[ReservedShortcut] = &[];
 ///
 /// Converts to lowercase and sorts modifier keys into a consistent order
 /// so that "Ctrl+Alt+A" and "alt+ctrl+a" match.
-fn normalize_shortcut(shortcut: &str) -> String {
+pub fn normalize_shortcut(shortcut: &str) -> String {
     let parts: Vec<String> = shortcut
         .split('+')
         .map(|p| p.trim().to_lowercase())

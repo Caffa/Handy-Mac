@@ -11,6 +11,7 @@
  */
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { commands } from "@/bindings";
 import type { RouterResultEvent } from "../hooks/useOverlayState";
 
 /// Handler icon mapping
@@ -92,6 +93,13 @@ export function RouterResultDisplay({
     return `${seconds}s`;
   };
 
+  // Mouse passthrough handlers for macOS overlay click-through.
+  // When the mouse enters the interactive preview area, the overlay must accept
+  // mouse events so the user can click/scroll/interact. When the mouse leaves,
+  // events pass through to apps below.
+  const handleMouseEnter = () => commands.setOverlayMousePassthrough(true).catch(() => {});
+  const handleMouseLeave = () => commands.setOverlayMousePassthrough(false).catch(() => {});
+
   if (!transcriptionPreview && !routerResult) return null;
 
   return (
@@ -99,23 +107,25 @@ export function RouterResultDisplay({
       dir={direction}
       className={`transcription-preview ${isEditing ? "editing" : ""} ${routerResult ? "has-result" : ""} ${isFadingOut ? "fade-out" : ""}`}
       style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       {routerResult ? (
         <div className="router-result">
           {routerResult.success ? (
             <div className="router-success">
-              <div className="result-icons">
+              <div className="handler-cards">
                 {parseHandlerNames(routerResult.summary).map(
                   (handlerName, idx) => (
-                    <span key={idx} className="handler-icon">
-                      {getHandlerIcon(handlerName)}
-                    </span>
+                    <div key={idx} className="handler-card">
+                      <span className="handler-icon">
+                        {getHandlerIcon(handlerName)}
+                      </span>
+                      <span className="handler-label">{handlerName}</span>
+                    </div>
                   ),
                 )}
               </div>
-              {routerResult.summary && (
-                <div className="result-summary">{routerResult.summary}</div>
-              )}
             </div>
           ) : (
             <div className="router-error">

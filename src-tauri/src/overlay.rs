@@ -1,6 +1,6 @@
 use crate::input;
 use crate::settings;
-use crate::settings::OverlayPosition;
+use crate::settings::{OverlayPosition, OverlayScreenTarget};
 use crate::transcription_coordinator::{emit_app_state, AppState};
 use log::{debug, info};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,6 +29,20 @@ pub fn bump_overlay_session() -> u64 {
 /// to become key and accept keyboard focus for text editing.
 #[cfg(target_os = "macos")]
 static OVERLAY_CAN_BECOME_KEY: AtomicBool = AtomicBool::new(false);
+
+/// Global flag for cursor tracking on macOS.
+/// When the cursor enters the overlay (via NSTrackingArea), this flag is set
+/// to true and `ignoresMouseEvents` is disabled, allowing mouse events to
+/// reach the webview for interactive elements (cancel button, edit textarea).
+/// When the cursor exits the overlay, the flag is set to false and
+/// `ignoresMouseEvents` is re-enabled, making the panel click-through.
+///
+/// BUGFIX (Fix 5): This replaces the React onMouseEnter/onMouseLeave approach,
+/// which has a chicken-and-egg problem: the panel is click-through, so mouse
+/// events can't reach the webview to trigger the handlers. NSTrackingArea with
+/// ActiveAlways fires cursor-tracking events even for click-through panels.
+#[cfg(target_os = "macos")]
+static OVERLAY_CURSOR_IN_PANEL: AtomicBool = AtomicBool::new(false);
 
 /// Swizzle the `canBecomeKeyWindow` method on the RecordingOverlayPanel class
 /// to check the `OVERLAY_CAN_BECOME_KEY` global flag instead of always returning false.
@@ -93,6 +107,195 @@ fn swizzle_can_become_key_window() {
     log::info!("swizzle_can_become_key_window: Successfully swizzled canBecomeKeyWindow on RecordingOverlayPanel");
 }
 
+/// Swizzle `mouseEntered:` and `mouseExited:` on RecordingOverlayPanel to handle
+/// cursor tracking for click-through overlays.
+///
+/// BUGFIX (Fix 5): The cancel button on the overlay relies on React `onMouseEnter`
+/// to toggle click-through off, but `onMouseEnter` can't fire while the NSPanel is
+/// click-through (`ignoresMouseEvents = true`). This is a chicken-and-egg problem.
+///
+/// The solution uses macOS's NSTrackingArea with `NSTrackingActiveAlways`, which
+/// fires `mouseEntered:` and `mouseExited:` events even for click-through panels.
+/// When the cursor enters the panel, we temporarily disable `ignoresMouseEvents`
+/// so interactive elements can receive events. When the cursor exits, we re-enable
+/// `ignoresMouseEvents` for click-through.
+///
+/// This is the standard pattern used by macOS HUD/floating-overlay apps.
+#[cfg(target_os = "macos")]
+fn swizzle_mouse_tracking() {
+    use objc2::runtime::AnyClass;
+    use std::ffi::CStr;
+
+    let class_name = CStr::from_bytes_with_nul(b"RecordingOverlayPanel\0").unwrap();
+    let Some(class) = AnyClass::get(class_name) else {
+        log::error!("swizzle_mouse_tracking: RecordingOverlayPanel class not found");
+        return;
+    };
+
+    unsafe {
+        // Swizzle mouseEntered: — called when the cursor enters the tracking area.
+        // When the cursor enters the panel, we disable ignoresMouseEvents so the
+        // webview can receive mouse events for interactive elements.
+        unsafe extern "C-unwind" fn overlay_mouse_entered(
+            this: &objc2::runtime::AnyObject,
+            _cmd: objc2::runtime::Sel,
+            _event: &objc2::runtime::AnyObject,
+        ) {
+            OVERLAY_CURSOR_IN_PANEL.store(true, Ordering::SeqCst);
+
+            // Disable ignoresMouseEvents so interactive elements (buttons,
+            // textareas) can receive mouse events.
+            let _: () = objc2::msg_send![this, setIgnoresMouseEvents: false];
+
+            log::debug!("Overlay mouse entered: disabled ignoresMouseEvents");
+        }
+
+        let mouse_entered_sel = objc2::sel!(mouseEntered:);
+        let types = CStr::from_bytes_with_nul(b"v@:@\0").unwrap();
+        let imp: objc2::runtime::Imp = std::mem::transmute::<
+            unsafe extern "C-unwind" fn(
+                &objc2::runtime::AnyObject,
+                objc2::runtime::Sel,
+                &objc2::runtime::AnyObject,
+            ),
+            objc2::runtime::Imp,
+        >(overlay_mouse_entered);
+        objc2::ffi::class_replaceMethod(
+            class as *const AnyClass as *mut AnyClass,
+            mouse_entered_sel,
+            imp,
+            types.as_ptr(),
+        );
+
+        // Swizzle mouseExited: — called when the cursor exits the tracking area.
+        // When the cursor exits the panel, we re-enable ignoresMouseEvents for
+        // click-through behavior.
+        unsafe extern "C-unwind" fn overlay_mouse_exited(
+            this: &objc2::runtime::AnyObject,
+            _cmd: objc2::runtime::Sel,
+            _event: &objc2::runtime::AnyObject,
+        ) {
+            OVERLAY_CURSOR_IN_PANEL.store(false, Ordering::SeqCst);
+
+            // Only re-enable click-through if the overlay doesn't need keyboard focus.
+            // If the user is editing text (can_become_key), we keep mouse events enabled
+            // so they can continue interacting with the text area.
+            if !OVERLAY_CAN_BECOME_KEY.load(Ordering::SeqCst) {
+                let _: () = objc2::msg_send![this, setIgnoresMouseEvents: true];
+            }
+
+            log::debug!("Overlay mouse exited: re-enabled ignoresMouseEvents");
+        }
+
+        let mouse_exited_sel = objc2::sel!(mouseExited:);
+        let types = CStr::from_bytes_with_nul(b"v@:@\0").unwrap();
+        let imp: objc2::runtime::Imp = std::mem::transmute::<
+            unsafe extern "C-unwind" fn(
+                &objc2::runtime::AnyObject,
+                objc2::runtime::Sel,
+                &objc2::runtime::AnyObject,
+            ),
+            objc2::runtime::Imp,
+        >(overlay_mouse_exited);
+        objc2::ffi::class_replaceMethod(
+            class as *const AnyClass as *mut AnyClass,
+            mouse_exited_sel,
+            imp,
+            types.as_ptr(),
+        );
+    }
+
+    log::info!("swizzle_mouse_tracking: Successfully swizzled mouseEntered:/mouseExited: on RecordingOverlayPanel");
+}
+
+/// Add an NSTrackingArea to the overlay panel so that mouseEntered:/mouseExited:
+/// are called even when the panel is click-through (ignoresMouseEvents = true).
+///
+/// BUGFIX (Fix 5): Without this tracking area, the swizzled mouseEntered:/mouseExited:
+/// methods would never be called, and we'd have no way to detect when the cursor
+/// enters/exits the overlay while it's click-through.
+///
+/// The NSTrackingActiveAlways option ensures tracking works regardless of the
+/// panel's active state, which is critical for a floating overlay that should
+/// work even when another app is frontmost.
+#[cfg(target_os = "macos")]
+fn add_cursor_tracking_area(app_handle: &AppHandle) {
+    use objc2_app_kit::NSTrackingAreaOptions;
+
+    let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") else {
+        log::debug!("add_cursor_tracking_area: overlay window not found");
+        return;
+    };
+
+    let Ok(panel) = overlay_window.to_panel::<RecordingOverlayPanel>() else {
+        log::debug!("add_cursor_tracking_area: could not convert to panel");
+        return;
+    };
+
+    // Get the content view of the panel. This is the NSView that fills the
+    // panel and is where we add the tracking area.
+    let content_view = panel.content_view();
+
+    // Get the window (panel) from the content view. The window IS the
+    // RecordingOverlayPanel, which is where we swizzled mouseEntered:/mouseExited:.
+    // We set the window as the tracking area's owner so that mouse tracking events
+    // are delivered to the panel (where our swizzled handlers are), not to the
+    // content view.
+    //
+    // BUGFIX: Previously, the content_view was set as the owner, which meant
+    // mouseEntered:/mouseExited: were delivered to the content view (NSView).
+    // But we swizzled these methods on RecordingOverlayPanel (NSPanel), so the
+    // events never reached our handlers. Setting the panel as the owner ensures
+    // the events go to the right place.
+    let window: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> =
+        unsafe { objc2::msg_send![&content_view, window] };
+    let Some(window) = window else {
+        log::error!("add_cursor_tracking_area: content view has no window");
+        return;
+    };
+
+    // Create NSTrackingArea options:
+    // MouseEnteredAndExited: fire when cursor enters/exits the tracking rect
+    // ActiveAlways: fire even when the app is inactive or the panel is click-through
+    // InVisibleRect: automatically update the tracking rect when the view resizes
+    let options = NSTrackingAreaOptions::MouseEnteredAndExited
+        | NSTrackingAreaOptions::ActiveAlways
+        | NSTrackingAreaOptions::InVisibleRect;
+
+    // Create the tracking area covering the entire content view.
+    // The window (panel) is the owner — mouseEntered:/mouseExited: messages will be
+    // delivered to the panel, where our swizzled handlers will toggle ignoresMouseEvents.
+    //
+    // NOTE: The owner is NOT retained by the tracking area on macOS 10.10+.
+    // The window outlives the tracking area (the tracking area is added to the
+    // content view, which is owned by the window), so this is safe.
+    //
+    // We use raw msg_send! because NSTrackingArea::alloc() requires a
+    // MainThreadMarker which is awkward to obtain in this context.
+    // Since this code runs on the main thread (via run_on_main_thread), this is safe.
+    let bounds: objc2_foundation::NSRect = unsafe { objc2::msg_send![&content_view, bounds] };
+    let tracking_area: objc2::rc::Retained<objc2_app_kit::NSTrackingArea> = unsafe {
+        let alloc: *mut objc2_app_kit::NSTrackingArea =
+            objc2::msg_send![objc2_app_kit::NSTrackingArea::class(), alloc];
+        let area: *mut objc2_app_kit::NSTrackingArea = objc2::msg_send![
+            alloc,
+            initWithRect: bounds,
+            options: options.bits(),
+            owner: &*window as *const _,
+            userInfo: objc2::ffi::nil
+        ];
+        objc2::rc::Retained::from_raw(area).expect("NSTrackingArea init failed")
+    };
+
+    // Add the tracking area to the content view.
+    // SAFETY: addTrackingArea retains the tracking area for the view's lifetime.
+    unsafe {
+        let _: () = objc2::msg_send![&content_view, addTrackingArea: &*tracking_area];
+    }
+
+    log::info!("add_cursor_tracking_area: added NSTrackingArea to overlay panel");
+}
+
 /// Tauri command to toggle the overlay window's ability to become the key window
 /// (accept keyboard input). On macOS, this swizzles the RecordingOverlayPanel's
 /// `canBecomeKeyWindow` method to check a global flag.
@@ -133,6 +336,51 @@ pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Resul
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, can_become_key);
+        Ok(())
+    }
+}
+
+/// Tauri command to toggle whether the overlay panel accepts mouse events.
+///
+/// When `enabled` is true, the overlay panel accepts mouse events (for interactive
+/// elements like buttons and textareas). When `enabled` is false, all mouse events
+/// (clicks, scrolls, hovers) pass through to apps below the overlay.
+///
+/// This implements the standard macOS pattern for click-through overlays:
+/// - Default: ignores_mouse_events = true (click-through)
+/// - Mouse enters interactive element: ignores_mouse_events = false (accept events)
+/// - Mouse leaves interactive element: ignores_mouse_events = true (click-through)
+///
+/// BUGFIX (Fix 5): On macOS, the previous approach relied on React onMouseEnter/
+/// onMouseLeave to toggle click-through. This has a chicken-and-egg problem: the
+/// panel is click-through, so mouse events can't reach the webview to trigger
+/// onMouseEnter. The NSTrackingArea approach works at the OS level and fires
+/// cursorUpdate: events even for click-through panels.
+///
+/// On non-macOS platforms, this is a no-op (CSS pointer-events handles this).
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_mouse_passthrough(app: AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(overlay_window) = app.get_webview_window("recording_overlay") {
+            let window = overlay_window.clone();
+            let _ = overlay_window.run_on_main_thread(move || {
+                if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
+                    // When enabled=true, the panel should accept mouse events
+                    // (ignores_mouse_events = false).
+                    // When enabled=false, mouse events pass through
+                    // (ignores_mouse_events = true).
+                    panel.set_ignores_mouse_events(!enabled);
+                }
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, enabled);
         Ok(())
     }
 }
@@ -312,6 +560,54 @@ fn get_monitor_with_cursor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
     app_handle.primary_monitor().ok().flatten()
 }
 
+/// Returns the monitor on which the overlay should appear, based on the
+/// `overlay_screen_target` setting:
+/// - `Cursor` (default): same monitor as the mouse cursor.
+/// - `SideScreen`: the first monitor that is NOT the cursor's monitor.
+///   Falls back to the cursor monitor (then primary) if no other monitor exists.
+fn get_target_overlay_monitor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
+    let screen_target = settings::get_settings_safe(app_handle).overlay_screen_target;
+
+    match screen_target {
+        OverlayScreenTarget::Cursor => {
+            let monitor = get_monitor_with_cursor(app_handle);
+            debug!(
+                "get_target_overlay_monitor: Cursor target, using monitor at ({:?})",
+                monitor.as_ref().map(|m| m.position())
+            );
+            monitor
+        }
+        OverlayScreenTarget::SideScreen => {
+            let cursor_monitor = get_monitor_with_cursor(app_handle);
+
+            if let Some(ref cm) = cursor_monitor {
+                // Find the first monitor whose position differs from the cursor monitor
+                if let Ok(monitors) = app_handle.available_monitors() {
+                    for monitor in &monitors {
+                        if monitor.position() != cm.position() {
+                            debug!(
+                                "get_target_overlay_monitor: SideScreen target, cursor at ({}, {}), using side monitor at ({}, {})",
+                                cm.position().x, cm.position().y,
+                                monitor.position().x, monitor.position().y
+                            );
+                            return Some(monitor.clone());
+                        }
+                    }
+                }
+                debug!(
+                    "get_target_overlay_monitor: SideScreen target but no other monitor found, falling back to cursor monitor"
+                );
+                cursor_monitor
+            } else {
+                debug!(
+                    "get_target_overlay_monitor: SideScreen target but cursor monitor unknown, falling back to primary"
+                );
+                app_handle.primary_monitor().ok().flatten()
+            }
+        }
+    }
+}
+
 /// Calculate the overlay window height based on monitor height.
 /// Uses a percentage of screen height to accommodate variable-length
 /// transcription text without clipping, with a minimum for the pill.
@@ -351,7 +647,7 @@ fn is_mouse_within_monitor(
 /// converts PhysicalPosition using the scale factor of the monitor the window
 /// is *currently* on, which is wrong when moving cross-monitor.
 fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)> {
-    let monitor = get_monitor_with_cursor(app_handle)?;
+    let monitor = get_target_overlay_monitor(app_handle)?;
     let scale = monitor.scale_factor();
     let monitor_x = monitor.position().x as f64 / scale;
     let monitor_y = monitor.position().y as f64 / scale;
@@ -400,7 +696,7 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
 #[cfg(not(target_os = "macos"))]
 pub fn create_recording_overlay(app_handle: &AppHandle) {
     // Get initial monitor to determine window height
-    let (initial_height, has_monitor) = match get_monitor_with_cursor(app_handle) {
+    let (initial_height, has_monitor) = match get_target_overlay_monitor(app_handle) {
         Some(monitor) => {
             let scale = monitor.scale_factor();
             let monitor_height = monitor.size().height as f64 / scale;
@@ -501,6 +797,23 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
                 // This must happen after the class is registered by PanelBuilder::build()
                 // which triggers define_class! registration.
                 swizzle_can_become_key_window();
+
+                // BUGFIX (Fix 5): Swizzle mouseEntered:/mouseExited: on the
+                // RecordingOverlayPanel to handle cursor tracking for click-through.
+                // When the cursor enters the panel, we temporarily disable
+                // ignoresMouseEvents so interactive elements (cancel button,
+                // edit textarea) can receive mouse events. When the cursor
+                // exits, we re-enable click-through.
+                //
+                // NSTrackingArea with ActiveAlways fires these events even for
+                // click-through panels, solving the chicken-and-egg problem
+                // where onMouseEnter can't fire because the panel is click-through.
+                swizzle_mouse_tracking();
+
+                // Add an NSTrackingArea to the panel's content view so that
+                // mouseEntered:/mouseExited: are called even when the panel
+                // is click-through.
+                add_cursor_tracking_area(app_handle);
             }
             Err(e) => {
                 log::error!("Failed to create recording overlay panel: {}", e);
@@ -571,18 +884,17 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
         #[cfg(target_os = "windows")]
         force_overlay_topmost(&overlay_window);
 
-        // On macOS, update click-through state based on current overlay state.
-        // During router "processing" state, the entire window should be click-through
-        // (OS-level) so users can click on apps below the transparent overlay.
-        // For all other states, only the CSS pointer-events: none areas are click-through.
+        // On macOS, always set the entire overlay to click-through at the OS level.
+        // This allows clicks and scrolls on transparent areas to pass through to apps
+        // below. Interactive elements (cancel button, edit textarea) temporarily
+        // disable click-through via set_overlay_mouse_passthrough when the mouse
+        // enters them, and re-enable it when the mouse leaves.
         #[cfg(target_os = "macos")]
         {
-            let should_ignore_mouse_events =
-                matches!(mode, OverlayMode::Router) && state == "processing";
             let window = overlay_window.clone();
             let _ = overlay_window.run_on_main_thread(move || {
                 if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
-                    panel.set_ignores_mouse_events(should_ignore_mouse_events);
+                    panel.set_ignores_mouse_events(true);
                 }
             });
         }
@@ -590,22 +902,12 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
         let payload = format_overlay_payload(state, mode);
         let _ = overlay_window.emit("show-overlay", payload);
 
-        // Also emit app-state for the new frontend state hook (Phase 1 backward compat).
-        // This supplements the existing show-overlay event with a structured AppState.
-        let app_state = match state {
-            "recording" => AppState::Recording {
-                binding_id: String::new(), // Will be updated by coordinator
-            },
-            "transcribing" | "processing" => AppState::Processing,
-            "usb-cycling" => AppState::UsbCycling {
-                stage: String::new(),
-            },
-            "confirming" => AppState::Confirming {
-                text: String::new(),
-            },
-            _ => AppState::Idle,
-        };
-        emit_app_state(app_handle, &app_state);
+        // NOTE: We intentionally do NOT emit an app-state event here.
+        // The TranscriptionCoordinator is the single source of truth for
+        // AppState. Emitting from show_overlay_state would overwrite the
+        // coordinator's state with incomplete data (e.g., missing binding_id).
+        // The coordinator emits app-state for all transitions: Recording,
+        // Processing, Confirming, UsbCycling, and Idle.
     }
 }
 
@@ -748,17 +1050,17 @@ fn position_overlay_fixed(app_handle: &AppHandle, state: &str, mode: &OverlayMod
         // See learning-log.md "Visualizer Positioning Bug — Center Screen After Router"
         // for full documentation.
 
-        // Try to get monitor with cursor first
-        if let Some(monitor) = get_monitor_with_cursor(app_handle) {
+        // Try to get the target overlay monitor (respects overlay_screen_target setting)
+        if let Some(monitor) = get_target_overlay_monitor(app_handle) {
             debug!(
-                "position_overlay_fixed: Using monitor with cursor at ({}, {})",
+                "position_overlay_fixed: Using target monitor at ({}, {})",
                 monitor.position().x,
                 monitor.position().y
             );
             position_overlay_on_monitor(&overlay_window, &monitor, app_handle, state, mode);
         } else {
-            // FALLBACK: Use primary monitor when cursor-based detection fails
-            debug!("position_overlay_fixed: get_monitor_with_cursor returned None, falling back to primary monitor");
+            // FALLBACK: Use primary monitor when target-based detection fails
+            debug!("position_overlay_fixed: get_target_overlay_monitor returned None, falling back to primary monitor");
 
             if let Some(primary) = app_handle.primary_monitor().ok().flatten() {
                 debug!(
@@ -857,12 +1159,15 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
         // force: false means the frontend will check state before hiding
         let _ = overlay_window.emit("hide-overlay", serde_json::json!({ "force": false }));
 
-        // Also emit app-state: Idle for the new frontend state hook.
-        // This supplements the existing hide-overlay event. Note: the coordinator
-        // also emits Idle on ProcessingFinished, so this may be a duplicate emission,
-        // but duplicate Idle emissions are harmless and ensure the frontend always
-        // receives the state transition even if one event is lost.
-        emit_app_state(app_handle, &AppState::Idle);
+        // NOTE: We intentionally do NOT emit AppState::Idle here.
+        // The coordinator is the sole authority for state transitions, and it
+        // already emits Idle on ProcessingFinished. Emitting Idle from here
+        // causes Bug 2: when the router's delayed hide fires while a second
+        // transcription is active, the spurious Idle emission overrides the
+        // frontend's Recording state, collapsing the visualizer/volume bar.
+        // The session guard below prevents the OS-level hide; the frontend
+        // hide-overlay event (emitted above) is also gated by its own state
+        // checks, so no explicit Idle emission is needed.
 
         // Capture session ID at call time — if a new recording starts between
         // now and the closure executing, the session will have been bumped.
@@ -892,6 +1197,16 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
                 .map_or(false, |coord| coord.is_active_use());
 
             if !is_active {
+                // On macOS, reset ignores_mouse_events to false (accept events)
+                // before hiding, so the next show starts with a clean state.
+                // show_overlay_state will set ignores_mouse_events(true) again
+                // when the overlay reappears.
+                #[cfg(target_os = "macos")]
+                {
+                    if let Ok(panel) = window_clone.to_panel::<RecordingOverlayPanel>() {
+                        panel.set_ignores_mouse_events(false);
+                    }
+                }
                 let _ = window_clone.hide();
             } else {
                 log::info!("hide_recording_overlay: keeping overlay — new recording active");
@@ -916,6 +1231,14 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
         // Hide immediately on main thread - no thread spawn, safer on crash
         let window_clone = overlay_window.clone();
         let _ = overlay_window.run_on_main_thread(move || {
+            // On macOS, reset ignores_mouse_events to false before hiding,
+            // so the next show starts with a clean state.
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(panel) = window_clone.to_panel::<RecordingOverlayPanel>() {
+                    panel.set_ignores_mouse_events(false);
+                }
+            }
             let _ = window_clone.hide();
         });
     }
@@ -928,5 +1251,311 @@ pub fn emit_levels(app_handle: &AppHandle, levels: &Vec<f32>) {
     // also emit to the recording overlay if it's open
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         let _ = overlay_window.emit("mic-level", levels);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test seams and test module for overlay session-guard logic.
+//
+// The session-guard in `hide_recording_overlay` prevents a stale hide from
+// closing the overlay when a new recording has started.  The core logic is:
+//
+//   1. Capture OVERLAY_SESSION at call time.
+//   2. In the closure, compare the captured value against the current value.
+//   3. If they differ, a new recording started → skip the hide.
+//
+// Because `hide_recording_overlay` needs a full `AppHandle` (which can't be
+// created in a unit test), we extract the session-guard decision into a pure
+// function `should_hide_with_session` and test that.
+//
+// Test seams added:
+// - `reset_overlay_session()` — resets the atomic counter to 0 for isolation.
+// - `should_hide_with_session(session_at_call, is_active)` — pure function
+//   implementing the same guard logic as `hide_recording_overlay`'s closure.
+// ---------------------------------------------------------------------------
+
+/// Test seam: Reset OVERLAY_SESSION to 0 for test isolation.
+/// Production code never resets the counter (it only increments), so this is
+/// strictly a `#[cfg(test)]` entry point.
+#[cfg(test)]
+fn reset_overlay_session() {
+    OVERLAY_SESSION.store(0, Ordering::SeqCst);
+}
+
+/// Test seam: Pure decision function that mirrors the session-guard logic in
+/// `hide_recording_overlay`'s `run_on_main_thread` closure.
+///
+/// Returns `true` if the hide should proceed (no session change, no active use),
+/// or `false` if the hide should be suppressed (session bumped = new recording,
+/// or still active).
+///
+/// This is the same logic as lines 1184–1213 of `hide_recording_overlay`, but
+/// extracted into a testable pure function without AppHandle/NSWindow deps.
+#[cfg(test)]
+fn should_hide_with_session(session_at_call: u64, is_active: bool) -> bool {
+    // GUARD 1: Session changed — a new recording started, keep overlay visible
+    let session_now = OVERLAY_SESSION.load(Ordering::SeqCst);
+    if session_now != session_at_call {
+        return false;
+    }
+
+    // GUARD 2: Active use check at the latest possible moment
+    if is_active {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// Serialize all overlay tests so they don't race on the global
+    /// OVERLAY_SESSION counter. Each test acquires this lock as its
+    /// first action, runs reset_overlay_session(), and holds the lock
+    /// for the entire test body.
+    static TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    // -----------------------------------------------------------------------
+    // Test 1: Session counter increments after bump_overlay_session
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1 (session counter)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn session_counter_increments_on_bump() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+        let before = OVERLAY_SESSION.load(Ordering::SeqCst);
+        let returned = bump_overlay_session();
+        let after = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // bump_overlay_session returns the *previous* value (fetch_add semantics)
+        assert_eq!(returned, before, "bump_overlay_session should return the value before increment");
+        assert_eq!(after, before + 1, "OVERLAY_SESSION should increment by 1 after bump");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2: Stale hide is suppressed (the core race fix)
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1, learning-log 2026-06-15 and
+    //         2026-06-17 (router filing race condition)
+    //
+    // Simulates the race: capture session, bump (new recording starts), then
+    // attempt hide with the stale session. The hide must be suppressed.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn stale_hide_suppressed_when_session_changed() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Simulate: show overlay for recording #1 (session = 0)
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // Simulate: new recording starts — session bumps to 1
+        bump_overlay_session();
+
+        // Simulate: stale hide arrives with session_at_call = 0
+        let should_hide = should_hide_with_session(session_at_call, false);
+
+        assert!(!should_hide, "Stale hide must be suppressed when session has changed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: Non-stale hide succeeds (session unchanged, not active)
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1 (happy path)
+    //
+    // When session hasn't changed and no recording is active, hide should
+    // proceed normally.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn non_stale_hide_succeeds_when_session_unchanged() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Simulate: show overlay for recording (session = 0)
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // No new recording — session stays at 0
+        // No active recording — is_active = false
+        let should_hide = should_hide_with_session(session_at_call, false);
+
+        assert!(should_hide, "Non-stale hide should succeed when session unchanged and not active");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: New recording keeps visualizer visible (exact checklist scenario)
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1, learning-log 2026-07-11
+    //         (router post-filing bugs)
+    //
+    // Scenario: Start recording with routing → while routing is filing, start
+    // a NEW recording → verify the NEW visualizer STAYS visible.
+    //
+    // Reproduces the session-counter logic: show overlay (session=N), start
+    // new recording (session=N+1), stale hide arrives referencing session=N
+    // → assert overlay is still visible (hide suppressed).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn new_recording_preserves_overlay_after_stale_hide() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Step 1: First recording starts — overlay shown, session bumps to 1
+        let session_first = bump_overlay_session(); // returns 0, session now 1
+        assert_eq!(session_first, 0);
+
+        // Step 2: While routing is filing, a stale hide arrives from the first
+        // recording's completion. It captured session = 0 (before the bump).
+        let stale_hide_session = session_first; // 0
+
+        // Step 3: New recording starts — session bumps to 2
+        let session_second = bump_overlay_session(); // returns 1, session now 2
+        assert_eq!(session_second, 1);
+
+        // Step 4: Stale hide from first recording arrives with session_at_call = 0
+        let should_hide = should_hide_with_session(stale_hide_session, false);
+        assert!(!should_hide, "Stale hide from first recording must not dismiss second recording's overlay");
+
+        // Step 5: The new recording's own hide (with correct session) should work
+        let current_session = OVERLAY_SESSION.load(Ordering::SeqCst);
+        let should_hide_current = should_hide_with_session(current_session, false);
+        assert!(should_hide_current, "Current recording's hide should succeed when recording finishes");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: Active-use guard also suppresses hide
+    // Guards: learning-log 2026-06-15 (is_active_use guard)
+    //
+    // Even if the session matches, if is_active_use() returns true (a recording
+    // is still in progress), the hide must be suppressed.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn active_use_guard_suppresses_hide() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // Session hasn't changed, but recording is still active
+        let should_hide = should_hide_with_session(session_at_call, true);
+
+        assert!(!should_hide, "Hide must be suppressed when recording is still active (is_active_use = true)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: Both guards combine — session changed AND active
+    // Even if only one guard fires, the result should be suppressed.
+    // Tests that both guards work together.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn both_guards_suppress_hide() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Session changes AND recording is active — both guards fire
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+        bump_overlay_session(); // session changed
+
+        assert!(!should_hide_with_session(session_at_call, true), "Both guards: session changed + active → suppress");
+        assert!(!should_hide_with_session(session_at_call, false), "One guard: session changed → suppress");
+
+        // Reset, now test session unchanged but active
+        reset_overlay_session();
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert!(!should_hide_with_session(session_at_call, true), "One guard: active → suppress");
+        assert!(should_hide_with_session(session_at_call, false), "No guards: session same + not active → proceed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7: Concurrent show/hide interleaving
+    // Guards: RECURRING_BUGS_CHECKLIST Bug #1, learning-log 2026-06-17
+    //
+    // Spawns threads that concurrently bump (show) and check (hide) the
+    // session counter. Verifies no panic, no deadlock, and final consistency.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn concurrent_bump_and_check_no_panic_or_deadlock() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        const ITERATIONS: u64 = 1000;
+        let bump_handles: Vec<_> = (0..2).map(|_| {
+            thread::spawn(|| {
+                for _ in 0..ITERATIONS {
+                    bump_overlay_session();
+                }
+            })
+        }).collect();
+
+        let check_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let check_handles: Vec<_> = (0..2).map(|_| {
+            let counter = Arc::clone(&check_counter);
+            thread::spawn(move || {
+                for _ in 0..ITERATIONS {
+                    let session = OVERLAY_SESSION.load(Ordering::SeqCst);
+                    // The session value should always be >= 0 and non-decreasing
+                    // (we can't check monotonicity perfectly due to races, but
+                    // we can check it never overflows or wraps)
+                    assert!(session < u64::MAX / 2, "Session counter should not overflow");
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        }).collect();
+
+        for h in bump_handles {
+            h.join().expect("Bump thread should not panic");
+        }
+        for h in check_handles {
+            h.join().expect("Check thread should not panic");
+        }
+
+        // Final session should be >= 2 * ITERATIONS (two bump threads)
+        let final_session = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert!(
+            final_session >= 2 * ITERATIONS,
+            "Final session ({}) should be >= {} (2 threads × {} iterations)",
+            final_session, 2 * ITERATIONS, ITERATIONS
+        );
+
+        // All check iterations should have completed (2 check threads × ITERATIONS each)
+        assert_eq!(
+            check_counter.load(Ordering::SeqCst),
+            2 * ITERATIONS,
+            "All check iterations should complete"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: Multiple bumps — session is strictly monotonic
+    // Verifies that sequential bumps produce strictly increasing session IDs.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn session_is_strictly_monotonic_across_bumps() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        let mut prev = OVERLAY_SESSION.load(Ordering::SeqCst);
+        for i in 1..=100 {
+            let returned = bump_overlay_session();
+            assert_eq!(returned, prev, "bump_overlay_session should return the previous value");
+            let current = OVERLAY_SESSION.load(Ordering::SeqCst);
+            assert_eq!(current, prev + 1, "After bump #{}, session should be {}", i, prev + 1);
+            prev = current;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 9: Reset overlay session for test isolation
+    // Verifies that reset_overlay_session correctly resets the counter,
+    // ensuring test isolation between test runs.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn reset_overlay_session_works() {
+        let _guard = TEST_LOCK.lock();
+        OVERLAY_SESSION.store(42, Ordering::SeqCst);
+        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 42, "Precondition: session should be 42");
+
+        reset_overlay_session();
+        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 0, "After reset, session should be 0");
     }
 }

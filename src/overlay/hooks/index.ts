@@ -1,7 +1,7 @@
 /**
  * Barrel exports for overlay hooks.
  */
-export { useOverlayState } from "./useOverlayState";
+export { useOverlaySharedState } from "./useOverlayState";
 export type {
   OverlayState,
   OverlayAction,

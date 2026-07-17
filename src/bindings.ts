@@ -104,6 +104,14 @@ async changeOverlayPositionSetting(position: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
+async changeOverlayScreenTargetSetting(target: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_overlay_screen_target_setting", { target }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeDebugModeSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_debug_mode_setting", { enabled }) };
@@ -1139,6 +1147,14 @@ async exportHistoryCsv() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getUsageStats() : Promise<Result<UsageStats, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_usage_stats") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Get all pending retry entries.
  */
@@ -1339,6 +1355,20 @@ async setOverlayCanBecomeKey(canBecomeKey: boolean) : Promise<Result<null, strin
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Toggle whether the overlay panel accepts mouse events.
+ * When enabled=true, the overlay accepts mouse events (for interactive elements).
+ * When enabled=false, all mouse events pass through to apps below.
+ * On non-macOS platforms, this is a no-op.
+ */
+async setOverlayMousePassthrough(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_overlay_mouse_passthrough", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -1357,7 +1387,7 @@ historyUpdate: "history-update"
 
 /** user-defined types **/
 
-export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
+export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; overlay_screen_target?: OverlayScreenTarget; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
 /**
  * Deprecated: Use `word_correction_mode` instead.
  * Kept for backward compatibility during migration.
@@ -1561,6 +1591,7 @@ export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "
 export type NoiseSuppressionLevel = "Low" | "Medium" | "High"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
+export type OverlayScreenTarget = "cursor" | "side_screen"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
@@ -1724,6 +1755,42 @@ hub: string;
  * Port number on the hub (e.g. "1")
  */
 port: string }
+/**
+ * Usage statistics computed from the transcription history.
+ */
+export type UsageStats = { 
+/**
+ * Total number of transcriptions ever completed (non-empty text)
+ */
+total_transcriptions: number; 
+/**
+ * Total words transcribed across all sessions
+ */
+total_words: number; 
+/**
+ * Number of transcriptions today (UTC)
+ */
+today_transcriptions: number; 
+/**
+ * Words transcribed today
+ */
+today_words: number; 
+/**
+ * Estimated minutes saved (words / 40 typing WPM − words / 130 speech WPM)
+ */
+estimated_minutes_saved: number; 
+/**
+ * Consecutive days with at least one transcription (counting back from today/yesterday)
+ */
+current_streak_days: number; 
+/**
+ * Longest streak ever
+ */
+longest_streak_days: number; 
+/**
+ * Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
+ */
+daily_stats: [string, number, number][] }
 export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }

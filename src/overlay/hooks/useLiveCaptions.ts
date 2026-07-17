@@ -3,8 +3,8 @@
  *
  * Manages the partial-transcription event listener and segment merging.
  * The streamingText and streamingSegments state are owned by the parent
- * (useOverlayState) and updated via setters — this ensures that resets
- * from show-overlay events propagate correctly.
+ * (useOverlaySharedState) and updated via setters — this ensures that resets
+ * propagate correctly.
  *
  * Scope: Live caption display during recording.
  * Dependencies: React hooks, PartialTranscriptionEvent type.
@@ -129,6 +129,18 @@ export function useLiveCaptions(
   // Use ref for segments since we need the accumulated value in the event handler
   const segmentsRef = useRef<TranscriptionSegment[]>([]);
 
+  // ─── Stale-closure refs ──────────────────────────────────────────────
+  // The partial-transcription listener effect has [] deps (registers once),
+  // so any closure variables it reads are frozen at mount time. Use refs to
+  // hold the latest values so the listener always reads current state.
+  const liveCaptionsEnabledRef = useRef(liveCaptionsEnabled);
+  const stateRef = useRef(state);
+  const isVisibleRef = useRef(isVisible);
+
+  useEffect(() => { liveCaptionsEnabledRef.current = liveCaptionsEnabled; }, [liveCaptionsEnabled]);
+  useEffect(() => { stateRef.current = state; }, [state]);
+  useEffect(() => { isVisibleRef.current = isVisible; }, [isVisible]);
+
   // Clear accumulated segments when recording stops or overlay hides
   // to prevent segments from a previous recording bleeding into the next.
   useEffect(() => {
@@ -192,14 +204,19 @@ export function useLiveCaptions(
         "partial-transcription",
         (event) => {
           const { text, segments } = event.payload;
+          // Read current values from refs to avoid stale closure
+          const currentLiveCaptionsEnabled = liveCaptionsEnabledRef.current;
+          const currentState = stateRef.current;
+          const currentIsVisible = isVisibleRef.current;
+
           console.log("[Live Captions] Event received:", {
             hasText: !!text,
             textLength: text?.length || 0,
             hasSegments: !!segments,
             segmentCount: segments?.length || 0,
-            liveCaptionsEnabled,
-            currentState: state,
-            isVisible,
+            liveCaptionsEnabled: currentLiveCaptionsEnabled,
+            currentState,
+            isVisible: currentIsVisible,
           });
 
           if (segments && segments.length > 0) {

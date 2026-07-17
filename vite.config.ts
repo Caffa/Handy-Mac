@@ -3,9 +3,10 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
+// More info at: https://storybook.js.org/docs/next/writing-tests/integrations/vitest-addon
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vitejs.dev/config/
+// https://vitejs.org/config/
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 

@@ -1,3 +1,5 @@
+<!-- Status: Active — Phases 1-3 done (state consolidation, visualizer fix). Phase 4 (remove legacy state) is in progress — the overlay state machine unification (commit 2255ae8) has made useAppState the sole visibility authority. -->
+
 # Refactoring Plan: State Consolidation & Visualizer Frozen Bug Fix
 
 **Date:** 2026-07-06  
@@ -697,6 +699,13 @@ The core issue is that `force_hide_recording_overlay` fires `hide-overlay { forc
 
 **Duration:** ~1-2 days  
 **Risk:** Medium — removing working code, but thoroughly tested in Phase 2-3
+
+**Progress (2026-07-09):** The overlay state machine unification (commit `2255ae8`) has completed the core of Phase 4:
+- `useAppState` is now the sole visibility authority — no more dual-listening
+- `useOverlayState` renamed to `useOverlaySharedState` — visibility logic stripped, only shared mutable state remains
+- `show-overlay`/`hide-overlay` frontend listeners removed (backend still emits for backward compat)
+- Visibility is a pure function of `AppState` (Idle = hidden, anything else = visible)
+- Remaining cleanup: remove `OverlayState` type entirely, remove `appStateToOverlayState` mapping, remove backend `show-overlay`/`hide-overlay` emissions
 
 ### 7.1 File Changes
 

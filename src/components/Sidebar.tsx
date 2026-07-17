@@ -8,6 +8,7 @@ import {
   Sparkles,
   Cpu,
   Target,
+  BarChart3,
 } from "lucide-react";
 import HandyTextLogo from "./icons/HandyTextLogo";
 import HandyHand from "./icons/HandyHand";
@@ -21,6 +22,7 @@ import {
   AboutSettings,
   PostProcessingSettings,
   ModelsSettings,
+  UsageSettings,
 } from "./settings";
 
 export type SidebarSection = keyof typeof SECTIONS_CONFIG;
@@ -69,6 +71,12 @@ export const SECTIONS_CONFIG = {
     labelKey: "sidebar.history",
     icon: History,
     component: HistorySettings,
+    enabled: () => true,
+  },
+  usage: {
+    labelKey: "sidebar.usage",
+    icon: BarChart3,
+    component: UsageSettings,
     enabled: () => true,
   },
   postprocessing: {

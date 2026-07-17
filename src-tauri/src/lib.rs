@@ -20,8 +20,8 @@ mod managers;
 mod overlay;
 pub mod portable;
 mod session;
-mod settings;
-mod shortcut;
+pub mod settings;
+pub mod shortcut;
 mod signal_handle;
 mod sleep_wake;
 mod transcription_coordinator;
@@ -62,6 +62,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
 use crate::settings::get_settings_safe;
+use crate::settings::SettingsCache;
 use crate::settings::SettingsWriter;
 
 // Global atomic to store the file log level filter
@@ -229,6 +230,15 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(Arc::new(session::SessionTracker::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
     app_handle.manage(Arc::new(SettingsWriter::new()));
+
+    // Initialize the in-memory settings cache with settings loaded from disk.
+    // This must happen AFTER the store plugin is initialized and AFTER
+    // SettingsWriter is managed, so that get_settings_safe can fall back
+    // to disk reads if the cache is not yet available.
+    // The cache is the single source of truth for all reads — eliminating the
+    // read-modify-write race with the debounced disk writer.
+    let initial_settings = settings::load_or_create_app_settings_safe(app_handle);
+    app_handle.manage(Arc::new(SettingsCache::new(initial_settings)));
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -448,8 +458,6 @@ fn is_query_only_flag(cli_args: &CliArgs) -> bool {
 /// This uses libc's atexit to ensure the handler runs even with std::process::exit.
 #[cfg(target_os = "macos")]
 fn setup_query_flag_handler(is_active_use: bool, is_recording: bool) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     // Store flags for the atexit handler
     static QUERY_FLAGS: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     QUERY_FLAGS.set((is_active_use, is_recording)).ok();
@@ -511,6 +519,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_convert_us_to_british_setting,
             shortcut::change_selected_language_setting,
             shortcut::change_overlay_position_setting,
+            shortcut::change_overlay_screen_target_setting,
             shortcut::change_debug_mode_setting,
             shortcut::change_word_correction_threshold_setting,
             shortcut::change_extra_recording_buffer_setting,
@@ -636,6 +645,7 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_history_entry_metadata,
             commands::history::export_history_json,
             commands::history::export_history_csv,
+            commands::history::get_usage_stats,
             commands::transcription_retry::get_retry_queue,
             commands::transcription_retry::retry_transcription,
             commands::transcription_retry::remove_from_retry_queue,
@@ -656,6 +666,7 @@ pub fn run(cli_args: CliArgs) {
             commands::confirm_routing,
             commands::open_path,
             overlay::set_overlay_can_become_key,
+            overlay::set_overlay_mouse_passthrough,
         ])
         .events(collect_events![
             managers::history::HistoryUpdate,

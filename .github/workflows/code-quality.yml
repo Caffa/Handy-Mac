@@ -10,6 +10,7 @@ on:
       - ".eslintrc*"
       - "eslint.config.*"
       - ".prettierrc*"
+      - "biome.json"
       - "tsconfig*"
       - "tailwind.config.*"
       - ".github/workflows/**"
@@ -21,6 +22,7 @@ on:
       - ".eslintrc*"
       - "eslint.config.*"
       - ".prettierrc*"
+      - "biome.json"
       - "tsconfig*"
       - "tailwind.config.*"
       - ".github/workflows/**"
@@ -47,6 +49,9 @@ jobs:
 
       - name: Run ESLint
         run: bun run lint
+
+      - name: Run Biome
+        run: bun run lint:biome
 
       - name: Run prettier
         run: bun run format:check

@@ -44,9 +44,13 @@
   display: flex;
   align-items: end;
   justify-content: center;
-  gap: 3px;
+  gap: 4px;
   padding-bottom: 0px;
-  height: 40px;
+  /* Match icon height (30px) so the bars' bottom edge aligns with the icon's
+     bottom edge. Bars grow upward from this baseline. The container clips any
+     bar above 30px (max bar is 35px in the component) — this slightly compresses
+     the top of the range but keeps visual alignment clean. */
+  height: 30px;
   overflow: hidden;
   /* Bars are visual-only, allow clicks to pass through */
   pointer-events: none;
@@ -94,11 +98,13 @@
 }
 
 .bar {
-  width: 8px;
+  width: 10px;
   background: #ffe5ee;
   max-height: 35px;
   border-radius: 2px;
-  transition: height 50ms linear;
+  /* Fallback transition — overridden inline by VisualizerBars.tsx
+     which uses separate rise/fall cubic-bezier timing */
+  transition: height 120ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
   min-height: 7px;
 }
 
@@ -461,7 +467,7 @@
   transition: width 100ms linear;
 }
 
-/* Router result display - clean icons without white box */
+/* Router result display - handler cards layout */
 .router-result {
   display: flex;
   flex-direction: column;
@@ -484,18 +490,42 @@
   gap: 8px;
 }
 
-.result-icons {
+/* Row of handler cards */
+.handler-cards {
   display: flex;
   flex-direction: row;
+  align-items: stretch;
+  justify-content: center;
+  gap: calc(8px * var(--overlay-scale, 1));
+}
+
+/* Individual handler card: icon above, name below */
+.handler-card {
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: calc(4px * var(--overlay-scale, 1));
+  padding: calc(10px * var(--overlay-scale, 1)) calc(12px * var(--overlay-scale, 1));
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: calc(10px * var(--overlay-scale, 1));
+  min-width: calc(60px * var(--overlay-scale, 1));
+  max-width: calc(90px * var(--overlay-scale, 1));
 }
 
 .handler-icon {
-  font-size: 32px;
+  font-size: calc(28px * var(--overlay-scale, 1));
   line-height: 1;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+}
+
+.handler-label {
+  font-size: calc(11px * var(--overlay-scale, 1));
+  font-weight: 500;
+  color: #ffffff;
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-word;
 }
 
 .result-icon {
@@ -503,18 +533,10 @@
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
 }
 
-.result-summary {
-  font-size: 14px;
-  color: rgba(255, 255, 255, 0.85);
-  text-align: center;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-}
-
 .result-message {
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.85);
+  color: #ffffff;
   text-align: center;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 /* Keep container styling when showing result - icons appear inside the rounded box */
@@ -572,6 +594,11 @@
 
 .transcription-preview.has-result {
   pointer-events: none;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border: none;
 }
 
 /* Fade-out animation for transcription preview dismissal */

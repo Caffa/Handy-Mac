@@ -18,8 +18,14 @@ pub use crate::tray::*;
 ///
 /// FIXED: Added defensive checks to ensure we don't try to cancel when already idle,
 /// and proper logging of state transitions for debugging freeze issues.
+/// INSTRUMENTED: Each step is timed so that if the freeze recurs, the log shows
+/// exactly which call blocked.
 pub fn cancel_current_operation(app: &AppHandle) {
-    info!("Initiating operation cancellation...");
+    info!(
+        "[CANCEL-TIMING] cancel_current_operation START on thread {:?}",
+        std::thread::current().id()
+    );
+    let total_start = std::time::Instant::now();
 
     // CRITICAL: Cancel streaming transcription FIRST (uses AtomicBool, no lock needed).
     // This must happen before any other operations to stop live captions immediately,
@@ -29,24 +35,39 @@ pub fn cancel_current_operation(app: &AppHandle) {
     // The streaming callback holds the TM lock during transcription (seconds),
     // and this cancel handler would block waiting for that lock, freezing the UI.
     // By using the Arc<AtomicBool> directly, we can cancel without waiting.
-    if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-        let was_already_cancelled = cancel_flag.swap(true, Ordering::AcqRel);
-        if was_already_cancelled {
-            info!("Streaming transcription was already cancelled");
+    {
+        let t = std::time::Instant::now();
+        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
+            let was_already_cancelled = cancel_flag.swap(true, Ordering::AcqRel);
+            if was_already_cancelled {
+                info!("Streaming transcription was already cancelled");
+            } else {
+                info!("Streaming transcription cancelled via Arc<AtomicBool>");
+            }
         } else {
-            info!("Streaming transcription cancelled via Arc<AtomicBool>");
+            warn!("Streaming cancel flag not available in app state");
         }
-    } else {
-        warn!("Streaming cancel flag not available in app state");
+        info!(
+            "[CANCEL-TIMING] step 1 (streaming cancel flag swap) took {:?}",
+            t.elapsed()
+        );
     }
 
     // Unregister the cancel shortcut (synchronously now, not async)
-    info!("Unregistering cancel shortcut...");
-    shortcut::unregister_cancel_shortcut(app);
+    {
+        let t = std::time::Instant::now();
+        info!("Unregistering cancel shortcut...");
+        shortcut::unregister_cancel_shortcut(app);
+        info!(
+            "[CANCEL-TIMING] step 2 (unregister_cancel_shortcut) took {:?}",
+            t.elapsed()
+        );
+    }
 
     // 3. Cancel recording FIRST — must never fail
-    let recording_was_active =
-        if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
+    let recording_was_active = {
+        let t = std::time::Instant::now();
+        let active = if let Some(audio_manager) = app.try_state::<Arc<AudioRecordingManager>>() {
             let active = audio_manager.is_recording();
             if active {
                 info!("Cancelling active recording");
@@ -59,30 +80,74 @@ pub fn cancel_current_operation(app: &AppHandle) {
             warn!("AudioRecordingManager not available for cancellation");
             false
         };
+        info!(
+            "[CANCEL-TIMING] step 3 (cancel_recording) took {:?}",
+            t.elapsed()
+        );
+        active
+    };
 
     // 4. Notify coordinator (non-blocking, ignores closed channel)
-    if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
-        coordinator.notify_cancel(recording_was_active);
-    } else {
-        warn!("TranscriptionCoordinator not available");
+    {
+        let t = std::time::Instant::now();
+        if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
+            coordinator.notify_cancel(recording_was_active);
+        } else {
+            warn!("TranscriptionCoordinator not available");
+        }
+        info!(
+            "[CANCEL-TIMING] step 4 (notify_cancel) took {:?}",
+            t.elapsed()
+        );
     }
-    if let Some(cancel_signal) = app.try_state::<CancelSignal>() {
-        cancel_signal.send_cancel();
-        info!("Cancel signal sent via CancelSignal flag");
+    {
+        let t = std::time::Instant::now();
+        if let Some(cancel_signal) = app.try_state::<CancelSignal>() {
+            cancel_signal.send_cancel();
+            info!("Cancel signal sent via CancelSignal flag");
+        }
+        info!(
+            "[CANCEL-TIMING] step 5 (send_cancel) took {:?}",
+            t.elapsed()
+        );
     }
 
     // 5. Emit Idle state (safe — uses let _ = on emits)
-    emit_app_state(app, &AppState::Idle);
+    {
+        let t = std::time::Instant::now();
+        emit_app_state(app, &AppState::Idle);
+        info!(
+            "[CANCEL-TIMING] step 6 (emit_app_state Idle) took {:?}",
+            t.elapsed()
+        );
+    }
 
     // 6. UI cleanup LAST — wrapped so a tray panic can't abort the cancel.
     // The tray icon change has 14 .expect() calls that can panic; wrapping
     // it ensures the cancel completes even if the tray is in a bad state.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        change_tray_icon(app, crate::tray::TrayIconState::Idle);
-    }));
-    force_hide_recording_overlay(app);
+    {
+        let t = std::time::Instant::now();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            change_tray_icon(app, crate::tray::TrayIconState::Idle);
+        }));
+        info!(
+            "[CANCEL-TIMING] step 7 (change_tray_icon) took {:?}",
+            t.elapsed()
+        );
+    }
+    {
+        let t = std::time::Instant::now();
+        force_hide_recording_overlay(app);
+        info!(
+            "[CANCEL-TIMING] step 8 (force_hide_recording_overlay) took {:?}",
+            t.elapsed()
+        );
+    }
 
-    info!("Operation cancellation completed - returned to idle state");
+    info!(
+        "[CANCEL-TIMING] cancel_current_operation COMPLETE, total {:?}",
+        total_start.elapsed()
+    );
 }
 
 /// Show the recording overlay in "USB cycling" mode.
