@@ -744,3 +744,30 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 ### Lesson
 - **Lock-ordering inversions are silent killers.** Two functions each taking two locks in opposite order won't deadlock until they run concurrently — which may only happen under specific conditions (always-on mode enabling the liveness monitor). Always audit for consistent lock ordering when two functions take the same pair of locks.
 - **The liveness monitor is the always-on-specific risk multiplier.** It's a background thread that takes manager locks every 3s, creating concurrent lock contention that on-demand mode never sees. Any new always-on-related lock analysis must account for the liveness thread.
+
+## Settings "Forgetting Changes" — Cache-Bypass Clobber (2026-07-17)
+
+### Problem
+- User reports settings frequently "forget" changes after being saved. Changes vanish on app restart.
+
+### Root Cause
+- **Three sources of truth** for settings: `SettingsCache` (RwLock, in-memory), `SettingsWriter.pending` (500ms debounced disk-write queue), and `tauri-plugin-store` (disk JSON).
+- The frontend uses `get_settings_safe` / `write_settings_safe` which correctly update the cache. But ~45 internal backend call sites (`managers/model.rs`, `managers/audio.rs`, `managers/transcription.rs`, `shortcut/mod.rs`, `actions/transcribe.rs`, `actions/router.rs`, `clipboard.rs`) used the non-safe `get_settings()` / `write_settings()` variants which **bypassed the cache**:
+  - `get_settings()` read straight from `tauri-plugin-store`'s in-memory cache (STALE — didn't see unflushed cache changes)
+  - `write_settings()` scheduled a debounced disk write but did NOT update `SettingsCache`
+- **Clobber scenario**: user saves setting A (cache updated, disk write pending) → backend calls `get_settings()` (gets stale struct without A) → mutates → `write_settings()` (schedules disk write of stale struct) → debounce fires → A is gone from disk → restart loses A.
+- Worst offender: `auto_select_model_if_needed()` in `managers/model.rs` fires on every model state change.
+- Contributing: `flush_settings` on `ExitRequested` used `block_in_place` + `block_on` which can deadlock during runtime teardown → trailing 500ms write dropped on quit. And `let _ = store.save()` silently discarded disk-write errors.
+
+### Fix (in `src-tauri/src/settings/store.rs` only)
+1. `get_settings()` now reads from `SettingsCache` first (via `try_state`), falls back to plugin-store ONLY when cache isn't managed yet (early startup) — emits a `warn!` so we'd see it at runtime.
+2. `write_settings()` now updates `SettingsCache` before scheduling the debounced disk write — mirrors `write_settings_safe` exactly.
+3. `write_settings_safe` / `write_settings_immediate_safe` simplified to thin wrappers delegating to the non-safe variants (cache logic now lives in one place).
+4. `flush_settings` hardened: early-return if no pending write; 2-second `tokio::time::timeout` guard around `block_on(flush)`; on timeout, writes cache snapshot directly via `write_settings_immediate`.
+5. Diagnostic logging with `[settings]` prefix: `debug!` write trace (5 representative fields, no secrets), `info!` flush events, `warn!` fallback paths, `error!` disk-write failures (replaced all `let _ = store.save()`), `trace!` chatty cache hits.
+
+### Lesson
+- **A "safe" wrapper that callers can bypass is a footgun.** When two API variants exist (`foo` and `foo_safe`), every internal caller will eventually use the wrong one. The fix here was to make the non-safe variant behave like the safe one, so callers can't get it wrong — rather than auditing 45 call sites.
+- **Debounced writes + multiple sources of truth = stale-struct clobber.** The debounce itself wasn't the bug (each write is a full-struct snapshot, so coalescing is fine); the bug was that a stale snapshot could be queued AFTER a fresh one because the non-safe path didn't read the fresh cache.
+- **`let _ = result;` is a silent-failure antipattern** for persistence operations. Always log disk-write errors.
+- **Diagnostic logging is cheap insurance.** The `[settings]` prefix lets us grep `~/Library/Logs/com.pais.handy/handy.log` for the full settings trace if this ever recurs.

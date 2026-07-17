@@ -1,7 +1,7 @@
 // Settings store operations: load, save, flush, debounced writer,
 // sanitization, and migration helpers.
 
-use log::{debug, error, warn};
+use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -37,6 +37,7 @@ impl SettingsCache {
 
     pub fn update(&self, settings: AppSettings) {
         *self.settings.write().unwrap() = settings;
+        trace!("[settings] cache updated");
     }
 }
 
@@ -174,43 +175,35 @@ pub fn load_or_create_app_settings_safe(app: &AppHandle) -> AppSettings {
 /// Reads from the in-memory cache when available, eliminating the read-modify-write
 /// race with the debounced disk writer.
 pub fn get_settings_safe(app: &AppHandle) -> AppSettings {
-    safe_settings_operation("get_settings", || {
+    safe_settings_operation("get_settings_safe", || {
         if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            trace!("[settings] get_safe (cache hit)");
             return cache.get();
         }
         get_settings(app)
     })
     .unwrap_or_else(|| {
-        error!("Falling back to default settings after panic in get_settings");
+        error!("Falling back to default settings after panic in get_settings_safe");
         get_default_settings()
     })
 }
 
 /// Safe wrapper around [`write_settings`] that catches panics.
-/// Updates the in-memory cache immediately so that subsequent reads see the
-/// new value, then schedules a debounced disk write.
+/// Delegates to `write_settings` which updates the cache and schedules a
+/// debounced disk write. The `_safe` variant wraps the call in a panic
+/// catcher as an extra safety net for callers that prefer it.
 pub fn write_settings_safe(app: &AppHandle, settings: AppSettings) {
-    let _ = safe_settings_operation("write_settings", || {
-        // Update the in-memory cache immediately — this is the key fix.
-        // All subsequent reads will see the new value, eliminating the
-        // read-modify-write race with the debounced disk writer.
-        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
-            cache.update(settings.clone());
-        }
-        // Then schedule the debounced disk write (or immediate if no writer).
+    let _ = safe_settings_operation("write_settings_safe", || {
         write_settings(app, settings);
     });
 }
 
 /// Safe wrapper around [`write_settings_immediate`] that catches panics.
-/// Also updates the in-memory cache to keep it consistent with disk.
+/// Delegates to `write_settings_immediate` which updates the cache and
+/// writes to disk synchronously.
 #[allow(dead_code)]
 pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings_immediate", || {
-        // Update the in-memory cache first so reads stay consistent.
-        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
-            cache.update(settings.clone());
-        }
         write_settings_immediate(app, settings);
     });
 }
@@ -276,7 +269,10 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                     sanitize_floats(&mut settings);
                     if let Some(value) = settings_to_value(&settings) {
                         store.set("settings", value);
-                        let _ = store.save();
+                        match store.save() {
+                            Ok(()) => info!("[settings] flushed to disk"),
+                            Err(e) => error!("[settings] disk write FAILED: {e}"),
+                        }
                     }
                 }
 
@@ -310,6 +306,16 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
 }
 
 pub fn get_settings(app: &AppHandle) -> AppSettings {
+    // Prefer the in-memory cache — this is the single source of truth at runtime.
+    // Only fall back to the plugin-store path during early startup before
+    // SettingsCache is managed (e.g. during load_or_create_app_settings).
+    if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+        trace!("[settings] get (cache hit)");
+        return cache.get();
+    }
+
+    warn!("[settings] get: cache not managed yet, falling back to plugin-store");
+
     let Some(store) = open_settings_store(app) else {
         error!("Cannot get settings: store initialization failed, returning defaults");
         return get_default_settings();
@@ -366,7 +372,10 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         sanitize_floats(&mut settings);
         if let Some(value) = settings_to_value(&settings) {
             store.set("settings", value);
-            let _ = store.save();
+            match store.save() {
+                Ok(()) => info!("[settings] flushed to disk"),
+                Err(e) => error!("[settings] disk write FAILED: {e}"),
+            }
         }
     }
 
@@ -381,8 +390,25 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
 }
 
 /// Write settings to disk using the debounced writer.
+/// Also updates the in-memory cache immediately so that subsequent reads
+/// (via `get_settings` or `get_settings_safe`) see the new value, eliminating
+/// the read-modify-write race with the debounced disk writer.
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings", || {
+        // Update the in-memory cache first — mirror what write_settings_safe does.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            cache.update(settings.clone());
+        }
+
+        debug!(
+            "[settings] write: active_model_id={:?} live_captions={} selected_language={} post_process_enabled={} overlay_position={:?}",
+            settings.selected_model,
+            settings.live_captions_enabled,
+            settings.selected_language,
+            settings.post_process_enabled,
+            settings.overlay_position,
+        );
+
         if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
             let app_clone = app.clone();
             let writer = writer.inner().clone();
@@ -417,20 +443,74 @@ pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
         };
 
         store.set("settings", value);
-        let _ = store.save();
+        match store.save() {
+            Ok(()) => info!("[settings] flushed to disk"),
+            Err(e) => error!("[settings] disk write FAILED: {e}"),
+        }
     });
 }
 
 /// Flush any pending debounced settings to disk.
+///
+/// On exit (`RunEvent::ExitRequested`) we must ensure in-flight settings
+/// are persisted. The previous implementation unconditionally called
+/// `block_in_place` + `block_on` which can deadlock if the Tokio runtime
+/// is already tearing down.
+///
+/// This version:
+/// 1. Checks whether there is a pending write first (cheap, async lock).
+/// 2. If no pending write, returns immediately — no blocking needed.
+/// 3. If there IS a pending write, does a synchronous disk write via
+///    `write_settings_immediate` (which calls `store.save()` synchronously)
+///    wrapped in a `block_in_place` + `block_on` with a 2-second timeout
+///    guard so a deadlocked runtime cannot hang the app on quit.
 pub fn flush_settings(app: &AppHandle) {
     let _ = safe_settings_operation("flush_settings", || {
-        if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
-            let writer = writer.inner().clone();
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    writer.flush(app).await;
-                })
-            });
+        let Some(writer) = app.try_state::<Arc<SettingsWriter>>() else {
+            info!("[settings] exit flush: no writer registered, nothing to flush");
+            return;
+        };
+
+        // Use block_in_place because we're in a sync context (Tauri run callback)
+        // but need to check the async pending lock.
+        let has_pending = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                writer.has_pending().await
+            })
+        });
+
+        info!("[settings] exit flush: pending={}", has_pending);
+
+        if !has_pending {
+            info!("[settings] exit flush complete (nothing to write)");
+            return;
+        }
+
+        // There is a pending write. Flush it with a timeout so we don't
+        // hang if the runtime is shutting down.
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    writer.flush(app),
+                )
+                .await
+            })
+        });
+
+        match result {
+            Ok(()) => info!("[settings] exit flush complete"),
+            Err(_) => {
+                warn!("[settings] exit flush timed out after 2s — performing direct disk write as fallback");
+                // Fallback: write directly from the pending settings if we can
+                // grab them, then do a synchronous save.
+                if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+                    write_settings_immediate(app, cache.get());
+                    info!("[settings] exit flush complete (via direct fallback)");
+                } else {
+                    warn!("[settings] exit flush fallback: cache not available, settings may be lost");
+                }
+            }
         }
     });
 }
@@ -512,6 +592,13 @@ impl SettingsWriter {
         }
     }
 
+    /// Check whether there is a pending write that hasn't been flushed yet.
+    /// Used by `flush_settings` to skip the expensive blocking path when
+    /// there's nothing to write.
+    pub async fn has_pending(&self) -> bool {
+        self.pending.lock().await.is_some()
+    }
+
     /// Schedule a settings write. If a write is already pending the new value
     /// replaces it and the debounce timer is restarted.
     pub async fn write(&self, app: AppHandle, settings: AppSettings) {
@@ -563,7 +650,7 @@ impl SettingsWriter {
         };
 
         if let Some(settings) = maybe_settings {
-            debug!("Flushing debounced settings to disk");
+            debug!("[settings] flushing debounced settings to disk");
             write_settings_immediate(app, settings);
         }
     }
