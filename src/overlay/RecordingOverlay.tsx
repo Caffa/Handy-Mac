@@ -267,16 +267,16 @@ const RecordingOverlay: React.FC = () => {
 
         <div className="overlay-middle">
           {/* Mic dead or low audio warning - only show during recording */}
-          {state === "recording" && (
+          {backendState.appState.state === "Recording" && (
             <MicDeadWarning
               micDeadWarning={micDeadWarning}
               lowAudioWarning={lowAudioWarning}
             />
           )}
           {/* Only show warning or visualizer, not both */}
-          {(micDeadWarning || lowAudioWarning) && state === "recording"
+          {(micDeadWarning || lowAudioWarning) && backendState.appState.state === "Recording"
             ? null
-            : state === "recording" && (
+            : backendState.appState.state === "Recording" && (
                 <VisualizerBars levels={levels} isRouter={isRouter} />
               )}
           {/* Processing state: "Filing..." for router, "Processing..." for normal */}
@@ -309,7 +309,7 @@ const RecordingOverlay: React.FC = () => {
         </div>
 
         <div className="overlay-right">
-          {state === "recording" && (
+          {backendState.appState.state === "Recording" && (
             <div
               className="cancel-button"
               onClick={handleCancel}
@@ -335,7 +335,7 @@ const RecordingOverlay: React.FC = () => {
           transcription was still producing text.
           Hide when router result is showing — the handler cards replace them. */}
       {isVisible &&
-        state === "recording" &&
+        backendState.appState.state === "Recording" &&
         liveCaptionsEnabled &&
         streamingText &&
         streamingText.trim() &&

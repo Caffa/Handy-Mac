@@ -892,16 +892,12 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     position_overlay_fixed(app_handle, state, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
-        // BUGFIX (2026-07-01): On macOS, give the main thread time to process the
-        // position update before showing the window. The position is set via
-        // run_on_main_thread() which is asynchronous. Without this delay, the window
-        // can be shown before the position update completes, causing it to appear
-        // at the wrong position (center of screen instead of top/bottom).
-        // This is part of the fix for "Visualizer Positioning Bug — Center Screen After Router".
-        #[cfg(target_os = "macos")]
-        {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // NOTE: The 5ms sleep that was here has been replaced with a synchronous
+        // wait inside position_overlay_on_monitor() using a oneshot channel.
+        // position_overlay_on_monitor now blocks until the main thread confirms
+        // the position has been applied, so the window is correctly positioned
+        // before show() is called below. See position_overlay_on_monitor's
+        // #[cfg(target_os = "macos")] block for the recv_timeout logic.
 
         let _ = overlay_window.show();
 
@@ -1029,13 +1025,19 @@ fn position_overlay_on_monitor(
     #[cfg(target_os = "macos")]
     {
         let window = overlay_window.clone();
+        let (position_tx, position_rx) = std::sync::mpsc::channel();
         let _ = overlay_window.run_on_main_thread(move || {
             let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
                 width: actual_width,
                 height: actual_height,
             }));
+            let _ = position_tx.send(());
         });
+        // Wait for the main thread to apply the position before showing the window.
+        // Without this, the window can appear at the wrong position (center of screen)
+        // because show() is called before the async run_on_main_thread completes.
+        let _ = position_rx.recv_timeout(std::time::Duration::from_millis(200));
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1669,6 +1671,141 @@ mod tests {
             OVERLAY_SESSION.load(Ordering::SeqCst),
             0,
             "After reset, session should be 0"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 10: Initial state — session 0, no bump, no active
+    // Verifies the very first hide succeeds before any recording has started.
+    // Guards: edge case for fresh-app launch.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn initial_state_hide_succeeds() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Before any recording, session = 0, captured = 0 → hide succeeds
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(session_at_call, 0);
+        assert!(
+            should_hide_with_session(session_at_call, false),
+            "Hide should succeed in initial state (session=0, not active)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: Triple recording — third recording's hide succeeds after two bumps
+    // Scenario: Start rec1 (session 1), then rec2 (session 2), then rec3 (session 3).
+    // Stale hides from rec1/rec2 are suppressed; rec3's own hide succeeds.
+    // Guards: Regression test for multi-recording sequences.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn triple_recording_stale_hides_suppressed() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Rec 1 starts
+        let s1 = bump_overlay_session(); // returns 0, session now 1
+
+        // Rec 2 starts
+        let s2 = bump_overlay_session(); // returns 1, session now 2
+
+        // Rec 3 starts
+        let s3 = bump_overlay_session(); // returns 2, session now 3
+
+        // Stale hide from rec1 (session=0) should be suppressed
+        assert!(
+            !should_hide_with_session(s1, false),
+            "Stale hide from rec1 should be suppressed"
+        );
+        // Stale hide from rec2 (session=1) should be suppressed
+        assert!(
+            !should_hide_with_session(s2, false),
+            "Stale hide from rec2 should be suppressed"
+        );
+        // Rec3's own hide (session=2) should be suppressed — session is now 3
+        assert!(
+            !should_hide_with_session(s3, false),
+            "Stale hide from rec3 should be suppressed (session advanced to 3)"
+        );
+        // Current session hide should succeed
+        let current = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(current, 3);
+        assert!(
+            should_hide_with_session(current, false),
+            "Current session hide should succeed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12: Router flow simulation — recording → processing → idle
+    // Guards: Regression test for the router filing race condition.
+    //
+    // Simulates the exact router lifecycle:
+    // 1. User triggers recording (session bumped to 1)
+    // 2. Recording stops → Processing starts → coordinator goes Idle
+    // 3. hide_recording_overlay is called → captures session_at_call = 1
+    //    should_hide_with_session(1, false) → current session is 1 → hide succeeds
+    // 4. User starts a new recording (session bumped to 2)
+    // 5. A stale hide arrives with session_at_call=1 → session is now 2 → suppressed
+    // -----------------------------------------------------------------------
+    #[test]
+    fn router_flow_stale_hide_suppressed() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Step 1: User triggers recording via router binding
+        bump_overlay_session(); // returns 0, session now 1
+
+        // Step 2: Recording finishes, router subprocess starts,
+        // coordinator goes Idle (session stays at 1)
+
+        // Step 3: hide_recording_overlay is called for the router recording.
+        // In real code, session_at_call is captured at hide time (not show time).
+        let session_at_call_step3 = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(session_at_call_step3, 1);
+        let should_hide = should_hide_with_session(session_at_call_step3, false);
+        assert!(
+            should_hide,
+            "Router's own hide should succeed (session matches, not active)"
+        );
+
+        // Step 4: User starts a new recording (session bumped to 2)
+        bump_overlay_session(); // returns 1, session now 2
+        let session_now = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(session_now, 2);
+
+        // Step 5: A stale hide from the router arrives (captured session=1)
+        // This is suppressed because session has advanced to 2.
+        let should_hide_stale = should_hide_with_session(session_at_call_step3, false);
+        assert!(
+            !should_hide_stale,
+            "Stale router hide must be suppressed after new recording starts"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 13: Hide suppressed when is_active=true regardless of session
+    // Even with matching session, active recording must prevent hide.
+    // Guards: Edge case for stop-command race.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn active_recording_blocks_hide_even_with_matching_session() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // Session matches, but is_active=true → hide suppressed
+        assert!(
+            !should_hide_with_session(session_at_call, true),
+            "Active recording must block hide even when session matches"
+        );
+
+        // Now deactivate, hide should succeed
+        assert!(
+            should_hide_with_session(session_at_call, false),
+            "After deactivation, hide should succeed with matching session"
         );
     }
 }
