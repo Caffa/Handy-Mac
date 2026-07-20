@@ -31,6 +31,9 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN post_processed_text TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_prompt TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_requested BOOLEAN NOT NULL DEFAULT 0;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN model_id TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN routed BOOLEAN NOT NULL DEFAULT 0;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN routing_result TEXT;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -63,6 +66,12 @@ pub struct HistoryEntry {
     pub post_processed_text: Option<String>,
     pub post_process_prompt: Option<String>,
     pub post_process_requested: bool,
+    pub model_id: Option<String>,
+    pub routed: bool,
+    /// JSON string of routing handler results, e.g.
+    /// `[{"status":"✅","handler":"Daily","classification":"diary_entry","file_path":null}]`.
+    /// Set after the boss_router subprocess completes.
+    pub routing_result: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -204,9 +213,12 @@ impl HistoryManager {
             saved: row.get("saved")?,
             title: row.get("title")?,
             transcription_text: row.get("transcription_text")?,
-            post_processed_text: row.get("post_processed_text")?,
-            post_process_prompt: row.get("post_process_prompt")?,
-            post_process_requested: row.get("post_process_requested")?,
+            post_processed_text: row.get("post_processed_text").unwrap_or(None),
+            post_process_prompt: row.get("post_process_prompt").unwrap_or(None),
+            post_process_requested: row.get("post_process_requested").unwrap_or(false),
+            model_id: row.get("model_id").unwrap_or(None),
+            routed: row.get("routed").unwrap_or(false),
+            routing_result: row.get("routing_result").unwrap_or(None),
         })
     }
 
@@ -223,6 +235,8 @@ impl HistoryManager {
         post_process_requested: bool,
         post_processed_text: Option<String>,
         post_process_prompt: Option<String>,
+        model_id: Option<String>,
+        routed: bool,
     ) -> Result<HistoryEntry> {
         let timestamp = Utc::now().timestamp();
         let title = self.format_timestamp_title(timestamp);
@@ -237,8 +251,10 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                post_process_requested,
+                model_id,
+                routed
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 &file_name,
                 timestamp,
@@ -248,6 +264,8 @@ impl HistoryManager {
                 &post_processed_text,
                 &post_process_prompt,
                 post_process_requested,
+                &model_id,
+                routed,
             ],
         )?;
 
@@ -261,6 +279,9 @@ impl HistoryManager {
             post_processed_text,
             post_process_prompt,
             post_process_requested,
+            model_id,
+            routed,
+            routing_result: None,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -308,13 +329,54 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
             )?;
 
         debug!("Updated transcription for history entry {}", id);
+
+        if let Err(e) = (HistoryUpdatePayload::Updated {
+            entry: entry.clone(),
+        })
+        .emit(&self.app_handle)
+        {
+            error!("Failed to emit history-updated event: {}", e);
+        }
+
+        Ok(entry)
+    }
+
+    /// Save routing results to an existing history entry (called after boss_router subprocess).
+    pub fn update_routing_result(
+        &self,
+        id: i64,
+        routing_result: Option<String>,
+    ) -> Result<HistoryEntry> {
+        let conn = self.get_connection()?;
+        let updated = conn.execute(
+            "UPDATE transcription_history
+             SET routing_result = ?1
+             WHERE id = ?2",
+            params![routing_result, id],
+        )?;
+
+        if updated == 0 {
+            return Err(anyhow!("History entry {} not found", id));
+        }
+
+        let entry = conn
+            .query_row(
+                "SELECT id, file_name, timestamp, saved, title, transcription_text,
+                        post_processed_text, post_process_prompt, post_process_requested,
+                        model_id, routed, routing_result
+                 FROM transcription_history WHERE id = ?1",
+                params![id],
+                Self::map_history_entry,
+            )?;
+
+        debug!("Updated routing result for history entry {}", id);
 
         if let Err(e) = (HistoryUpdatePayload::Updated {
             entry: entry.clone(),
@@ -459,7 +521,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -473,7 +535,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -485,7 +547,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
                      FROM transcription_history
                      ORDER BY id DESC",
                 )?;
@@ -516,7 +578,10 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                model_id,
+                routed,
+                routing_result
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -543,7 +608,10 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                model_id,
+                routed,
+                routing_result
              FROM transcription_history
              WHERE transcription_text != ''
              ORDER BY timestamp DESC
@@ -597,7 +665,10 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                model_id,
+                routed,
+                routing_result
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -666,7 +737,10 @@ mod tests {
                 transcription_text TEXT NOT NULL,
                 post_processed_text TEXT,
                 post_process_prompt TEXT,
-                post_process_requested BOOLEAN NOT NULL DEFAULT 0
+                post_process_requested BOOLEAN NOT NULL DEFAULT 0,
+                model_id TEXT,
+                routed BOOLEAN NOT NULL DEFAULT 0,
+                routing_result TEXT
             );",
         )
         .expect("create transcription_history table");
@@ -683,8 +757,10 @@ mod tests {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                post_process_requested,
+                model_id,
+                routed
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 format!("handy-{}.wav", timestamp),
                 timestamp,
@@ -692,6 +768,8 @@ mod tests {
                 format!("Recording {}", timestamp),
                 text,
                 post_processed,
+                Option::<String>::None,
+                false,
                 Option::<String>::None,
                 false,
             ],

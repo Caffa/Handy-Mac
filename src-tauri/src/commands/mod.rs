@@ -185,3 +185,40 @@ pub fn initialize_shortcuts(app: AppHandle) -> Result<(), String> {
     log::info!("Shortcuts initialized successfully");
     Ok(())
 }
+
+// ============================================================================
+// Router mode (fork-only feature)
+// ============================================================================
+
+/// Pending routing confirmation state.
+/// Used to communicate between the frontend (overlay) and the backend
+/// when the user confirms or edits a routing transcription.
+pub struct PendingRouting {
+    /// Sender for confirming routing with (possibly edited) text
+    pub confirm_tx: tokio::sync::oneshot::Sender<String>,
+}
+
+/// Thread-safe container for pending routing confirmation.
+/// Allows the frontend to trigger confirmation after the countdown/edit phase.
+pub type PendingRoutingState = std::sync::Arc<parking_lot::Mutex<Option<PendingRouting>>>;
+
+/// Confirm routing with edited text.
+/// Called by the frontend when the user confirms the transcription
+/// (either by letting the countdown expire or by clicking "Send").
+#[specta::specta]
+#[tauri::command]
+pub fn confirm_routing(app: AppHandle, text: String) -> Result<(), String> {
+    if let Some(state) = app.try_state::<PendingRoutingState>() {
+        let pending_opt = state.lock().take();
+        if let Some(pending) = pending_opt {
+            if pending.confirm_tx.send(text).is_err() {
+                log::warn!("Failed to send routing confirmation - receiver already dropped");
+            }
+            Ok(())
+        } else {
+            Err("No pending routing confirmation available - already used".to_string())
+        }
+    } else {
+        Err("No pending routing confirmation available".to_string())
+    }
+}

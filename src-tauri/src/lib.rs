@@ -689,6 +689,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::conflicts::detect_conflicts,
             health::get_health_report,
             health::get_log_entries,
+            commands::confirm_routing,
         ])
         .events(collect_events![
             managers::history::HistoryUpdatePayload,
@@ -905,6 +906,13 @@ pub fn run(cli_args: CliArgs) {
             // disk writer.
             let initial_settings = settings::load_or_create_app_settings_safe(&app_handle);
             app.manage(Arc::new(SettingsCache::new(initial_settings)));
+
+            // PendingRoutingState for router mode confirmation flow
+            app.manage(
+                Arc::new(parking_lot::Mutex::new(
+                    None::<commands::PendingRouting>,
+                )) as commands::PendingRoutingState,
+            );
 
             // Initialise the structured JSONL event logger and install a panic
             // hook that captures crash info before the process terminates.
