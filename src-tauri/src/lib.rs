@@ -29,7 +29,7 @@ mod utils;
 
 // Modules from later PRs — temporarily disabled so PR 1 compiles independently.
 // Remove the cfg(any()) guard when each module's PR is merged.
-#[cfg(any())] mod health;        // PR: health report — depends on session (now available) + get_settings_safe
+mod health;
 mod sleep_wake;
 mod usb_watchdog;
 
@@ -687,6 +687,8 @@ pub fn run(cli_args: CliArgs) {
             helpers::clamshell::is_laptop,
             session::get_session_history,
             shortcut::conflicts::detect_conflicts,
+            health::get_health_report,
+            health::get_log_entries,
         ])
         .events(collect_events![
             managers::history::HistoryUpdatePayload,
