@@ -30,8 +30,8 @@ mod utils;
 // Modules from later PRs — temporarily disabled so PR 1 compiles independently.
 // Remove the cfg(any()) guard when each module's PR is merged.
 #[cfg(any())] mod health;        // PR: health report — depends on session (now available) + get_settings_safe
-#[cfg(any())] mod sleep_wake;     // PR: sleep/wake — depends on shortcut::handy_keys::reset_hotkey_state_after_wake
-#[cfg(any())] mod usb_watchdog;   // PR: USB watchdog — depends on AudioRecordingManager fields
+mod sleep_wake;
+mod usb_watchdog;
 
 pub use cli::CliArgs;
 #[cfg(debug_assertions)]
@@ -58,6 +58,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
 use crate::settings::{get_settings, SettingsCache, SettingsWriter};
+use crate::usb_watchdog::UsbWatchdog;
 
 // Global atomic to store the file log level filter
 // We use u8 to store the log::LevelFilter as a number
@@ -193,6 +194,19 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::CurrentTrayIconState::new());
+
+    // Initialize USB watchdog with settings and app handle
+    let settings = settings::get_settings(app_handle);
+    let usb_watchdog = Arc::new(UsbWatchdog::new(
+        settings.usb_watchdog_enabled,
+        &settings.usb_watchdog_device_name,
+        Some(app_handle.clone()),
+    ));
+    app_handle.manage(usb_watchdog.clone());
+
+    // Start sleep/wake detection (macOS only, no-op on other platforms)
+    #[cfg(target_os = "macos")]
+    sleep_wake::start_sleep_wake_listener(app_handle.clone());
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
