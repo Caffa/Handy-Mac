@@ -42,7 +42,10 @@ use env_filter::Builder as EnvFilterBuilder;
 use managers::audio::AudioRecordingManager;
 use managers::history::HistoryManager;
 use managers::model::ModelManager;
+use managers::retry_worker::RetryWorker;
 use managers::transcription::TranscriptionManager;
+use managers::transcription_retry::TranscriptionRetryQueue;
+use parking_lot::Mutex;
 #[cfg(unix)]
 use signal_hook::consts::{SIGUSR1, SIGUSR2};
 #[cfg(unix)]
@@ -194,6 +197,18 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::CurrentTrayIconState::new());
+
+    // Initialize the transcription retry queue and background retry worker.
+    // Failed transcriptions are persisted to disk and retried automatically.
+    let retry_queue = Arc::new(Mutex::new(
+        TranscriptionRetryQueue::new(app_handle.clone())
+            .expect("Failed to initialize retry queue"),
+    ));
+    app_handle.manage(retry_queue.clone());
+
+    let retry_worker = RetryWorker::new();
+    retry_worker.start(app_handle.clone());
+    app_handle.manage(retry_worker);
 
     // Initialize USB watchdog with settings and app handle
     let settings = settings::get_settings(app_handle);
@@ -665,6 +680,10 @@ pub fn run(cli_args: CliArgs) {
             commands::history::retry_history_entry_transcription,
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
+            managers::transcription_retry::get_retry_entries,
+            managers::transcription_retry::remove_retry_entry,
+            managers::transcription_retry::clear_retry_entries,
+            managers::transcription_retry::get_retry_count,
             helpers::clamshell::is_laptop,
             session::get_session_history,
             shortcut::conflicts::detect_conflicts,

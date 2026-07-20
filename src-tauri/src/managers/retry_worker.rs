@@ -130,15 +130,14 @@ impl RetryWorker {
 
                     // Try transcription
                     match tm.lock().transcribe(audio_samples) {
-                        Ok(transcription) if !transcription.text.is_empty() => {
+                        Ok(transcription) if !transcription.is_empty() => {
                             info!(
-                                "Retry transcription succeeded for entry {} (model: {}): '{}'",
+                                "Retry transcription succeeded for entry {}: '{}'",
                                 entry.id,
-                                transcription.model_id,
-                                if transcription.text.len() > 50 {
-                                    format!("{}...", &transcription.text[..50])
+                                if transcription.len() > 50 {
+                                    format!("{}...", &transcription[..50])
                                 } else {
-                                    transcription.text.clone()
+                                    transcription.clone()
                                 }
                             );
 
@@ -156,10 +155,9 @@ impl RetryWorker {
 
                                 if let Err(e) = hm.update_transcription(
                                     history_id,
-                                    transcription.text.clone(),
+                                    transcription.clone(),
                                     None,
                                     entry.post_process_prompt.clone(),
-                                    Some(transcription.model_id),
                                 ) {
                                     error!("Failed to update history entry {}: {}", history_id, e);
                                 }

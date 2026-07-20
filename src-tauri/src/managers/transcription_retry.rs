@@ -17,7 +17,7 @@ use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 /// Classification of transcription failure types.
 /// Different failures require different retry strategies.
@@ -523,6 +523,51 @@ impl TranscriptionRetryQueue {
 
         Ok(processed)
     }
+}
+
+// ── Tauri commands for the retry queue ──────────────────────────────────
+
+/// Get all pending retry entries (for UI display).
+#[tauri::command]
+#[specta::specta]
+pub fn get_retry_entries(
+    retry_queue: State<'_, Arc<Mutex<TranscriptionRetryQueue>>>,
+) -> Vec<RetryableTranscription> {
+    retry_queue.lock().get_all_pending()
+}
+
+/// Remove a specific entry from the retry queue.
+#[tauri::command]
+#[specta::specta]
+pub fn remove_retry_entry(
+    retry_queue: State<'_, Arc<Mutex<TranscriptionRetryQueue>>>,
+    entry_id: String,
+) -> Result<bool, String> {
+    retry_queue
+        .lock()
+        .remove_entry(&entry_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Clear all pending retry entries.
+#[tauri::command]
+#[specta::specta]
+pub fn clear_retry_entries(
+    retry_queue: State<'_, Arc<Mutex<TranscriptionRetryQueue>>>,
+) -> Result<(), String> {
+    retry_queue
+        .lock()
+        .clear_all()
+        .map_err(|e| e.to_string())
+}
+
+/// Get the count of pending retry entries.
+#[tauri::command]
+#[specta::specta]
+pub fn get_retry_count(
+    retry_queue: State<'_, Arc<Mutex<TranscriptionRetryQueue>>>,
+) -> usize {
+    retry_queue.lock().count()
 }
 
 #[cfg(test)]
