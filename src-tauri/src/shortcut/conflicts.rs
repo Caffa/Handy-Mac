@@ -504,7 +504,7 @@ mod tests {
     fn test_detect_conflicts_macos() {
         #[cfg(target_os = "macos")]
         {
-            let conflicts = detect_conflicts("cmd+q");
+            let conflicts = detect_conflicts("cmd+q".to_string());
             assert!(!conflicts.is_empty());
             assert!(conflicts[0].reserved);
             assert_eq!(conflicts[0].name, "Quit Application");
@@ -512,14 +512,14 @@ mod tests {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let conflicts = detect_conflicts("cmd+q");
+            let conflicts = detect_conflicts("cmd+q".to_string());
             assert!(conflicts.is_empty());
         }
     }
 
     #[test]
     fn test_detect_no_conflict() {
-        let conflicts = detect_conflicts("ctrl+shift+f12");
+        let conflicts = detect_conflicts("ctrl+shift+f12".to_string());
         assert!(conflicts.is_empty());
     }
 

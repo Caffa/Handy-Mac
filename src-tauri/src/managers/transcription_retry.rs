@@ -657,4 +657,405 @@ mod tests {
         entry.schedule_retry(5, 2.0);
         assert_eq!(entry.retry_count, 4);
     }
+
+    // ── Additional tests ───────────────────────────────────────────
+
+    // ── Failure type display messages ──────────────────────────────
+
+    #[test]
+    fn display_model_load_failure() {
+        let f = TranscriptionFailure::ModelLoadFailure {
+            model_id: "turbo".into(),
+            error: "weights missing".into(),
+        };
+        assert_eq!(f.description(), "Failed to load model 'turbo': weights missing");
+    }
+
+    #[test]
+    fn display_inference_failure() {
+        let f = TranscriptionFailure::InferenceFailure {
+            model_id: "small".into(),
+            error: "OOM".into(),
+        };
+        assert_eq!(
+            f.description(),
+            "Transcription failed with model 'small': OOM"
+        );
+    }
+
+    #[test]
+    fn display_engine_panic() {
+        let f = TranscriptionFailure::EnginePanic {
+            model_id: "turbo".into(),
+        };
+        assert_eq!(
+            f.description(),
+            "Model 'turbo' crashed during transcription"
+        );
+    }
+
+    #[test]
+    fn display_timeout() {
+        let f = TranscriptionFailure::Timeout {
+            model_id: "medium".into(),
+            duration_secs: 45,
+        };
+        assert_eq!(
+            f.description(),
+            "Model 'medium' timed out after 45s"
+        );
+    }
+
+    #[test]
+    fn display_resource_unavailable() {
+        let f = TranscriptionFailure::ResourceUnavailable {
+            resource: "GPU".into(),
+            error: "device busy".into(),
+        };
+        assert_eq!(f.description(), "GPU unavailable: device busy");
+    }
+
+    #[test]
+    fn display_silent_audio() {
+        let f = TranscriptionFailure::SilentAudio;
+        assert_eq!(f.description(), "Audio was silent or empty");
+    }
+
+    #[test]
+    fn display_unknown() {
+        let f = TranscriptionFailure::Unknown {
+            error: "something weird".into(),
+        };
+        assert_eq!(f.description(), "Unknown error: something weird");
+    }
+
+    // ── should_auto_retry for all variants ─────────────────────────
+
+    #[test]
+    fn engine_panic_no_auto_retry() {
+        let f = TranscriptionFailure::EnginePanic {
+            model_id: "turbo".into(),
+        };
+        assert!(!f.should_auto_retry());
+    }
+
+    #[test]
+    fn model_load_failure_auto_retry() {
+        let f = TranscriptionFailure::ModelLoadFailure {
+            model_id: "turbo".into(),
+            error: "corrupt".into(),
+        };
+        assert!(f.should_auto_retry());
+    }
+
+    #[test]
+    fn timeout_auto_retry() {
+        let f = TranscriptionFailure::Timeout {
+            model_id: "turbo".into(),
+            duration_secs: 30,
+        };
+        assert!(f.should_auto_retry());
+    }
+
+    #[test]
+    fn resource_unavailable_auto_retry() {
+        let f = TranscriptionFailure::ResourceUnavailable {
+            resource: "GPU".into(),
+            error: "busy".into(),
+        };
+        assert!(f.should_auto_retry());
+    }
+
+    #[test]
+    fn unknown_auto_retry() {
+        let f = TranscriptionFailure::Unknown {
+            error: "mystery".into(),
+        };
+        assert!(f.should_auto_retry());
+    }
+
+    // ── should_try_fallback_model for all variants ─────────────────
+
+    #[test]
+    fn engine_panic_no_fallback() {
+        let f = TranscriptionFailure::EnginePanic {
+            model_id: "turbo".into(),
+        };
+        assert!(!f.should_try_fallback_model());
+    }
+
+    #[test]
+    fn resource_unavailable_no_fallback() {
+        let f = TranscriptionFailure::ResourceUnavailable {
+            resource: "GPU".into(),
+            error: "busy".into(),
+        };
+        assert!(!f.should_try_fallback_model());
+    }
+
+    #[test]
+    fn model_load_failure_fallback() {
+        let f = TranscriptionFailure::ModelLoadFailure {
+            model_id: "turbo".into(),
+            error: "missing".into(),
+        };
+        assert!(f.should_try_fallback_model());
+    }
+
+    #[test]
+    fn inference_failure_fallback() {
+        let f = TranscriptionFailure::InferenceFailure {
+            model_id: "turbo".into(),
+            error: "OOM".into(),
+        };
+        assert!(f.should_try_fallback_model());
+    }
+
+    // ── RetryableTranscription edge cases ──────────────────────────
+
+    #[test]
+    fn retryable_new_defaults() {
+        let entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(entry.retry_count, 0);
+        assert_eq!(entry.max_retries, 3);
+        assert!(!entry.is_processing);
+        assert!(entry.next_retry_at.is_none());
+        assert!(entry.is_ready());
+    }
+
+    #[test]
+    fn not_ready_when_processing() {
+        let mut entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        entry.is_processing = true;
+        assert!(!entry.is_ready());
+    }
+
+    #[test]
+    fn not_ready_when_max_retries_exceeded() {
+        let mut entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        entry.retry_count = 3;
+        entry.max_retries = 3;
+        assert!(!entry.is_ready());
+    }
+
+    #[test]
+    fn get_next_model_primary() {
+        let entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec!["model-b".into()],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(entry.get_next_model(), Some("model-a".into()));
+    }
+
+    #[test]
+    fn get_next_model_fallback() {
+        let mut entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec!["model-b".into(), "model-c".into()],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        entry.current_model_index = 1;
+        assert_eq!(entry.get_next_model(), Some("model-b".into()));
+    }
+
+    #[test]
+    fn get_next_model_none_when_exhausted() {
+        let entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        // Primary at index 0 exists
+        assert_eq!(entry.get_next_model(), Some("model-a".into()));
+
+        let mut entry2 = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        entry2.current_model_index = 1; // past end
+        assert_eq!(entry2.get_next_model(), None);
+    }
+
+    #[test]
+    fn advance_to_fallback_returns_false_when_exhausted() {
+        let mut entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec!["model-b".into()],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        // First advance: 0 -> 1
+        assert!(entry.advance_to_fallback());
+        // Second advance: 1 -> 2, but fallback_models.len() == 1
+        assert!(!entry.advance_to_fallback());
+    }
+
+    #[test]
+    fn mark_completed_clears_failure() {
+        let mut entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::InferenceFailure {
+                model_id: "model-a".into(),
+                error: "fail".into(),
+            },
+            false,
+            None,
+            None,
+        );
+        entry.mark_completed();
+        assert!(entry.last_failure.is_none());
+        assert!(entry.next_retry_at.is_none());
+        assert!(!entry.is_processing);
+    }
+
+    #[test]
+    fn schedule_retry_caps_at_5_minutes() {
+        let mut entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        // Large base delay with high multiplier — should cap at 300s
+        entry.retry_count = 10; // Already many retries
+        entry.schedule_retry(60, 10.0);
+
+        // next_retry_at should be at most 300s from now
+        let now = Utc::now().timestamp();
+        let next = entry.next_retry_at.unwrap();
+        let delay = next - now;
+        assert!(delay <= 301, "delay {} should be <= 300", delay);
+    }
+
+    #[test]
+    fn retryable_transcription_serde_roundtrip() {
+        let entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/test.wav"),
+            "turbo".into(),
+            vec!["small".into()],
+            TranscriptionFailure::InferenceFailure {
+                model_id: "turbo".into(),
+                error: "OOM".into(),
+            },
+            true,
+            Some("fix grammar".into()),
+            Some(42),
+        );
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: RetryableTranscription = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, entry.id);
+        assert_eq!(deserialized.model_id, "turbo");
+        assert_eq!(deserialized.fallback_models, vec!["small"]);
+        assert_eq!(deserialized.post_process, true);
+        assert_eq!(
+            deserialized.post_process_prompt,
+            Some("fix grammar".into())
+        );
+        assert_eq!(deserialized.history_entry_id, Some(42));
+    }
+
+    #[test]
+    fn failure_serde_roundtrip() {
+        let failures = vec![
+            TranscriptionFailure::SilentAudio,
+            TranscriptionFailure::EnginePanic {
+                model_id: "turbo".into(),
+            },
+            TranscriptionFailure::InferenceFailure {
+                model_id: "small".into(),
+                error: "OOM".into(),
+            },
+            TranscriptionFailure::Timeout {
+                model_id: "medium".into(),
+                duration_secs: 30,
+            },
+            TranscriptionFailure::ResourceUnavailable {
+                resource: "GPU".into(),
+                error: "busy".into(),
+            },
+            TranscriptionFailure::Unknown {
+                error: "mystery".into(),
+            },
+            TranscriptionFailure::ModelLoadFailure {
+                model_id: "turbo".into(),
+                error: "corrupt".into(),
+            },
+        ];
+
+        for f in &failures {
+            let json = serde_json::to_string(f).unwrap();
+            let deserialized: TranscriptionFailure = serde_json::from_str(&json).unwrap();
+            assert_eq!(*f, deserialized, "Roundtrip failed for {:?}", f);
+        }
+    }
+
+    #[test]
+    fn new_retries_increment_correctly() {
+        let mut entry = RetryableTranscription::new(
+            PathBuf::from("/tmp/a.wav"),
+            "model-a".into(),
+            vec![],
+            TranscriptionFailure::SilentAudio,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(entry.retry_count, 0);
+        entry.schedule_retry(5, 2.0);
+        assert_eq!(entry.retry_count, 1);
+        entry.schedule_retry(5, 2.0);
+        assert_eq!(entry.retry_count, 2);
+    }
 }

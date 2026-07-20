@@ -388,3 +388,223 @@ pub fn get_session_history(
     let limit = limit.unwrap_or(20) as usize;
     Ok(tracker.get_recent_sessions(limit))
 }
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_tracker_has_no_current_session() {
+        let tracker = SessionTracker::new();
+        assert!(tracker.current_session_id().is_none());
+    }
+
+    #[test]
+    fn new_tracker_has_empty_history() {
+        let tracker = SessionTracker::new();
+        let recent = tracker.get_recent_sessions(10);
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn start_session_returns_nonempty_id() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("Built-in Microphone", false);
+        assert!(!sid.is_empty());
+        assert!(sid.starts_with("s-"));
+    }
+
+    #[test]
+    fn start_session_sets_current() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        assert_eq!(tracker.current_session_id(), Some(sid));
+    }
+
+    #[test]
+    fn finish_session_clears_current() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.finish_session(&sid, 10);
+        assert!(tracker.current_session_id().is_none());
+    }
+
+    #[test]
+    fn finish_session_adds_to_history() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.finish_session(&sid, 5);
+
+        let recent = tracker.get_recent_sessions(10);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].id, sid);
+        assert!(recent[0].success);
+        assert!(recent[0].duration_ms.is_some());
+    }
+
+    #[test]
+    fn fail_session_adds_to_history_as_failure() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.fail_session(&sid, "transcription failed");
+
+        let recent = tracker.get_recent_sessions(10);
+        assert_eq!(recent.len(), 1);
+        assert!(!recent[0].success);
+        assert_eq!(recent[0].errors, vec!["transcription failed"]);
+    }
+
+    #[test]
+    fn fail_session_clears_current() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.fail_session(&sid, "error");
+        assert!(tracker.current_session_id().is_none());
+    }
+
+    #[test]
+    fn start_session_finalises_leaked_previous_session() {
+        let tracker = SessionTracker::new();
+        let _sid1 = tracker.start_session("mic-1", false);
+        let sid2 = tracker.start_session("mic-2", false);
+
+        // Previous session should appear as failed in history
+        let recent = tracker.get_recent_sessions(10);
+        assert_eq!(recent.len(), 1);
+        assert!(!recent[0].success); // leaked session finalised as failed
+        assert_eq!(tracker.current_session_id(), Some(sid2));
+    }
+
+    #[test]
+    fn advance_to_transcribing_sets_model() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.advance_to_transcribing(&sid, "whisper-turbo", 16000, 1000);
+
+        let recent = tracker.get_recent_sessions(10);
+        // Session is still active, not in history yet
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn advance_to_post_processing_records_text_length() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.advance_to_transcribing(&sid, "whisper-turbo", 16000, 1000);
+        tracker.advance_to_post_processing(&sid, 42, 500);
+
+        // Finish and check
+        tracker.finish_session(&sid, 10);
+        let recent = tracker.get_recent_sessions(10);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].text_length, Some(42));
+        assert!(recent[0].success);
+    }
+
+    #[test]
+    fn session_with_post_process_records_flag() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.set_post_process(&sid, "openai");
+        tracker.finish_session(&sid, 10);
+
+        let recent = tracker.get_recent_sessions(10);
+        assert_eq!(recent.len(), 1);
+        assert!(recent[0].had_post_processing);
+    }
+
+    #[test]
+    fn wrong_session_id_is_ignored() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+
+        let wrong_id = "s-wrong-id".to_string();
+        tracker.finish_session(&wrong_id, 10);
+
+        // Session should still be active
+        assert_eq!(tracker.current_session_id(), Some(sid));
+
+        // No history entries
+        assert!(tracker.get_recent_sessions(10).is_empty());
+    }
+
+    #[test]
+    fn history_respects_limit() {
+        let tracker = SessionTracker::new();
+        for i in 0..5 {
+            let sid = tracker.start_session(&format!("mic-{}", i), false);
+            tracker.finish_session(&sid, 1);
+        }
+
+        let all = tracker.get_recent_sessions(10);
+        assert_eq!(all.len(), 5);
+
+        let limited = tracker.get_recent_sessions(3);
+        assert_eq!(limited.len(), 3);
+    }
+
+    #[test]
+    fn history_is_most_recent_first() {
+        let tracker = SessionTracker::new();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let sid = tracker.start_session("mic", false);
+            ids.push(sid.clone());
+            tracker.finish_session(&sid, 1);
+        }
+
+        let recent = tracker.get_recent_sessions(10);
+        // Most recent first
+        assert_eq!(recent[0].id, ids[2]);
+        assert_eq!(recent[1].id, ids[1]);
+        assert_eq!(recent[2].id, ids[0]);
+    }
+
+    #[test]
+    fn fail_session_adds_error_to_errors_vec() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.fail_session(&sid, "model load failed");
+
+        let recent = tracker.get_recent_sessions(10);
+        assert_eq!(recent[0].errors, vec!["model load failed"]);
+    }
+
+    #[test]
+    fn session_phase_serializes_to_snake_case() {
+        // Verify the serde rename works
+        let phase = SessionPhase::Recording;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, "\"recording\"");
+
+        let phase = SessionPhase::Transcribing;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, "\"transcribing\"");
+
+        let phase = SessionPhase::PostProcessing;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, "\"post_processing\"");
+
+        let phase = SessionPhase::Done;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, "\"done\"");
+
+        let phase = SessionPhase::Failed;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, "\"failed\"");
+    }
+
+    #[test]
+    fn session_summary_serializes() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("mic-1", false);
+        tracker.finish_session(&sid, 10);
+
+        let summary = &tracker.get_recent_sessions(1)[0];
+        let json = serde_json::to_string(summary).unwrap();
+        assert!(json.contains("\"id\""));
+        assert!(json.contains("\"success\":true"));
+    }
+}
