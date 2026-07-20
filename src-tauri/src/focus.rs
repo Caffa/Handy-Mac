@@ -49,7 +49,7 @@ pub fn save_frontmost_app(app: &AppHandle) {
         // All ObjC API calls MUST happen inside an autorelease pool to prevent
         // autoreleased temporary objects from corrupting the malloc heap on
         // background (tokio worker) threads.
-        let saved = objc2::rc::autoreleasepool(|_| get_frontmost_app_info());
+        let saved = tauri_nspanel::objc2::rc::autoreleasepool(|_| get_frontmost_app_info());
         if let Some(ref info) = saved {
             info!(
                 "Saving frontmost app: bundle_id={}, pid={}",
@@ -134,7 +134,7 @@ pub fn restore_frontmost_app(app: &AppHandle) -> bool {
         // autoreleased temporary objects from corrupting the malloc heap on
         // background (tokio worker) threads.
         let activated =
-            objc2::rc::autoreleasepool(|_| activate_app_by_pid(info.pid, &info.bundle_id));
+            tauri_nspanel::objc2::rc::autoreleasepool(|_| activate_app_by_pid(info.pid, &info.bundle_id));
         if activated {
             // Small delay to let the target app's run loop process the
             // activation before we send keystrokes. 50ms is generous —
@@ -155,7 +155,7 @@ pub fn restore_frontmost_app(app: &AppHandle) -> bool {
 
 #[cfg(target_os = "macos")]
 fn get_frontmost_app_info() -> Option<FrontmostApp> {
-    use objc2_app_kit::NSWorkspace;
+    use tauri_nspanel::objc2_app_kit::NSWorkspace;
 
     let workspace = NSWorkspace::sharedWorkspace();
     let app = workspace.frontmostApplication()?;
@@ -171,7 +171,7 @@ fn get_frontmost_app_info() -> Option<FrontmostApp> {
 
 #[cfg(target_os = "macos")]
 fn activate_app_by_pid(pid: i32, bundle_id: &str) -> bool {
-    use objc2_app_kit::{NSApplicationActivationOptions, NSWorkspace};
+    use tauri_nspanel::objc2_app_kit::{NSApplicationActivationOptions, NSWorkspace};
 
     let workspace = NSWorkspace::sharedWorkspace();
     let running_apps = workspace.runningApplications();

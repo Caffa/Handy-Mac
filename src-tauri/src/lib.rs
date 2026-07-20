@@ -7,8 +7,10 @@ mod catalog;
 pub mod cli;
 mod clipboard;
 mod commands;
+mod emergency_save;
 mod error_events;
 mod errors;
+mod focus;
 mod helpers;
 mod input;
 mod llm_client;
@@ -651,6 +653,7 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_recording_retention_period,
             helpers::clamshell::is_laptop,
             session::get_session_history,
+            shortcut::conflicts::detect_conflicts,
         ])
         .events(collect_events![
             managers::history::HistoryUpdatePayload,
@@ -853,11 +856,26 @@ pub fn run(cli_args: CliArgs) {
             let app_handle = app.handle().clone();
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
             app.manage(session::SessionTracker::new());
+            app.manage(focus::SavedFrontmostApp::new());
 
             // Initialise the structured JSONL event logger and install a panic
             // hook that captures crash info before the process terminates.
             logging::init(&app_handle);
             logging::install_panic_hook();
+
+            // Initialise the emergency recording backup system so in-progress
+            // recordings survive crashes, force-quits, and hangs.
+            {
+                let backup_dir = app_handle
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|e| {
+                        log::error!("Failed to resolve app data dir for emergency backup: {e}");
+                        std::path::PathBuf::from(".")
+                    })
+                    .join("recordings");
+                emergency_save::init_emergency_backup(&backup_dir);
+            }
 
             initialize_core_logic(&app_handle);
 

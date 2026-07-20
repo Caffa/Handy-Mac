@@ -369,7 +369,7 @@ pub fn normalize_shortcut(shortcut: &str) -> String {
 ///
 /// This function checks against the current platform's reserved shortcuts only.
 /// It does NOT block registration — the caller should use this to emit warnings.
-pub fn detect_conflicts(shortcut: &str) -> Vec<ConflictInfo> {
+pub fn detect_conflicts_for_shortcut(shortcut: &str) -> Vec<ConflictInfo> {
     let normalized = normalize_shortcut(shortcut);
     let mut conflicts = Vec::new();
 
@@ -465,6 +465,16 @@ pub fn detect_conflicts_all_platforms(shortcut: &str) -> Vec<ConflictInfo> {
     }
 
     conflicts
+}
+
+/// Tauri command wrapper for conflict detection.
+///
+/// Accepts the shortcut string as an owned `String` (Tauri commands cannot
+/// take references) and delegates to [`detect_conflicts_for_shortcut`].
+#[tauri::command]
+#[specta::specta]
+pub fn detect_conflicts(shortcut: String) -> Vec<ConflictInfo> {
+    detect_conflicts_for_shortcut(&shortcut)
 }
 
 #[cfg(test)]

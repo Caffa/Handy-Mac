@@ -1,6 +1,9 @@
 use crate::input;
 use crate::settings;
 use crate::settings::{OverlayPosition, OverlayStyle};
+
+#[cfg(target_os = "macos")]
+use crate::focus;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
@@ -422,6 +425,11 @@ fn show_overlay_state(app_handle: &AppHandle, state: &str) {
 
 /// Shows the recording overlay window with fade-in animation
 pub fn show_recording_overlay(app_handle: &AppHandle) {
+    // Save the frontmost app before the overlay steals focus, so the paste
+    // flow can re-activate the user's target application.
+    #[cfg(target_os = "macos")]
+    focus::save_frontmost_app(app_handle);
+
     show_overlay_state(app_handle, "recording");
 }
 
