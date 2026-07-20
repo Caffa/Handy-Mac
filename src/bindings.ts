@@ -1369,6 +1369,21 @@ async setOverlayMousePassthrough(enabled: boolean) : Promise<Result<null, string
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Force the overlay panel to stay click-through regardless of cursor position.
+ * When force_click_through is true, the mouseEntered callback does NOT disable
+ * ignoresMouseEvents, so the panel never steals clicks even when the cursor
+ * enters the panel area. Used during non-interactive phases (router filing,
+ * result display).
+ */
+async setOverlayForceClickThrough(forceClickThrough: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_overlay_force_click_through", { forceClickThrough }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

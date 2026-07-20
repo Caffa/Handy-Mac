@@ -128,6 +128,19 @@ const RecordingOverlay: React.FC = () => {
     setState(backendState.overlayState);
   }, [backendState.overlayState, setState]);
 
+  // ─── Force click-through during non-interactive overlay phases ─────────
+  // When the router is filing (Processing state) or showing results, the
+  // overlay has nothing the user needs to interact with. Force click-through
+  // so the NSTrackingArea doesn't disable ignoresMouseEvents and steal clicks.
+  useEffect(() => {
+    const forceClickThrough =
+      // Filing... — nothing to interact with
+      (state === "processing" && isRouter) ||
+      // Router result displayed — just visual cards, no interaction
+      (routerResult !== null);
+    commands.setOverlayForceClickThrough(forceClickThrough).catch(() => {});
+  }, [state, isRouter, routerResult]);
+
   // ─── Reset on new recording ──────────────────────────────────────────
   // When the backend transitions to Recording from any other state,
   // reset all mutable UI state (streaming text, warnings, etc.).
@@ -256,8 +269,12 @@ const RecordingOverlay: React.FC = () => {
   };
 
   // ─── Render ────────────────────────────────────────────────────────────
+  // During router result display, hide the pill — only show the status message cards.
+  const showPill = isVisible && !routerResult;
+
   return (
     <>
+      {showPill && (
       <div
         dir={direction}
         className={getOverlayClassNames()}
@@ -326,6 +343,7 @@ const RecordingOverlay: React.FC = () => {
 
         </div>
       </div>
+      )}
 
       {/* Live captions — decoupled from mic warnings: captions and mic warnings
           are independent concerns. The MicDeadWarning component is already
@@ -349,7 +367,7 @@ const RecordingOverlay: React.FC = () => {
         )}
 
       {/* Router result display / transcription preview */}
-      {isRouter && (transcriptionPreview || routerResult) && (
+      {isRouter && routerResult && (
         <RouterResultDisplay
           routerResult={routerResult}
           isEditing={isEditing}

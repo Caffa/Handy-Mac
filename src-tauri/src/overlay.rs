@@ -45,6 +45,11 @@ static OVERLAY_CAN_BECOME_KEY: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static OVERLAY_CURSOR_IN_PANEL: AtomicBool = AtomicBool::new(false);
 
+/// When true, the mouseEntered callback does NOT disable ignoresMouseEvents.
+/// This keeps the panel fully click-through during non-interactive phases
+/// (router filing, result display) so the transparent window doesn't steal clicks.
+static OVERLAY_FORCE_CLICK_THROUGH: AtomicBool = AtomicBool::new(false);
+
 // Cached "overlay is enabled" flag, kept in sync with the overlay_position
 // setting. Avoids reading the Tauri store on every audio callback (~24 Hz
 // during recording). Defaults to false so the audio path doesn't emit until
@@ -155,6 +160,14 @@ fn swizzle_mouse_tracking() {
             _event: &objc2::runtime::AnyObject,
         ) {
             OVERLAY_CURSOR_IN_PANEL.store(true, Ordering::SeqCst);
+
+            // If force click-through is enabled, don't disable ignoresMouseEvents.
+            // This keeps the panel click-through during non-interactive phases
+            // (router filing, result display) so the transparent window doesn't block clicks.
+            if OVERLAY_FORCE_CLICK_THROUGH.load(Ordering::SeqCst) {
+                log::debug!("Overlay mouse entered: force click-through active, keeping ignoresMouseEvents");
+                return;
+            }
 
             // Disable ignoresMouseEvents so interactive elements (buttons,
             // textareas) can receive mouse events.
@@ -351,6 +364,24 @@ pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Resul
         let _ = (app, can_become_key);
         Ok(())
     }
+}
+
+/// Tauri command to force the overlay panel to stay click-through regardless
+/// of cursor position. When force_click_through is true, the mouseEntered
+/// callback does NOT disable ignoresMouseEvents, so the panel never steals
+/// clicks even when the cursor enters the panel area.
+///
+/// Used during non-interactive phases (router filing, result display) where
+/// the overlay shows status text but nothing the user needs to interact with.
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_force_click_through(app: AppHandle, force_click_through: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        OVERLAY_FORCE_CLICK_THROUGH.store(force_click_through, Ordering::SeqCst);
+        log::debug!("set_overlay_force_click_through: {}", force_click_through);
+    }
+    Ok(())
 }
 
 /// Tauri command to toggle whether the overlay panel accepts mouse events.
@@ -1224,6 +1255,9 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
                 .map_or(false, |coord| coord.is_active_use());
 
             if !is_active {
+                // Reset force click-through so next show starts with clean state.
+                OVERLAY_FORCE_CLICK_THROUGH.store(false, Ordering::SeqCst);
+
                 // On macOS, reset ignores_mouse_events to false (accept events)
                 // before hiding, so the next show starts with a clean state.
                 // show_overlay_state will set ignores_mouse_events(true) again
@@ -1258,6 +1292,9 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
         // Hide immediately on main thread - no thread spawn, safer on crash
         let window_clone = overlay_window.clone();
         let _ = overlay_window.run_on_main_thread(move || {
+            // Reset force click-through so next show starts with clean state.
+            OVERLAY_FORCE_CLICK_THROUGH.store(false, Ordering::SeqCst);
+
             // On macOS, reset ignores_mouse_events to false before hiding,
             // so the next show starts with a clean state.
             #[cfg(target_os = "macos")]

@@ -667,6 +667,7 @@ pub fn run(cli_args: CliArgs) {
             commands::open_path,
             overlay::set_overlay_can_become_key,
             overlay::set_overlay_mouse_passthrough,
+            overlay::set_overlay_force_click_through,
         ])
         .events(collect_events![
             managers::history::HistoryUpdate,
