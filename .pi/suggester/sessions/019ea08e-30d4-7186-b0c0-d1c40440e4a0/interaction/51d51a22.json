@@ -1,0 +1,30 @@
+{
+  "stateVersion": 9,
+  "pendingNextTurnObservation": {
+    "suggestionTurnId": "51d51a22",
+    "suggestionShownAt": "2026-06-07T06:31:10.454Z",
+    "userPromptSubmittedAt": "2026-06-07T11:15:45.131Z",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "ec6d1490",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Maybe you just need to check if the visualiser is on? Whether it is actively transcribing, or doing doing router filing, we should not quit the app till it is done. Do a flag called 'activeUse'",
+      "classification": "changed_course",
+      "similarity": 0.03980099502487562,
+      "timestamp": "2026-06-07T06:14:46.931Z"
+    },
+    {
+      "turnId": "51d51a22",
+      "suggestedPrompt": "Build and test it",
+      "actualUserPrompt": "base ❯ bash \"scripts/build-reinstall.sh\" --skip-build\n═══════════════════════════════════════════════════════════════\n  Handy Build + Reinstall\n═══════════════════════════════════════════════════════════════\n\n1/9 ⏩ Skipping build (--skip-build)\n2/9 📦 Creating DMG...\n.......................................................................................\ncreated: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/target/release/bundle/Handy_0.10.0_arm64.dmg\n   ✅ DMG created: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/target/release/bundle/Handy_0.10.0_arm64.dmg ( 19M)\nerror: unexpected argument '--is-active-use' found\n\nUsage: handy [OPTIONS]\n\nFor more information, try '--help'.\n3/9 ⏸️  Handy: --is-active-use not supported, checking recording state...\n   Handy has an active recording session. Waiting for it to finish...\n   (Always-on mode does not block - only active transcriptions do)\n   Recording session still active... waiting (attempt 1)",
+      "classification": "changed_course",
+      "similarity": 0.03149219201850781,
+      "timestamp": "2026-06-07T11:15:45.131Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 4
+}

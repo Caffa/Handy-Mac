@@ -1,0 +1,23 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "Update the other locale files too",
+    "shownAt": "2026-04-30T08:49:23.876Z",
+    "turnId": "7b7d04db",
+    "sourceLeafId": "7b7d04db",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "fcb332e6",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Continue",
+      "classification": "accepted_exact",
+      "similarity": 1,
+      "timestamp": "2026-04-30T08:21:20.507Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 6
+}

@@ -1,0 +1,22 @@
+{
+  "stateVersion": 9,
+  "pendingNextTurnObservation": {
+    "suggestionTurnId": "67e01f7c",
+    "suggestionShownAt": "2026-04-30T06:27:03.335Z",
+    "userPromptSubmittedAt": "2026-04-30T06:58:44.165Z",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "67e01f7c",
+      "suggestedPrompt": "Yes, hiding the threshold in advanced mode is correct. Let's also move the translation keys to settings.advanced.*",
+      "actualUserPrompt": "Yes, hiding the threshold in advanced mode is correct. Can we also move the model selection for the hybrid model to the model pane? Instead of using dropdowns in the enabling area, we need to set short or long in the main model picker area.",
+      "classification": "changed_course",
+      "similarity": 0.4361734615971904,
+      "timestamp": "2026-04-30T06:58:44.165Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 2
+}

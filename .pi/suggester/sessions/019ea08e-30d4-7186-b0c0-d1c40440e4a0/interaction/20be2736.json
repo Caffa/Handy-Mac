@@ -1,0 +1,23 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "Test the build-reinstall script now",
+    "shownAt": "2026-06-07T06:25:07.447Z",
+    "turnId": "20be2736",
+    "sourceLeafId": "20be2736",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "ec6d1490",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Maybe you just need to check if the visualiser is on? Whether it is actively transcribing, or doing doing router filing, we should not quit the app till it is done. Do a flag called 'activeUse'",
+      "classification": "changed_course",
+      "similarity": 0.03980099502487562,
+      "timestamp": "2026-06-07T06:14:46.931Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 3
+}

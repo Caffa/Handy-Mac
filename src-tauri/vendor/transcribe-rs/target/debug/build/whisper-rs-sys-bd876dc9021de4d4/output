@@ -1,0 +1,607 @@
+cargo:rustc-link-lib=dylib=c++
+cargo:rustc-link-lib=framework=Accelerate
+cargo:rerun-if-changed=wrapper.h
+cargo:rerun-if-env-changed=TARGET
+cargo:rerun-if-env-changed=BINDGEN_EXTRA_CLANG_ARGS_aarch64-apple-darwin
+cargo:rerun-if-env-changed=BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_darwin
+cargo:rerun-if-env-changed=BINDGEN_EXTRA_CLANG_ARGS
+cargo:rerun-if-changed=wrapper.h
+cargo:rerun-if-changed=./whisper.cpp/include/whisper.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdbool.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stddef.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_header_macro.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_ptrdiff_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_size_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_wchar_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_null.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_max_align_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_offsetof.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/stdint.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int8_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int16_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int32_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int64_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint8_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint16_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint32_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint64_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_symbol_aliasing.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_posix_availability.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/ptrcheck.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_pthread/_pthread_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_intptr_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_uintptr_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_intmax_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uintmax_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/stdio.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_stdio.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_bounds.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityVersions.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternal.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityVersions.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternalLegacy.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternal.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_bounds.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_va_list.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int8_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int16_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int32_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int64_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int8_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int16_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int32_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int64_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_intptr_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_uintptr_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_size_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_null.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/stdio.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_printf.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_bounds.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_seek_set.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_ctermid.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_bounds.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_off_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_ssize_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/types.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_bounds.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_common.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml-cpu.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml-backend.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml-alloc.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stddef.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_header_macro.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_ptrdiff_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_size_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_rsize_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_wchar_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_max_align_t.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stddef_offsetof.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h
+cargo:rerun-if-changed=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdbool.h
+cargo:rerun-if-changed=./whisper.cpp/ggml/include/ggml.h
+CMAKE_TOOLCHAIN_FILE_aarch64-apple-darwin = None
+CMAKE_TOOLCHAIN_FILE_aarch64_apple_darwin = None
+HOST_CMAKE_TOOLCHAIN_FILE = None
+CMAKE_TOOLCHAIN_FILE = None
+CMAKE_GENERATOR_aarch64-apple-darwin = None
+CMAKE_GENERATOR_aarch64_apple_darwin = None
+HOST_CMAKE_GENERATOR = None
+CMAKE_GENERATOR = None
+CMAKE_PREFIX_PATH_aarch64-apple-darwin = None
+CMAKE_PREFIX_PATH_aarch64_apple_darwin = None
+HOST_CMAKE_PREFIX_PATH = None
+CMAKE_PREFIX_PATH = None
+CMAKE_aarch64-apple-darwin = None
+CMAKE_aarch64_apple_darwin = None
+HOST_CMAKE = None
+CMAKE = None
+running: cd "/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build" && CMAKE_PREFIX_PATH="" LC_ALL="C" "cmake" "-Wdev" "--debug-output" "/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp" "-DCMAKE_OSX_ARCHITECTURES=arm64" "-DBUILD_SHARED_LIBS=OFF" "-DWHISPER_ALL_WARNINGS=OFF" "-DWHISPER_ALL_WARNINGS_3RD_PARTY=OFF" "-DWHISPER_BUILD_TESTS=OFF" "-DWHISPER_BUILD_EXAMPLES=OFF" "-DGGML_METAL=OFF" "-DCMAKE_BUILD_TYPE=RelWithDebInfo" "-DGGML_OPENMP=OFF" "-DCMAKE_INSTALL_PREFIX=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out" "-DCMAKE_C_FLAGS= -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2" "-DCMAKE_C_COMPILER=/usr/bin/cc" "-DCMAKE_CXX_FLAGS= -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2" "-DCMAKE_CXX_COMPILER=/usr/bin/c++" "-DCMAKE_ASM_FLAGS= -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2" "-DCMAKE_ASM_COMPILER=/usr/bin/cc" "-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON"
+Running with debug output on.
+-- The C compiler identification is AppleClang 17.0.0.17000604
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake
+-- The CXX compiler identification is AppleClang 17.0.0.17000604
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake
+-- Detecting C compiler ABI info
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake
+-- Detecting C compiler ABI info - done
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake
+-- Check for working C compiler: /usr/bin/cc - skipped
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake
+-- Detecting C compile features
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerSupport.cmake
+-- Detecting C compile features - done
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerSupport.cmake
+-- Detecting CXX compiler ABI info
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake
+-- Detecting CXX compiler ABI info - done
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake
+-- Detecting CXX compile features
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerSupport.cmake
+-- Detecting CXX compile features - done
+   Called from: [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerSupport.cmake
+-- Found Git: /Users/caffae/minimal_dotfiles/zsh/bin/git (found version "2.51.1")
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/cmake/git-vars.cmake
+                [3]	/opt/homebrew/share/cmake/Modules/FindGit.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/FindPackageHandleStandardArgs.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/FindPackageMessage.cmake
+-- The ASM compiler identification is AppleClang
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineASMCompiler.cmake
+-- Found assembler: /usr/bin/cc
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+                [1]	/opt/homebrew/share/cmake/Modules/CMakeDetermineASMCompiler.cmake
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+                [4]	/opt/homebrew/share/cmake/Modules/FindThreads.cmake
+                [3]	/opt/homebrew/share/cmake/Modules/FindThreads.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+                [4]	/opt/homebrew/share/cmake/Modules/FindThreads.cmake
+                [3]	/opt/homebrew/share/cmake/Modules/FindThreads.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Found Threads: TRUE
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+                [3]	/opt/homebrew/share/cmake/Modules/FindThreads.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/FindPackageHandleStandardArgs.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/FindPackageMessage.cmake
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+-- CMAKE_SYSTEM_PROCESSOR: arm64
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+-- GGML_SYSTEM_ARCH: ARM
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+-- Including CPU backend
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+-- Accelerate framework found
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+-- ARM detected
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+-- Performing Test GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/Internal/CheckCompilerFlag.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E - Failed
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/Internal/CheckCompilerFlag.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_dotprod
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_dotprod - Success
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_i8mm
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_i8mm - Failed
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_noi8mm
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_noi8mm - Success
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_sve
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_sve - Failed
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_nosve
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_nosve - Success
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_sme
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_sme - Failed
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceRuns.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceRuns.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_nosme
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test GGML_MACHINE_SUPPORTS_nosme - Success
+   Called from: [5]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Checking for ARM features using flags:
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+--   -U__ARM_FEATURE_MATMUL_INT8
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+--   -U__ARM_FEATURE_SVE
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+--   -U__ARM_FEATURE_SME
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+--   -mcpu=native+dotprod+noi8mm+nosve+nosme
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+-- Performing Test HAVE_DOTPROD
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_DOTPROD - Success
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_SVE
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_SVE - Failed
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_MATMUL_INT8
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_MATMUL_INT8 - Failed
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_FMA
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_FMA - Success
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_FP16_VECTOR_ARITHMETIC
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_FP16_VECTOR_ARITHMETIC - Success
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_SME
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Performing Test HAVE_SME - Failed
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [3]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+                [2]	/opt/homebrew/share/cmake/Modules/CheckCXXSourceCompiles.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake
+-- Adding CPU backend variant ggml-cpu: -U__ARM_FEATURE_MATMUL_INT8;-U__ARM_FEATURE_SVE;-U__ARM_FEATURE_SME;-mcpu=native+dotprod+noi8mm+nosve+nosme 
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+-- Looking for dgemm_
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/CMakeLists.txt
+                [3]	/opt/homebrew/share/cmake/Modules/FindBLAS.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/FindBLAS.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CheckFunctionExists.cmake
+-- Looking for dgemm_ - found
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/CMakeLists.txt
+                [3]	/opt/homebrew/share/cmake/Modules/FindBLAS.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/FindBLAS.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/CheckFunctionExists.cmake
+-- Found BLAS: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Accelerate.framework
+   Called from: [4]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/CMakeLists.txt
+                [3]	/opt/homebrew/share/cmake/Modules/FindBLAS.cmake
+                [2]	/opt/homebrew/share/cmake/Modules/FindPackageHandleStandardArgs.cmake
+                [1]	/opt/homebrew/share/cmake/Modules/FindPackageMessage.cmake
+-- BLAS found, Libraries: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Accelerate.framework
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/CMakeLists.txt
+-- BLAS found, Includes: 
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/CMakeLists.txt
+-- Including BLAS backend
+   Called from: [2]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+                [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+-- ggml version: 0.9.5
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+-- ggml commit:  0339e1e
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+-- Configuring done (4.0s)
+-- Generating /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/CMakeLists.txt
+-- Generating /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/CMakeLists.txt
+-- Generating /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/CMakeLists.txt
+-- Generating /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-cpu
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+-- Generating /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/CMakeLists.txt
+-- Generating /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src
+   Called from: [1]	/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/src/CMakeLists.txt
+-- Generating done (0.0s)
+-- Build files have been written to: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build
+running: cd "/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build" && LC_ALL="C" "cmake" "--build" "/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build" "--target" "install" "--config" "Release" "--parallel" "20"
+Change Dir: '/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build'
+
+Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile -j20 install
+/opt/homebrew/bin/cmake -S/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp -B/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build --check-build-system CMakeFiles/Makefile.cmake 0
+/opt/homebrew/bin/cmake -E cmake_progress_start /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build//CMakeFiles/progress.marks
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/Makefile2 all
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/CMakeFiles/ggml-base.dir/build.make ggml/src/CMakeFiles/ggml-base.dir/depend
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-base.dir/DependInfo.cmake "--color="
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/CMakeFiles/ggml-base.dir/build.make ggml/src/CMakeFiles/ggml-base.dir/build
+[  3%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[ 10%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[ 10%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[ 16%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[ 16%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/cc -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu11 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o -MF CMakeFiles/ggml-base.dir/ggml.c.o.d -o CMakeFiles/ggml-base.dir/ggml.c.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml.c
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/cc -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu11 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o -MF CMakeFiles/ggml-base.dir/ggml-alloc.c.o.d -o CMakeFiles/ggml-base.dir/ggml-alloc.c.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-alloc.c
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o -MF CMakeFiles/ggml-base.dir/ggml-opt.cpp.o.d -o CMakeFiles/ggml-base.dir/ggml-opt.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-opt.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o -MF CMakeFiles/ggml-base.dir/ggml-backend.cpp.o.d -o CMakeFiles/ggml-base.dir/ggml-backend.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-backend.cpp
+[ 26%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[ 26%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[ 26%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o -MF CMakeFiles/ggml-base.dir/ggml.cpp.o.d -o CMakeFiles/ggml-base.dir/ggml.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/cc -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu11 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o -MF CMakeFiles/ggml-base.dir/ggml-quants.c.o.d -o CMakeFiles/ggml-base.dir/ggml-quants.c.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-quants.c
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o -MF CMakeFiles/ggml-base.dir/gguf.cpp.o.d -o CMakeFiles/ggml-base.dir/gguf.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/gguf.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DGGML_COMMIT=\"0339e1e\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_VERSION=\"0.9.5\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o -MF CMakeFiles/ggml-base.dir/ggml-threading.cpp.o.d -o CMakeFiles/ggml-base.dir/ggml-threading.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-threading.cpp
+[ 30%] Linking CXX static library libggml-base.a
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /opt/homebrew/bin/cmake -P CMakeFiles/ggml-base.dir/cmake_clean_target.cmake
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/ggml-base.dir/link.txt --verbose=1
+/usr/bin/ar qc libggml-base.a "CMakeFiles/ggml-base.dir/ggml.c.o" "CMakeFiles/ggml-base.dir/ggml.cpp.o" "CMakeFiles/ggml-base.dir/ggml-alloc.c.o" "CMakeFiles/ggml-base.dir/ggml-backend.cpp.o" "CMakeFiles/ggml-base.dir/ggml-opt.cpp.o" "CMakeFiles/ggml-base.dir/ggml-threading.cpp.o" "CMakeFiles/ggml-base.dir/ggml-quants.c.o" "CMakeFiles/ggml-base.dir/gguf.cpp.o"
+/usr/bin/ranlib libggml-base.a
+[ 30%] Built target ggml-base
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/build.make ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/depend
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/CMakeFiles/ggml-cpu.dir/build.make ggml/src/CMakeFiles/ggml-cpu.dir/depend
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/DependInfo.cmake "--color="
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-cpu.dir/DependInfo.cmake "--color="
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/CMakeFiles/ggml-cpu.dir/build.make ggml/src/CMakeFiles/ggml-cpu.dir/build
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/build.make ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/build
+[ 33%] Building CXX object ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BLAS_USE_ACCELERATE -DGGML_SCHED_MAX_COPIES=4 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -MD -MT ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o -MF CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o.d -o CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-blas/ggml-blas.cpp
+[ 36%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[ 40%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/repack.cpp
+[ 43%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu.cpp
+[ 50%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[ 53%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/amx/amx.cpp
+[ 53%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[ 56%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/hbm.cpp
+[ 63%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/cc -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu11 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu.c
+[ 66%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[ 70%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/amx/mmq.cpp
+[ 73%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[ 73%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/vec.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/unary-ops.cpp
+[ 80%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o
+[ 80%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/ops.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/arch/arm/repack.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/cc -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu11 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/arch/arm/quants.c
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/binary-ops.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/traits.cpp
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/cc -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_ACCELERATE -DGGML_USE_CPU_REPACK -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/.. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu11 -arch arm64 -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -MD -MT ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o -MF CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o.d -o CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-cpu/quants.c
+[ 83%] Linking CXX static library libggml-blas.a
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas && /opt/homebrew/bin/cmake -P CMakeFiles/ggml-blas.dir/cmake_clean_target.cmake
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas && /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/ggml-blas.dir/link.txt --verbose=1
+/usr/bin/ar qc libggml-blas.a "CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o"
+/usr/bin/ranlib libggml-blas.a
+[ 83%] Built target ggml-blas
+[ 86%] Linking CXX static library libggml-cpu.a
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /opt/homebrew/bin/cmake -P CMakeFiles/ggml-cpu.dir/cmake_clean_target.cmake
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/ggml-cpu.dir/link.txt --verbose=1
+/usr/bin/ar qc libggml-cpu.a "CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o" "CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o"
+/usr/bin/ranlib libggml-cpu.a
+[ 86%] Built target ggml-cpu
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/CMakeFiles/ggml.dir/build.make ggml/src/CMakeFiles/ggml.dir/depend
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml.dir/DependInfo.cmake "--color="
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f ggml/src/CMakeFiles/ggml.dir/build.make ggml/src/CMakeFiles/ggml.dir/build
+[ 90%] Building CXX object ggml/src/CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /usr/bin/c++ -DGGML_SCHED_MAX_COPIES=4 -DGGML_USE_BLAS -DGGML_USE_CPU -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -std=gnu++17 -arch arm64 -MD -MT ggml/src/CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o -MF CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o.d -o CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/ggml-backend-reg.cpp
+[ 93%] Linking CXX static library libggml.a
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /opt/homebrew/bin/cmake -P CMakeFiles/ggml.dir/cmake_clean_target.cmake
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src && /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/ggml.dir/link.txt --verbose=1
+/usr/bin/ar qc libggml.a "CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o"
+/usr/bin/ranlib libggml.a
+[ 93%] Built target ggml
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f src/CMakeFiles/whisper.dir/build.make src/CMakeFiles/whisper.dir/depend
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src/CMakeFiles/whisper.dir/DependInfo.cmake "--color="
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f src/CMakeFiles/whisper.dir/build.make src/CMakeFiles/whisper.dir/build
+[ 96%] Building CXX object src/CMakeFiles/whisper.dir/whisper.cpp.o
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src && /usr/bin/c++ -DGGML_USE_BLAS -DGGML_USE_CPU -DWHISPER_VERSION=\"1.8.3\" -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/src/. -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/src/../include -I/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/ggml/src/../include -DWHISPER_DEBUG -ffunction-sections -fdata-sections -fPIC --target=arm64-apple-macosx -mmacosx-version-min=26.2 -O2 -g -DNDEBUG -arch arm64 -MD -MT src/CMakeFiles/whisper.dir/whisper.cpp.o -MF CMakeFiles/whisper.dir/whisper.cpp.o.d -o CMakeFiles/whisper.dir/whisper.cpp.o -c /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/whisper.cpp/src/whisper.cpp
+[100%] Linking CXX static library libwhisper.a
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src && /opt/homebrew/bin/cmake -P CMakeFiles/whisper.dir/cmake_clean_target.cmake
+cd /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src && /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/whisper.dir/link.txt --verbose=1
+/usr/bin/ar qc libwhisper.a CMakeFiles/whisper.dir/whisper.cpp.o
+/usr/bin/ranlib libwhisper.a
+[100%] Built target whisper
+/opt/homebrew/bin/cmake -E cmake_progress_start /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles 0
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/Makefile2 preinstall
+make[1]: Nothing to be done for `preinstall'.
+Install the project...
+/opt/homebrew/bin/cmake -P cmake_install.cmake
+-- Install configuration: "RelWithDebInfo"
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/libwhisper.a
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/whisper.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/cmake/whisper/whisper-config.cmake
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/cmake/whisper/whisper-version.cmake
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/pkgconfig/whisper.pc
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/libggml-cpu.a
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/libggml-blas.a
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/libggml.a
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-cpu.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-alloc.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-backend.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-blas.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-cann.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-cpp.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-cuda.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-opt.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-metal.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-rpc.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-sycl.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-vulkan.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-webgpu.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/ggml-zendnn.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/include/gguf.h
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/libggml-base.a
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/cmake/ggml/ggml-config.cmake
+-- Installing: /Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/lib/cmake/ggml/ggml-version.cmake
+
+cargo:root=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/4.1.2
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/4.1.2/CompilerIdASM
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/4.1.2/CompilerIdC
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/4.1.2/CompilerIdC/tmp
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/4.1.2/CompilerIdCXX
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/4.1.2/CompilerIdCXX/tmp
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/CMakeScratch
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/CMakeFiles/pkgRedirects
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/CMakeFiles
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas/CMakeFiles
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml.dir
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-base.dir
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-cpu.dir
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-cpu
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/ggml/src/ggml-cpu/CMakeFiles
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src/CMakeFiles
+cargo:rustc-link-search=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out/build/src/CMakeFiles/whisper.dir
+cargo:rustc-link-search=native=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out
+cargo:rustc-link-lib=static=whisper
+cargo:rustc-link-lib=static=ggml
+cargo:rustc-link-lib=static=ggml-base
+cargo:rustc-link-lib=static=ggml-cpu
+cargo:rustc-link-lib=static=ggml-blas
+cargo:WHISPER_CPP_VERSION=1.8.3

@@ -1,0 +1,23 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "Let's test it",
+    "shownAt": "2026-04-30T08:39:27.084Z",
+    "turnId": "720f7cdb",
+    "sourceLeafId": "720f7cdb",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "fcb332e6",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Continue",
+      "classification": "accepted_exact",
+      "similarity": 1,
+      "timestamp": "2026-04-30T08:21:20.507Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 5
+}

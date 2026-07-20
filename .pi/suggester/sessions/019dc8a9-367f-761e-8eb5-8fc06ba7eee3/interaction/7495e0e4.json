@@ -1,0 +1,22 @@
+{
+  "stateVersion": 9,
+  "pendingNextTurnObservation": {
+    "suggestionTurnId": "7495e0e4",
+    "suggestionShownAt": "2026-04-26T07:28:08.322Z",
+    "userPromptSubmittedAt": "2026-04-26T07:28:29.023Z",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "7495e0e4",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Use ollama models instead of openai-codex",
+      "classification": "changed_course",
+      "similarity": 0.10204081632653061,
+      "timestamp": "2026-04-26T07:28:29.023Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 1
+}

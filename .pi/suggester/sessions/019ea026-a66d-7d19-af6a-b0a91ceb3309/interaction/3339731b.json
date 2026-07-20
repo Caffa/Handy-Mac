@@ -1,0 +1,22 @@
+{
+  "stateVersion": 9,
+  "pendingNextTurnObservation": {
+    "suggestionTurnId": "3339731b",
+    "suggestionShownAt": "2026-06-07T03:40:44.228Z",
+    "userPromptSubmittedAt": "2026-06-07T03:41:38.056Z",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "3339731b",
+      "suggestedPrompt": "commit this fix",
+      "actualUserPrompt": "commit this fix.",
+      "classification": "accepted_edited",
+      "similarity": 0.9838709677419355,
+      "timestamp": "2026-06-07T03:41:38.056Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 3
+}

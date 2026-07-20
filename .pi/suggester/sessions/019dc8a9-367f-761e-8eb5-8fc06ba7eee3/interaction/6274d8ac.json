@@ -1,0 +1,23 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "optimize COMMON_WORDS to a HashSet for O(1) lookup",
+    "shownAt": "2026-04-26T08:15:01.863Z",
+    "turnId": "6274d8ac",
+    "sourceLeafId": "6274d8ac",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "7495e0e4",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Use ollama models instead of openai-codex",
+      "classification": "changed_course",
+      "similarity": 0.10204081632653061,
+      "timestamp": "2026-04-26T07:28:29.023Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 5
+}

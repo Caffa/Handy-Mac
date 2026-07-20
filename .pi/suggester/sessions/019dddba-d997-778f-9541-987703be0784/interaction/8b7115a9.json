@@ -1,0 +1,14 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "commit the instructions",
+    "shownAt": "2026-04-30T09:40:10.432Z",
+    "turnId": "8b7115a9",
+    "sourceLeafId": "8b7115a9",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [],
+  "turnsSinceLastStalenessCheck": 1
+}

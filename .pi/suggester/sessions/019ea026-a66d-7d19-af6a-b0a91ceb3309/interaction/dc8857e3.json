@@ -1,0 +1,14 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "run it and let me know what happens",
+    "shownAt": "2026-06-07T03:40:19.055Z",
+    "turnId": "dc8857e3",
+    "sourceLeafId": "dc8857e3",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [],
+  "turnsSinceLastStalenessCheck": 2
+}

@@ -10,13 +10,13 @@
 //! - Transcription failures (engine crashes, model not loaded)
 //! - Audio device errors (microphone permission denied, no input device)
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Emitter};
 
 /// Categories of recoverable errors.
 /// Each variant maps to a user-friendly i18n key prefix in the frontend.
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoverableErrorType {
     /// Model download failed (network error, verification failure, extraction failure)
@@ -30,7 +30,7 @@ pub enum RecoverableErrorType {
 }
 
 /// Whether a recoverable error can be retried automatically or needs user action.
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryAction {
     /// The operation can be retried directly (e.g., re-download, re-load model)
@@ -51,7 +51,7 @@ pub enum RecoveryAction {
 /// - `retry_command`: The Tauri command name to call on retry (if applicable)
 /// - `retry_args`: Arguments for the retry command (JSON string)
 /// - `technical_detail`: Technical error info for "Show Details" toggle
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, tauri_specta::Event)]
 pub struct RecoverableErrorEvent {
     /// Unique identifier for this error occurrence (for dedup/tracking retry count)
     pub error_id: String,

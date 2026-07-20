@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "019dc8a9-367f-761e-8eb5-8fc06ba7eee3",
+  "sessionFile": "/Users/caffae/.pi/agent/sessions/--Users-caffae-Local-Projects-2026-Handy-Fork-Handy-Mac--/2026-04-26T07-20-25-984Z_019dc8a9-367f-761e-8eb5-8fc06ba7eee3.jsonl",
+  "cwd": "/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac",
+  "ignoreLegacyPiSessionEntries": true,
+  "legacyMigration": {
+    "performedAt": "2026-04-26T07:20:27.349Z",
+    "importedLegacyEntries": false,
+    "legacyStateEntryCount": 0,
+    "legacyUsageEntryCount": 0,
+    "note": "Legacy suggester-state/suggester-usage pi session entries were imported once into extension-owned storage and are ignored afterwards."
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "stateVersion": 9,
+  "steeringHistory": [
+    {
+      "turnId": "2c204f3a",
+      "suggestedPrompt": "Looks good. I'll test it with a [deploy] commit and report back.",
+      "actualUserPrompt": "It should also quit the running app before doing a rm , can you double check this",
+      "classification": "changed_course",
+      "similarity": 0.23703703703703705,
+      "timestamp": "2026-04-25T10:12:24.207Z"
+    },
+    {
+      "turnId": "607aa8c5",
+      "suggestedPrompt": "Great, thanks for verifying.",
+      "actualUserPrompt": "Do a git commit and build this app so I have a copy in Applications",
+      "classification": "changed_course",
+      "similarity": 0.15789473684210525,
+      "timestamp": "2026-04-25T10:15:36.575Z"
+    },
+    {
+      "turnId": "4e820e91",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Try again. I had to stop another coding agent that was changing the files to add a USB Power Watchdog. I do want the USB Power Watchdog feature. This should stay in. You just need to build the app. Do not do git reset.",
+      "classification": "changed_course",
+      "similarity": 0.035398230088495575,
+      "timestamp": "2026-04-25T10:48:08.399Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 5
+}

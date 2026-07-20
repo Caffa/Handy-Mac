@@ -1,0 +1,22 @@
+{
+  "stateVersion": 9,
+  "pendingNextTurnObservation": {
+    "suggestionTurnId": "2c204f3a",
+    "suggestionShownAt": "2026-04-25T10:01:02.296Z",
+    "userPromptSubmittedAt": "2026-04-25T10:12:24.207Z",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "2c204f3a",
+      "suggestedPrompt": "Looks good. I'll test it with a [deploy] commit and report back.",
+      "actualUserPrompt": "It should also quit the running app before doing a rm , can you double check this",
+      "classification": "changed_course",
+      "similarity": 0.23703703703703705,
+      "timestamp": "2026-04-25T10:12:24.207Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 2
+}

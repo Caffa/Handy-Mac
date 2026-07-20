@@ -1,0 +1,22 @@
+{
+  "stateVersion": 9,
+  "pendingNextTurnObservation": {
+    "suggestionTurnId": "7d661d0b",
+    "suggestionShownAt": "2026-04-30T09:46:13.386Z",
+    "userPromptSubmittedAt": "2026-04-30T09:47:16.124Z",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "7d661d0b",
+      "suggestedPrompt": "Fix the Rapidmg race condition in the script",
+      "actualUserPrompt": "Fix the Rapidmg race condition in the script.",
+      "classification": "accepted_edited",
+      "similarity": 0.9943820224719101,
+      "timestamp": "2026-04-30T09:47:16.124Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 2
+}

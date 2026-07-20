@@ -1,0 +1,23 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "Looks good, let's test it",
+    "shownAt": "2026-04-30T07:04:16.995Z",
+    "turnId": "b84d4b05",
+    "sourceLeafId": "b84d4b05",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "76c47240",
+      "suggestedPrompt": "let's test the pronunciation recording",
+      "actualUserPrompt": "Why are we doing an auto-stop instead of a button to start and stop?",
+      "classification": "changed_course",
+      "similarity": 0.16981132075471697,
+      "timestamp": "2026-04-30T06:58:35.846Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 3
+}

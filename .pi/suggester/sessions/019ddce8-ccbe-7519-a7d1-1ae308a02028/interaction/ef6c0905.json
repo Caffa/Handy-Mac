@@ -1,0 +1,14 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "Fix those three bugs in the script",
+    "shownAt": "2026-04-30T05:50:13.632Z",
+    "turnId": "ef6c0905",
+    "sourceLeafId": "ef6c0905",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [],
+  "turnsSinceLastStalenessCheck": 2
+}

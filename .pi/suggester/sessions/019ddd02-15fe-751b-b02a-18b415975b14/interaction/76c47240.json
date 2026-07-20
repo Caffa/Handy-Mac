@@ -1,0 +1,22 @@
+{
+  "stateVersion": 9,
+  "pendingNextTurnObservation": {
+    "suggestionTurnId": "76c47240",
+    "suggestionShownAt": "2026-04-30T06:49:54.654Z",
+    "userPromptSubmittedAt": "2026-04-30T06:58:35.846Z",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "76c47240",
+      "suggestedPrompt": "let's test the pronunciation recording",
+      "actualUserPrompt": "Why are we doing an auto-stop instead of a button to start and stop?",
+      "classification": "changed_course",
+      "similarity": 0.16981132075471697,
+      "timestamp": "2026-04-30T06:58:35.846Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 2
+}

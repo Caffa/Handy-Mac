@@ -1,0 +1,10 @@
+prefix=/Users/caffae/Local-Projects-2026/Handy-Fork/Handy-Mac/src-tauri/vendor/transcribe-rs/target/debug/build/whisper-rs-sys-bd876dc9021de4d4/out
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: whisper
+Description: Port of OpenAI's Whisper model in C/C++
+Version: 1.8.3
+Libs: -L${libdir} -lggml  -lggml-base -lwhisper
+Cflags: -I${includedir}

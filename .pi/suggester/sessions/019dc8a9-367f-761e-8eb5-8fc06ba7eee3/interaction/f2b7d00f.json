@@ -1,0 +1,23 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "fix the COMMON_WORDS duplicates and switch to HashSet",
+    "shownAt": "2026-04-26T08:08:04.614Z",
+    "turnId": "f2b7d00f",
+    "sourceLeafId": "f2b7d00f",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "7495e0e4",
+      "suggestedPrompt": "continue",
+      "actualUserPrompt": "Use ollama models instead of openai-codex",
+      "classification": "changed_course",
+      "similarity": 0.10204081632653061,
+      "timestamp": "2026-04-26T07:28:29.023Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 3
+}

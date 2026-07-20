@@ -11,7 +11,6 @@
 //! issues without reading thousands of unstructured lines.
 
 use chrono::Utc;
-use log;
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};

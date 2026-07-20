@@ -7,22 +7,29 @@ mod catalog;
 pub mod cli;
 mod clipboard;
 mod commands;
-mod health;
+mod error_events;
+mod errors;
 mod helpers;
 mod input;
 mod llm_client;
+mod logging;
 mod managers;
 mod overlay;
 pub mod portable;
+mod session;
 mod settings;
 mod shortcut;
 mod signal_handle;
-mod sleep_wake;
 mod transcription_coordinator;
 mod tray;
 mod tray_i18n;
-mod usb_watchdog;
 mod utils;
+
+// Modules from later PRs — temporarily disabled so PR 1 compiles independently.
+// Remove the cfg(any()) guard when each module's PR is merged.
+#[cfg(any())] mod health;        // PR: health report — depends on session (now available) + get_settings_safe
+#[cfg(any())] mod sleep_wake;     // PR: sleep/wake — depends on shortcut::handy_keys::reset_hotkey_state_after_wake
+#[cfg(any())] mod usb_watchdog;   // PR: USB watchdog — depends on AudioRecordingManager fields
 
 pub use cli::CliArgs;
 #[cfg(debug_assertions)]
@@ -643,11 +650,13 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
             helpers::clamshell::is_laptop,
+            session::get_session_history,
         ])
         .events(collect_events![
             managers::history::HistoryUpdatePayload,
             managers::transcription::StreamTextEvent,
             managers::transcription::StreamPhaseEvent,
+            error_events::RecoverableErrorEvent,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
@@ -843,6 +852,12 @@ pub fn run(cli_args: CliArgs) {
             WEBVIEW_LOG_STREAMING.store(settings.debug_mode, Ordering::Relaxed);
             let app_handle = app.handle().clone();
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
+            app.manage(session::SessionTracker::new());
+
+            // Initialise the structured JSONL event logger and install a panic
+            // hook that captures crash info before the process terminates.
+            logging::init(&app_handle);
+            logging::install_panic_hook();
 
             initialize_core_logic(&app_handle);
 
