@@ -57,7 +57,7 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
-use crate::settings::get_settings;
+use crate::settings::{get_settings, SettingsCache, SettingsWriter};
 
 // Global atomic to store the file log level filter
 // We use u8 to store the log::LevelFilter as a number
@@ -857,6 +857,19 @@ pub fn run(cli_args: CliArgs) {
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
             app.manage(session::SessionTracker::new());
             app.manage(focus::SavedFrontmostApp::new());
+
+            // SettingsWriter is managed first so get_settings_safe can fall back
+            // to disk reads if the cache is not yet available.
+            app.manage(Arc::new(SettingsWriter::new()));
+
+            // Initialize the in-memory settings cache with settings loaded from disk.
+            // This must happen AFTER SettingsWriter is managed, so that
+            // get_settings_safe can fall back to disk reads if the cache is not
+            // yet available. The cache is the single source of truth for all
+            // reads — eliminating the read-modify-write race with the debounced
+            // disk writer.
+            let initial_settings = settings::load_or_create_app_settings_safe(&app_handle);
+            app.manage(Arc::new(SettingsCache::new(initial_settings)));
 
             // Initialise the structured JSONL event logger and install a panic
             // hook that captures crash info before the process terminates.
