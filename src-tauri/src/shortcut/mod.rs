@@ -1527,13 +1527,17 @@ pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Re
     settings.live_captions_enabled = enabled;
     settings::write_settings(&app, settings);
 
-    // Toggle streaming transcription at runtime.
+    // Recreate the recorder so the new streaming callback is picked up.
+    // The streaming callback is set on the recorder at creation time, so
+    // recreating the recorder ensures the new live_captions_enabled setting
+    // takes effect immediately. RAII pattern: if the stream was open before
+    // recreation, it is restarted automatically.
     if let Some(rm) =
         app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
     {
-        if let Err(e) = rm.set_streaming_enabled(enabled) {
+        if let Err(e) = rm.recreate_recorder() {
             log::warn!(
-                "Failed to toggle streaming transcription after live captions toggle: {}",
+                "Failed to recreate recorder after live captions toggle: {}",
                 e
             );
         }

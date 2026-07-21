@@ -811,16 +811,12 @@ impl AudioRecordingManager {
 
     /// Toggle live-streaming (partial-transcription) mode on the recorder.
     ///
-    /// In the current architecture the `AudioRecorder` does not yet expose a
-    /// streaming-enabled flag, so this is a no-op that logs a warning.  The
-    /// setting is still persisted so it will take effect on the next recording
-    /// start.  Once the streaming API is ported to this branch, this method
-    /// will forward the toggle to `AudioRecorder::set_streaming_enabled`.
+    /// The streaming callback is set on the `AudioRecorder` at creation time,
+    /// so toggling it requires recreating the recorder. This method delegates
+    /// to `recreate_recorder()` which handles the RAII pattern (restarting the
+    /// stream if it was open before recreation).
     pub fn set_streaming_enabled(&self, _enabled: bool) -> Result<(), anyhow::Error> {
-        log::warn!(
-            "[Live Captions] set_streaming_enabled called but AudioRecorder streaming API \
-             is not yet available on this branch. Setting persisted, applies on next recording."
-        );
-        Ok(())
+        info!("[Live Captions] Toggling streaming mode via recorder recreation");
+        self.recreate_recorder()
     }
 }

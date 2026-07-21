@@ -350,7 +350,7 @@ const RecordingOverlay: React.FC = () => {
           transcription was still producing text.
           Hide when router result is showing — the handler cards replace them. */}
       {isVisible &&
-        state === "recording" &&
+        (state === "recording" || state === "streaming") &&
         liveCaptionsEnabled &&
         streamingText &&
         streamingText.trim() &&

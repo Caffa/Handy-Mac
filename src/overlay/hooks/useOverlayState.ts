@@ -38,7 +38,8 @@ export type OverlayState =
   | "transcribing"
   | "processing"
   | "usb-cycling"
-  | "confirming";
+  | "confirming"
+  | "streaming";
 
 /// Overlay action types
 export type OverlayAction = "transcribe" | "post_process" | "router";

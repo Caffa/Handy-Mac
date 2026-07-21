@@ -25,11 +25,14 @@ export interface TranscriptionSegment {
   text: string;
 }
 
+/**
+ * Live transcription snapshot emitted to the overlay during a streaming run.
+ * `committed` is the append-only, flicker-free prefix; `tentative` is the
+ * volatile suffix the model may still rewrite.
+ */
 export interface PartialTranscriptionEvent {
-  text: string;
-  model_id: string;
-  suppressed_token_count: number | null;
-  segments: TranscriptionSegment[] | null;
+  committed: string;
+  tentative: string;
 }
 
 /** Categories of recoverable errors that can show a retry dialog. */

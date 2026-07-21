@@ -1,14 +1,14 @@
 /**
  * useLiveCaptions — Streaming transcription display logic.
  *
- * Manages the partial-transcription event listener and segment merging.
+ * Manages the stream-text-event listener for live caption display.
  * The streamingText and streamingSegments state are owned by the parent
  * (useOverlaySharedState) and updated via setters — this ensures that resets
  * propagate correctly.
  *
  * Scope: Live caption display during recording.
  * Dependencies: React hooks, PartialTranscriptionEvent type.
- * Side effects: partial-transcription event listener, debug logging.
+ * Side effects: stream-text-event listener, debug logging.
  */
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
@@ -128,7 +128,7 @@ export function useLiveCaptions(
   const segmentsRef = useRef<TranscriptionSegment[]>([]);
 
   // ─── Stale-closure refs ──────────────────────────────────────────────
-  // The partial-transcription listener effect has [] deps (registers once),
+  // The stream-text-event listener effect has [] deps (registers once),
   // so any closure variables it reads are frozen at mount time. Use refs to
   // hold the latest values so the listener always reads current state.
   const liveCaptionsEnabledRef = useRef(liveCaptionsEnabled);
@@ -189,95 +189,53 @@ export function useLiveCaptions(
     }
   }, [effectivelyRecording, liveCaptionsEnabled]);
 
-  // Listen for partial transcription events
+  // Listen for streaming text events (stream-text-event with committed/tentative fields)
   useEffect(() => {
     let unlisten: (() => void) | null = null;
 
     console.log(
-      "[Live Captions] Registering partial-transcription event listener",
+      "[Live Captions] Registering stream-text-event listener",
     );
 
     const setup = async () => {
       unlisten = await listen<PartialTranscriptionEvent>(
-        "partial-transcription",
+        "stream-text-event",
         (event) => {
-          const { text, segments } = event.payload;
+          const { committed, tentative } = event.payload;
           // Read current values from refs to avoid stale closure
           const currentLiveCaptionsEnabled = liveCaptionsEnabledRef.current;
           const currentState = stateRef.current;
           const currentIsVisible = isVisibleRef.current;
 
           console.log("[Live Captions] Event received:", {
-            hasText: !!text,
-            textLength: text?.length || 0,
-            hasSegments: !!segments,
-            segmentCount: segments?.length || 0,
+            committedLength: committed?.length || 0,
+            tentativeLength: tentative?.length || 0,
             liveCaptionsEnabled: currentLiveCaptionsEnabled,
             currentState,
             isVisible: currentIsVisible,
           });
 
-          if (segments && segments.length > 0) {
-            // Merge segments
-            const merged = [...segmentsRef.current];
-            for (const ns of segments) {
-              const kept = merged.filter(
-                (es) => !(es.start < ns.end && es.end > ns.start),
-              );
-              kept.push(ns);
-              merged.splice(0, merged.length, ...kept);
-            }
-            merged.sort((a, b) => a.start - b.start);
+          // Combine committed (stable prefix) + tentative (volatile suffix)
+          const displayText = (committed || "") + (tentative || "");
+          const filtered = filterStreamingText(displayText);
 
-            const displayText = merged.map((s) => s.text).join(" ");
-            const filtered = filterStreamingText(displayText);
-
-            if (!filtered) {
-              console.log(
-                "[Live Captions] Filler filter removed ALL text — raw:",
-                JSON.stringify(displayText),
-                "| keeping previous",
-              );
-              // Don't update streamingText if filter removed all text
-            } else {
-              console.log(
-                "[Live Captions] streamingText set to:",
-                JSON.stringify(filtered),
-              );
-              setStreamingText(filtered);
-            }
-
-            segmentsRef.current = merged;
-            setStreamingSegments([...merged]);
+          if (!filtered) {
+            console.log(
+              "[Live Captions] Filler filter removed ALL text — raw:",
+              JSON.stringify(displayText),
+              "| keeping previous",
+            );
+            // Don't update streamingText if filter removed all text
           } else {
-            // Fallback for models without timestamps
-            if (text) {
-              setStreamingText((prev) => {
-                if (prev === text) {
-                  console.log(
-                    "[Live Captions] Text unchanged from previous — skipping update",
-                  );
-                  return prev;
-                }
-                const filtered = filterStreamingText(text);
-                if (!filtered) {
-                  console.log(
-                    "[Live Captions] Filler filter removed ALL text (fallback) — raw:",
-                    JSON.stringify(text),
-                    "| keeping previous:",
-                    JSON.stringify(prev),
-                  );
-                  return prev;
-                } else {
-                  console.log(
-                    "[Live Captions] streamingText set to (fallback):",
-                    JSON.stringify(filtered),
-                  );
-                  return filtered;
-                }
-              });
-            }
+            console.log(
+              "[Live Captions] streamingText set to:",
+              JSON.stringify(filtered),
+            );
+            setStreamingText(filtered);
           }
+
+          // No segment merging — StreamTextEvent uses committed/tentative, not segments
+          setStreamingSegments([]);
         },
       );
     };
