@@ -247,7 +247,8 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                     settings.router_script_path = default_settings.router_script_path.clone();
                     updated = true;
                 }
-                if settings.router_env_file.is_none() && default_settings.router_env_file.is_some() {
+                if settings.router_env_file.is_none() && default_settings.router_env_file.is_some()
+                {
                     debug!("Migrating router_env_file from default");
                     settings.router_env_file = default_settings.router_env_file.clone();
                     updated = true;
@@ -589,9 +590,7 @@ pub fn flush_settings(app: &AppHandle) {
         // Use block_in_place because we're in a sync context (Tauri run callback)
         // but need to check the async pending lock.
         let has_pending = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                writer.has_pending().await
-            })
+            tokio::runtime::Handle::current().block_on(async { writer.has_pending().await })
         });
 
         info!("[settings] exit flush: pending={}", has_pending);
@@ -605,11 +604,7 @@ pub fn flush_settings(app: &AppHandle) {
         // hang if the runtime is shutting down.
         let result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    writer.flush(app),
-                )
-                .await
+                tokio::time::timeout(std::time::Duration::from_secs(2), writer.flush(app)).await
             })
         });
 
@@ -623,7 +618,9 @@ pub fn flush_settings(app: &AppHandle) {
                     write_settings_immediate(app, cache.get());
                     info!("[settings] exit flush complete (via direct fallback)");
                 } else {
-                    warn!("[settings] exit flush fallback: cache not available, settings may be lost");
+                    warn!(
+                        "[settings] exit flush fallback: cache not available, settings may be lost"
+                    );
                 }
             }
         }

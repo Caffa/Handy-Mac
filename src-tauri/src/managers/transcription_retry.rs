@@ -555,18 +555,13 @@ pub fn remove_retry_entry(
 pub fn clear_retry_entries(
     retry_queue: State<'_, Arc<Mutex<TranscriptionRetryQueue>>>,
 ) -> Result<(), String> {
-    retry_queue
-        .lock()
-        .clear_all()
-        .map_err(|e| e.to_string())
+    retry_queue.lock().clear_all().map_err(|e| e.to_string())
 }
 
 /// Get the count of pending retry entries.
 #[tauri::command]
 #[specta::specta]
-pub fn get_retry_count(
-    retry_queue: State<'_, Arc<Mutex<TranscriptionRetryQueue>>>,
-) -> usize {
+pub fn get_retry_count(retry_queue: State<'_, Arc<Mutex<TranscriptionRetryQueue>>>) -> usize {
     retry_queue.lock().count()
 }
 
@@ -668,7 +663,10 @@ mod tests {
             model_id: "turbo".into(),
             error: "weights missing".into(),
         };
-        assert_eq!(f.description(), "Failed to load model 'turbo': weights missing");
+        assert_eq!(
+            f.description(),
+            "Failed to load model 'turbo': weights missing"
+        );
     }
 
     #[test]
@@ -700,10 +698,7 @@ mod tests {
             model_id: "medium".into(),
             duration_secs: 45,
         };
-        assert_eq!(
-            f.description(),
-            "Model 'medium' timed out after 45s"
-        );
+        assert_eq!(f.description(), "Model 'medium' timed out after 45s");
     }
 
     #[test]
@@ -999,10 +994,7 @@ mod tests {
         assert_eq!(deserialized.model_id, "turbo");
         assert_eq!(deserialized.fallback_models, vec!["small"]);
         assert_eq!(deserialized.post_process, true);
-        assert_eq!(
-            deserialized.post_process_prompt,
-            Some("fix grammar".into())
-        );
+        assert_eq!(deserialized.post_process_prompt, Some("fix grammar".into()));
         assert_eq!(deserialized.history_entry_id, Some(42));
     }
 

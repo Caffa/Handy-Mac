@@ -3,13 +3,13 @@
 //! For each enum in `settings/types.rs` that derives `Serialize + Deserialize`,
 //! verifies that `serde_json::from_str(&serde_json::to_string(&x).unwrap()).unwrap() == x`.
 
+use handy_app_lib::audio_toolkit::SpellingDictionary;
 use handy_app_lib::settings::{
     AutoSubmitKey, ClipboardHandling, KeyboardImplementation, ModelUnloadTimeout,
     NoiseSuppressionLevel, OrtAcceleratorSetting, OverlayPosition, OverlayScreenTarget,
-    PasteMethod, RecordingRetentionPeriod, SoundTheme, TranscribeAcceleratorSetting, TypingTool, VadSensitivity,
-    WordCorrectionMode,
+    PasteMethod, RecordingRetentionPeriod, SoundTheme, TranscribeAcceleratorSetting, TypingTool,
+    VadSensitivity, WordCorrectionMode,
 };
-use handy_app_lib::audio_toolkit::SpellingDictionary;
 use proptest::prelude::*;
 
 // ─── Strategy helpers ───────────────────────────────────────────────────
@@ -26,10 +26,7 @@ fn log_level() -> impl Strategy<Value = handy_app_lib::settings::LogLevel> {
 }
 
 fn overlay_position() -> impl Strategy<Value = OverlayPosition> {
-    prop_oneof![
-        Just(OverlayPosition::Top),
-        Just(OverlayPosition::Bottom),
-    ]
+    prop_oneof![Just(OverlayPosition::Top), Just(OverlayPosition::Bottom),]
 }
 
 fn overlay_screen_target() -> impl Strategy<Value = OverlayScreenTarget> {

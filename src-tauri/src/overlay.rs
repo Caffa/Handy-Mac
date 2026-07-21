@@ -2,11 +2,11 @@ use crate::input;
 use crate::settings;
 use crate::settings::{OverlayPosition, OverlayStyle};
 use crate::transcription_coordinator::TranscriptionCoordinator;
+use log::info;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
-use log::info;
 
 #[cfg(target_os = "macos")]
 use crate::focus;
@@ -535,7 +535,11 @@ pub fn update_overlay_position(app_handle: &AppHandle) {
 /// This is the state+mode-aware version of `update_overlay_position`, used by
 /// the router confirmation flow (PR 10). Currently delegates to the same
 /// repositioning logic as the parameterless version.
-pub fn update_overlay_position_with_mode(app_handle: &AppHandle, _state: &str, _mode: &OverlayMode) {
+pub fn update_overlay_position_with_mode(
+    app_handle: &AppHandle,
+    _state: &str,
+    _mode: &OverlayMode,
+) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
         {

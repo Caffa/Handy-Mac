@@ -485,15 +485,14 @@ impl HistoryManager {
             return Err(anyhow!("History entry {} not found", id));
         }
 
-        let entry = conn
-            .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text,
+        let entry = conn.query_row(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text,
                         post_processed_text, post_process_prompt, post_process_requested,
                         model_id, routed, routing_result
                  FROM transcription_history WHERE id = ?1",
-                params![id],
-                Self::map_history_entry,
-            )?;
+            params![id],
+            Self::map_history_entry,
+        )?;
 
         debug!("Updated routing result for history entry {}", id);
 
@@ -867,11 +866,10 @@ impl HistoryManager {
     /// Get total number of history entries.
     pub fn get_history_count(&self) -> Result<usize> {
         let conn = self.get_conn()?;
-        let count: usize = conn.query_row(
-            "SELECT COUNT(*) FROM transcription_history",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: usize =
+            conn.query_row("SELECT COUNT(*) FROM transcription_history", [], |row| {
+                row.get(0)
+            })?;
         Ok(count)
     }
 
@@ -890,10 +888,16 @@ impl HistoryManager {
 
         let mut csv_output = String::new();
         // Header
-        csv_output.push_str("id,file_name,timestamp,saved,title,transcription_text,post_processed_text,model_id\n");
+        csv_output.push_str(
+            "id,file_name,timestamp,saved,title,transcription_text,post_processed_text,model_id\n",
+        );
         for entry in &entries {
             let text = entry.transcription_text.replace('"', "\"\"");
-            let post_text = entry.post_processed_text.as_deref().unwrap_or("").replace('"', "\"\"");
+            let post_text = entry
+                .post_processed_text
+                .as_deref()
+                .unwrap_or("")
+                .replace('"', "\"\"");
             csv_output.push_str(&format!(
                 "{},{},{},{},{},\"{}\",\"{}\",{}\n",
                 entry.id,
@@ -989,7 +993,9 @@ impl HistoryManager {
                 speech_speed: row.get(15)?,
             })
         })?;
-        entries.collect::<Result<Vec<_>, _>>().map_err(|e| anyhow::anyhow!("Failed to query entries: {}", e))
+        entries
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("Failed to query entries: {}", e))
     }
 
     /// Helper: get a database connection.

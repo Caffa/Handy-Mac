@@ -579,7 +579,11 @@ pub fn reset_hotkey_state_after_wake(app_handle: &tauri::AppHandle) {
             .unwrap_or_else(|| default_binding.clone());
 
         if let Err(e) = state.unregister(&binding) {
-            log::debug!("reset_hotkey_state_after_wake: unregister {} failed: {}", id, e);
+            log::debug!(
+                "reset_hotkey_state_after_wake: unregister {} failed: {}",
+                id,
+                e
+            );
         }
     }
 
@@ -600,7 +604,11 @@ pub fn reset_hotkey_state_after_wake(app_handle: &tauri::AppHandle) {
             .unwrap_or_else(|| default_binding.clone());
 
         if let Err(e) = state.register(&binding) {
-            log::error!("reset_hotkey_state_after_wake: register {} failed: {}", id, e);
+            log::error!(
+                "reset_hotkey_state_after_wake: register {} failed: {}",
+                id,
+                e
+            );
         }
     }
 

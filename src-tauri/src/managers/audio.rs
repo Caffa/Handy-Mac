@@ -390,10 +390,7 @@ impl AudioRecordingManager {
                 if self.usb_watchdog.on_mic_open_failed() {
                     // Watchdog completed a power cycle (blocking). Retry the mic
                     // open now that the device should have re-enumerated.
-                    warn!(
-                        "Mic open failed ({}), USB watchdog cycled - retrying",
-                        e
-                    );
+                    warn!("Mic open failed ({}), USB watchdog cycled - retrying", e);
                     match self.start_microphone_stream_inner() {
                         Ok(()) => {
                             usb_watchdog::emit_stage_event_with_handle(
@@ -755,8 +752,8 @@ impl AudioRecordingManager {
 
         // Capture whether the stream should be running before we tear it down.
         let was_open = *self.is_open.lock().unwrap();
-        let should_be_running = was_open
-            && matches!(*self.mode.lock().unwrap(), MicrophoneMode::AlwaysOn);
+        let should_be_running =
+            was_open && matches!(*self.mode.lock().unwrap(), MicrophoneMode::AlwaysOn);
 
         // Mark the stream as closed before tearing down — prevents concurrent
         // operations from acting on a recorder that is about to be replaced.
@@ -788,11 +785,8 @@ impl AudioRecordingManager {
             )
             .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
 
-        let new_recorder = create_audio_recorder(
-            &vad_path,
-            &self.app_handle,
-            Arc::clone(&self.stream_router),
-        )?;
+        let new_recorder =
+            create_audio_recorder(&vad_path, &self.app_handle, Arc::clone(&self.stream_router))?;
 
         *recorder_opt = Some(new_recorder);
         drop(recorder_opt);
@@ -802,7 +796,10 @@ impl AudioRecordingManager {
         if should_be_running {
             info!("Recreate_recorder: stream was running before recreation, self-healing by restarting");
             if let Err(e) = self.start_microphone_stream() {
-                error!("Recreate_recorder: failed to self-heal stream restart: {}", e);
+                error!(
+                    "Recreate_recorder: failed to self-heal stream restart: {}",
+                    e
+                );
                 return Err(e);
             }
             info!("Recreate_recorder: stream self-healed successfully");

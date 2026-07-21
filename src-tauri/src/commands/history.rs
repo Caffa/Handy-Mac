@@ -212,7 +212,5 @@ pub async fn get_usage_stats(
     _app: AppHandle,
     history_manager: State<'_, Arc<HistoryManager>>,
 ) -> Result<UsageStats, String> {
-    history_manager
-        .get_usage_stats()
-        .map_err(|e| e.to_string())
+    history_manager.get_usage_stats().map_err(|e| e.to_string())
 }

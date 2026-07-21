@@ -17,8 +17,8 @@
 //! 2. Demonstrates that the BAD (inverted) order WOULD deadlock, proving the
 //!    test has the power to catch regressions.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -68,10 +68,7 @@ fn acquire_stop_order(state: &parking_lot::Mutex<()>, recorder: &parking_lot::Mu
 ///
 /// DO NOT USE IN PRODUCTION CODE. This function exists only to prove that the
 /// test can detect the bad order.
-fn acquire_stop_order_buggy(
-    state: &parking_lot::Mutex<()>,
-    recorder: &parking_lot::Mutex<()>,
-) {
+fn acquire_stop_order_buggy(state: &parking_lot::Mutex<()>, recorder: &parking_lot::Mutex<()>) {
     // Phase 1: recorder lock acquired
     let _recorder_guard = recorder.lock();
     // Phase 2: state lock acquired WHILE recorder lock is held — INVERTED ORDER

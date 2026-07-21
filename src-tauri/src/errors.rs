@@ -354,10 +354,7 @@ mod tests {
     #[test]
     fn display_path_resolution() {
         let err = AppError::PathResolution("/foo/bar".into());
-        assert_eq!(
-            err.to_string(),
-            "Failed to resolve path: /foo/bar"
-        );
+        assert_eq!(err.to_string(), "Failed to resolve path: /foo/bar");
     }
 
     #[test]
@@ -503,12 +500,8 @@ mod tests {
 
     #[test]
     fn constructor_model_load() {
-        let err = AppError::model_load(
-            "whisper",
-            "turbo",
-            "weights missing",
-            anyhow::anyhow!("io"),
-        );
+        let err =
+            AppError::model_load("whisper", "turbo", "weights missing", anyhow::anyhow!("io"));
         assert_eq!(
             err.to_string(),
             "Failed to load whisper model turbo: weights missing"
@@ -518,16 +511,12 @@ mod tests {
     #[test]
     fn constructor_model_download() {
         let err = AppError::model_download("small", "timeout", anyhow::anyhow!("timed out"));
-        assert_eq!(
-            err.to_string(),
-            "Failed to download model small: timeout"
-        );
+        assert_eq!(err.to_string(), "Failed to download model small: timeout");
     }
 
     #[test]
     fn constructor_model_extraction() {
-        let err =
-            AppError::model_extraction("medium", "bad archive", anyhow::anyhow!("corrupt"));
+        let err = AppError::model_extraction("medium", "bad archive", anyhow::anyhow!("corrupt"));
         assert_eq!(
             err.to_string(),
             "Failed to extract model medium: bad archive"
@@ -629,8 +618,11 @@ mod tests {
             AppError::TranscriptionLoadTimeout,
         ];
         let displays: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
-        let unique: std::collections::HashSet<&str> =
-            displays.iter().map(|s| s.as_str()).collect();
-        assert_eq!(unique.len(), displays.len(), "All display messages should be unique");
+        let unique: std::collections::HashSet<&str> = displays.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            unique.len(),
+            displays.len(),
+            "All display messages should be unique"
+        );
     }
 }

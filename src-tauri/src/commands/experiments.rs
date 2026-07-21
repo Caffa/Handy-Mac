@@ -64,7 +64,13 @@ pub async fn update_experiment_group(
     notes: Option<String>,
     is_complete: Option<bool>,
 ) -> Result<ExperimentGroup, String> {
-    let _ = (ground_truth, speech_speed, recording_quality, notes, is_complete);
+    let _ = (
+        ground_truth,
+        speech_speed,
+        recording_quality,
+        notes,
+        is_complete,
+    );
     Err(format!(
         "Experiment system not yet available on this branch (id={})",
         id

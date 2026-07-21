@@ -1,6 +1,7 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
+use parking_lot::RwLock;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -8,7 +9,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
-use parking_lot::RwLock;
 
 const DEBOUNCE: Duration = Duration::from_millis(30);
 const RELEASE_GRACE: Duration = Duration::from_millis(50);
@@ -276,10 +276,8 @@ impl TranscriptionCoordinator {
                                     | Stage::Confirming { .. }
                                     | Stage::UsbCycling { .. }
                             );
-                            let is_active_shared = !matches!(
-                                current_state_clone.read().clone(),
-                                AppState::Idle
-                            );
+                            let is_active_shared =
+                                !matches!(current_state_clone.read().clone(), AppState::Idle);
                             if recording_was_active || is_active_thread || is_active_shared {
                                 stage = Stage::Idle;
                                 *current_state_clone.write() = AppState::Idle;
@@ -450,7 +448,12 @@ fn start(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &s
         .is_some_and(|a| a.is_recording())
     {
         *stage = Stage::Recording(binding_id.to_string());
-        emit_app_state(app, &AppState::Recording { binding_id: binding_id.to_string() });
+        emit_app_state(
+            app,
+            &AppState::Recording {
+                binding_id: binding_id.to_string(),
+            },
+        );
     } else {
         debug!("Start for '{binding_id}' did not begin recording; staying idle");
     }
@@ -463,7 +466,12 @@ fn stop(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &st
     };
     action.stop(app, binding_id, hotkey_string);
     *stage = Stage::Processing;
-    emit_app_state(app, &AppState::Processing { binding_id: Some(binding_id.to_string()) });
+    emit_app_state(
+        app,
+        &AppState::Processing {
+            binding_id: Some(binding_id.to_string()),
+        },
+    );
 }
 
 #[cfg(test)]

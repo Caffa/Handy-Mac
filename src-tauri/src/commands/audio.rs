@@ -428,8 +428,11 @@ pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
         return Err("A recording is already in progress".to_string());
     }
 
-    rm.try_start_recording(PRONUNCIATION_BINDING_ID, crate::audio_toolkit::VadPolicy::Offline)
-        .map_err(|e| format!("Failed to start pronunciation recording: {}", e))?;
+    rm.try_start_recording(
+        PRONUNCIATION_BINDING_ID,
+        crate::audio_toolkit::VadPolicy::Offline,
+    )
+    .map_err(|e| format!("Failed to start pronunciation recording: {}", e))?;
 
     info!("Pronunciation recording started");
     Ok(())

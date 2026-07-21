@@ -12,23 +12,46 @@ use proptest::prelude::*;
 /// Generate realistic shortcut strings: modifier+key combinations.
 fn realistic_shortcut() -> impl Strategy<Value = String> {
     let modifiers = vec![
-        "ctrl", "control", "shift", "alt", "option", "cmd", "command",
-        "meta", "super", "win", "windows", "fn",
+        "ctrl", "control", "shift", "alt", "option", "cmd", "command", "meta", "super", "win",
+        "windows", "fn",
     ];
     let keys = vec![
-        "a", "b", "c", "z", "0", "1", "9",
-        "f1", "f5", "f12",
-        "space", "enter", "tab", "escape",
-        "arrow_up", "arrow_down", "arrow_left", "arrow_right",
-        "delete", "backspace", "insert", "home", "end",
-        "comma", "period", "slash", "semicolon",
+        "a",
+        "b",
+        "c",
+        "z",
+        "0",
+        "1",
+        "9",
+        "f1",
+        "f5",
+        "f12",
+        "space",
+        "enter",
+        "tab",
+        "escape",
+        "arrow_up",
+        "arrow_down",
+        "arrow_left",
+        "arrow_right",
+        "delete",
+        "backspace",
+        "insert",
+        "home",
+        "end",
+        "comma",
+        "period",
+        "slash",
+        "semicolon",
     ];
 
     (0..3_usize).prop_flat_map(move |n_mods| {
         let mod_strat = modifiers.clone();
         let key_strat = keys.clone();
-        (prop::collection::vec(prop::sample::select(mod_strat), n_mods),
-         prop::sample::select(key_strat))
+        (
+            prop::collection::vec(prop::sample::select(mod_strat), n_mods),
+            prop::sample::select(key_strat),
+        )
             .prop_map(move |(mods, key)| {
                 let mut parts: Vec<&str> = mods;
                 parts.push(&key);

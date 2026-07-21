@@ -1131,10 +1131,7 @@ pub fn paste_with_verification(text: String, app_handle: AppHandle) -> Result<()
         }
         Err(e) => {
             error!("paste_with_verification: all paste methods failed: {}", e);
-            Err(format!(
-                "All paste methods failed. Last error: {}",
-                e
-            ))
+            Err(format!("All paste methods failed. Last error: {}", e))
         }
     }
 }
