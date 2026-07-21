@@ -7,8 +7,8 @@ use crate::managers::history::HistoryManager;
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::StreamWorkKind;
 use crate::managers::transcription::TranscriptionManager;
-use crate::settings::{get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::session;
+use crate::settings::{get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
@@ -793,6 +793,8 @@ impl ShortcutAction for TranscribeAction {
                                 let paste_time = Instant::now();
                                 let final_text = processed.final_text;
                                 let rm_for_paste = Arc::clone(&rm);
+                                let paste_verification_enabled =
+                                    get_settings(&ah).paste_verification_enabled;
                                 ah.run_on_main_thread(move || {
                                     if rm_for_paste.was_cancelled_since(cancel_generation) {
                                         debug!("Transcription operation cancelled before paste");
@@ -801,7 +803,15 @@ impl ShortcutAction for TranscribeAction {
                                         return;
                                     }
 
-                                    match utils::paste(final_text, ah_clone.clone()) {
+                                    let paste_result = if paste_verification_enabled {
+                                        crate::clipboard::paste_with_verification(
+                                            final_text,
+                                            ah_clone.clone(),
+                                        )
+                                    } else {
+                                        crate::clipboard::paste(final_text, ah_clone.clone())
+                                    };
+                                    match paste_result {
                                         Ok(()) => debug!(
                                             "Text pasted successfully in {:?}",
                                             paste_time.elapsed()
@@ -980,10 +990,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
         change_tray_icon(app, TrayIconState::Recording);
 
         // Show recording overlay with Router mode
-        crate::overlay::show_recording_overlay_with_mode(
-            app,
-            crate::overlay::OverlayMode::Router,
-        );
+        crate::overlay::show_recording_overlay_with_mode(app, crate::overlay::OverlayMode::Router);
 
         // Get the microphone mode to determine audio feedback timing
         let plan_started = Instant::now();
@@ -1121,17 +1128,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
         tauri::async_runtime::spawn(async move {
             let _guard = FinishGuard(ah.clone());
-            debug!(
-                "Starting async router task for binding: {}",
-                binding_id
-            );
+            debug!("Starting async router task for binding: {}", binding_id);
 
             let stop_recording_time = Instant::now();
             if let Some(samples) = rm.stop_recording(&binding_id, cancel_generation) {
-                debug!(
-                    "Recording stopped, sample count: {}",
-                    samples.len()
-                );
+                debug!("Recording stopped, sample count: {}", samples.len());
 
                 if rm.was_cancelled_since(cancel_generation) {
                     debug!("Router transcription cancelled after recording stop");
@@ -1257,11 +1258,11 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             match hm.save_entry(
                                 file_name,
                                 transcription_text.clone(),
-                                false,  // post_process_requested
-                                None,   // post_processed_text
-                                None,   // post_process_prompt
+                                false, // post_process_requested
+                                None,  // post_processed_text
+                                None,  // post_process_prompt
                                 model_id_for_history,
-                                true,   // routed
+                                true, // routed
                             ) {
                                 Ok(entry) => Some(entry.id),
                                 Err(err) => {
@@ -1274,22 +1275,18 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         };
 
                         // Emit transcription preview for routing overlay
-                        if let Some(overlay_window) =
-                            ah.get_webview_window("recording_overlay")
-                        {
+                        if let Some(overlay_window) = ah.get_webview_window("recording_overlay") {
                             crate::overlay::update_overlay_position_with_mode(
                                 &ah,
                                 "confirming",
                                 &crate::overlay::OverlayMode::Router,
                             );
-                            let _ = overlay_window
-                                .emit("transcription-preview", &transcription_text);
+                            let _ =
+                                overlay_window.emit("transcription-preview", &transcription_text);
                         }
 
                         // Set coordinator state to Confirming
-                        if let Some(coordinator) =
-                            ah.try_state::<TranscriptionCoordinator>()
-                        {
+                        if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
                             coordinator.set_confirming(
                                 &ah,
                                 transcription_text.clone(),
@@ -1298,21 +1295,19 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         }
 
                         // Wait for user confirmation (with countdown) before routing
-                        let (confirm_tx, confirm_rx) =
-                            tokio::sync::oneshot::channel::<String>();
+                        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel::<String>();
 
-                        let pending_state: crate::commands::PendingRoutingState =
-                            ah.state::<crate::commands::PendingRoutingState>().inner().clone();
+                        let pending_state: crate::commands::PendingRoutingState = ah
+                            .state::<crate::commands::PendingRoutingState>()
+                            .inner()
+                            .clone();
                         *pending_state.lock() =
                             Some(crate::commands::PendingRouting { confirm_tx });
 
                         // Wait for confirmation with timeout (30 seconds)
-                        let confirmation_timeout =
-                            std::time::Duration::from_secs(30);
+                        let confirmation_timeout = std::time::Duration::from_secs(30);
                         let confirmed_text =
-                            match tokio::time::timeout(confirmation_timeout, confirm_rx)
-                                .await
-                            {
+                            match tokio::time::timeout(confirmation_timeout, confirm_rx).await {
                                 Ok(Ok(edited_text)) => {
                                     debug!(
                                         "Router confirmation received, text length: {}",
@@ -1339,9 +1334,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         );
 
                         // Transition coordinator from Confirming to Processing
-                        if let Some(coordinator) =
-                            ah.try_state::<TranscriptionCoordinator>()
-                        {
+                        if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
                             coordinator.set_processing_with_binding(
                                 &ah,
                                 Some("transcribe_with_router".to_string()),
@@ -1357,8 +1350,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                         if let Some(router_script) = router_path {
                             let now = chrono::Local::now();
-                            let datetime_str =
-                                now.format("%Y-%m-%d %H:%M:%S").to_string();
+                            let datetime_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
                             info!(
                                 "Sending transcription to router: {} chars, datetime={}",
@@ -1368,8 +1360,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                             let ah_for_router = ah.clone();
                             let sid_for_router = sid.clone();
-                            let transcription_text_for_router =
-                                transcription_text.clone();
+                            let transcription_text_for_router = transcription_text.clone();
                             let hm_for_router = if let Some(id) = history_entry_id {
                                 Some((hm.clone(), id))
                             } else {
@@ -1392,9 +1383,8 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                                 match result {
                                     Ok((summary_opt, handler_data)) => {
-                                        let any_success = handler_data
-                                            .iter()
-                                            .any(|d| d.status == "✅");
+                                        let any_success =
+                                            handler_data.iter().any(|d| d.status == "✅");
                                         let summary_text = match &summary_opt {
                                             Some(s) => s.clone(),
                                             None => {
@@ -1417,85 +1407,49 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                         }
 
                                         // Save routing result to history entry
-                                        if let Some((ref hm_ref, entry_id)) =
-                                            hm_for_router
-                                        {
-                                            let routing_json =
-                                                serde_json::to_string(&handler_data)
-                                                    .unwrap_or_else(|_| {
-                                                        "[]".to_string()
-                                                    });
+                                        if let Some((ref hm_ref, entry_id)) = hm_for_router {
+                                            let routing_json = serde_json::to_string(&handler_data)
+                                                .unwrap_or_else(|_| "[]".to_string());
                                             if let Err(e) = hm_ref
-                                                .update_routing_result(
-                                                    entry_id,
-                                                    Some(routing_json),
-                                                )
+                                                .update_routing_result(entry_id, Some(routing_json))
                                             {
-                                                error!(
-                                                    "Failed to update routing result: {}",
-                                                    e
-                                                );
+                                                error!("Failed to update routing result: {}", e);
                                             }
                                         }
 
                                         info!("Router completed: {}", summary_text);
 
                                         let event = RouterResultEvent {
-                                            success: any_success
-                                                || handler_data.is_empty(),
+                                            success: any_success || handler_data.is_empty(),
                                             summary: Some(summary_text.clone()),
                                             error: None,
-                                            transcription_text:
-                                                transcription_text_for_router,
+                                            transcription_text: transcription_text_for_router,
                                         };
-                                        let _ = ah_for_router
-                                            .emit("router-result", &event);
+                                        let _ = ah_for_router.emit("router-result", &event);
 
-                                        let notification_text =
-                                            if summary_text.len() > 100 {
-                                                format!(
-                                                    "Route: {}...",
-                                                    &summary_text[..100]
-                                                )
-                                            } else {
-                                                format!(
-                                                    "Route: {}",
-                                                    summary_text
-                                                )
-                                            };
-                                        send_macos_notification(
-                                            "Handy Router",
-                                            &notification_text,
-                                        );
+                                        let notification_text = if summary_text.len() > 100 {
+                                            format!("Route: {}...", &summary_text[..100])
+                                        } else {
+                                            format!("Route: {}", summary_text)
+                                        };
+                                        send_macos_notification("Handy Router", &notification_text);
                                     }
                                     Err(e) => {
                                         error!("Router subprocess failed: {}", e);
 
                                         // Save routing failure to history
-                                        if let Some((ref hm_ref, entry_id)) =
-                                            hm_for_router
-                                        {
-                                            let failure_result =
-                                                vec![RouterHandlerData {
-                                                    status: "❌".to_string(),
-                                                    handler: "Router Error"
-                                                        .to_string(),
-                                                    classification: "error"
-                                                        .to_string(),
-                                                    file_path: None,
-                                                }];
+                                        if let Some((ref hm_ref, entry_id)) = hm_for_router {
+                                            let failure_result = vec![RouterHandlerData {
+                                                status: "❌".to_string(),
+                                                handler: "Router Error".to_string(),
+                                                classification: "error".to_string(),
+                                                file_path: None,
+                                            }];
                                             let routing_json =
-                                                serde_json::to_string(
-                                                    &failure_result,
-                                                )
-                                                .unwrap_or_else(|_| {
-                                                    "[]".to_string()
-                                                });
+                                                serde_json::to_string(&failure_result)
+                                                    .unwrap_or_else(|_| "[]".to_string());
                                             if let Err(save_err) = hm_ref
-                                                .update_routing_result(
-                                                    entry_id,
-                                                    Some(routing_json),
-                                                )
+                                                .update_routing_result(entry_id, Some(routing_json))
                                             {
                                                 error!(
                                                     "Failed to update routing error in history: {}",
@@ -1508,11 +1462,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                             success: false,
                                             summary: None,
                                             error: Some(e.clone()),
-                                            transcription_text:
-                                                transcription_text_for_router,
+                                            transcription_text: transcription_text_for_router,
                                         };
-                                        let _ = ah_for_router
-                                            .emit("router-result", &event);
+                                        let _ = ah_for_router.emit("router-result", &event);
 
                                         let error_display = if e.len() > 150 {
                                             format!("{}...", &e[..150])
@@ -1529,8 +1481,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                 // Free the coordinator immediately so the user
                                 // can start a new recording right away
                                 if let Some(coord) =
-                                    ah_for_router.try_state::<TranscriptionCoordinator>(
-                                    )
+                                    ah_for_router.try_state::<TranscriptionCoordinator>()
                                 {
                                     coord.notify_processing_finished();
                                 }
@@ -1540,29 +1491,21 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                     let app_delayed = ah_for_router.clone();
                                     std::thread::spawn(move || {
                                         std::thread::sleep(Duration::from_secs(5));
-                                        crate::overlay::hide_recording_overlay(
-                                            &app_delayed,
-                                        );
-                                        change_tray_icon(
-                                            &app_delayed,
-                                            TrayIconState::Idle,
-                                        );
+                                        crate::overlay::hide_recording_overlay(&app_delayed);
+                                        change_tray_icon(&app_delayed, TrayIconState::Idle);
                                     });
                                 }
 
                                 // Finish session after routing
                                 if let (Some(ref s), Some(tracker)) = (
                                     &sid_for_router,
-                                    ah_for_router
-                                        .try_state::<Arc<session::SessionTracker>>(),
+                                    ah_for_router.try_state::<Arc<session::SessionTracker>>(),
                                 ) {
                                     tracker.finish_session(s, 0);
                                 }
                             });
                         } else {
-                            warn!(
-                                "No router_script_path configured; transcription not routed."
-                            );
+                            warn!("No router_script_path configured; transcription not routed.");
 
                             let event = RouterResultEvent {
                                 success: false,
@@ -1579,18 +1522,25 @@ impl ShortcutAction for TranscribeWithRouterAction {
                             // Fall back to paste if no router configured
                             if !transcription_text.is_empty() {
                                 let ah_for_paste = ah.clone();
+                                let paste_verification_enabled =
+                                    get_settings(&ah).paste_verification_enabled;
                                 let _ = ah.run_on_main_thread(move || {
-                                    let _ = crate::clipboard::paste(
-                                        transcription_text,
-                                        ah_for_paste.clone(),
-                                    );
-                                    crate::overlay::hide_recording_overlay(
-                                        &ah_for_paste,
-                                    );
-                                    change_tray_icon(
-                                        &ah_for_paste,
-                                        TrayIconState::Idle,
-                                    );
+                                    let paste_result = if paste_verification_enabled {
+                                        crate::clipboard::paste_with_verification(
+                                            transcription_text,
+                                            ah_for_paste.clone(),
+                                        )
+                                    } else {
+                                        crate::clipboard::paste(
+                                            transcription_text,
+                                            ah_for_paste.clone(),
+                                        )
+                                    };
+                                    if let Err(e) = paste_result {
+                                        error!("Failed to paste router fallback: {}", e);
+                                    }
+                                    crate::overlay::hide_recording_overlay(&ah_for_paste);
+                                    change_tray_icon(&ah_for_paste, TrayIconState::Idle);
                                 });
                             } else {
                                 crate::overlay::hide_recording_overlay(&ah);
@@ -1608,15 +1558,9 @@ impl ShortcutAction for TranscribeWithRouterAction {
 
                         let settings = get_settings(&ah);
 
-                        let failure_type = if err
-                            .to_string()
-                            .contains("Model is not loaded")
-                            || err
-                                .to_string()
-                                .contains("failed to load")
-                            || err
-                                .to_string()
-                                .contains("Timed out waiting for model")
+                        let failure_type = if err.to_string().contains("Model is not loaded")
+                            || err.to_string().contains("failed to load")
+                            || err.to_string().contains("Timed out waiting for model")
                         {
                             crate::managers::transcription_retry::TranscriptionFailure::ModelLoadFailure {
                                 model_id: settings.selected_model.clone(),
@@ -1636,16 +1580,12 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         let fallback_models = {
                             let mut models = Vec::new();
                             if settings.hybrid_mode_enabled {
-                                if let Some(short_model) =
-                                    &settings.hybrid_short_audio_model
-                                {
+                                if let Some(short_model) = &settings.hybrid_short_audio_model {
                                     if short_model != &settings.selected_model {
                                         models.push(short_model.clone());
                                     }
                                 }
-                                if let Some(long_model) =
-                                    &settings.hybrid_long_audio_model
-                                {
+                                if let Some(long_model) = &settings.hybrid_long_audio_model {
                                     if long_model != &settings.selected_model
                                         && !models.contains(long_model)
                                     {
@@ -1674,10 +1614,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                                     Some(entry.id)
                                 }
                                 Err(save_err) => {
-                                    error!(
-                                        "Failed to save failed history entry: {}",
-                                        save_err
-                                    );
+                                    error!("Failed to save failed history entry: {}", save_err);
                                     None
                                 }
                             }
@@ -1686,30 +1623,23 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         };
 
                         if wav_saved {
-                            if let Some(retry_queue) = ah
-                                .try_state::<Arc<
-                                    parking_lot::Mutex<
-                                        crate::managers::transcription_retry::TranscriptionRetryQueue,
-                                    >,
-                                >>()
-                            {
-                                let wav_path =
-                                    hm.recordings_dir().join(&file_name);
-                                let model_id =
-                                    settings.selected_model.clone();
+                            if let Some(retry_queue) = ah.try_state::<Arc<
+                                parking_lot::Mutex<
+                                    crate::managers::transcription_retry::TranscriptionRetryQueue,
+                                >,
+                            >>() {
+                                let wav_path = hm.recordings_dir().join(&file_name);
+                                let model_id = settings.selected_model.clone();
 
-                                if let Err(retry_err) = retry_queue
-                                    .lock()
-                                    .add_failed_transcription(
-                                        wav_path,
-                                        model_id,
-                                        fallback_models,
-                                        failure_type,
-                                        false,
-                                        None,
-                                        history_entry_id,
-                                    )
-                                {
+                                if let Err(retry_err) = retry_queue.lock().add_failed_transcription(
+                                    wav_path,
+                                    model_id,
+                                    fallback_models,
+                                    failure_type,
+                                    false,
+                                    None,
+                                    history_entry_id,
+                                ) {
                                     error!(
                                         "Failed to add transcription to retry queue: {}",
                                         retry_err
@@ -1728,8 +1658,7 @@ impl ShortcutAction for TranscribeWithRouterAction {
                         crate::overlay::hide_recording_overlay(&ah);
                         change_tray_icon(&ah, TrayIconState::Idle);
 
-                        let router_model_id =
-                            settings.selected_model.clone();
+                        let router_model_id = settings.selected_model.clone();
                         crate::error_events::emit_transcription_error(
                             &ah,
                             &err.to_string(),
@@ -1809,10 +1738,7 @@ fn run_router_subprocess(
                 warn!("Router env file not readable: {}", env_path.display());
             }
         } else {
-            warn!(
-                "Router env file does not exist: {}",
-                env_path.display()
-            );
+            warn!("Router env file does not exist: {}", env_path.display());
         }
     }
 
@@ -1862,14 +1788,8 @@ fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
                     let mut summaries: Vec<String> = Vec::new();
 
                     for h in handlers {
-                        let status = h
-                            .get("status")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let handler_name = h
-                            .get("handler")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
+                        let status = h.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let handler_name = h.get("handler").and_then(|v| v.as_str()).unwrap_or("?");
                         let classification = h
                             .get("classification")
                             .and_then(|v| v.as_str())
@@ -1891,15 +1811,9 @@ fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
                                 .file_name()
                                 .and_then(|n| n.to_str())
                                 .unwrap_or(path);
-                            summaries.push(format!(
-                                "{} {} ({})",
-                                status, handler_name, filename
-                            ));
+                            summaries.push(format!("{} {} ({})", status, handler_name, filename));
                         } else {
-                            summaries.push(format!(
-                                "{} {}",
-                                status, handler_name
-                            ));
+                            summaries.push(format!("{} {}", status, handler_name));
                         }
                     }
 
