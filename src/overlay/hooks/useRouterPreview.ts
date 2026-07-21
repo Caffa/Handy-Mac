@@ -36,9 +36,7 @@ const ROUTER_RESULT_DISPLAY_MS = 10_000;
  */
 async function safeSetOverlayCanBecomeKey(canBecomeKey: boolean): Promise<void> {
   try {
-    // @ts-expect-error — command may not be in bindings yet; will resolve after regen
     if (typeof commands.setOverlayCanBecomeKey === "function") {
-      // @ts-expect-error — command may not be in bindings yet
       await commands.setOverlayCanBecomeKey(canBecomeKey);
     }
   } catch (e) {
@@ -48,9 +46,7 @@ async function safeSetOverlayCanBecomeKey(canBecomeKey: boolean): Promise<void> 
 
 async function safeSetOverlayMousePassthrough(enabled: boolean): Promise<void> {
   try {
-    // @ts-expect-error — command may not be in bindings yet; will resolve after regen
     if (typeof commands.setOverlayMousePassthrough === "function") {
-      // @ts-expect-error — command may not be in bindings yet
       await commands.setOverlayMousePassthrough(enabled);
     }
   } catch (e) {

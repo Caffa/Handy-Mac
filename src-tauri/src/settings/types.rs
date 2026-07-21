@@ -436,7 +436,7 @@ pub struct CustomWord {
 /// A word replacement rule for exact word-to-word substitution.
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct WordReplacement {
-    pub mistranscription: String,
+    pub mistranslation: String,
     pub correction: String,
 }
 

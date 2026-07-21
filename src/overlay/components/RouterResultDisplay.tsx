@@ -62,9 +62,7 @@ const ROUTING_COUNTDOWN_MS = 4500;
 async function safeSetOverlayMousePassthrough(enabled: boolean): Promise<void> {
   try {
     const { commands } = await import("@/bindings");
-    // @ts-expect-error — command may not be in bindings yet; will resolve after regen
     if (typeof commands.setOverlayMousePassthrough === "function") {
-      // @ts-expect-error — command may not be in bindings yet
       await commands.setOverlayMousePassthrough(enabled);
     }
   } catch (e) {

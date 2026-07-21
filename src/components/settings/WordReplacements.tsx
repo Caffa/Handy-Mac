@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useSettings } from "../../hooks/useSettings";
-import type { WordReplacement } from "../../bindings";
+import type { WordReplacement } from "@/bindings";
 import { Input } from "../ui/Input";
 import { Button } from "../ui/Button";
 import { SettingContainer } from "../ui/SettingContainer";
@@ -63,7 +63,7 @@ export const WordReplacements: React.FC<WordReplacementsProps> = React.memo(
         return;
       }
 
-      const newEntry: WordReplacement = {
+      const newEntry = {
         mistranslation: sanitizedMistranslation,
         correction: sanitizedCorrection,
       };

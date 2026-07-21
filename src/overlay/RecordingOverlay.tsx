@@ -50,9 +50,7 @@ import type { OverlayState } from "./hooks/useOverlayState";
  */
 async function safeSetOverlayMousePassthrough(enabled: boolean): Promise<void> {
   try {
-    // @ts-expect-error — command may not be in bindings yet; will resolve after regen
     if (typeof commands.setOverlayMousePassthrough === "function") {
-      // @ts-expect-error — command may not be in bindings yet
       await commands.setOverlayMousePassthrough(enabled);
     }
   } catch {

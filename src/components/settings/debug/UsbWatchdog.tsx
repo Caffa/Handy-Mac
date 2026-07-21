@@ -26,7 +26,7 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
 
     // Check uhubctl availability on mount
     useEffect(() => {
-      commands.isUsbWatchdogAvailable().then(setAvailable);
+      commands.isUsbWatchdogAvailable().then((res) => setAvailable(res.status === "ok" ? res.data : false));
     }, []);
 
     // Listen for USB power-cycle events to update the cycling state
@@ -63,7 +63,9 @@ export const UsbWatchdog: React.FC<UsbWatchdogProps> = React.memo(
       setLoading(true);
       try {
         const result = await commands.listUsbDevices();
-        setDevices(result);
+        if (result.status === "ok") {
+          setDevices(result.data);
+        }
       } catch {
         // uhubctl not available, list will be empty
       } finally {

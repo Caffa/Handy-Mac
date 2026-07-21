@@ -2049,10 +2049,7 @@ port: string }
 export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 export type WordCorrectionMode = "word_bias" | "pronunciation" | "replacement"
-/**
- * A word replacement rule for exact word-to-word substitution.
- */
-export type WordReplacement = { mistranscription: string; correction: string }
+export type WordReplacement = { mistranslation: string; correction: string }
 
 /** tauri-specta globals **/
 
