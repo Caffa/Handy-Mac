@@ -1210,7 +1210,9 @@ pub fn change_app_language_setting(app: AppHandle, language: String) -> Result<(
     settings::write_settings(&app, settings);
 
     // Refresh the tray menu with the new language
-    tray::update_tray_menu(&app, Some(&language));
+    if let Err(e) = tray::update_tray_menu(&app, Some(&language)) {
+        error!("Failed to update tray menu after language change: {e}");
+    }
 
     Ok(())
 }
@@ -1299,10 +1301,7 @@ pub fn change_convert_us_to_british_setting(app: AppHandle, enabled: bool) -> Re
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_overlay_screen_target_setting(
-    app: AppHandle,
-    target: String,
-) -> Result<(), String> {
+pub fn change_overlay_screen_target_setting(app: AppHandle, target: String) -> Result<(), String> {
     let parsed = match target.as_str() {
         "cursor" => OverlayScreenTarget::Cursor,
         "side_screen" => OverlayScreenTarget::SideScreen,
@@ -1333,11 +1332,7 @@ pub fn update_advanced_custom_words(app: AppHandle, words: Vec<CustomWord>) -> R
 #[specta::specta]
 pub fn update_custom_filler_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
-    settings.custom_filler_words = if words.is_empty() {
-        None
-    } else {
-        Some(words)
-    };
+    settings.custom_filler_words = if words.is_empty() { None } else { Some(words) };
     settings::write_settings(&app, settings);
     Ok(())
 }
@@ -1362,10 +1357,7 @@ pub fn change_use_advanced_custom_words_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_word_correction_mode(
-    app: AppHandle,
-    mode: WordCorrectionMode,
-) -> Result<(), String> {
+pub fn change_word_correction_mode(app: AppHandle, mode: WordCorrectionMode) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.word_correction_mode = mode;
     // Keep use_advanced_custom_words in sync for backward compatibility
@@ -1518,7 +1510,10 @@ pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Re
         app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
     {
         if let Err(e) = rm.recreate_recorder() {
-            log::warn!("Failed to recreate recorder after VAD sensitivity change: {}", e);
+            log::warn!(
+                "Failed to recreate recorder after VAD sensitivity change: {}",
+                e
+            );
         }
     }
 
@@ -1589,10 +1584,7 @@ pub fn change_noise_suppression_enabled_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_noise_suppression_level_setting(
-    app: AppHandle,
-    level: String,
-) -> Result<(), String> {
+pub fn change_noise_suppression_level_setting(app: AppHandle, level: String) -> Result<(), String> {
     let noise_level = match level.as_str() {
         "Low" => NoiseSuppressionLevel::Low,
         "Medium" => NoiseSuppressionLevel::Medium,

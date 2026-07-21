@@ -171,22 +171,28 @@ fn initialize_core_logic(app_handle: &AppHandle) -> Result<(), Box<dyn std::erro
     // Initialize the managers. The audio recorder receives the streaming router
     // explicitly, so always-on microphone startup can wire live-preview frames
     // even before Tauri state is populated.
-    let model_manager = Arc::new(
-        ModelManager::new(app_handle)
-            .map_err(|e| { log::error!("Failed to initialize model manager: {e}"); e })?,
-    );
+    let model_manager = Arc::new(ModelManager::new(app_handle).map_err(|e| {
+        log::error!("Failed to initialize model manager: {e}");
+        e
+    })?);
     let transcription_manager = Arc::new(
-        TranscriptionManager::new(app_handle, model_manager.clone())
-            .map_err(|e| { log::error!("Failed to initialize transcription manager: {e}"); e })?,
+        TranscriptionManager::new(app_handle, model_manager.clone()).map_err(|e| {
+            log::error!("Failed to initialize transcription manager: {e}");
+            e
+        })?,
     );
     let recording_manager = Arc::new(
-        AudioRecordingManager::new(app_handle, transcription_manager.stream_router())
-            .map_err(|e| { log::error!("Failed to initialize recording manager: {e}"); e })?,
+        AudioRecordingManager::new(app_handle, transcription_manager.stream_router()).map_err(
+            |e| {
+                log::error!("Failed to initialize recording manager: {e}");
+                e
+            },
+        )?,
     );
-    let history_manager = Arc::new(
-        HistoryManager::new(app_handle)
-            .map_err(|e| { log::error!("Failed to initialize history manager: {e}"); e })?,
-    );
+    let history_manager = Arc::new(HistoryManager::new(app_handle).map_err(|e| {
+        log::error!("Failed to initialize history manager: {e}");
+        e
+    })?);
 
     // Initialize the transcribe-cpp native backend (logging + backend module
     // registration) once, before any whisper model is loaded.
@@ -205,8 +211,10 @@ fn initialize_core_logic(app_handle: &AppHandle) -> Result<(), Box<dyn std::erro
     // Initialize the transcription retry queue and background retry worker.
     // Failed transcriptions are persisted to disk and retried automatically.
     let retry_queue = Arc::new(Mutex::new(
-        TranscriptionRetryQueue::new(app_handle.clone())
-            .map_err(|e| { log::error!("Failed to initialize retry queue: {e}"); e })?,
+        TranscriptionRetryQueue::new(app_handle.clone()).map_err(|e| {
+            log::error!("Failed to initialize retry queue: {e}");
+            e
+        })?,
     ));
     app_handle.manage(retry_queue.clone());
 
@@ -232,11 +240,12 @@ fn initialize_core_logic(app_handle: &AppHandle) -> Result<(), Box<dyn std::erro
     // after permissions are confirmed (on macOS) or after onboarding completes.
     // This matches the pattern used for Enigo initialization.
 
-    #[cfg(unix)]
-    let signals = Signals::new([SIGUSR1, SIGUSR2]).unwrap();
     // Set up signal handlers for toggling transcription
     #[cfg(unix)]
-    signal_handle::setup_signal_handler(app_handle.clone(), signals);
+    match Signals::new([SIGUSR1, SIGUSR2]) {
+        Ok(signals) => signal_handle::setup_signal_handler(app_handle.clone(), signals),
+        Err(e) => log::warn!("Failed to install SIGUSR1/SIGUSR2 signal handlers: {e}"),
+    }
 
     // Apply macOS Accessory policy if starting hidden and tray is available.
     // If the tray icon is disabled, keep the dock icon so the user can reopen.
@@ -253,16 +262,15 @@ fn initialize_core_logic(app_handle: &AppHandle) -> Result<(), Box<dyn std::erro
     // Choose the appropriate initial icon based on theme
     let initial_icon_path = tray::get_icon_path(initial_theme, tray::TrayIconState::Idle);
 
-    let tray = TrayIconBuilder::new()
-        .icon(
-            Image::from_path(
-                app_handle
-                    .path()
-                    .resolve(initial_icon_path, tauri::path::BaseDirectory::Resource)
-                    .unwrap(),
-            )
-            .unwrap(),
-        )
+    // Build the tray icon fallibly. If icon resolution/loading or the builder
+    // itself fails, log and skip all tray-dependent setup (menu, visibility,
+    // and the model-state-changed listener that would otherwise panic on the
+    // unmanaged `TrayIcon` state).
+    let tray_result = TrayIconBuilder::new()
+        .icon(tray::load_tray_icon(app_handle.path().resolve(
+            initial_icon_path,
+            tauri::path::BaseDirectory::Resource,
+        ))?)
         .tooltip(tray::tray_tooltip())
         .show_menu_on_left_click(true)
         .icon_as_template(true)
@@ -316,29 +324,42 @@ fn initialize_core_logic(app_handle: &AppHandle) -> Result<(), Box<dyn std::erro
                             log::error!("Failed to switch model via tray: {}", e);
                         }
                     }
-                    tray::update_tray_menu(&app_clone, None);
+                    if let Err(e) = tray::update_tray_menu(&app_clone, None) {
+                        log::error!("Failed to update tray menu after model switch: {e}");
+                    }
                 });
             }
             _ => {}
         })
-        .build(app_handle)
-        .unwrap();
-    app_handle.manage(tray);
+        .build(app_handle);
 
-    // Initialize tray menu with idle state
-    utils::update_tray_menu(app_handle, None);
+    match tray_result {
+        Ok(tray) => {
+            app_handle.manage(tray);
 
-    // Apply show_tray_icon setting
-    let settings = settings::get_settings(app_handle);
-    if !settings.show_tray_icon {
-        tray::set_tray_visibility(app_handle, false);
+            // Initialize tray menu with idle state
+            if let Err(e) = utils::update_tray_menu(app_handle, None) {
+                log::error!("Failed to build initial tray menu: {e}");
+            }
+
+            // Apply show_tray_icon setting
+            let settings = settings::get_settings(app_handle);
+            if !settings.show_tray_icon {
+                tray::set_tray_visibility(app_handle, false);
+            }
+
+            // Refresh tray menu when model state changes
+            let app_handle_for_listener = app_handle.clone();
+            app_handle.listen("model-state-changed", move |_| {
+                if let Err(e) = tray::update_tray_menu(&app_handle_for_listener, None) {
+                    log::error!("Failed to update tray menu on model-state-changed: {e}");
+                }
+            });
+        }
+        Err(e) => {
+            log::error!("Failed to initialize tray icon; tray features disabled: {e}");
+        }
     }
-
-    // Refresh tray menu when model state changes
-    let app_handle_for_listener = app_handle.clone();
-    app_handle.listen("model-state-changed", move |_| {
-        tray::update_tray_menu(&app_handle_for_listener, None);
-    });
 
     // Get the autostart manager and configure based on user setting
     let autostart_manager = app_handle.autolaunch();
@@ -877,13 +898,15 @@ pub fn run(cli_args: CliArgs) {
             // signal handlers, and autostart that initialize_core_logic sets up.
             if headless_mode {
                 let app_handle = app.handle().clone();
-                let model_manager = Arc::new(
-                    ModelManager::new(&app_handle)
-                        .map_err(|e| { log::error!("Failed to initialize model manager: {e}"); e })?,
-                );
+                let model_manager = Arc::new(ModelManager::new(&app_handle).map_err(|e| {
+                    log::error!("Failed to initialize model manager: {e}");
+                    e
+                })?);
                 let transcription_manager = Arc::new(
-                    TranscriptionManager::new(&app_handle, model_manager.clone())
-                        .map_err(|e| { log::error!("Failed to initialize transcription manager: {e}"); e })?,
+                    TranscriptionManager::new(&app_handle, model_manager.clone()).map_err(|e| {
+                        log::error!("Failed to initialize transcription manager: {e}");
+                        e
+                    })?,
                 );
                 app_handle.manage(model_manager);
                 app_handle.manage(transcription_manager);
@@ -971,9 +994,8 @@ pub fn run(cli_args: CliArgs) {
 
             // PendingRoutingState for router mode confirmation flow
             app.manage(
-                Arc::new(parking_lot::Mutex::new(
-                    None::<commands::PendingRouting>,
-                )) as commands::PendingRoutingState,
+                Arc::new(parking_lot::Mutex::new(None::<commands::PendingRouting>))
+                    as commands::PendingRoutingState,
             );
 
             // Initialise the structured JSONL event logger and install a panic

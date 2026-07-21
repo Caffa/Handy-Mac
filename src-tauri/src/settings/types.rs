@@ -680,6 +680,12 @@ pub struct AppSettings {
     pub noise_suppression_enabled: bool,
     #[serde(default)]
     pub noise_suppression_level: NoiseSuppressionLevel,
+    /// When enabled, paste operations use the Accessibility API to verify that
+    /// the text landed in the target app. On macOS, falls back to AX paste
+    /// (setting AXValue directly) if Cmd+V fails. On other platforms, this
+    /// setting has no effect — the standard paste path is always used.
+    #[serde(default = "default_paste_verification_enabled")]
+    pub paste_verification_enabled: bool,
 }
 
 impl AppSettings {
@@ -990,4 +996,16 @@ pub(crate) fn default_hybrid_threshold_secs() -> f64 {
 
 pub(crate) fn default_adaptive_parakeet_thresholds() -> bool {
     true
+}
+
+/// AX paste verification is enabled by default on macOS (where the Accessibility
+/// API is available) and disabled on other platforms.
+#[cfg(target_os = "macos")]
+pub(crate) fn default_paste_verification_enabled() -> bool {
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn default_paste_verification_enabled() -> bool {
+    false
 }

@@ -140,6 +140,7 @@ pub fn get_default_settings() -> AppSettings {
         repetition_suppression_level: 0,
         noise_suppression_enabled: false,
         noise_suppression_level: NoiseSuppressionLevel::default(),
+        paste_verification_enabled: crate::settings::types::default_paste_verification_enabled(),
     }
 }
 
