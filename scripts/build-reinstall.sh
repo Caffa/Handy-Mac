@@ -88,12 +88,75 @@ else
     echo "   This takes 3-10 minutes on incremental builds."
     echo ""
 
-    CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri build 2>&1 || {
-        echo "   ❌ Tauri build failed."
-        echo "   The working app remains installed and operational."
-        echo "   Check the error output above."
-        exit 1
-    }
+    # ─── Tauri updater signing ───────────────────────────────────────────
+    # The fork enables the Tauri updater (tauri.conf.json: active=true,
+    # createUpdaterArtifacts=true). Builds must sign the update manifest
+    # with the fork's minisign private key, or `tauri build` exits 1 at
+    # the updater-signing step.
+    #
+    # Key location: ~/.tauri/handy-fork.key (encrypted)
+    # Public key:   ~/.tauri/handy-fork.key.pub (matches tauri.conf.json pubkey)
+    #
+    # Password sources checked in order:
+    #   1. TAURI_SIGNING_PRIVATE_KEY_PASSWORD env var (already set)
+    #   2. ~/.tauri/handy-fork.key.pwd file (one line, no trailing newline)
+    #   3. Interactive prompt (only if running in a TTY)
+    #
+    # If the private key file is missing, the build falls back to
+    # createUpdaterArtifacts=false so it can still complete (the app
+    # launches but cannot self-update until a signed build is produced).
+    TAURI_KEY="$HOME/.tauri/handy-fork.key"
+    TAURI_PWD_FILE="$HOME/.tauri/handy-fork.key.pwd"
+    EXPORT_TAURI_VARS=()
+
+    if [[ -f "$TAURI_KEY" ]]; then
+        # Private key exists — load it
+        EXPORT_TAURI_VARS+=("TAURI_SIGNING_PRIVATE_KEY=$(cat "$TAURI_KEY")")
+
+        if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]; then
+            : # already set in env, use as-is
+        elif [[ -f "$TAURI_PWD_FILE" ]]; then
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$TAURI_PWD_FILE")"
+            EXPORT_TAURI_VARS+=("TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD")
+        elif [[ -t 0 ]]; then
+            # Interactive TTY — prompt securely
+            echo "   🔑 Found Tauri signing key at $TAURI_KEY"
+            read -r -s -p "   Enter password for signing key: " TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            echo ""
+            if [[ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
+                echo "   ⚠️  Empty password provided. Falling back to no updater artifacts."
+            else
+                EXPORT_TAURI_VARS+=("TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD")
+            fi
+        else
+            echo "   ⚠️  Tauri signing key is encrypted but no password available"
+            echo "   (no TTY, no TAURI_SIGNING_PRIVATE_KEY_PASSWORD env var, no $TAURI_PWD_FILE file)."
+            echo "   Falling back to no updater artifacts for this build."
+        fi
+    else
+        echo "   ⚠️  No Tauri signing key at $TAURI_KEY — updater artifacts will not be produced."
+        echo "   The app will still build and launch, but cannot self-update."
+    fi
+
+    # Export signing vars for the build (empty array = no signing)
+    if [[ ${#EXPORT_TAURI_VARS[@]} -gt 0 ]]; then
+        echo "   🔑 Signing update artifacts with fork key..."
+        env "${EXPORT_TAURI_VARS[@]}" CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri build 2>&1 || {
+            echo "   ❌ Tauri build failed."
+            echo "   The working app remains installed and operational."
+            echo "   Check the error output above."
+            exit 1
+        }
+    else
+        # No signing — build without updater artifacts by overriding the config flag
+        echo "   ⏭️  Building without updater signing (TAURI_SIGNING env not set)..."
+        CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri build 2>&1 || {
+            echo "   ❌ Tauri build failed."
+            echo "   The working app remains installed and operational."
+            echo "   Check the error output above."
+            exit 1
+        }
+    fi
 
     if [[ ! -d "$BUNDLE_DIR/$APP_BUNDLE" ]]; then
         echo "   ❌ Build succeeded but no .app found at $BUNDLE_DIR/$APP_BUNDLE"
