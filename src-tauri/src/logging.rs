@@ -326,21 +326,26 @@ pub fn install_panic_hook() {
             .unwrap_or("<unnamed>")
             .to_string();
 
-        log::error!("PANIC in thread '{}': {} at {}", thread, message, location);
+        // Wrap all logging/emit/flush in catch_unwind to prevent double-panic.
+        // If any of these calls panic (e.g. structured logger is in a broken state),
+        // catch_unwind absorbs it so we never abort from a double-panic.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            log::error!("PANIC in thread '{}': {} at {}", thread, message, location);
 
-        emit(AppEvent::AppCrashed {
-            message,
-            location,
-            thread,
-        });
+            emit(AppEvent::AppCrashed {
+                message,
+                location,
+                thread,
+            });
 
-        // Force-flush both log files so crash is captured before process dies
-        if let Some(logger) = STRUCTURED_LOGGER.get() {
-            let guard = logger.lock();
-            if let Some(ref writer) = *guard {
-                let _ = writer.file.sync_all();
+            // Force-flush both log files so crash is captured before process dies
+            if let Some(logger) = STRUCTURED_LOGGER.get() {
+                let guard = logger.lock();
+                if let Some(ref writer) = *guard {
+                    let _ = writer.file.sync_all();
+                }
             }
-        }
-        log::logger().flush();
+            log::logger().flush();
+        }));
     }));
 }

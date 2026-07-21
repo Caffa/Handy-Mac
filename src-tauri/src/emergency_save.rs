@@ -331,7 +331,12 @@ pub fn init_emergency_backup<P: AsRef<Path>>(backup_dir: P) {
     let backup_dir = backup_dir.as_ref().to_path_buf();
     let backup = Arc::new(EmergencyBackup::new(backup_dir));
 
-    // Set up panic hook to save recordings on crash
+    // Take the previously installed hook (logging's panic hook) so we can chain.
+    // Without take_hook(), set_hook() would completely replace the logging hook,
+    // preventing crash events from being emitted and log files from being flushed.
+    let previous_hook = std::panic::take_hook();
+
+    // Set up panic hook to save recordings on crash, chaining to the logging hook
     std::panic::set_hook(Box::new(move |panic_info| {
         // Log the panic
         let message = panic_info
@@ -350,6 +355,10 @@ pub fn init_emergency_backup<P: AsRef<Path>>(backup_dir: P) {
 
         // Continue with default panic handler
         eprintln!("{}", panic_info);
+
+        // Chain to the previous panic hook (logging hook) so crash events
+        // are still emitted and log files are flushed
+        previous_hook(panic_info);
     }));
 
     let _ = EMERGENCY_BACKUP.set(backup);

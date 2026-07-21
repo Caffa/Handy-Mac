@@ -7,19 +7,18 @@ This document describes how to run the end-to-end test suite for Handy-Mac. The 
 
 ## Known Issues
 
-### App Startup Test (SIGABRT on launch from terminal)
+### App Startup Test (SIGABRT on launch from terminal) — FIXED
 
-The app startup test (`test-app-startup.sh`) currently **fails** when launching from the terminal with `--start-hidden --no-tray --debug`. The app crashes with `SIGABRT` during `_postDidFinishNotification` — this is a **double-panic** pattern where:
+The app startup test (`test-app-startup.sh`) previously **failed** when launching from the terminal with `--start-hidden --no-tray --debug`. The app crashed with `SIGABRT` during `_postDidFinishNotification` due to a **double-panic** pattern where:
 
-1. Something panics during the Tauri `.setup()` callback (app initialization)
-2. The panic hook (`logging::install_panic_hook()`) tries to emit an `AppCrashed` event
-3. Emitting the event also panics (double panic → `abort()`)
+1. Something panicked during the Tauri `.setup()` callback (app initialization)
+2. The panic hook (`logging::install_panic_hook()`) tried to emit an `AppCrashed` event
+3. Emitting the event also panicked (double panic → `abort()`)
+4. Additionally, `emergency_save::init_emergency_backup()` was overwriting the logging panic hook via `set_hook()`, so the logging hook's crash event emission and log flush never ran
 
-This is a **real bug** that the E2E test discovered. The other two startup sub-tests pass:
+**Fix applied:** The logging panic hook now wraps `emit()` and flush calls in `std::panic::catch_unwind()` to prevent double-panic. The emergency save hook now uses `take_hook()` to chain to the previously installed logging hook instead of replacing it. The other two startup sub-tests pass:
 - ✅ `--is-active-use` returns idle (exit code 1) when the app is not running
 - ✅ `--is-recording` returns not-recording (exit code 1) when the app is not running
-
-**Workaround:** The `--transcribe-file`, `--is-active-use`, and `--is-recording` CLI flags all work correctly in headless mode. The crash only occurs when the full GUI app launches from a non-display context (terminal, CI).
 
 ### Query State File Stale State
 
