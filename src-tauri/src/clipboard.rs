@@ -44,6 +44,30 @@ mod macos_ax {
     // CoreFoundation encoding
     pub const K_CFSTRING_ENCODING_UTF8: u32 = 0x08000100;
 
+    /// Create a CFString for the `AXFocusedUIElement` accessibility attribute.
+    /// Caller must release the returned CFStringRef with CFRelease.
+    pub fn ax_focused_ui_element_attribute() -> CFStringRef {
+        unsafe {
+            CFStringCreateWithCString(
+                std::ptr::null::<std::ffi::c_void>() as CFTypeRef,
+                c"AXFocusedUIElement".as_ptr(),
+                K_CFSTRING_ENCODING_UTF8,
+            )
+        }
+    }
+
+    /// Create a CFString for the `AXValue` accessibility attribute.
+    /// Caller must release the returned CFStringRef with CFRelease.
+    pub fn ax_value_attribute() -> CFStringRef {
+        unsafe {
+            CFStringCreateWithCString(
+                std::ptr::null::<std::ffi::c_void>() as CFTypeRef,
+                c"AXValue".as_ptr(),
+                K_CFSTRING_ENCODING_UTF8,
+            )
+        }
+    }
+
     #[link(kind = "framework", name = "ApplicationServices")]
     extern "C" {
         pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
@@ -53,7 +77,8 @@ mod macos_ax {
             // a raw C string. Passing a *const i8 here previously made the framework
             // call CFStringGetLength on a non-CFString pointer, triggering an Apple
             // Silicon PAC trap (SIGTRAP / EXC_BREAKPOINT) and crashing the app
-            // after every successful paste. Use the linked kAX* constants below.
+            // after every successful paste. We now build proper CFString objects
+            // with CFStringCreateWithCString instead of relying on linkable globals.
             attribute: CFStringRef,
             value: *mut *mut std::ffi::c_void,
         ) -> AXError;
@@ -67,15 +92,11 @@ mod macos_ax {
             encoding: CFStringEncoding,
         ) -> bool;
         pub fn CFRelease(cf: CFTypeRef);
-    }
-
-    // Framework-provided CFString constants for AX attribute names.
-    // These are real CFStringRef objects exported by HIServices, so they can be
-    // passed directly to AXUIElementCopyAttributeValue's `attribute` parameter.
-    #[link(kind = "framework", name = "ApplicationServices")]
-    extern "C" {
-        pub static kAXFocusedUIElementAttribute: CFStringRef;
-        pub static kAXValueAttribute: CFStringRef;
+        pub fn CFStringCreateWithCString(
+            alloc: CFTypeRef,
+            cStr: *const i8,
+            encoding: CFStringEncoding,
+        ) -> CFStringRef;
     }
 }
 
@@ -155,13 +176,16 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
         // our panel is click-through.
         let ax_app: AXUIElementRef = unsafe { AXUIElementCreateApplication(pid) };
 
+        // Build the AX attribute name CFStrings at runtime. Modern macOS SDKs
+        // no longer export linkable globals for these (they are CFSTR macros
+        // in headers), so we create them from C-string literals and release
+        // them once the verification is done.
+        let focused_attr = macos_ax::ax_focused_ui_element_attribute();
+        let value_attr = macos_ax::ax_value_attribute();
+
         let mut focused_element_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let result = unsafe {
-            AXUIElementCopyAttributeValue(
-                ax_app,
-                kAXFocusedUIElementAttribute,
-                &mut focused_element_ptr as *mut _,
-            )
+            AXUIElementCopyAttributeValue(ax_app, focused_attr, &mut focused_element_ptr as *mut _)
         };
 
         if result != KAX_ERROR_SUCCESS {
@@ -169,8 +193,12 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
                 "Paste verification: could not get focused AX element (error={}) — assuming paste failed",
                 result
             );
-            // Release ax_app (Create Rule: caller must release).
-            unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+            unsafe {
+                // Release attribute CFStrings and ax_app (Create Rule: caller must release).
+                macos_ax::CFRelease(focused_attr as macos_ax::CFTypeRef);
+                macos_ax::CFRelease(value_attr as macos_ax::CFTypeRef);
+                macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef);
+            }
             return false;
         }
 
@@ -179,11 +207,7 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
         // Get the AXValue of the focused element
         let mut value_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let value_result = unsafe {
-            AXUIElementCopyAttributeValue(
-                focused_element,
-                kAXValueAttribute,
-                &mut value_ptr as *mut _,
-            )
+            AXUIElementCopyAttributeValue(focused_element, value_attr, &mut value_ptr as *mut _)
         };
 
         if value_result != KAX_ERROR_SUCCESS {
@@ -194,9 +218,14 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
                 "Paste verification: focused element has no AXValue (error={}) — assuming paste succeeded (terminal-like app)",
                 value_result
             );
-            // Release the focused element (Create-rule +1 reference)
-            unsafe { macos_ax::CFRelease(focused_element_ptr as macos_ax::CFTypeRef) };
-            unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+            unsafe {
+                // Release the focused element (Create-rule +1 reference)
+                macos_ax::CFRelease(focused_element_ptr as macos_ax::CFTypeRef);
+                // Release attribute CFStrings and ax_app.
+                macos_ax::CFRelease(focused_attr as macos_ax::CFTypeRef);
+                macos_ax::CFRelease(value_attr as macos_ax::CFTypeRef);
+                macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef);
+            }
             return true;
         }
 
@@ -235,16 +264,24 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
                 } else {
                     info!("Paste verification: AXValue does NOT contain pasted text — paste may have failed");
                 }
-                // Release the CFString object obtained from AXUIElementCopyAttributeValue
-                // (Core Foundation Create Rule: caller must release).
-                unsafe { macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef) };
-                // Release ax_app (Create Rule: caller must release).
-                unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+                unsafe {
+                    // Release the CFString object obtained from AXUIElementCopyAttributeValue
+                    // (Core Foundation Create Rule: caller must release).
+                    macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef);
+                    // Release attribute CFStrings and ax_app.
+                    macos_ax::CFRelease(focused_attr as macos_ax::CFTypeRef);
+                    macos_ax::CFRelease(value_attr as macos_ax::CFTypeRef);
+                    macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef);
+                }
                 contains
             } else {
                 info!("Paste verification: could not extract string from AXValue — assuming paste failed");
-                unsafe { macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef) };
-                unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+                unsafe {
+                    macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef);
+                    macos_ax::CFRelease(focused_attr as macos_ax::CFTypeRef);
+                    macos_ax::CFRelease(value_attr as macos_ax::CFTypeRef);
+                    macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef);
+                }
                 false
             }
         } else {
@@ -252,8 +289,12 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
                 "Paste verification: AXValue is not a string (type={}) — assuming paste failed",
                 type_id
             );
-            unsafe { macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef) };
-            unsafe { macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef) };
+            unsafe {
+                macos_ax::CFRelease(value_ptr as macos_ax::CFTypeRef);
+                macos_ax::CFRelease(focused_attr as macos_ax::CFTypeRef);
+                macos_ax::CFRelease(value_attr as macos_ax::CFTypeRef);
+                macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef);
+            }
             false
         }
     })
