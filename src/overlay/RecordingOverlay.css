@@ -44,13 +44,11 @@
   display: flex;
   align-items: end;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   padding-bottom: 0px;
-  /* Match icon height (30px) so the bars' bottom edge aligns with the icon's
-     bottom edge. Bars grow upward from this baseline. The container clips any
-     bar above 30px (max bar is 35px in the component) — this slightly compresses
-     the top of the range but keeps visual alignment clean. */
-  height: 30px;
+  /* Height matches max bar height (38px) so the full range is visible.
+     Bars grow upward from this baseline. No clipping of the top range. */
+  height: 38px;
   overflow: hidden;
   /* Bars are visual-only, allow clicks to pass through */
   pointer-events: none;
@@ -98,9 +96,9 @@
 }
 
 .bar {
-  width: 10px;
+  width: 8px;
   background: #ffe5ee;
-  max-height: 35px;
+  max-height: 38px;
   border-radius: 2px;
   /* Fallback transition — overridden inline by VisualizerBars.tsx
      which uses separate rise/fall cubic-bezier timing */

@@ -73,7 +73,7 @@ export function useVisualizer(
   // because the decay timer alone may not reach zero fast enough.
   useEffect(() => {
     if (!effectivelyRecording || !isVisible) {
-      setLevels(Array(9).fill(0));
+      setLevels(Array(16).fill(0));
       // Also reset the smoothed levels ref so the next recording starts clean
       smoothedLevelsRef.current = Array(16).fill(0);
     }
@@ -206,7 +206,7 @@ export function useVisualizer(
         });
 
         smoothedLevelsRef.current = smoothed;
-        setLevels(smoothed.slice(0, 9));
+        setLevels(smoothed);
 
         // Track low audio levels during recording
         const maxLevel = Math.max(...newLevels);

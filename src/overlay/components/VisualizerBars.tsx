@@ -5,8 +5,8 @@
  * Bars use CSS transitions for smooth animation and opacity for depth.
  *
  * Animation uses asymmetric cubic-bezier easing:
- * - Rise (bars going up): fast ease-out (100ms) — snappy response to speech
- * - Fall (bars going down): slower ease-in (180ms) — smooth decay, no abrupt collapse
+ * - Rise (bars going up): fast ease-out (120ms) — snappy response to speech
+ * - Fall (bars going down): slower ease-in-out (180ms) — smooth decay, no abrupt collapse
  *
  * This follows the animation principle that exiting is slower than entering,
  * giving the visualizer a fluid, organic feel without losing responsiveness.
@@ -24,7 +24,7 @@ interface VisualizerBarsProps {
 const RISE_EASE = "cubic-bezier(0.25, 0.46, 0.45, 0.94)"; // ease-out-quad: gentle deceleration
 const FALL_EASE = "cubic-bezier(0.4, 0, 0.6, 1)"; // ease-in-out: smooth decay
 const RISE_MS = 120; // gentle rise — not too sudden
-const FALL_MS = 100; // responsive fall — feels natural
+const FALL_MS = 180; // slower fall — fluid decay, feels organic
 
 export function VisualizerBars({ levels, isRouter }: VisualizerBarsProps) {
   // Track previous heights to determine rise vs fall direction
@@ -33,7 +33,7 @@ export function VisualizerBars({ levels, isRouter }: VisualizerBarsProps) {
   return (
     <div className="bars-container">
       {levels.map((v, i) => {
-        const height = Math.min(35, 7 + Math.pow(v, 0.7) * 28);
+        const height = Math.min(38, 7 + Math.pow(v, 0.5) * 31);
         const prevHeight = prevHeightsRef.current[i] ?? 0;
         const isRising = height > prevHeight + 0.5; // threshold to avoid micro-jitter
 
