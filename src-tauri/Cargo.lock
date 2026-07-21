@@ -2513,6 +2513,7 @@ dependencies = [
  "handy-keys",
  "hf-hub",
  "hound",
+ "libc",
  "log",
  "loom",
  "natural",

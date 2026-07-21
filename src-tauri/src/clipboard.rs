@@ -4,6 +4,7 @@ use crate::settings::TypingTool;
 use crate::settings::{get_settings, AutoSubmitKey, ClipboardHandling, PasteMethod};
 use enigo::{Direction, Enigo, Key, Keyboard};
 use log::{error, info, warn};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::Command;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -796,119 +797,188 @@ pub fn verify_paste(_app_handle: &AppHandle, pasted_text: &str) -> bool {
     }
 }
 
+/// Check if a process with the given PID still exists.
+/// Returns `true` if the process exists (or we can't determine — safe to try AX calls),
+/// `false` only if we're certain the process doesn't exist (ESRCH).
+#[cfg(target_os = "macos")]
+fn pid_exists(pid: i32) -> bool {
+    // kill(pid, 0) doesn't send a signal — it just checks process existence.
+    // Returns 0 if process exists, -1 with errno=ESRCH if it doesn't.
+    // Returns -1 with errno=EPERM if process exists but we lack permission (still valid).
+    unsafe {
+        if libc::kill(pid, 0) == 0 {
+            true
+        } else {
+            let err = *libc::__error();
+            if err == libc::ESRCH {
+                // Process definitively does not exist
+                false
+            } else {
+                // EPERM or other error — process likely exists, we just can't signal it.
+                // Safe to proceed with AX calls.
+                true
+            }
+        }
+    }
+}
+
 /// macOS implementation of paste verification using the Accessibility API.
 ///
 /// Reads the focused UI element's AXValue and checks if it contains the
 /// pasted text. This confirms the paste actually landed in the target
 /// text field, not in Handy's own overlay or nowhere at all.
+///
+/// Wraps all AX calls in `catch_unwind` to prevent crashes from invalid
+/// CF objects (e.g., when the target app has closed or the focused element
+/// is invalid). Also validates the PID before making AX calls and checks
+/// for null pointers from AXUIElementCopyAttributeValue.
 #[cfg(target_os = "macos")]
 fn verify_paste_macos(pasted_text: &str) -> bool {
     use tauri_nspanel::objc2::rc::autoreleasepool;
     use tauri_nspanel::objc2_app_kit::NSWorkspace;
 
     autoreleasepool(|_| {
-        let workspace = NSWorkspace::sharedWorkspace();
-        let Some(app) = workspace.frontmostApplication() else {
-            info!("Paste verification: no frontmost app — assuming paste failed");
-            return false;
-        };
+        // Wrap the entire AX interaction in catch_unwind to prevent SIGTRAP crashes
+        // from invalid CF objects (e.g., when target app has closed or element is stale).
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let workspace = NSWorkspace::sharedWorkspace();
+            let Some(app) = workspace.frontmostApplication() else {
+                info!("Paste verification: no frontmost app — assuming paste failed");
+                return false;
+            };
 
-        let pid = app.processIdentifier();
+            let pid = app.processIdentifier();
 
-        // Use the macOS Accessibility API to check the focused element.
-        let ax_app: AXUIElementRef = unsafe { AXUIElementCreateApplication(pid) };
+            // Validate that the target process still exists before making AX calls.
+            // AXUIElementCreateApplication on a dead/zombie PID can return garbage pointers.
+            if !pid_exists(pid) {
+                warn!(
+                    "Paste verification: target process (pid={}) no longer exists — assuming paste failed",
+                    pid
+                );
+                return false;
+            }
 
-        let mut focused_element_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-        let result = unsafe {
-            AXUIElementCopyAttributeValue(
-                ax_app,
-                KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE,
-                &mut focused_element_ptr as *mut _,
-            )
-        };
+            // Use the macOS Accessibility API to check the focused element.
+            let ax_app: AXUIElementRef = unsafe { AXUIElementCreateApplication(pid) };
 
-        if result != KAX_ERROR_SUCCESS {
-            info!(
-                "Paste verification: could not get focused AX element (error={}) — assuming paste failed",
-                result
-            );
-            unsafe { CFRelease(ax_app as CFTypeRef) };
-            return false;
-        }
-
-        let focused_element: AXUIElementRef = focused_element_ptr as AXUIElementRef;
-
-        // Get the AXValue of the focused element
-        let mut value_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-        let value_result = unsafe {
-            AXUIElementCopyAttributeValue(
-                focused_element,
-                KAX_VALUE_ATTRIBUTE,
-                &mut value_ptr as *mut _,
-            )
-        };
-
-        if value_result != KAX_ERROR_SUCCESS {
-            // Element has no AXValue — might be a non-text field (terminal, etc.)
-            // Many terminal apps don't expose AXValue, so assume paste succeeded.
-            info!(
-                "Paste verification: focused element has no AXValue (error={}) — assuming paste succeeded (terminal-like app)",
-                value_result
-            );
-            unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
-            unsafe { CFRelease(ax_app as CFTypeRef) };
-            return true;
-        }
-
-        // Release the focused element (Create-rule +1 reference)
-        unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
-
-        let type_id = unsafe { CFGetTypeID(value_ptr as CFTypeRef) };
-        let string_type_id = unsafe { CFStringGetTypeID() };
-
-        if type_id == string_type_id {
-            let cf_string: CFStringRef = value_ptr as CFStringRef;
-            let len = unsafe { CFStringGetLength(cf_string) };
-            // Each UTF-16 code unit can expand to up to 3 UTF-8 bytes
-            let buffer_size = (len as usize) * 3 + 1;
-            let mut buffer = vec![0u8; buffer_size];
-
-            let success = unsafe {
-                CFStringGetCString(
-                    cf_string,
-                    buffer.as_mut_ptr() as *mut i8,
-                    buffer_size as isize,
-                    K_CFSTRING_ENCODING_UTF8,
+            let mut focused_element_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let ax_result = unsafe {
+                AXUIElementCopyAttributeValue(
+                    ax_app,
+                    KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE,
+                    &mut focused_element_ptr as *mut _,
                 )
             };
 
-            // Release the CFString obtained from AXUIElementCopyAttributeValue
-            unsafe { CFRelease(value_ptr as CFTypeRef) };
-            // Release ax_app
-            unsafe { CFRelease(ax_app as CFTypeRef) };
+            if ax_result != KAX_ERROR_SUCCESS {
+                info!(
+                    "Paste verification: could not get focused AX element (error={}) — assuming paste failed",
+                    ax_result
+                );
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+                return false;
+            }
 
-            if success {
-                let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
-                let s = String::from_utf8_lossy(&buffer[..end]);
-                let contains = s.contains(pasted_text);
-                if contains {
-                    info!("Paste verification: AXValue contains pasted text — paste confirmed");
+            // Null pointer check: even on success, verify the returned pointer is valid
+            if focused_element_ptr.is_null() {
+                info!("Paste verification: AXUIElementCopyAttributeValue returned success but null pointer — assuming paste failed");
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+                return false;
+            }
+
+            let focused_element: AXUIElementRef = focused_element_ptr as AXUIElementRef;
+
+            // Get the AXValue of the focused element
+            let mut value_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let value_result = unsafe {
+                AXUIElementCopyAttributeValue(
+                    focused_element,
+                    KAX_VALUE_ATTRIBUTE,
+                    &mut value_ptr as *mut _,
+                )
+            };
+
+            if value_result != KAX_ERROR_SUCCESS {
+                // Element has no AXValue — might be a non-text field (terminal, etc.)
+                // Many terminal apps don't expose AXValue, so assume paste succeeded.
+                info!(
+                    "Paste verification: focused element has no AXValue (error={}) — assuming paste succeeded (terminal-like app)",
+                    value_result
+                );
+                unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+                return true;
+            }
+
+            // Null pointer check for AXValue
+            if value_ptr.is_null() {
+                info!("Paste verification: AXUIElementCopyAttributeValue for AXValue returned success but null pointer — assuming paste succeeded (terminal-like app)");
+                unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+                return true;
+            }
+
+            // Release the focused element (Create-rule +1 reference)
+            unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
+
+            // Type check BEFORE calling CFStringGetLength to prevent crashes
+            // on invalid CF objects
+            let type_id = unsafe { CFGetTypeID(value_ptr as CFTypeRef) };
+            let string_type_id = unsafe { CFStringGetTypeID() };
+
+            if type_id == string_type_id {
+                let cf_string: CFStringRef = value_ptr as CFStringRef;
+                let len = unsafe { CFStringGetLength(cf_string) };
+                // Each UTF-16 code unit can expand to up to 3 UTF-8 bytes
+                let buffer_size = (len as usize) * 3 + 1;
+                let mut buffer = vec![0u8; buffer_size];
+
+                let success = unsafe {
+                    CFStringGetCString(
+                        cf_string,
+                        buffer.as_mut_ptr() as *mut i8,
+                        buffer_size as isize,
+                        K_CFSTRING_ENCODING_UTF8,
+                    )
+                };
+
+                // Release the CFString obtained from AXUIElementCopyAttributeValue
+                unsafe { CFRelease(value_ptr as CFTypeRef) };
+                // Release ax_app
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+
+                if success {
+                    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+                    let s = String::from_utf8_lossy(&buffer[..end]);
+                    let contains = s.contains(pasted_text);
+                    if contains {
+                        info!("Paste verification: AXValue contains pasted text — paste confirmed");
+                    } else {
+                        info!("Paste verification: AXValue does NOT contain pasted text — paste may have failed");
+                    }
+                    contains
                 } else {
-                    info!("Paste verification: AXValue does NOT contain pasted text — paste may have failed");
+                    info!("Paste verification: could not extract string from AXValue — assuming paste failed");
+                    false
                 }
-                contains
             } else {
-                info!("Paste verification: could not extract string from AXValue — assuming paste failed");
+                info!(
+                    "Paste verification: AXValue is not a string (type={}) — assuming paste failed",
+                    type_id
+                );
+                unsafe { CFRelease(value_ptr as CFTypeRef) };
+                unsafe { CFRelease(ax_app as CFTypeRef) };
                 false
             }
-        } else {
-            info!(
-                "Paste verification: AXValue is not a string (type={}) — assuming paste failed",
-                type_id
-            );
-            unsafe { CFRelease(value_ptr as CFTypeRef) };
-            unsafe { CFRelease(ax_app as CFTypeRef) };
-            false
+        }));
+
+        match result {
+            Ok(inner_result) => inner_result,
+            Err(_) => {
+                warn!("Paste verification: AX API panic — assuming paste failed");
+                false
+            }
         }
     })
 }
@@ -938,82 +1008,119 @@ pub fn paste_via_accessibility(text: &str, app_handle: &AppHandle) -> Result<(),
 /// Gets the focused UI element via the Accessibility API and sets its
 /// AXValue attribute to the text directly. This bypasses the clipboard
 /// and Cmd+V entirely — useful when keystroke-based paste fails.
+///
+/// Wraps all AX calls in `catch_unwind` to prevent crashes from invalid
+/// CF objects. Also validates the PID before making AX calls and checks
+/// for null pointers from AXUIElementCopyAttributeValue.
 #[cfg(target_os = "macos")]
 fn paste_via_accessibility_macos(text: &str, _app_handle: &AppHandle) -> Result<(), String> {
     use tauri_nspanel::objc2::rc::autoreleasepool;
     use tauri_nspanel::objc2_app_kit::NSWorkspace;
 
     autoreleasepool(|_| {
-        let workspace = NSWorkspace::sharedWorkspace();
-        let app = workspace
-            .frontmostApplication()
-            .ok_or("Could not get frontmost application")?;
+        // Wrap the entire AX interaction in catch_unwind to prevent SIGTRAP crashes
+        // from invalid CF objects (e.g., when target app has closed or element is stale).
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let workspace = NSWorkspace::sharedWorkspace();
+            let app = workspace
+                .frontmostApplication()
+                .ok_or("Could not get frontmost application")?;
 
-        let pid = app.processIdentifier();
+            let pid = app.processIdentifier();
 
-        // Create AX element for the target application
-        let ax_app: AXUIElementRef = unsafe { AXUIElementCreateApplication(pid) };
+            // Validate that the target process still exists before making AX calls.
+            if !pid_exists(pid) {
+                warn!(
+                    "AX paste: target process (pid={}) no longer exists — cannot paste",
+                    pid
+                );
+                return Err(format!(
+                    "AX paste: target process (pid={}) no longer exists",
+                    pid
+                ));
+            }
 
-        // Get the focused UI element
-        let mut focused_element_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-        let result = unsafe {
-            AXUIElementCopyAttributeValue(
-                ax_app,
-                KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE,
-                &mut focused_element_ptr as *mut _,
-            )
-        };
+            // Create AX element for the target application
+            let ax_app: AXUIElementRef = unsafe { AXUIElementCreateApplication(pid) };
 
-        if result != KAX_ERROR_SUCCESS {
-            unsafe { CFRelease(ax_app as CFTypeRef) };
-            return Err(format!(
-                "AX paste: could not get focused element (error={})",
-                result
-            ));
-        }
+            // Get the focused UI element
+            let mut focused_element_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let ax_result = unsafe {
+                AXUIElementCopyAttributeValue(
+                    ax_app,
+                    KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE,
+                    &mut focused_element_ptr as *mut _,
+                )
+            };
 
-        let focused_element: AXUIElementRef = focused_element_ptr as AXUIElementRef;
+            if ax_result != KAX_ERROR_SUCCESS {
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+                return Err(format!(
+                    "AX paste: could not get focused element (error={})",
+                    ax_result
+                ));
+            }
 
-        // Create a CFString from the text
-        let cf_text: CFStringRef = unsafe {
-            CFStringCreateWithCString(
-                std::ptr::null_mut(),
-                text.as_ptr() as *const i8,
-                K_CFSTRING_ENCODING_UTF8,
-            )
-        };
+            // Null pointer check: even on success, verify the returned pointer is valid
+            if focused_element_ptr.is_null() {
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+                return Err(
+                    "AX paste: AXUIElementCopyAttributeValue returned success but null pointer"
+                        .into(),
+                );
+            }
 
-        if cf_text.is_null() {
+            let focused_element: AXUIElementRef = focused_element_ptr as AXUIElementRef;
+
+            // Create a CFString from the text
+            let cf_text: CFStringRef = unsafe {
+                CFStringCreateWithCString(
+                    std::ptr::null_mut(),
+                    text.as_ptr() as *const i8,
+                    K_CFSTRING_ENCODING_UTF8,
+                )
+            };
+
+            if cf_text.is_null() {
+                unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
+                unsafe { CFRelease(ax_app as CFTypeRef) };
+                return Err("AX paste: could not create CFString from text".into());
+            }
+
+            // Set the AXValue of the focused element
+            let set_result = unsafe {
+                AXUIElementSetAttributeValue(focused_element, KAX_VALUE_ATTRIBUTE, cf_text as *mut _)
+            };
+
+            // Release all references (Create Rule: caller must release)
+            unsafe { CFRelease(cf_text as CFTypeRef) };
             unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
             unsafe { CFRelease(ax_app as CFTypeRef) };
-            return Err("AX paste: could not create CFString from text".into());
-        }
 
-        // Set the AXValue of the focused element
-        let set_result = unsafe {
-            AXUIElementSetAttributeValue(focused_element, KAX_VALUE_ATTRIBUTE, cf_text as *mut _)
-        };
+            if set_result == KAX_ERROR_SUCCESS {
+                info!(
+                    "AX paste: successfully set AXValue on focused element ({} chars)",
+                    text.len()
+                );
+                Ok(())
+            } else {
+                warn!(
+                    "AX paste: failed to set AXValue (error={}) — element may not support direct text setting",
+                    set_result
+                );
+                Err(format!(
+                    "AX paste: AXUIElementSetAttributeValue failed with error {}",
+                    set_result
+                ))
+            }
+        }));
 
-        // Release all references (Create Rule: caller must release)
-        unsafe { CFRelease(cf_text as CFTypeRef) };
-        unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
-        unsafe { CFRelease(ax_app as CFTypeRef) };
-
-        if set_result == KAX_ERROR_SUCCESS {
-            info!(
-                "AX paste: successfully set AXValue on focused element ({} chars)",
-                text.len()
-            );
-            Ok(())
-        } else {
-            warn!(
-                "AX paste: failed to set AXValue (error={}) — element may not support direct text setting",
-                set_result
-            );
-            Err(format!(
-                "AX paste: AXUIElementSetAttributeValue failed with error {}",
-                set_result
-            ))
+        match result {
+            Ok(inner_result) => inner_result,
+            Err(_) => {
+                warn!("AX paste: AX API panic — assuming paste failed");
+                Err("AX paste: AX API panic — cannot paste".into())
+            }
         }
     })
 }

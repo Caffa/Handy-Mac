@@ -1,7 +1,7 @@
 .recording-overlay {
   --overlay-scale: 1;
   height: calc(60px * var(--overlay-scale));
-  width: calc(230px * var(--overlay-scale));
+  width: calc(200px * var(--overlay-scale));
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
@@ -31,6 +31,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .overlay-right {
@@ -44,7 +46,7 @@
   display: flex;
   align-items: end;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   padding-bottom: 0px;
   /* Height matches max bar height (38px) so the full range is visible.
      Bars grow upward from this baseline. No clipping of the top range. */
@@ -96,7 +98,7 @@
 }
 
 .bar {
-  width: 8px;
+  width: 4px;
   background: #ffe5ee;
   max-height: 38px;
   border-radius: 2px;
