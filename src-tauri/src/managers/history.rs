@@ -34,6 +34,41 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN model_id TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN routed BOOLEAN NOT NULL DEFAULT 0;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN routing_result TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN tags TEXT;"),
+    // Quality and metadata for data tagging
+    M::up("ALTER TABLE transcription_history ADD COLUMN ground_truth TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN quality TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN speech_speed TEXT;"),
+    // Experiment system: track transcription accuracy tests (for programmatic use)
+    M::up(
+        "CREATE TABLE IF NOT EXISTS experiment_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL,
+            original_transcript TEXT NOT NULL,
+            ground_truth TEXT,
+            speech_speed TEXT DEFAULT 'normal',
+            recording_quality TEXT DEFAULT 'good',
+            created_at INTEGER NOT NULL,
+            is_complete BOOLEAN NOT NULL DEFAULT 0,
+            notes TEXT,
+            FOREIGN KEY (recording_id) REFERENCES transcription_history(id)
+        );",
+    ),
+    M::up(
+        "CREATE TABLE IF NOT EXISTS transcription_variants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_group_id INTEGER NOT NULL,
+            model_id TEXT NOT NULL,
+            parameters TEXT NOT NULL,
+            transcription_text TEXT NOT NULL,
+            match_score REAL,
+            ranking INTEGER,
+            is_acceptable BOOLEAN NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            notes TEXT,
+            FOREIGN KEY (experiment_group_id) REFERENCES experiment_groups(id)
+        );",
+    ),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -72,6 +107,45 @@ pub struct HistoryEntry {
     /// `[{"status":"✅","handler":"Daily","classification":"diary_entry","file_path":null}]`.
     /// Set after the boss_router subprocess completes.
     pub routing_result: Option<String>,
+    /// JSON array of tags for categorizing recordings, e.g. `["fast", "slow", "test"]`.
+    /// Used for research and experimentation purposes.
+    pub tags: Option<String>,
+    /// Ground truth text - what the user actually said (corrected transcription).
+    /// Used for transcription accuracy experiments.
+    pub ground_truth: Option<String>,
+    /// Quality rating: "good", "okay", "bad".
+    /// User's assessment of recording quality.
+    pub quality: Option<String>,
+    /// Speech speed: "fast", "normal", "slow".
+    /// User's assessment of speech speed.
+    pub speech_speed: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct ExperimentGroup {
+    pub id: i64,
+    pub recording_id: i64,
+    pub original_transcript: String,
+    pub ground_truth: Option<String>,
+    pub speech_speed: String,
+    pub recording_quality: String,
+    pub created_at: i64,
+    pub is_complete: bool,
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct TranscriptionVariant {
+    pub id: i64,
+    pub experiment_group_id: i64,
+    pub model_id: String,
+    pub parameters: String,
+    pub transcription_text: String,
+    pub match_score: Option<f32>,
+    pub ranking: Option<i32>,
+    pub is_acceptable: bool,
+    pub created_at: i64,
+    pub notes: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -126,8 +200,24 @@ impl HistoryManager {
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         debug!("Database version before migration: {}", version_before);
 
-        // Apply any pending migrations
-        migrations.to_latest(&mut conn)?;
+        // Apply any pending migrations, tolerating databases that are ahead of code
+        match migrations.to_latest(&mut conn) {
+            Ok(()) => {}
+            Err(rusqlite_migration::Error::MigrationDefinition(
+                rusqlite_migration::MigrationDefinitionError::DatabaseTooFarAhead,
+            )) => {
+                let db_version: i32 = conn
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0))
+                    .unwrap_or(0);
+                log::warn!(
+                    "Database version ahead of code migrations ({} > {}); continuing without migration",
+                    db_version,
+                    MIGRATIONS.len()
+                );
+                // The schema is a superset of what we need — safe to continue
+            }
+            Err(e) => return Err(e.into()),
+        }
 
         // Get version after migration
         let version_after: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -219,6 +309,10 @@ impl HistoryManager {
             model_id: row.get("model_id").unwrap_or(None),
             routed: row.get("routed").unwrap_or(false),
             routing_result: row.get("routing_result").unwrap_or(None),
+            tags: row.get("tags").unwrap_or(None),
+            ground_truth: row.get("ground_truth").unwrap_or(None),
+            quality: row.get("quality").unwrap_or(None),
+            speech_speed: row.get("speech_speed").unwrap_or(None),
         })
     }
 
@@ -282,6 +376,10 @@ impl HistoryManager {
             model_id,
             routed,
             routing_result: None,
+            tags: None,
+            ground_truth: None,
+            quality: None,
+            speech_speed: None,
         };
 
         debug!("Saved history entry with id {}", entry.id);

@@ -162,7 +162,7 @@ fn should_force_show_permissions_window(app: &AppHandle) -> bool {
     false
 }
 
-fn initialize_core_logic(app_handle: &AppHandle) {
+fn initialize_core_logic(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // Note: Enigo (keyboard/mouse simulation) is NOT initialized here.
     // The frontend is responsible for calling the `initialize_enigo` command
     // after onboarding completes. This avoids triggering permission dialogs
@@ -171,18 +171,22 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // Initialize the managers. The audio recorder receives the streaming router
     // explicitly, so always-on microphone startup can wire live-preview frames
     // even before Tauri state is populated.
-    let model_manager =
-        Arc::new(ModelManager::new(app_handle).expect("Failed to initialize model manager"));
+    let model_manager = Arc::new(
+        ModelManager::new(app_handle)
+            .map_err(|e| { log::error!("Failed to initialize model manager: {e}"); e })?,
+    );
     let transcription_manager = Arc::new(
         TranscriptionManager::new(app_handle, model_manager.clone())
-            .expect("Failed to initialize transcription manager"),
+            .map_err(|e| { log::error!("Failed to initialize transcription manager: {e}"); e })?,
     );
     let recording_manager = Arc::new(
         AudioRecordingManager::new(app_handle, transcription_manager.stream_router())
-            .expect("Failed to initialize recording manager"),
+            .map_err(|e| { log::error!("Failed to initialize recording manager: {e}"); e })?,
     );
-    let history_manager =
-        Arc::new(HistoryManager::new(app_handle).expect("Failed to initialize history manager"));
+    let history_manager = Arc::new(
+        HistoryManager::new(app_handle)
+            .map_err(|e| { log::error!("Failed to initialize history manager: {e}"); e })?,
+    );
 
     // Initialize the transcribe-cpp native backend (logging + backend module
     // registration) once, before any whisper model is loaded.
@@ -202,7 +206,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // Failed transcriptions are persisted to disk and retried automatically.
     let retry_queue = Arc::new(Mutex::new(
         TranscriptionRetryQueue::new(app_handle.clone())
-            .expect("Failed to initialize retry queue"),
+            .map_err(|e| { log::error!("Failed to initialize retry queue: {e}"); e })?,
     ));
     app_handle.manage(retry_queue.clone());
 
@@ -350,6 +354,8 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Create the recording overlay window (hidden by default)
     utils::create_recording_overlay(app_handle);
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -817,11 +823,12 @@ pub fn run(cli_args: CliArgs) {
             if headless_mode {
                 let app_handle = app.handle().clone();
                 let model_manager = Arc::new(
-                    ModelManager::new(&app_handle).expect("Failed to initialize model manager"),
+                    ModelManager::new(&app_handle)
+                        .map_err(|e| { log::error!("Failed to initialize model manager: {e}"); e })?,
                 );
                 let transcription_manager = Arc::new(
                     TranscriptionManager::new(&app_handle, model_manager.clone())
-                        .expect("Failed to initialize transcription manager"),
+                        .map_err(|e| { log::error!("Failed to initialize transcription manager: {e}"); e })?,
                 );
                 app_handle.manage(model_manager);
                 app_handle.manage(transcription_manager);
@@ -933,7 +940,7 @@ pub fn run(cli_args: CliArgs) {
                 emergency_save::init_emergency_backup(&backup_dir);
             }
 
-            initialize_core_logic(&app_handle);
+            initialize_core_logic(&app_handle)?;
 
             // Populate the overlay-enabled cache from initial settings so the
             // audio path (overlay::emit_levels, called ~24 Hz during recording)
