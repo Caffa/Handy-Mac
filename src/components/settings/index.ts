@@ -1,11 +1,13 @@
 // Settings section components
 export { GeneralSettings } from "./general/GeneralSettings";
+export { AccuracySettings } from "./accuracy/AccuracySettings";
 export { AdvancedSettings } from "./advanced/AdvancedSettings";
 export { DebugSettings } from "./debug/DebugSettings";
 export { HistorySettings } from "./history/HistorySettings";
 export { AboutSettings } from "./about/AboutSettings";
 export { PostProcessingSettings } from "./post-processing/PostProcessingSettings";
 export { ModelsSettings } from "./models/ModelsSettings";
+export { UsageSettings } from "./usage/UsageSettings";
 
 // Individual setting components
 export { MicrophoneSelector } from "./MicrophoneSelector";
@@ -15,11 +17,17 @@ export { AlwaysOnMicrophone } from "./AlwaysOnMicrophone";
 export { PushToTalk } from "./PushToTalk";
 export { AudioFeedback } from "./AudioFeedback";
 export { ShowOverlay } from "./ShowOverlay";
+export { OverlayScreenTarget } from "./OverlayScreenTarget";
+export { OverlayScale } from "./OverlayScale";
 export { GlobalShortcutInput } from "./GlobalShortcutInput";
 export { HandyKeysShortcutInput } from "./HandyKeysShortcutInput";
 export { ShortcutInput } from "./ShortcutInput";
 export { TranslateToEnglish } from "./TranslateToEnglish";
 export { CustomWords } from "./CustomWords";
+export { AdvancedCustomWords } from "./AdvancedCustomWords";
+export { WordReplacements } from "./WordReplacements";
+export { WordCorrectionModeSelector } from "./WordCorrectionModeSelector";
+export { WordCorrectionThreshold } from "./WordCorrectionThreshold";
 export { PostProcessingToggle } from "./PostProcessingToggle";
 export { PostProcessingSettingsApi } from "./PostProcessingSettingsApi";
 export { PostProcessingSettingsPrompts } from "./PostProcessingSettingsPrompts";
@@ -30,4 +38,11 @@ export { HistoryLimit } from "./HistoryLimit";
 export { RecordingRetentionPeriodSelector } from "./RecordingRetentionPeriod";
 export { AutostartToggle } from "./AutostartToggle";
 export { UpdateChecksToggle } from "./UpdateChecksToggle";
-export { ShowWhatsNewOnUpdate } from "./ShowWhatsNewOnUpdate";
+export { AdaptiveThresholds } from "./AdaptiveThresholds";
+export { VerificationMode } from "./VerificationMode";
+export { ConvertUsToBritish } from "./ConvertUsToBritish";
+export { CustomFillerWords } from "./CustomFillerWords";
+export { HybridMode } from "./HybridMode";
+export { LiveCaptions } from "./LiveCaptions";
+export { NoiseSuppression } from "./NoiseSuppression";
+export { VadSensitivity } from "./VadSensitivity";

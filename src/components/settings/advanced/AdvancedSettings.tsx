@@ -1,8 +1,10 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { type } from "@tauri-apps/plugin-os";
 import { ShowOverlay } from "../ShowOverlay";
+import { OverlayScreenTarget } from "../OverlayScreenTarget";
+import { OverlayScale } from "../OverlayScale";
 import { ModelUnloadTimeoutSetting } from "../ModelUnloadTimeout";
-import { CustomWords } from "../CustomWords";
 import { SettingsGroup } from "../../ui/SettingsGroup";
 import { StartHidden } from "../StartHidden";
 import { AutostartToggle } from "../AutostartToggle";
@@ -18,14 +20,17 @@ import { RecordingRetentionPeriodSelector } from "../RecordingRetentionPeriod";
 import { ExperimentalToggle } from "../ExperimentalToggle";
 import { useSettings } from "../../../hooks/useSettings";
 import { KeyboardImplementationSelector } from "../debug/KeyboardImplementationSelector";
-import { VoiceActivityDetection } from "../VoiceActivityDetection";
 import { AccelerationSelector } from "../AccelerationSelector";
 import { LazyStreamClose } from "../LazyStreamClose";
+import { HybridMode } from "../HybridMode";
+import { ToggleSwitch } from "../../ui/ToggleSwitch";
+import { VerificationMode } from "../VerificationMode";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
-  const { getSetting } = useSettings();
+  const { getSetting, updateSetting, isUpdating } = useSettings();
   const experimentalEnabled = getSetting("experimental_enabled") || false;
+  const isLinux = type() === "linux";
 
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
@@ -34,6 +39,10 @@ export const AdvancedSettings: React.FC = () => {
         <AutostartToggle descriptionMode="tooltip" grouped={true} />
         <ShowTrayIcon descriptionMode="tooltip" grouped={true} />
         <ShowOverlay descriptionMode="tooltip" grouped={true} />
+        {!isLinux && (
+          <OverlayScreenTarget descriptionMode="tooltip" grouped={true} />
+        )}
+        <OverlayScale descriptionMode="tooltip" grouped={true} />
         <ModelUnloadTimeoutSetting descriptionMode="tooltip" grouped={true} />
         <ExperimentalToggle descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
@@ -43,11 +52,6 @@ export const AdvancedSettings: React.FC = () => {
         <TypingToolSetting descriptionMode="tooltip" grouped={true} />
         <ClipboardHandlingSetting descriptionMode="tooltip" grouped={true} />
         <AutoSubmit descriptionMode="tooltip" grouped={true} />
-      </SettingsGroup>
-
-      <SettingsGroup title={t("settings.advanced.groups.transcription")}>
-        <VoiceActivityDetection descriptionMode="tooltip" grouped={true} />
-        <CustomWords descriptionMode="tooltip" grouped />
         <AppendTrailingSpace descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
@@ -68,6 +72,20 @@ export const AdvancedSettings: React.FC = () => {
           />
           <AccelerationSelector descriptionMode="tooltip" grouped={true} />
           <LazyStreamClose descriptionMode="tooltip" grouped={true} />
+          <HybridMode descriptionMode="tooltip" grouped={true} />
+          <ToggleSwitch
+            checked={getSetting("adaptive_parakeet_thresholds") ?? false}
+            onChange={(checked) =>
+              updateSetting("adaptive_parakeet_thresholds", checked)
+            }
+            disabled={isUpdating("adaptive_parakeet_thresholds")}
+            isUpdating={isUpdating("adaptive_parakeet_thresholds")}
+            label={t("settings.advanced.adaptiveThresholds.label")}
+            description={t("settings.advanced.adaptiveThresholds.description")}
+            descriptionMode="tooltip"
+            grouped={true}
+          />
+          <VerificationMode descriptionMode="tooltip" grouped={true} />
         </SettingsGroup>
       )}
     </div>

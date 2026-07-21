@@ -467,6 +467,11 @@ fn stop(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &st
 }
 
 #[cfg(test)]
+mod transcription_coordinator_tests {
+    include!("transcription_coordinator_tests.rs");
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -1,7 +1,9 @@
 pub mod audio;
+pub mod experiments;
 pub mod history;
 pub mod models;
 pub mod transcription;
+pub mod transcription_retry;
 
 use crate::settings::{get_settings, write_settings, AppSettings, LogLevel};
 use crate::utils::cancel_current_operation;
@@ -221,4 +223,13 @@ pub fn confirm_routing(app: AppHandle, text: String) -> Result<(), String> {
     } else {
         Err("No pending routing confirmation available".to_string())
     }
+}
+
+/// Open a path in the system file manager or with the default application.
+#[specta::specta]
+#[tauri::command]
+pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .open_path(path, None::<String>)
+        .map_err(|e| format!("Failed to open path: {}", e))
 }

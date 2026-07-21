@@ -72,6 +72,10 @@ const EMIT_THROTTLE_MS: u64 = 33; // ~30 FPS
 /// starts so any pending hide from a previous session is invalidated.
 static OVERLAY_SESSION: AtomicU64 = AtomicU64::new(0);
 
+/// Whether the overlay panel can become the key window (for keyboard input
+/// in router confirmation mode). Defaults to false.
+static OVERLAY_CAN_BECOME_KEY: AtomicBool = AtomicBool::new(false);
+
 /// Bump the overlay session counter. Called when a new recording starts.
 /// Any pending hide operation from a previous session will see the session
 /// has changed and will skip hiding the window.
@@ -660,4 +664,78 @@ pub fn emit_levels(app_handle: &AppHandle, levels: &[f32]) {
     // eval_script call per callback, cutting the per-callback WebKit
     // dispatch work in half.
     let _ = app_handle.emit_to("recording_overlay", "mic-level", levels);
+}
+
+/// Tauri command to toggle whether the overlay panel accepts mouse events.
+///
+/// When `enabled` is true, the overlay panel accepts mouse events (for interactive
+/// elements like buttons and textareas). When `enabled` is false, all mouse events
+/// pass through to apps below the overlay.
+///
+/// On macOS, this controls the NSPanel's `ignoresMouseEvents` property.
+/// On non-macOS platforms, this is a no-op (CSS pointer-events handles this).
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_mouse_passthrough(app: AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::WebviewWindowExt;
+        if let Some(overlay_window) = app.get_webview_window("recording_overlay") {
+            let window = overlay_window.clone();
+            let _ = overlay_window.run_on_main_thread(move || {
+                if let Ok(panel) = window.to_panel::<crate::overlay::RecordingOverlayPanel>() {
+                    // When enabled=true, the panel should accept mouse events
+                    // (ignores_mouse_events = false).
+                    // When enabled=false, mouse events pass through
+                    // (ignores_mouse_events = true).
+                    panel.set_ignores_mouse_events(!enabled);
+                }
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, enabled);
+        Ok(())
+    }
+}
+
+/// Tauri command to toggle whether the overlay panel can become the key window.
+///
+/// When `can_become_key` is true, the overlay panel can receive keyboard input
+/// (for editing text in the router confirmation UI). When false, the panel
+/// returns to its default behavior of not accepting keyboard input.
+///
+/// On non-macOS platforms, this is a no-op.
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        OVERLAY_CAN_BECOME_KEY.store(can_become_key, Ordering::SeqCst);
+
+        if let Some(overlay_window) = app.get_webview_window("recording_overlay") {
+            let window = overlay_window.clone();
+            let _ = overlay_window.run_on_main_thread(move || {
+                use tauri_nspanel::WebviewWindowExt;
+                if let Ok(panel) = window.to_panel::<crate::overlay::RecordingOverlayPanel>() {
+                    if can_become_key {
+                        panel.make_key_and_order_front();
+                    } else {
+                        panel.resign_key_window();
+                    }
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, can_become_key);
+        Ok(())
+    }
 }

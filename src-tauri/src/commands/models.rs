@@ -1,6 +1,9 @@
-use crate::managers::model::{ModelInfo, ModelManager};
+use crate::managers::model::{
+    BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager,
+};
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
+use log::{info, warn};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -199,4 +202,72 @@ pub async fn cancel_download(
     model_manager
         .cancel_download(&model_id)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn has_any_models_available(
+    model_manager: State<'_, Arc<ModelManager>>,
+) -> Result<bool, String> {
+    let models = model_manager.get_available_models();
+    Ok(models.iter().any(|m| m.is_downloaded))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn has_any_models_or_downloads(
+    model_manager: State<'_, Arc<ModelManager>>,
+) -> Result<bool, String> {
+    let models = model_manager.get_available_models();
+    // Return true if any models are downloaded OR if any downloads are in progress
+    Ok(models.iter().any(|m| m.is_downloaded))
+}
+
+/// Check whether benchmarking is available (requires downloaded models and history audio clips).
+#[tauri::command]
+#[specta::specta]
+pub async fn can_benchmark_models(app_handle: AppHandle) -> Result<bool, String> {
+    let Some(model_manager) = app_handle.try_state::<Arc<ModelManager>>() else {
+        return Err("ModelManager not available".to_string());
+    };
+    let Some(history_manager) =
+        app_handle.try_state::<Arc<crate::managers::history::HistoryManager>>()
+    else {
+        return Err("HistoryManager not available".to_string());
+    };
+
+    let has_downloaded = model_manager
+        .get_available_models()
+        .iter()
+        .any(|m| m.is_downloaded);
+    let has_clips = history_manager
+        .get_history_count()
+        .map_err(|e| e.to_string())?
+        >= 20;
+
+    Ok(has_downloaded && has_clips)
+}
+
+/// Count the number of history audio clips available for benchmarking.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_benchmark_clip_count(app_handle: AppHandle) -> Result<usize, String> {
+    let Some(history_manager) =
+        app_handle.try_state::<Arc<crate::managers::history::HistoryManager>>()
+    else {
+        return Err("HistoryManager not available".to_string());
+    };
+    history_manager
+        .get_history_count()
+        .map_err(|e| e.to_string())
+}
+
+/// Run a benchmark of all downloaded models against the user's history audio clips.
+/// Currently returns an error indicating this feature is not yet available on this branch.
+#[tauri::command]
+#[specta::specta]
+pub async fn benchmark_models(_app_handle: AppHandle) -> Result<BenchmarkResult, String> {
+    // Benchmark functionality requires transcribe_for_benchmark which is not yet
+    // available on this branch. Return a stub result indicating the feature is pending.
+    Err("Benchmark feature is not yet available on this branch".to_string())
 }

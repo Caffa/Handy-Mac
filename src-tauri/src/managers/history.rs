@@ -148,6 +148,27 @@ pub struct TranscriptionVariant {
     pub notes: Option<String>,
 }
 
+/// Usage statistics for the dashboard.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct UsageStats {
+    /// Total number of transcriptions ever completed (non-empty text)
+    pub total_transcriptions: usize,
+    /// Total words transcribed across all sessions
+    pub total_words: usize,
+    /// Number of transcriptions today (UTC)
+    pub today_transcriptions: usize,
+    /// Words transcribed today
+    pub today_words: usize,
+    /// Estimated minutes saved
+    pub estimated_minutes_saved: f64,
+    /// Consecutive days with at least one transcription
+    pub current_streak_days: usize,
+    /// Longest streak ever
+    pub longest_streak_days: usize,
+    /// Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
+    pub daily_stats: Vec<(String, usize, usize)>,
+}
+
 pub struct HistoryManager {
     app_handle: AppHandle,
     recordings_dir: PathBuf,
@@ -815,6 +836,166 @@ impl HistoryManager {
         } else {
             format!("Recording {}", timestamp)
         }
+    }
+
+    /// Update tags for a history entry.
+    pub async fn update_tags(&self, id: i64, tags: Option<String>) -> Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE transcription_history SET tags = ?1 WHERE id = ?2",
+            rusqlite::params![tags, id],
+        )?;
+        Ok(())
+    }
+
+    /// Update metadata (ground_truth, quality, speech_speed) for a history entry.
+    pub async fn update_metadata(
+        &self,
+        id: i64,
+        ground_truth: Option<String>,
+        quality: Option<String>,
+        speech_speed: Option<String>,
+    ) -> Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE transcription_history SET ground_truth = ?1, quality = ?2, speech_speed = ?3 WHERE id = ?4",
+            rusqlite::params![ground_truth, quality, speech_speed, id],
+        )?;
+        Ok(())
+    }
+
+    /// Get total number of history entries.
+    pub fn get_history_count(&self) -> Result<usize> {
+        let conn = self.get_conn()?;
+        let count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM transcription_history",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Export history entries as JSON string.
+    pub fn export_history_json(&self) -> Result<String> {
+        let conn = self.get_conn()?;
+        let entries: Vec<HistoryEntry> = self.get_all_entries_with_conn(&conn)?;
+        serde_json::to_string_pretty(&entries)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize history to JSON: {}", e))
+    }
+
+    /// Export history entries as CSV string.
+    pub fn export_history_csv(&self) -> Result<String> {
+        let conn = self.get_conn()?;
+        let entries: Vec<HistoryEntry> = self.get_all_entries_with_conn(&conn)?;
+
+        let mut csv_output = String::new();
+        // Header
+        csv_output.push_str("id,file_name,timestamp,saved,title,transcription_text,post_processed_text,model_id\n");
+        for entry in &entries {
+            let text = entry.transcription_text.replace('"', "\"\"");
+            let post_text = entry.post_processed_text.as_deref().unwrap_or("").replace('"', "\"\"");
+            csv_output.push_str(&format!(
+                "{},{},{},{},{},\"{}\",\"{}\",{}\n",
+                entry.id,
+                entry.file_name,
+                entry.timestamp,
+                entry.saved,
+                entry.title.replace('"', "\"\""),
+                text,
+                post_text,
+                entry.model_id.as_deref().unwrap_or("")
+            ));
+        }
+        Ok(csv_output)
+    }
+
+    /// Get usage statistics for the dashboard.
+    pub fn get_usage_stats(&self) -> Result<UsageStats> {
+        let conn = self.get_conn()?;
+
+        let total_transcriptions: usize = conn.query_row(
+            "SELECT COUNT(*) FROM transcription_history WHERE transcription_text != ''",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let total_words: usize = conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(transcription_text) - LENGTH(REPLACE(transcription_text, ' ', '')) + 1), 0) FROM transcription_history WHERE transcription_text != ''",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let today_start = chrono::Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+
+        let today_transcriptions: usize = conn.query_row(
+            "SELECT COUNT(*) FROM transcription_history WHERE timestamp >= ?1 AND transcription_text != ''",
+            rusqlite::params![today_start],
+            |row| row.get(0),
+        )?;
+
+        let today_words: usize = conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(transcription_text) - LENGTH(REPLACE(transcription_text, ' ', '')) + 1), 0) FROM transcription_history WHERE timestamp >= ?1 AND transcription_text != ''",
+            rusqlite::params![today_start],
+            |row| row.get(0),
+        )?;
+
+        // Estimated minutes saved: (words / 40 WPM typing) - (words / 130 WPM speaking)
+        let estimated_minutes_saved = if total_words > 0 {
+            (total_words as f64 / 40.0) - (total_words as f64 / 130.0)
+        } else {
+            0.0
+        };
+
+        Ok(UsageStats {
+            total_transcriptions,
+            total_words,
+            today_transcriptions,
+            today_words,
+            estimated_minutes_saved,
+            current_streak_days: 0,
+            longest_streak_days: 0,
+            daily_stats: vec![],
+        })
+    }
+
+    /// Helper: get all entries from the database.
+    fn get_all_entries_with_conn(&self, conn: &Connection) -> Result<Vec<HistoryEntry>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed FROM transcription_history ORDER BY timestamp DESC"
+        )?;
+        let entries = stmt.query_map([], |row| {
+            Ok(HistoryEntry {
+                id: row.get(0)?,
+                file_name: row.get(1)?,
+                timestamp: row.get(2)?,
+                saved: row.get(3)?,
+                title: row.get(4)?,
+                transcription_text: row.get(5)?,
+                post_processed_text: row.get(6)?,
+                post_process_prompt: row.get(7)?,
+                post_process_requested: row.get(8).unwrap_or(false),
+                model_id: row.get(9)?,
+                routed: row.get(10).unwrap_or(false),
+                routing_result: row.get(11)?,
+                tags: row.get(12)?,
+                ground_truth: row.get(13)?,
+                quality: row.get(14)?,
+                speech_speed: row.get(15)?,
+            })
+        })?;
+        entries.collect::<Result<Vec<_>, _>>().map_err(|e| anyhow::anyhow!("Failed to query entries: {}", e))
+    }
+
+    /// Helper: get a database connection.
+    fn get_conn(&self) -> Result<Connection> {
+        Connection::open(&self.db_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open database: {}", e))
     }
 }
 

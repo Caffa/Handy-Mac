@@ -24,9 +24,10 @@ use tauri_plugin_autostart::ManagerExt;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
-    self, get_settings, AutoSubmitKey, ClipboardHandling, KeyboardImplementation, LLMPrompt,
-    OverlayPosition, OverlayStyle, PasteMethod, ShortcutBinding, SoundTheme, Theme, TypingTool,
-    APPLE_INTELLIGENCE_PROVIDER_ID,
+    self, get_settings, AutoSubmitKey, ClipboardHandling, CustomWord, KeyboardImplementation,
+    LLMPrompt, NoiseSuppressionLevel, OverlayPosition, OverlayScreenTarget, OverlayStyle,
+    PasteMethod, ShortcutBinding, SoundTheme, Theme, TypingTool, VadSensitivity,
+    WordCorrectionMode, WordReplacement, APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
 
@@ -1281,4 +1282,344 @@ pub async fn get_available_accelerators() -> crate::managers::transcription::Ava
     tauri::async_runtime::spawn_blocking(crate::managers::transcription::get_available_accelerators)
         .await
         .expect("get_available_accelerators panicked")
+}
+
+// ============================================================================
+// Fork-ported setting commands
+// ============================================================================
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_convert_us_to_british_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.convert_us_to_british = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_overlay_screen_target_setting(
+    app: AppHandle,
+    target: String,
+) -> Result<(), String> {
+    let parsed = match target.as_str() {
+        "cursor" => OverlayScreenTarget::Cursor,
+        "side_screen" => OverlayScreenTarget::SideScreen,
+        other => {
+            log::warn!(
+                "Invalid overlay screen target '{}', defaulting to cursor",
+                other
+            );
+            OverlayScreenTarget::Cursor
+        }
+    };
+    let mut settings = settings::get_settings(&app);
+    settings.overlay_screen_target = parsed;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn update_advanced_custom_words(app: AppHandle, words: Vec<CustomWord>) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.advanced_custom_words = words;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn update_custom_filler_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.custom_filler_words = if words.is_empty() {
+        None
+    } else {
+        Some(words)
+    };
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_use_advanced_custom_words_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    // Backward compatibility: map boolean to mode
+    settings.word_correction_mode = if enabled {
+        WordCorrectionMode::Pronunciation
+    } else {
+        WordCorrectionMode::WordBias
+    };
+    settings.use_advanced_custom_words = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_word_correction_mode(
+    app: AppHandle,
+    mode: WordCorrectionMode,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.word_correction_mode = mode;
+    // Keep use_advanced_custom_words in sync for backward compatibility
+    settings.use_advanced_custom_words = mode == WordCorrectionMode::Pronunciation;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn update_word_replacements(
+    app: AppHandle,
+    replacements: Vec<WordReplacement>,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.word_replacements = replacements;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_pre_recording_buffer_setting(app: AppHandle, ms: u64) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.pre_recording_buffer_ms = ms;
+    settings::write_settings(&app, settings);
+
+    // Recreate the recorder if the stream is open to apply the new setting.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if rm.is_stream_open() {
+            if let Err(e) = rm.recreate_recorder() {
+                log::error!(
+                    "Failed to recreate recorder after pre-recording buffer change: {}",
+                    e
+                );
+                return Err(format!(
+                    "Failed to apply pre-recording buffer setting: {}",
+                    e
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_whisper_accelerator_setting(
+    app: AppHandle,
+    accelerator: settings::TranscribeAcceleratorSetting,
+) -> Result<(), String> {
+    let mut s = settings::get_settings(&app);
+    s.transcribe_accelerator = accelerator;
+    save_accelerator_and_reload_next_use(&app, s);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_whisper_gpu_device(app: AppHandle, device: i32) -> Result<(), String> {
+    let mut s = settings::get_settings(&app);
+    s.transcribe_gpu_device = device;
+    save_accelerator_and_reload_next_use(&app, s);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_mode_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_mode_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_threshold_secs_setting(app: AppHandle, secs: f64) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_threshold_secs = secs;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_short_audio_model_setting(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_short_audio_model = model_id;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hybrid_long_audio_model_setting(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.hybrid_long_audio_model = model_id;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_adaptive_parakeet_thresholds_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.adaptive_parakeet_thresholds = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_verification_mode_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.verification_mode = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Result<(), String> {
+    let vad_sensitivity = match sensitivity.as_str() {
+        "very_quick" => VadSensitivity::VeryQuick,
+        "quick" => VadSensitivity::Quick,
+        "balanced" => VadSensitivity::Balanced,
+        "relaxed" => VadSensitivity::Relaxed,
+        "very_relaxed" => VadSensitivity::VeryRelaxed,
+        _ => return Err(format!("Invalid VAD sensitivity: {}", sensitivity)),
+    };
+    let mut settings = settings::get_settings(&app);
+    settings.vad_sensitivity = vad_sensitivity;
+    settings::write_settings(&app, settings);
+
+    // Recreate the recorder so the new VAD sensitivity takes effect immediately.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            log::warn!("Failed to recreate recorder after VAD sensitivity change: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.live_captions_enabled = enabled;
+    settings::write_settings(&app, settings);
+
+    // Toggle streaming transcription at runtime.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.set_streaming_enabled(enabled) {
+            log::warn!(
+                "Failed to toggle streaming transcription after live captions toggle: {}",
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_overlay_scale_setting(app: AppHandle, scale: f64) -> Result<(), String> {
+    if scale != 1.0 && scale != 2.0 {
+        return Err(format!(
+            "Invalid overlay scale: {}. Must be 1.0 or 2.0",
+            scale
+        ));
+    }
+    let mut settings = settings::get_settings(&app);
+    settings.overlay_scale = scale;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_noise_suppression_enabled_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.noise_suppression_enabled = enabled;
+    settings::write_settings(&app, settings);
+
+    // Recreate the recorder so the noise suppression toggle takes effect immediately.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            log::warn!(
+                "Failed to recreate recorder after noise suppression toggle: {}",
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_noise_suppression_level_setting(
+    app: AppHandle,
+    level: String,
+) -> Result<(), String> {
+    let noise_level = match level.as_str() {
+        "Low" => NoiseSuppressionLevel::Low,
+        "Medium" => NoiseSuppressionLevel::Medium,
+        "High" => NoiseSuppressionLevel::High,
+        _ => return Err(format!("Invalid noise suppression level: {}", level)),
+    };
+    let mut settings = settings::get_settings(&app);
+    settings.noise_suppression_level = noise_level;
+    settings::write_settings(&app, settings);
+
+    // Recreate the recorder so the new noise suppression level takes effect immediately.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            log::warn!(
+                "Failed to recreate recorder after noise suppression level change: {}",
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn check_shortcut_conflicts(binding: String) -> Vec<conflicts::ConflictInfo> {
+    conflicts::detect_conflicts(binding)
 }

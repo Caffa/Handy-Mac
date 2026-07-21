@@ -15,7 +15,10 @@
     "postProcessing": "Post Process",
     "history": "History",
     "debug": "Debug",
-    "about": "About"
+    "about": "About",
+    "accuracy": "Accuracy",
+    "usage": "Usage",
+    "debugHint": "Debug settings are for advanced users. Use with caution."
   },
   "onboarding": {
     "subtitle": "To get started, choose a transcription model",
@@ -178,6 +181,10 @@
           "transcribe_with_post_process": {
             "name": "Post-Processing Hotkey",
             "description": "Optional: A dedicated hotkey that always applies AI post-processing to your transcription."
+          },
+          "transcribe_with_router": {
+            "name": "Router Hotkey",
+            "description": "Records speech, transcribes it, and sends the text to your router system for classification and filing. No text is pasted — you'll get a notification via Telegram."
           }
         },
         "errors": {
@@ -367,6 +374,101 @@
       "voiceActivityDetection": {
         "title": "Voice Activity Detection",
         "description": "Filter silence from recordings. Streaming-capable models use a longer VAD tail; disabling VAD records raw audio."
+      },
+      "adaptiveThresholds": {
+        "label": "Adaptive Parakeet Thresholds",
+        "description": "Automatically adjust Parakeet's internal thresholds based on audio characteristics for optimal transcription quality."
+      },
+      "convertUsToBritish": {
+        "label": "Convert to British English",
+        "description": "Convert US English spelling to British English (e.g., color → colour, analyze → analyse, center → centre)."
+      },
+      "customFillerWords": {
+        "title": "Custom Filler Words",
+        "description": "Add filler words to remove from transcriptions (like 'um', 'uh', 'like'). These words will be automatically filtered out from your transcribed text.",
+        "placeholder": "e.g. um",
+        "add": "Add",
+        "remove": "Remove {{word}}",
+        "duplicate": "\"{{word}}\" already exists in your filler words list"
+      },
+      "hybridMode": {
+        "label": "Hybrid Mode",
+        "labelTooltip": "Automatically switch between two models based on recording length. Useful for users who alternate between quick voice commands and longer dictations.",
+        "description": "Uses a fast model for short recordings and a more accurate model for longer ones. Assign models as SHORT or LONG in the Models tab.",
+        "descriptionDetail": "Short recordings use a fast model that resists hallucinations. Long recordings use an accurate model optimized for sustained speech. Set the threshold below.",
+        "currentAssignment": "Currently assigned: {{shortModel}} for short, {{longModel}} for long",
+        "noAssignment": "No models assigned yet. Go to the Models tab to assign SHORT and LONG models.",
+        "thresholdLabel": "Length Threshold",
+        "thresholdDescription": "Audio shorter than this uses the short audio model; longer audio uses the long audio model.",
+        "thresholdTooltip": "Example: Set to 3s to use the SHORT model for quick commands under 3 seconds, and the LONG model for longer dictations.",
+        "assignHint": "Assign models as SHORT or LONG in the Models section above. Each role uses a different model based on recording length.",
+        "thresholdValue": "{{seconds}}s",
+        "shortAudioModelLabel": "Short Audio Model",
+        "shortAudioModelDescription": "Model used for recordings under the threshold. Recommended: CTC models (Parakeet) or non-autoregressive models (SenseVoice) which don't hallucinate on short audio.",
+        "longAudioModelLabel": "Long Audio Model",
+        "longAudioModelDescription": "Model used for recordings at or above the threshold. Whisper models work well for longer audio.",
+        "modelPlaceholder": "Use default model...",
+        "shortBadge": "SHORT",
+        "shortBadgeTooltip": "Best for short recordings: fast response, no hallucinations. Ideal for voice commands and quick phrases.",
+        "longBadge": "LONG",
+        "longBadgeTooltip": "Best for longer recordings: higher accuracy for sustained speech. Ideal for dictation and meetings.",
+        "modelSpeedHint": {
+          "fast": "Fast model — ideal for SHORT role",
+          "medium": "Balanced speed — can work for either role",
+          "slow": "Accurate but slow — ideal for LONG role"
+        }
+      },
+      "liveCaptions": {
+        "label": "Live Captions",
+        "description": "Show live captions below the volume bars during recording. Uses additional CPU."
+      },
+      "noiseSuppression": {
+        "label": "Noise Suppression",
+        "description": "Remove background noise before voice detection for improved accuracy in noisy environments. Increases CPU usage slightly.",
+        "levelTitle": "Suppression Level",
+        "levelDescription": "Higher levels remove more noise but may slightly affect speech quality.",
+        "levelPlaceholder": "Select level...",
+        "low": "Low",
+        "lowTooltip": "Subtle noise reduction. Minimal impact on speech quality. Good for mild background noise.",
+        "medium": "Medium",
+        "mediumTooltip": "Balanced noise reduction. Recommended for most noisy environments like cafes or offices.",
+        "high": "High",
+        "highTooltip": "Aggressive noise reduction. Best for very noisy environments but may introduce slight artifacts in speech."
+      },
+      "overlayScreenTarget": {
+        "title": "Overlay Screen",
+        "description": "Choose which screen the visualizer appears on. 'Side Screen' shows it on the screen your mouse is NOT on (requires multiple monitors).",
+        "options": {
+          "cursor": "Follow Cursor",
+          "sideScreen": "Side Screen"
+        }
+      },
+      "verificationMode": {
+        "label": "Verification Mode",
+        "description": "Enable two-pass transcription. After the first transcription, a second model verifies and corrects uncertain segments for improved accuracy."
+      },
+      "vadSensitivity": {
+        "title": "Voice Detection Sensitivity",
+        "description": "Controls when the app starts and stops recording based on voice activity. Higher sensitivity catches speech earlier but may pick up background noise.",
+        "veryQuick": "Very Quick",
+        "veryQuickTooltip": "Maximum sensitivity. Starts recording at the slightest sound. Best for quiet environments but may pick up background noise.",
+        "quick": "Quick",
+        "quickTooltip": "High sensitivity. Good for normal environments where you want to capture everything, including soft speech.",
+        "balanced": "Balanced (recommended)",
+        "balancedTooltip": "Recommended for most users. Good balance between catching speech and ignoring background noise.",
+        "relaxed": "Relaxed",
+        "relaxedTooltip": "Lower sensitivity. Requires clearer speech to trigger. Good for noisy environments to avoid false starts.",
+        "veryRelaxed": "Very Relaxed",
+        "veryRelaxedTooltip": "Minimum sensitivity. Only triggers on clear, loud speech. Best for very noisy environments or if you speak deliberately.",
+        "placeholder": "Select sensitivity..."
+      },
+      "overlayScale": {
+        "title": "Overlay Scale",
+        "description": "Scale the overlay size. Normal is the default, Large doubles it.",
+        "options": {
+          "normal": "Normal",
+          "large": "Large (2x)"
+        }
       }
     },
     "postProcessing": {
@@ -436,7 +538,16 @@
       "retranscribe": "Re-transcribe",
       "retranscribeError": "Failed to re-transcribe. Please try again.",
       "transcribing": "Transcribing...",
-      "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon."
+      "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon.",
+      "error": "Failed to load history",
+      "exportCsv": "Export CSV",
+      "exportError": "Failed to export history. Please try again.",
+      "exportJson": "Export JSON",
+      "exportSuccess": "History exported successfully!",
+      "noResults": "No matching transcriptions found",
+      "retry": "Retry",
+      "routed": "Routed",
+      "search": "Search history..."
     },
     "debug": {
       "title": "Debug",
@@ -534,6 +645,99 @@
       "recordingBuffer": {
         "title": "Extra Recording Buffer",
         "description": "Extra time (in milliseconds) to keep recording after you release the key, to capture trailing audio. 0 = no extra buffer."
+      },
+      "advancedCustomWords": {
+        "title": "Advanced Custom Words",
+        "description": "Add custom words with pronunciation variants. When the transcription matches a pronunciation, it will be replaced with the canonical word.",
+        "toggleLabel": "Advanced Custom Words",
+        "toggleDescription": "Switch to advanced mode with pronunciation variants. Only one mode (simple or advanced) is active at a time. Your words are preserved when switching between modes.",
+        "placeholder": "Add a word",
+        "add": "Add",
+        "addPronunciation": "Add",
+        "removePronunciation": "Remove {{pronunciation}}",
+        "duplicate": "\"{{word}}\" already exists",
+        "duplicatePronunciation": "\"{{pronunciation}}\" already exists for this word",
+        "pronunciation": "pronunciation",
+        "pronunciations": "pronunciations",
+        "pronunciationHint": "Add ways the word might be transcribed. Each pronunciation will be used as a fuzzy match target.",
+        "pronunciationPlaceholder": "Add pronunciation...",
+        "recordPronunciation": "Record",
+        "recordTooltip": "Record yourself saying the word to automatically detect how the model transcribes it",
+        "stopRecording": "Stop Recording",
+        "transcribing": "Transcribing...",
+        "recordingEmpty": "No speech was detected. Try speaking louder or closer to the microphone.",
+        "recordingSuccess": "Detected pronunciation: \"{{pronunciation}}\"",
+        "recordingError": "Failed to transcribe: {{error}}",
+        "recordingStartError": "Failed to start recording: {{error}}",
+        "multiModelProgress": "Transcribing with model {{current}}/{{total}}: {{modelName}}",
+        "multiModelSuccess": "Added {{count}} pronunciation(s) for '{{word}}' from {{count}} model(s)",
+        "allModelsMatch": "All models correctly heard '{{word}}' - no new pronunciations needed",
+        "allModelsDuplicate": "All model transcriptions already exist as pronunciations for '{{word}}'"
+      },
+      "liveCaptions": {
+        "label": "Live Captions",
+        "description": "Show live captions below the volume bars during recording. Uses additional CPU."
+      },
+      "noiseSuppression": {
+        "label": "Noise Suppression",
+        "description": "Remove background noise before voice detection for improved accuracy in noisy environments. Increases CPU usage slightly.",
+        "levelTitle": "Suppression Level",
+        "levelDescription": "Higher levels remove more noise but may slightly affect speech quality.",
+        "levelPlaceholder": "Select level...",
+        "low": "Low",
+        "lowTooltip": "Subtle noise reduction. Minimal impact on speech quality. Good for mild background noise.",
+        "medium": "Medium",
+        "mediumTooltip": "Balanced noise reduction. Recommended for most noisy environments like cafes or offices.",
+        "high": "High",
+        "highTooltip": "Aggressive noise reduction. Best for very noisy environments but may introduce slight artifacts in speech."
+      },
+      "preRecordingBuffer": {
+        "title": "Pre-Recording Buffer",
+        "description": "Capture audio from before you pressed the hotkey. When using Always-On microphone mode, stores the last N ms of audio continuously. When you press the hotkey, this audio is prepended to capture words you started saying before pressing. Recommended: 1000-3000ms. Only works with Always-On microphone mode."
+      },
+      "repetitionSuppression": {
+        "title": "Repetition Suppression",
+        "description": "Remove repeated consecutive words from transcriptions. Protected words (pronouns, articles, intensifiers) are never removed as they're often legitimate speech.",
+        "loading": "Loading...",
+        "level": "Suppression Level",
+        "protectedNotice": "Protected words: I, you, the, a, very, so, and, or, but, to, for, with, is, was, etc. These are never deduplicated even if repeated."
+      },
+      "usbWatchdog": {
+        "label": "USB Power Watchdog",
+        "description": "Automatically power-cycle the USB port when the microphone can't be opened. Requires uhubctl.",
+        "device": "USB Device to Watch",
+        "selectDevice": "— Select a USB device —",
+        "loading": "Loading devices…",
+        "refreshDevices": "Refresh device list",
+        "deviceNotFound": "Device not currently connected",
+        "cycleOnWakeLabel": "Cycle on Wake",
+        "cycleOnWakeDescription": "Automatically power-cycle the USB device when the computer wakes from sleep. Useful for devices that get stuck after sleep.",
+        "testCycle": "Test Power Cycle",
+        "cycling": "Cycling…",
+        "cycleOnWake": {
+          "label": "Cycle on Wake",
+          "description": "Automatically power-cycle the USB port when the computer wakes up from sleep."
+        }
+      },
+      "wordCorrectionMode": {
+        "label": "Word Correction Mode",
+        "description": "Choose how custom words are matched: Prefer Custom Words (fuzzy bias), Match Pronunciations (sound-alike variants), or Exact Replacements (direct substitution)",
+        "wordBias": "Prefer Custom Words",
+        "pronunciation": "Match Pronunciations",
+        "replacement": "Exact Replacements"
+      },
+      "wordReplacements": {
+        "title": "Word Replacements",
+        "description": "Replace specific mistranscriptions with corrections. When the wrong text appears, it will be replaced exactly with the correct text.",
+        "mistranslationPlaceholder": "Wrong text",
+        "correctionPlaceholder": "Correct text",
+        "add": "Add",
+        "remove": "Remove {{mistranslation}} → {{correction}}",
+        "duplicate": "\"{{mistranslation}}\" already has a replacement",
+        "bothFieldsRequired": "Both fields are required",
+        "mistranslationTooLong": "Mistranslation is too long (max 100 characters)",
+        "correctionTooLong": "Correction is too long (max 100 characters)",
+        "hint": "Enter the text that appears incorrectly and what it should be corrected to"
       }
     },
     "about": {
@@ -568,6 +772,49 @@
           "details": "Handy's local speech-to-text is built on transcribe.cpp and ggml. Thanks to the amazing work by Georgi Gerganov and contributors."
         }
       }
+    },
+    "accuracy": {
+      "title": "Accuracy",
+      "groups": {
+        "wordCorrection": "Word Correction",
+        "voiceDetection": "Voice Detection",
+        "language": "Language"
+      }
+    },
+    "usage": {
+      "title": "Usage Statistics",
+      "today": "Today",
+      "last30Days": "Last 30 Days",
+      "totalTranscriptions": "Total transcriptions",
+      "totalWords": "Words transcribed",
+      "timeSaved": "Time saved",
+      "timeSavedSub": "vs. typing at 40 WPM",
+      "currentStreak": "Current streak",
+      "bestStreak": "Best",
+      "transcriptions": "Transcriptions",
+      "words": "Words"
+    },
+    "retryQueue": {
+      "title": "Failed Transcriptions",
+      "retry": "Retry",
+      "retryAll": "Retry All",
+      "clearAll": "Clear",
+      "retrying": "Retrying...",
+      "attempts": "Attempt {{current}}/{{max}}",
+      "model": "Model",
+      "fallback": "Fallback: {{count}} models",
+      "usingFallback": "Using fallback",
+      "readyNow": "Ready now",
+      "retryInMinutes": "Retry in {{mins}}m",
+      "retryInHours": "Retry in {{hours}}h",
+      "cleared": "Queue cleared",
+      "removed": "Entry removed",
+      "retrySuccess": "Retry successful",
+      "retryError": "Retry failed: {{error}}",
+      "removeError": "Failed to remove: {{error}}",
+      "clearError": "Failed to clear queue",
+      "batchSuccess": "{{count}} transcriptions retried",
+      "batchFail": "Failed to retry {{count}} transcriptions"
     }
   },
   "footer": {
@@ -632,6 +879,27 @@
   },
   "overlay": {
     "transcribing": "Transcribing...",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "usbCycling": "USB cycling…",
+    "usbResolving": "Locating USB device…",
+    "usbCyclingPort": "Power cycling port…",
+    "usbWaitingReconnect": "Waiting for device…",
+    "usbRecovered": "Audio recovered",
+    "usbCyclingTime": "{{seconds}}s / ~10s",
+    "hybridShort": "S",
+    "hybridLong": "L",
+    "routing": "Routing…",
+    "filing": "Filing…",
+    "micDead": "Microphone not responding",
+    "lowAudio": "Low audio - check microphone",
+    "confirming": "Sending in",
+    "editing": "Edit text:",
+    "send": "Send",
+    "cancel": "Cancel",
+    "clickToEdit": "Click to edit",
+    "editPlaceholder": "Edit your text...",
+    "routerError": "Routing failed",
+    "routerSuccess": "Routed successfully",
+    "noSpeech": "No speech detected"
   }
 }

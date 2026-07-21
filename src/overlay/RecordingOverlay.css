@@ -1,369 +1,614 @@
-@import "../styles/theme.css";
-
-:root {
-  --s-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  /* Near-opaque app surface (theme.css --color-background at 98%). Auto-flips
-     light/dark with --color-background, so no dark-mode override is needed. */
-  --s-surface: color-mix(in srgb, var(--color-background) 98%, transparent);
-  /* Accent = logo pink; flips automatically via --color-logo-primary. */
-  --s-accent: var(--color-logo-primary);
-  --s-accent-soft: color-mix(
-    in srgb,
-    var(--color-background-ui) 16%,
-    transparent
-  );
-  /* Neutrals. Hairlines reuse the app's mid-gray at low opacity — same vocabulary
-     as the app's border-mid-gray/* utilities. muted/faint are overlay-specific
-     secondary/tertiary text grays (no theme equivalent). */
-  --s-muted: #6e6e6e;
-  --s-faint: #9a9a9a;
-  --s-border: color-mix(in srgb, var(--color-mid-gray) 22%, transparent);
-  --s-hair: color-mix(in srgb, var(--color-mid-gray) 12%, transparent);
-
-  /* Card geometry — single source of truth for the visible overlay sizes. The
-     native overlay window (overlay.rs) is sized from these: it must be at least
-     the card's max footprint (--ov-work-w for compact, --ov-open-w for Live),
-     since the card is anchored flush to the screen edge in CSS. Keep overlay.rs
-     in sync when these change. */
-  --ov-rest-w: 172px; /* resting compact pill (minimal, recording) -- roomy enough
-                         for the English working label before the grow starts */
-  --ov-pill-w: 184px; /* base width / Live pill before it opens or collapses */
-  --ov-work-w: 216px; /* working pill (transcribing / polishing) -- wide enough to
-                         center longer labels; shared by Live (collapsed) + minimal */
-  --ov-open-w: 392px; /* Live panel, expanded */
-  --ov-base-h: 40px; /* control-row height (.sbase) */
-  --ov-cap-max-h: 64px; /* max height of the scrolling live-text region */
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* Accent uses the lighter logo pink in dark — reads better on the dark
-       surface than the deeper UI pink. */
-    --s-accent-soft: color-mix(
-      in srgb,
-      var(--color-logo-primary) 20%,
-      transparent
-    );
-    --s-muted: #a3a09a;
-    --s-faint: #6f6c66;
-    /* Hairlines flip to the near-white text token for contrast on dark. */
-    --s-border: color-mix(in srgb, var(--color-text) 12%, transparent);
-    --s-hair: color-mix(in srgb, var(--color-text) 8%, transparent);
-  }
-}
-
-/* ============================================================
-   Unified overlay stage — one fixed, transparent container shared by the compact
-   pill and the Live panel (both render the same `.scard` base). The card is
-   anchored flush to the screen-edge side (bottom by default, top when placed up
-   top) and centered horizontally, so the visible card sits exactly
-   OVERLAY_*_OFFSET from the screen edge regardless of window height — only the
-   offsets in overlay.rs move it. Pops scale from that edge, so the card is never
-   drawn past it (matters for the 4px top offset on Windows/Linux).
-   ============================================================ */
-.ov-stage {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  justify-content: center; /* horizontal centering, kept for both forms */
-  align-items: flex-end; /* bottom placement: flush to the bottom edge */
-  font-family: var(--s-font);
-}
-.ov-stage.top {
-  align-items: flex-start; /* top placement: flush to the top edge */
-}
-
-/* Compact pill: fade the whole container in/out (the pill itself never pops or
-   morphs). */
-.ov-fade {
-  opacity: 0;
-  transition: opacity 200ms ease-out;
-}
-.ov-fade.show {
-  opacity: 1;
-}
-
-/* Top placement, Live panel: stack the control pill above the text region so the
-   card grows downward from its top edge (oldest line under the pill, newest at
-   the bottom) — mirroring the bottom overlay's upward flow. The compact pill has
-   no flowing text, so this only affects the Live panel. The text region keeps the
-   same fade + scroll-pin; older lines dissolve up under the pill. */
-.ov-stage.top .scard {
-  /* column-reverse stacks the control pill above the text region. */
-  flex-direction: column-reverse;
-  transform-origin: top center;
-}
-.ov-stage.top .stext-cap {
-  /* Mirror of the bottom overlay (top: 12 / bottom: 0): the first line sits flush
-     under the pill and the breathing room moves below the text. The top fade is
-     off at rest — at zero top padding it would dim the resting first line — and
-     switches on (below) only once text overflows. */
-  padding-top: 0;
-  padding-bottom: 12px;
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-/* Once live text overflows, fade older lines up under the pill, matching the
-   bottom overlay's top fade. Gated on `.overflowing` so a short resting line
-   (sitting at the very top) is never dimmed. */
-.ov-stage.top .stext-cap.overflowing {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
-}
-.ov-stage.top .stext-cap p {
-  /* Top-anchor short text just under the pill; on overflow the cap still pins to
-     the bottom (newest visible) and older lines fade off the top, same as bottom. */
-  margin: 0;
-}
-
-/* Shared base card. Flat: theme surface + hairline border, no shadow or blur. */
-.scard {
-  width: var(--ov-pill-w);
-  border-radius: 24px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  flex: none; /* hold our own width; never let the stage flex shrink the card */
-  transform-origin: bottom center;
-  background: var(--s-surface);
-  border: 1px solid var(--s-border);
-  /* Flat: no drop shadow, no backdrop blur/saturate (was a glassy gradient look). */
-  /* pop-in plays on mount; morph (width/radius) is a transition */
-  animation: scard-pop 460ms cubic-bezier(0.22, 1, 0.36, 1);
-  transition:
-    width 460ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 460ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform, width, opacity;
-}
-@keyframes scard-pop {
-  from {
-    opacity: 0;
-    /* Scale from the anchored edge (transform-origin) — never translate past it. */
-    transform: scale(0.92);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.scard.leaving {
-  opacity: 0;
-  transform: scale(0.96);
-  transition:
-    opacity 240ms ease,
-    transform 300ms ease;
-}
-.scard.open {
-  width: var(--ov-open-w);
-  border-radius: 16px;
-}
-.scard.working {
-  width: var(--ov-work-w);
-  border-radius: 18px;
-}
-
-/* Compact form: two fixed widths so the recording→working change is an animatable
-   width transition (intrinsic max-content can't be transitioned, and every label
-   is short enough to fit the resting pill, so content-sizing produced no visible
-   grow). The resting pill hugs the waveform; the working pill is roomy enough to
-   center the longest label — the .swork-label ellipsis is only a safety net past it. */
-.scard.compact {
-  animation: none;
-  width: var(--ov-rest-w);
-}
-.scard.compact.cworking {
-  width: var(--ov-work-w);
-}
-
-/* text region — auto-height open via grid-rows trick; region fades as a whole */
-.stext {
+.recording-overlay {
+  --overlay-scale: 1;
+  height: calc(60px * var(--overlay-scale));
+  width: calc(230px * var(--overlay-scale));
   display: grid;
-  grid-template-rows: 0fr;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  padding: calc(8px * var(--overlay-scale));
+  background: #000000cc;
+  border-radius: calc(30px * var(--overlay-scale));
   opacity: 0;
   transition:
-    grid-template-rows 440ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 260ms ease;
-}
-.scard.open .stext {
-  grid-template-rows: 1fr;
-  opacity: 1;
-}
-.stext-clip {
-  overflow: hidden;
-  min-height: 0;
-}
-.stext-cap {
-  max-height: var(--ov-cap-max-h);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  display: flex;
-  flex-direction: column;
-  padding-top: 12px;
-  padding-bottom: 0px;
-  padding-left: 14px;
-  padding-right: 14px;
-  font-size: 15px;
-  font-style: italic;
-  line-height: 1.35;
-  letter-spacing: -0.003em;
-  color: color-mix(in srgb, var(--color-text) 90%, transparent);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
-  scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none; /* legacy Edge */
-}
-/* Hide the scrollbar (WebKit/Chromium) — scroll-back is signalled by the fade. */
-.stext-cap::-webkit-scrollbar {
-  display: none;
-}
-.stext-cap p {
-  /* Bottom-anchor the text when it's shorter than the viewport, avoiding the
-     justify-content:flex-end overflow bug that makes the top unscrollable. */
-  margin: auto 0 0;
-}
-.stext-cap .tentative {
-  color: inherit;
-}
-.scaret {
-  display: inline-block;
-  width: 2px;
-  height: 1.02em;
-  translate: 0 3px;
-  margin-left: 1px;
-  background: var(--s-accent);
-  border-radius: 2px;
-  animation: scaret-blink 1.05s steps(1) infinite;
-}
-@keyframes scaret-blink {
-  50% {
-    opacity: 0;
-  }
+    opacity 300ms ease-out,
+    height 200ms ease-out;
+  box-sizing: border-box;
+  /* Center the pill within the wider transparent window */
+  margin: 4px auto auto;
+  /* Allow clicks to pass through transparent window areas */
+  pointer-events: none;
 }
 
-/* base row — dot (left) | waveform (center) | timer + cancel (right).
-   Same structure for pill & panel; the dot stays anchored left in both. */
-.sbase {
-  height: var(--ov-base-h);
-  padding: 0 10px;
-  display: grid;
-  /* Equal side columns (min 22px to hold the cancel button) keep the center item
-     — waveform or label — centered whether the pill is at min width or content-
-     sized. */
-  grid-template-columns: minmax(22px, 1fr) auto minmax(22px, 1fr);
-  align-items: center;
-}
-.sbase-l {
-  display: flex;
-  padding-left: 5px;
-  align-items: center;
-  justify-self: start;
-}
-.sbase-r {
+/* Hybrid indicator and live captions are now in a separate container below the pill */
+
+.overlay-left {
   display: flex;
   align-items: center;
-  gap: 10px;
-  justify-self: end;
-}
-.sdot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--s-accent);
-  flex: none;
-  animation: sdot-pulse 1.9s infinite;
-}
-@keyframes sdot-pulse {
-  0% {
-    box-shadow: 0 0 0 0 var(--s-accent-soft);
-  }
-  70% {
-    box-shadow: 0 0 0 7px transparent;
-  }
-}
-.stimer {
-  font-size: 12px;
-  color: var(--s-faint);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 240ms ease 80ms;
-}
-.scard.open .stimer {
-  opacity: 1;
+  padding-left: 8px;
 }
 
-/* Waveform — simple reactive bars, themed; heights set inline from mic levels. */
-.swave {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding-right: 8px;
-  height: 18px;
-  flex: none;
-}
-.swave i {
-  width: 4px;
-  min-height: 3px;
-  max-height: 18px;
-  border-radius: 2px;
-  background: var(--s-accent);
-  transition: height 80ms linear;
-}
-.sx {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  flex: none;
-  padding: 0;
-  border: 0;
-  -webkit-appearance: none;
-  appearance: none;
+.overlay-middle {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--s-muted);
-  background: var(--s-hair);
-  cursor: pointer;
-  transition:
-    background-color 150ms ease,
-    color 150ms ease,
-    transform 100ms ease;
 }
-.sx svg {
-  width: 9px;
-  height: 9px;
+
+.overlay-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 6px;
+}
+
+.bars-container {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 4px;
+  padding-bottom: 0px;
+  /* Match icon height (30px) so the bars' bottom edge aligns with the icon's
+     bottom edge. Bars grow upward from this baseline. The container clips any
+     bar above 30px (max bar is 35px in the component) — this slightly compresses
+     the top of the range but keeps visual alignment clean. */
+  height: 30px;
+  overflow: hidden;
+  /* Bars are visual-only, allow clicks to pass through */
+  pointer-events: none;
+}
+
+.hybrid-indicator {
+  font-size: 8px;
+  font-weight: 700;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  transition:
+    background-color 300ms ease,
+    color 300ms ease;
+}
+
+.hybrid-short {
+  color: #4ade80;
+  background: #4ade8020;
+}
+
+.hybrid-long {
+  color: #818cf8;
+  background: #818cf820;
+}
+
+.streaming-text {
+  /* Deprecated - replaced by live-captions. Kept for backward compatibility. */
+  font-size: 9px;
+  font-weight: 500;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #ffe5ee;
+  opacity: 0.8;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  padding: 2px 4px;
+  animation: pulse-opacity 1.5s ease-in-out infinite;
+}
+
+.bar {
+  width: 10px;
+  background: #ffe5ee;
+  max-height: 35px;
+  border-radius: 2px;
+  /* Fallback transition — overridden inline by VisualizerBars.tsx
+     which uses separate rise/fall cubic-bezier timing */
+  transition: height 120ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  min-height: 7px;
+}
+
+/* Live captions displayed below the pill during recording */
+.live-captions-box {
+  box-sizing: border-box;
+  --overlay-scale: 1;
+  position: fixed;
+  top: calc(80px * var(--overlay-scale));
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: calc(600px * var(--overlay-scale));
+  max-width: calc(1500px * var(--overlay-scale));
+  width: auto;
+  height: auto;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow:
+    0 calc(8px * var(--overlay-scale)) calc(32px * var(--overlay-scale))
+      rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: calc(12px * var(--overlay-scale));
+  padding: calc(8px * var(--overlay-scale)) calc(12px * var(--overlay-scale));
+  opacity: 1;
+  z-index: 9998;
+  font-size: calc(18px * var(--overlay-scale));
+  font-weight: 500;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #1a1a1a;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  text-align: center;
+  line-height: 1.4;
   display: block;
 }
-.sx:hover {
-  background: var(--s-accent-soft);
-  color: var(--color-text);
+
+.live-captions-box.fade-in {
+  opacity: 1;
+}
+
+.live-captions-box.routing-mode {
+  background: rgba(59, 130, 246, 0.15);
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.recording-overlay.fade-in {
+  opacity: 1;
+}
+
+.transcribing-text {
+  color: white;
+  font-size: 12px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  animation: transcribing-pulse 1.5s infinite ease-in-out;
+}
+
+.usb-cycling-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.usb-cycling-stage {
+  color: #ffd966;
+  font-size: 13px;
+  font-weight: 600;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  animation: transcribing-pulse 1.5s infinite ease-in-out;
+  white-space: nowrap;
+}
+
+.usb-cycling-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.usb-cycling-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 217, 102, 0.25);
+  transition:
+    background 300ms ease,
+    box-shadow 300ms ease,
+    transform 200ms ease;
+}
+
+.usb-cycling-dot.dot-active {
+  background: rgba(255, 217, 102, 0.6);
+  transform: scale(1.1);
+}
+
+.usb-cycling-dot.dot-current {
+  background: #ffd966;
+  box-shadow: 0 0 8px rgba(255, 217, 102, 0.8);
+  transform: scale(1.2);
+}
+
+.usb-cycling-time {
+  color: rgba(255, 217, 102, 0.8);
+  font-size: 10px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin-top: 2px;
+}
+
+/* ── Enlarged "mic dead" overlay for recovery states ── */
+.recording-overlay.mic-dead-overlay {
+  height: auto;
+  min-height: 80px;
+  width: 320px;
+  padding: 16px 20px;
+  background: #b91010cc;
+  border-radius: 40px;
+  animation: mic-dead-pulse 1s infinite ease-in-out;
+}
+
+.recording-overlay.mic-dead-overlay .overlay-left,
+.recording-overlay.mic-dead-overlay .overlay-middle {
+  align-items: center;
+}
+
+.mic-dead-warning {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-shadow: 0 0 10px rgba(255, 0, 0, 0.8);
+  animation: transcribing-pulse 0.5s infinite ease-in-out;
+}
+
+.mic-dead-warning::before {
+  content: "⚠️ ";
+}
+
+@keyframes mic-dead-pulse {
+  0%,
+  100% {
+    background: rgba(185, 16, 16, 0.8);
+    transform: scale(1);
+  }
+  50% {
+    background: rgba(220, 30, 30, 0.9);
+    transform: scale(1.02);
+  }
+}
+
+/* ── Enlarged overlay for USB cycling progress ── */
+.recording-overlay.usb-cycling-overlay {
+  height: auto;
+  min-height: 70px;
+  width: 240px;
+  padding: 12px 16px;
+  background: #1a1a2ecc;
+  border-radius: 35px;
+}
+
+.recording-overlay.usb-cycling-overlay .overlay-left,
+.recording-overlay.usb-cycling-overlay .overlay-middle {
+  align-items: center;
+}
+
+@keyframes transcribing-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.cancel-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease-out,
+    transform 100ms ease-out;
+  flex-shrink: 0;
+  /* Re-enable pointer events for interactive button */
+  pointer-events: auto;
+}
+
+.cancel-button:hover {
+  background: #faa2ca33;
   transform: scale(1.05);
 }
-.sx:active {
+
+.cancel-button:active {
   transform: scale(0.95);
 }
 
-/* working state (transcribing / polishing) — spinner + label */
-.sspinner {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 2px solid var(--s-hair);
-  border-top-color: var(--s-accent);
-  animation: sspin 0.7s linear infinite;
-  flex: none;
+/* ── Routing overlay theme ── */
+.routing-mode .cancel-button:hover {
+  background: #3b82f633;
 }
-@keyframes sspin {
-  to {
-    transform: rotate(1turn);
-  }
+
+.routing-mode {
+  background: #1e3a5fcc;
 }
-.swork-label {
+
+.routing-bar {
+  background: #bfdbfe;
+}
+
+.routing-text {
+  color: #60a5fa;
+}
+
+/* ── Transcription preview for routing mode ── */
+.transcription-preview {
+  position: fixed;
+  top: calc(75px * var(--overlay-scale)); /* Below the overlay pill */
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(
+    516px * var(--overlay-scale)
+  ); /* 3x the visualizer width (172px) */
+  max-width: 90vw;
+  max-height: 80vh; /* Limit to 80% of viewport height */
+  overflow-y: auto; /* Allow scrolling for long text */
+  padding: calc(16px * var(--overlay-scale)) calc(24px * var(--overlay-scale));
+  font-size: calc(20px * var(--overlay-scale));
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #1a1a1a;
+  background: rgba(255, 255, 255, 0.92); /* Slightly more opaque */
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow:
+    0 calc(8px * var(--overlay-scale)) calc(32px * var(--overlay-scale))
+      rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: calc(12px * var(--overlay-scale));
+  white-space: pre-wrap; /* Preserve line breaks from backend */
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word; /* Break long words if needed */
+  line-height: 1.5;
+  text-align: start; /* Respect RTL direction */
+  pointer-events: auto; /* Allow interaction */
+  z-index: 9999;
+  display: block;
+}
+
+/* Clickable text preview (during countdown) */
+.transcription-text-preview {
+  cursor: pointer;
+  user-select: none;
+  min-height: calc(40px * var(--overlay-scale));
+  border-radius: calc(8px * var(--overlay-scale));
+}
+
+.transcription-text-preview:hover {
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 8px;
+}
+
+/* Edit container */
+.edit-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Textarea for editing */
+.transcription-edit {
+  width: 100%;
+  min-height: calc(80px * var(--overlay-scale));
+  max-height: 50vh;
+  padding: calc(12px * var(--overlay-scale));
+  font-size: calc(18px * var(--overlay-scale));
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  color: #1a1a1a;
+  background: rgba(255, 255, 255, 0.95);
+  border: 2px solid rgba(59, 130, 246, 0.3);
+  border-radius: calc(8px * var(--overlay-scale));
+  resize: vertical;
+  outline: none;
+  pointer-events: auto;
+}
+
+.transcription-edit:focus {
+  border-color: rgba(59, 130, 246, 0.8);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Edit buttons container */
+.edit-buttons {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.edit-cancel-button {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #666;
+  background: rgba(0, 0, 0, 0.05);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.edit-cancel-button:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.edit-send-button {
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: white;
+  background: #3b82f6;
+  border-radius: 6px;
+  cursor: pointer;
+  border: none;
+  transition: background-color 150ms ease;
+}
+
+.edit-send-button:hover {
+  background: #2563eb;
+}
+
+.edit-send-button:active {
+  background: #1d4ed8;
+}
+
+/* Countdown progress bar */
+.countdown-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  border-radius: 0 0 12px 12px;
+  transition: width 100ms linear;
+}
+
+/* Router result display - handler cards layout */
+.router-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  /* Padding comes from parent .transcription-preview */
+}
+
+.router-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.router-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Row of handler cards */
+.handler-cards {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: center;
+  gap: calc(8px * var(--overlay-scale, 1));
+}
+
+/* Individual handler card: icon above, name below */
+.handler-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(4px * var(--overlay-scale, 1));
+  padding: calc(10px * var(--overlay-scale, 1)) calc(12px * var(--overlay-scale, 1));
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: calc(10px * var(--overlay-scale, 1));
+  min-width: calc(60px * var(--overlay-scale, 1));
+  max-width: calc(90px * var(--overlay-scale, 1));
+}
+
+.handler-icon {
+  font-size: calc(28px * var(--overlay-scale, 1));
+  line-height: 1;
+}
+
+.handler-label {
+  font-size: calc(11px * var(--overlay-scale, 1));
+  font-weight: 500;
+  color: #ffffff;
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.result-icon {
+  font-size: 32px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+}
+
+.result-message {
+  font-size: 14px;
+  color: #ffffff;
+  text-align: center;
+}
+
+/* Keep container styling when showing result - icons appear inside the rounded box */
+
+/* Editing state overlay */
+.editing-overlay {
+  min-height: 100px;
+}
+
+/* Confirming state text */
+.confirming-text {
+  color: white;
   font-size: 12px;
-  color: var(--s-muted);
-  white-space: nowrap;
-  padding: 0 8px; /* breathing room from the spinner / cancel when content-sized */
-  /* Safety net: ellipsize rather than clip if a label exceeds the max pill width. */
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.countdown-timer {
+  font-weight: 700;
+  font-size: 14px;
+  color: #60a5fa;
+  min-width: 24px;
+  text-align: center;
+}
+
+/* Confirm/send buttons in overlay */
+.confirm-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confirm-send-button {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  background: #3b82f6;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.confirm-send-button:hover {
+  background: #2563eb;
+}
+
+/* Preview when editing or showing result */
+.transcription-preview.editing {
+  padding: calc(12px * var(--overlay-scale));
+}
+
+.transcription-preview.has-result {
+  pointer-events: none;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border: none;
+}
+
+/* Fade-out animation for transcription preview dismissal */
+.transcription-preview.fade-out {
+  opacity: 0;
+  transition: opacity 100ms ease-out;
+  pointer-events: none;
+}
+
+/* RTL support for edit placeholder */
+[dir="rtl"] .transcription-edit::placeholder {
+  text-align: right;
 }

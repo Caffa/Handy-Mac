@@ -734,4 +734,96 @@ impl AudioRecordingManager {
         let is_open = *self.is_open.lock().unwrap();
         (is_open, is_open)
     }
+
+    /// Check if the microphone stream is currently open.
+    /// Used by shortcut setter commands to decide whether to recreate the
+    /// recorder after a settings change (e.g. noise suppression, VAD sensitivity).
+    pub fn is_stream_open(&self) -> bool {
+        *self.is_open.lock().unwrap()
+    }
+
+    /// Recreate the `AudioRecorder` from scratch, discarding stale device
+    /// handles. If the stream was running in always-on mode, it is restarted
+    /// automatically (RAII self-heal).
+    ///
+    /// This is called by shortcut setter commands when a setting that affects
+    /// the recorder (VAD sensitivity, noise suppression, etc.) changes at
+    /// runtime, so the new value takes effect immediately without requiring a
+    /// full app restart.
+    pub fn recreate_recorder(&self) -> Result<(), anyhow::Error> {
+        info!("Recreating AudioRecorder to discard stale device handles");
+
+        // Capture whether the stream should be running before we tear it down.
+        let was_open = *self.is_open.lock().unwrap();
+        let should_be_running = was_open
+            && matches!(*self.mode.lock().unwrap(), MicrophoneMode::AlwaysOn);
+
+        // Mark the stream as closed before tearing down — prevents concurrent
+        // operations from acting on a recorder that is about to be replaced.
+        if was_open {
+            *self.is_open.lock().unwrap() = false;
+        }
+
+        // Take the old recorder and drop it (this stops any existing stream)
+        let mut recorder_opt = self.recorder.lock().unwrap();
+        if recorder_opt.is_some() {
+            if let Some(mut old_rec) = recorder_opt.take() {
+                info!("Closing old recorder before recreation");
+                if let Err(e) = old_rec.close() {
+                    warn!(
+                        "Error closing old recorder during recreation (continuing anyway): {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        // Create a fresh recorder with VAD, level callback, and audio callback.
+        let vad_path = self
+            .app_handle
+            .path()
+            .resolve(
+                "resources/models/silero_vad_v4.onnx",
+                tauri::path::BaseDirectory::Resource,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
+
+        let new_recorder = create_audio_recorder(
+            &vad_path,
+            &self.app_handle,
+            Arc::clone(&self.stream_router),
+        )?;
+
+        *recorder_opt = Some(new_recorder);
+        drop(recorder_opt);
+
+        // RAII self-healing: if the stream was open and should still be
+        // running (always-on mode), restart it automatically.
+        if should_be_running {
+            info!("Recreate_recorder: stream was running before recreation, self-healing by restarting");
+            if let Err(e) = self.start_microphone_stream() {
+                error!("Recreate_recorder: failed to self-heal stream restart: {}", e);
+                return Err(e);
+            }
+            info!("Recreate_recorder: stream self-healed successfully");
+        }
+
+        info!("AudioRecorder recreated successfully");
+        Ok(())
+    }
+
+    /// Toggle live-streaming (partial-transcription) mode on the recorder.
+    ///
+    /// In the current architecture the `AudioRecorder` does not yet expose a
+    /// streaming-enabled flag, so this is a no-op that logs a warning.  The
+    /// setting is still persisted so it will take effect on the next recording
+    /// start.  Once the streaming API is ported to this branch, this method
+    /// will forward the toggle to `AudioRecorder::set_streaming_enabled`.
+    pub fn set_streaming_enabled(&self, _enabled: bool) -> Result<(), anyhow::Error> {
+        log::warn!(
+            "[Live Captions] set_streaming_enabled called but AudioRecorder streaming API \
+             is not yet available on this branch. Setting persisted, applies on next recording."
+        );
+        Ok(())
+    }
 }

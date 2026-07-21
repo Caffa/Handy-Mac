@@ -1,284 +1,389 @@
-import { listen } from "@tauri-apps/api/event";
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+/**
+ * RecordingOverlay — Main coordinator for the recording overlay window.
+ *
+ * This component composes extracted hooks and presentational components:
+ * - useAppState: Sole source of truth for visibility and state machine.
+ *   Listens to `app-state` events from the Rust TranscriptionCoordinator.
+ *   Visibility is a pure function of AppState: Idle = hidden, else = visible.
+ * - useOverlaySharedState: Shared mutable UI state (transcription preview,
+ *   streaming text, mic warnings, etc.) and settings. Does NOT own visibility.
+ * - useVisualizer: Audio level bars, mic health warnings
+ * - useLiveCaptions: Streaming transcription display
+ * - useRouterPreview: Router confirmation/editing flow
+ * - useUSBRecovery: USB power cycling state
+ *
+ * Presentational components:
+ * - VisualizerBars, LiveCaptionsBox, MicDeadWarning, USBCyclingProgress, RouterResultDisplay
+ *
+ * Scope: Coordination only — delegates all logic to hooks.
+ * Dependencies: All hooks, all components, icons, i18n, commands.
+ */
+import React, { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  CancelIcon,
+  MicrophoneIcon,
+  RoutingIcon,
+  TranscriptionIcon,
+} from "../components/icons";
 import "./RecordingOverlay.css";
-import { commands, events } from "@/bindings";
-import type {
-  StreamPhase,
-  StreamPhaseEvent,
-  StreamTextEvent,
-  StreamWorkKind,
-} from "@/bindings";
-import i18n, { syncLanguageFromSettings } from "@/i18n";
-import { getLanguageDirection } from "@/lib/utils/rtl";
+import { commands } from "@/bindings";
+import { useOverlaySharedState } from "./hooks/useOverlayState";
+import { useAppState } from "./hooks/useAppState";
+import { useVisualizer } from "./hooks/useVisualizer";
+import { useLiveCaptions } from "./hooks/useLiveCaptions";
+import { useRouterPreview } from "./hooks/useRouterPreview";
+import { useUSBRecovery } from "./hooks/useUSBRecovery";
+import {
+  VisualizerBars,
+  LiveCaptionsBox,
+  MicDeadWarning,
+  USBCyclingProgress,
+  RouterResultDisplay,
+} from "./components";
+import type { OverlayState } from "./hooks/useOverlayState";
 
-type OverlayState = "recording" | "streaming" | "transcribing" | "processing";
-
-// Number of reactive bars in the waveform (the simple, smoothed style shared by
-// every overlay form). Mic levels arrive as 16 FFT buckets; we take the first N.
-const WAVE_BARS = 9;
+/**
+ * Safe wrapper for setOverlayMousePassthrough command.
+ * This command may not exist in the current bindings yet.
+ * TODO: Remove wrapper once bindings are regenerated.
+ */
+async function safeSetOverlayMousePassthrough(enabled: boolean): Promise<void> {
+  try {
+    // @ts-expect-error — command may not be in bindings yet; will resolve after regen
+    if (typeof commands.setOverlayMousePassthrough === "function") {
+      // @ts-expect-error — command may not be in bindings yet
+      await commands.setOverlayMousePassthrough(enabled);
+    }
+  } catch {
+    // Command not available — mouse passthrough won't toggle, but overlay still works
+  }
+}
 
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
-  const [isVisible, setIsVisible] = useState(false);
-  const [state, setState] = useState<OverlayState>("recording");
-  const [levels, setLevels] = useState<number[]>(Array(WAVE_BARS).fill(0));
-  const [streamText, setStreamText] = useState<StreamTextEvent>({
-    committed: "",
-    tentative: "",
+
+  // ─── Backend-driven state — SOLE source of truth for visibility ──────
+  const backendState = useAppState();
+
+  // ─── Shared overlay UI state (NOT visibility) ───────────────────────
+  const sharedState = useOverlaySharedState();
+  const {
+    setIsVisible,
+    state: legacyState,
+    setState,
+    overlayScale,
+    direction,
+    hybridEnabled,
+    hybridThresholdSecs,
+    recordingElapsedSecs,
+    // State owned by useOverlaySharedState, shared with sub-hooks
+    transcriptionPreview,
+    streamingText,
+    routerResult,
+    isEditing,
+    editedText,
+    countdown,
+    isFadingOut,
+    micDeadWarning,
+    lowAudioWarning,
+    usbCycleStage,
+    liveCaptionsEnabled,
+    // State setters needed by sub-hooks
+    setTranscriptionPreview,
+    setStreamingText,
+    setStreamingSegments,
+    setRouterResult,
+    setIsEditing,
+    setEditedText,
+    setCountdown,
+    setMicDeadWarning,
+    setLowAudioWarning,
+    setUsbCycleStage,
+    setIsFadingOut,
+    // Refs shared across hooks
+    lastLevelTimeRef,
+    recordingStartTimeRef,
+    lowAudioHistoryRef,
+    hadGoodAudioRef,
+    smoothedLevelsRef,
+    usbCyclingActiveRef,
+    transcriptionPreviewRef,
+    // Reset function for new recordings
+    resetRecordingState,
+  } = sharedState;
+
+  // ─── Derived state from backend (sole source of truth) ──────────────
+  const state: OverlayState = backendState.overlayState;
+  const isRecording = backendState.isRecording;
+  const isConfirming = backendState.isConfirming;
+  const isUsbCycling = backendState.isUsbCycling;
+
+  // BUGFIX (router regressions from commit 2255ae8):
+  // After the router subprocess is spawned, FinishGuard drops immediately,
+  // freeing the coordinator and setting backend state to Idle. At that point
+  // backendState.isRouter becomes false (binding_id is null for Idle) even
+  // though the router result hasn't arrived yet. Use routerResult as a
+  // fallback signal — it's only non-null during router flows and persists
+  // for the full 10-second display window.
+  const isRouter = backendState.isRouter || routerResult !== null;
+  const isVisible = backendState.isVisible || routerResult !== null;
+
+  // ─── Sync backend visibility to legacy setIsVisible ─────────────────
+  // Sub-hooks like useUSBRecovery and useRouterPreview still use
+  // setIsVisible for edge cases (USB cycling flash, router result timeout).
+  // Keep it in sync with the backend authority.
+  useEffect(() => {
+    setIsVisible(backendState.isVisible);
+  }, [backendState.isVisible, setIsVisible]);
+
+  // ─── Sync backend state to legacy setState ───────────────────────────
+  // Sub-hooks like useUSBRecovery and useRouterPreview still use setState
+  // for USB cycling transitions and router result timeout. Keep it in
+  // sync with the backend authority.
+  useEffect(() => {
+    setState(backendState.overlayState);
+  }, [backendState.overlayState, setState]);
+
+  // ─── Reset on new recording ──────────────────────────────────────────
+  // When the backend transitions to Recording from any other state,
+  // reset all mutable UI state (streaming text, warnings, etc.).
+  const prevStateRef = useRef(backendState.appState.state);
+  useEffect(() => {
+    const currentState = backendState.appState.state;
+    const prevState = prevStateRef.current;
+    prevStateRef.current = currentState;
+
+    if (currentState === "Recording" && prevState !== "Recording") {
+      resetRecordingState();
+    }
+  }, [backendState.appState.state, resetRecordingState]);
+
+  // ─── Visualizer (audio levels + mic warnings) ──────────────────────────
+  const { levels } = useVisualizer({
+    state,
+    isVisible,
+    isRecording,
+    lastLevelTimeRef,
+    recordingStartTimeRef,
+    lowAudioHistoryRef,
+    hadGoodAudioRef,
+    smoothedLevelsRef,
+    setMicDeadWarning,
+    setLowAudioWarning,
   });
-  const [phase, setPhase] = useState<StreamPhase>("listening");
-  const [workKind, setWorkKind] = useState<StreamWorkKind>("transcribing");
-  const [elapsed, setElapsed] = useState(0);
-  // Bumped on each new streaming session so the Live card remounts fresh (replays
-  // the pop-in, and never animates in from the previous panel's open size).
-  const [session, setSession] = useState(0);
-  // Overlay placement (top vs bottom of the screen). The Live panel grows downward
-  // from a top overlay (oldest line under the pill) and upward from a bottom one.
-  const [position, setPosition] = useState<"top" | "bottom">("bottom");
-  // True once live text overflows the cap. A top overlay fades its top edge only
-  // while overflowing, so the resting first line stays crisp flush under the pill.
-  const [overflowing, setOverflowing] = useState(false);
 
-  const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
-  // Live-text scroll-back: the text region "sticks" to the newest line while the
-  // user is at the bottom; if they scroll up to read history, auto-follow pauses
-  // until they scroll back down.
-  const capRef = useRef<HTMLDivElement>(null);
-  const pinnedRef = useRef(true);
-  const direction = getLanguageDirection(i18n.language);
+  // ─── Live captions (streaming transcription) ──────────────────────────
+  useLiveCaptions({
+    state,
+    isVisible,
+    isRecording,
+    liveCaptionsEnabled,
+    micDeadWarning,
+    lowAudioWarning,
+    streamingText,
+    setStreamingText,
+    setStreamingSegments,
+  });
 
-  useEffect(() => {
-    const setupEventListeners = async () => {
-      const unlistenShow = await listen("show-overlay", async (event) => {
-        await syncLanguageFromSettings();
-        // The Live panel flows downward from a top overlay and upward from a
-        // bottom one; read the placement so the layout can flip to match.
-        try {
-          const settings = await commands.getAppSettings();
-          if (settings.status === "ok") {
-            setPosition(
-              settings.data.overlay_position === "top" ? "top" : "bottom",
-            );
-          }
-        } catch {
-          // Keep the previous/default placement if settings can't be read.
-        }
-        const overlayState = event.payload as OverlayState;
-        setState(overlayState);
-        if (overlayState === "recording" || overlayState === "streaming") {
-          setStreamText({ committed: "", tentative: "" });
-        }
-        if (overlayState === "streaming") {
-          setPhase("listening");
-          setWorkKind("transcribing");
-          setElapsed(0);
-          setSession((s) => s + 1); // remount the card fresh for this session
-        }
-        setIsVisible(true);
-      });
+  // ─── Router preview (confirmation, editing, result) ───────────────────
+  const {
+    handleTranscriptionClick,
+    handleSendEdited,
+    handleCancelEdit,
+    handleEditedTextChange,
+    textareaRef,
+  } = useRouterPreview({
+    state,
+    isVisible,
+    setState,
+    setIsVisible,
+    isRouter,
+    isConfirming,
+    transcriptionPreview,
+    transcriptionPreviewRef,
+    routerResult,
+    isEditing,
+    editedText,
+    countdown,
+    isFadingOut,
+    setTranscriptionPreview,
+    setRouterResult,
+    setIsEditing,
+    setEditedText,
+    setCountdown,
+    setIsFadingOut,
+  });
 
-      const unlistenHide = await listen("hide-overlay", () => {
-        setIsVisible(false);
-      });
+  // ─── USB recovery (power cycling state) ───────────────────────────────
+  const { usbCyclingElapsed } = useUSBRecovery({
+    state,
+    setState,
+    setIsVisible,
+    isUsbCycling,
+    setMicDeadWarning,
+    setLowAudioWarning,
+    setUsbCycleStage,
+    usbCyclingActiveRef,
+    smoothedLevelsRef,
+    recordingStartTimeRef,
+    lowAudioHistoryRef,
+    hadGoodAudioRef,
+  });
 
-      const unlistenLevel = await listen<number[]>("mic-level", (event) => {
-        const newLevels = event.payload as number[];
-        // Exponential smoothing across the 16 buckets, then take the first N
-        // bars for the shared waveform.
-        const smoothed = smoothedLevelsRef.current.map((prev, i) => {
-          const target = newLevels[i] || 0;
-          return prev * 0.7 + target * 0.3;
-        });
-        smoothedLevelsRef.current = smoothed;
-        setLevels(smoothed.slice(0, WAVE_BARS));
-      });
+  // ─── Cancel handler ───────────────────────────────────────────────────
+  // Send cancel to the backend. The backend will emit AppState::Idle,
+  // which useAppState will pick up and set isVisible=false.
+  // No need to set visibility locally — the state machine handles it.
+  const handleCancel = useCallback(async () => {
+    try {
+      await commands.cancelOperation();
+    } catch (err) {
+      console.error("[Overlay] cancelOperation command failed:", err);
+    }
+    // Reset local UI state as a precaution, but do NOT set visibility.
+    // The backend's cancelOperation will emit AppState::Idle which
+    // useAppState will receive, setting isVisible=false.
+    setStreamingText("");
+    setTranscriptionPreview("");
+  }, [setStreamingText, setTranscriptionPreview]);
 
-      const unlistenStream = await events.streamTextEvent.listen((event) => {
-        setStreamText(event.payload);
-      });
-
-      const unlistenPhase = await events.streamPhaseEvent.listen((event) => {
-        const payload: StreamPhaseEvent = event.payload;
-        setPhase(payload.phase);
-        if (payload.kind) setWorkKind(payload.kind);
-      });
-
-      return () => {
-        unlistenShow();
-        unlistenHide();
-        unlistenLevel();
-        unlistenStream();
-        unlistenPhase();
-      };
-    };
-
-    setupEventListeners();
-  }, []);
-
-  // Elapsed timer while the Live overlay is visible.
-  useEffect(() => {
-    if (state !== "streaming" || !isVisible) return;
-    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(id);
-  }, [state, isVisible]);
-
-  // Stick to the bottom as text streams in — but only while pinned, so a user who
-  // has scrolled up to read history isn't yanked back down by the next chunk.
-  useLayoutEffect(() => {
-    const el = capRef.current;
-    if (!el) return;
-    // Fade the top edge only once text actually overflows the cap.
-    setOverflowing(el.scrollHeight > el.clientHeight + 1);
-    if (pinnedRef.current) el.scrollTop = el.scrollHeight;
-  }, [streamText]);
-
-  // Each fresh streaming session starts pinned to the bottom, fade cleared.
-  useEffect(() => {
-    pinnedRef.current = true;
-    setOverflowing(false);
-  }, [session]);
-
-  // Re-pin when the user is within ~a line of the bottom; unpin otherwise.
-  const handleStreamScroll = () => {
-    const el = capRef.current;
-    if (!el) return;
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 16;
+  // ─── Icon selection ───────────────────────────────────────────────────
+  const getIcon = () => {
+    if (isRouter) {
+      const iconColor = "#3b82f6";
+      return <RoutingIcon color={iconColor} width={30} height={30} />;
+    }
+    if (state === "recording") {
+      return <MicrophoneIcon width={30} height={30} />;
+    }
+    return <TranscriptionIcon width={30} height={30} />;
   };
 
-  const fmtTime = (s: number) =>
-    `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  // ─── Overlay class names ──────────────────────────────────────────────
+  const getOverlayClassNames = (): string => {
+    const classes = ["recording-overlay"];
+    if (isVisible) classes.push("fade-in");
+    if (isRouter) classes.push("routing-mode");
+    if ((micDeadWarning || lowAudioWarning) && state === "recording")
+      classes.push("mic-dead-overlay");
+    if (state === "usb-cycling") classes.push("usb-cycling-overlay");
+    if (isEditing && state === "confirming") classes.push("editing-overlay");
+    return classes.join(" ");
+  };
 
-  // ---- Shared building blocks (one visual language for every overlay form) ----
-  const waveform = (
-    <div className="swave">
-      {levels.map((v, i) => (
-        <i
-          key={i}
-          style={{
-            height: `${Math.max(3, Math.min(18, 3 + Math.pow(v, 0.7) * 15))}px`,
-          }}
-        />
-      ))}
-    </div>
-  );
+  // ─── Render ────────────────────────────────────────────────────────────
+  return (
+    <>
+      <div
+        dir={direction}
+        className={getOverlayClassNames()}
+        style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
+      >
+        <div className="overlay-left">{getIcon()}</div>
 
-  const cancelBtn = (
-    <button
-      className="sx"
-      aria-label="cancel"
-      onClick={() => commands.cancelOperation()}
-    >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M4 4 L12 12 M12 4 L4 12"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-        />
-      </svg>
-    </button>
-  );
-
-  // dot (left) | waveform (center) | timer + cancel (right) — same structure for
-  // pill & panel, so the Live morph is a pure width change.
-  const listeningRow = (showTimer: boolean, showCancel: boolean) => (
-    <div className="sbase">
-      <div className="sbase-l">
-        <span className="sdot" />
-      </div>
-      {waveform}
-      <div className="sbase-r">
-        {showTimer && <span className="stimer">{fmtTime(elapsed)}</span>}
-        {showCancel && cancelBtn}
-      </div>
-    </div>
-  );
-
-  // spinner (left) | label (center) | cancel (right) — same 3-zone grid as the
-  // listening row, so the label is centered.
-  const workingRow = (label: string, showCancel: boolean) => (
-    <div className="sbase">
-      <div className="sbase-l">
-        <span className="sspinner" />
-      </div>
-      <span className="swork-label">{label}</span>
-      <div className="sbase-r">{showCancel && cancelBtn}</div>
-    </div>
-  );
-
-  // ---- Live overlay: a pill that sculpts open into a panel ----
-  if (state === "streaming") {
-    const hasText =
-      streamText.committed.length > 0 || streamText.tentative.length > 0;
-    const working = phase === "working";
-    // Keep the panel open whenever there's text — even while finalizing — so the
-    // transcript stays put under a working spinner instead of collapsing and
-    // squishing the text mid-stream. Only fall back to the small working pill
-    // when there was no text to preserve.
-    const open = hasText;
-    const collapsed = working && !hasText;
-
-    return (
-      <div dir={direction} className={`ov-stage ${position}`}>
-        <div
-          key={session}
-          className={`scard ${open ? "open" : ""} ${collapsed ? "working" : ""} ${
-            isVisible ? "" : "leaving"
-          }`}
-        >
-          <div className="stext">
-            <div className="stext-clip">
-              <div
-                className={`stext-cap ${overflowing ? "overflowing" : ""}`}
-                ref={capRef}
-                onScroll={handleStreamScroll}
-              >
-                <p>
-                  <span className="committed">
-                    {streamText.committed ? streamText.committed + " " : ""}
-                  </span>
-                  <span className="tentative">{streamText.tentative}</span>
-                  {/* Drop the blinking caret once finalizing — it's no longer
-                      capturing, and a static spinner conveys the work. */}
-                  {!working && <span className="scaret" />}
-                </p>
-              </div>
+        <div className="overlay-middle">
+          {/* Mic dead or low audio warning - only show during recording */}
+          {state === "recording" && (
+            <MicDeadWarning
+              micDeadWarning={micDeadWarning}
+              lowAudioWarning={lowAudioWarning}
+            />
+          )}
+          {/* Only show warning or visualizer, not both */}
+          {(micDeadWarning || lowAudioWarning) && state === "recording"
+            ? null
+            : state === "recording" && (
+                <VisualizerBars levels={levels} isRouter={isRouter} />
+              )}
+          {/* Processing state: "Filing..." for router, "Processing..." for normal */}
+          {state === "processing" && (
+            <div
+              className={`transcribing-text${isRouter ? " routing-text" : ""}`}
+            >
+              {isRouter ? t("overlay.filing") : t("overlay.processing")}
             </div>
-          </div>
-          {working
-            ? workingRow(
-                workKind === "polishing"
-                  ? t("overlay.processing")
-                  : t("overlay.transcribing"),
-                true,
-              )
-            : listeningRow(open, true)}
+          )}
+          {state === "usb-cycling" && (
+            <USBCyclingProgress
+              usbCycleStage={usbCycleStage}
+              usbCyclingElapsed={usbCyclingElapsed}
+            />
+          )}
+          {/* Confirming state */}
+          {state === "confirming" && !routerResult && (
+            <div className="confirming-text">
+              {isEditing
+                ? t("overlay.editing", "Edit text:")
+                : t("overlay.confirming", "Sending in")}
+              {!isEditing && countdown > 0 && (
+                <span className="countdown-timer">
+                  {`${Math.ceil(countdown / 1000)}s`}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="overlay-right">
+          {state === "recording" && (
+            <div
+              className="cancel-button"
+              onClick={handleCancel}
+              onMouseEnter={() => safeSetOverlayMousePassthrough(true)}
+              onMouseLeave={() => safeSetOverlayMousePassthrough(false)}
+            >
+              <CancelIcon
+                width={33}
+                height={33}
+                color={isRouter ? "#3b82f6" : undefined}
+              />
+            </div>
+          )}
+
         </div>
       </div>
-    );
-  }
 
-  // ---- Minimal overlay: exactly one row at a time — waveform (recording), or a
-  // spinner + label (transcribing / processing). Never both. The pill animates its
-  // width between them; the cancel button is in both rows so it stays put.
-  const working = state === "transcribing" || state === "processing";
-  const workLabel =
-    state === "processing"
-      ? t("overlay.processing")
-      : t("overlay.transcribing");
+      {/* Live captions — decoupled from mic warnings: captions and mic warnings
+          are independent concerns. The MicDeadWarning component is already
+          rendered separately above, so removing these gates here does NOT
+          suppress the mic warning. Previously, lowAudioWarning (triggered
+          during 2+ second speech pauses) would kill captions even though
+          transcription was still producing text.
+          Hide when router result is showing — the handler cards replace them. */}
+      {isVisible &&
+        state === "recording" &&
+        liveCaptionsEnabled &&
+        streamingText &&
+        streamingText.trim() &&
+        !routerResult && (
+          <LiveCaptionsBox
+            text={streamingText}
+            direction={direction}
+            overlayScale={overlayScale}
+            isRouter={isRouter}
+          />
+        )}
 
-  return (
-    <div
-      dir={direction}
-      className={`ov-stage ${position} ov-fade ${isVisible ? "show" : ""}`}
-    >
-      <div
-        className={`scard compact ${working && isVisible ? "cworking" : ""}`}
-      >
-        {working ? workingRow(workLabel, true) : listeningRow(false, true)}
-      </div>
-    </div>
+      {/* Router result display / transcription preview */}
+      {isRouter && (transcriptionPreview || routerResult) && (
+        <RouterResultDisplay
+          routerResult={routerResult}
+          isEditing={isEditing}
+          isFadingOut={isFadingOut}
+          transcriptionPreview={transcriptionPreview}
+          editedText={editedText}
+          countdown={countdown}
+          direction={direction}
+          overlayScale={overlayScale}
+          textareaRef={textareaRef}
+          onTranscriptionClick={handleTranscriptionClick}
+          onSendEdited={handleSendEdited}
+          onCancelEdit={handleCancelEdit}
+          onEditedTextChange={handleEditedTextChange}
+        />
+      )}
+    </>
   );
 };
 

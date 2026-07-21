@@ -165,6 +165,11 @@ tao-macros = { git = "https://github.com/tauri-apps/tao", rev = "07f3742b1833b64
 
 [dev-dependencies]
 tempfile = "3"
+loom = "0.7"
+proptest = "1.5"
+
+[features]
+tsan = []
 
 [profile.release]
 lto = true

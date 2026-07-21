@@ -443,6 +443,50 @@ impl<'a> Drop for DownloadCleanup<'a> {
     }
 }
 
+// ── Benchmark types ──
+
+/// Score for a single model from a benchmark run.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BenchmarkScore {
+    /// Model ID this score belongs to.
+    pub model_id: String,
+    /// Average transcription time in milliseconds across all benchmark clips.
+    pub avg_ms: f64,
+    /// Relative speed score (0.0–1.0), computed from avg_ms across all benchmarked models.
+    pub speed_score: f32,
+    /// Number of audio clips used in the benchmark.
+    pub clip_count: u32,
+    /// Timestamp (epoch seconds) when the benchmark was run.
+    pub benchmarked_at: i64,
+    /// Whether this model failed to produce any transcription during benchmarking.
+    #[serde(default)]
+    pub failed: bool,
+}
+
+/// A model that failed during benchmarking.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BenchmarkModelFailure {
+    /// Model ID that failed.
+    pub model_id: String,
+    /// Human-readable model name.
+    pub model_name: String,
+    /// Reason for failure: "load" or "transcribe".
+    pub reason: String,
+    /// Error message from the failure.
+    pub error: String,
+}
+
+/// Complete result from a benchmark run.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BenchmarkResult {
+    /// Scores for models that were successfully benchmarked.
+    pub scores: Vec<BenchmarkScore>,
+    /// Models that failed during benchmarking.
+    pub failed_models: Vec<BenchmarkModelFailure>,
+    /// Model IDs that were skipped because they already had benchmark data.
+    pub skipped_model_ids: Vec<String>,
+}
+
 pub struct ModelManager {
     app_handle: AppHandle,
     models_dir: PathBuf,

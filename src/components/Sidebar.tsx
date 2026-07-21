@@ -1,17 +1,28 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Cog, FlaskConical, History, Info, Sparkles, Cpu } from "lucide-react";
+import {
+  Cog,
+  FlaskConical,
+  History,
+  Info,
+  Sparkles,
+  Cpu,
+  Target,
+  BarChart3,
+} from "lucide-react";
 import HandyTextLogo from "./icons/HandyTextLogo";
 import HandyHand from "./icons/HandyHand";
 import { useSettings } from "../hooks/useSettings";
 import {
   GeneralSettings,
+  AccuracySettings,
   AdvancedSettings,
   HistorySettings,
   DebugSettings,
   AboutSettings,
   PostProcessingSettings,
   ModelsSettings,
+  UsageSettings,
 } from "./settings";
 
 export type SidebarSection = keyof typeof SECTIONS_CONFIG;
@@ -44,6 +55,12 @@ export const SECTIONS_CONFIG = {
     component: ModelsSettings,
     enabled: () => true,
   },
+  accuracy: {
+    labelKey: "sidebar.accuracy",
+    icon: Target,
+    component: AccuracySettings,
+    enabled: () => true,
+  },
   advanced: {
     labelKey: "sidebar.advanced",
     icon: Cog,
@@ -54,6 +71,12 @@ export const SECTIONS_CONFIG = {
     labelKey: "sidebar.history",
     icon: History,
     component: HistorySettings,
+    enabled: () => true,
+  },
+  usage: {
+    labelKey: "sidebar.usage",
+    icon: BarChart3,
+    component: UsageSettings,
     enabled: () => true,
   },
   postprocessing: {
@@ -92,6 +115,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     .filter(([_, config]) => config.enabled(settings))
     .map(([id, config]) => ({ id: id as SidebarSection, ...config }));
 
+  const showDebugHint = !settings?.debug_mode;
+
   return (
     <div className="flex flex-col w-40 h-full border-e border-mid-gray/20 items-center px-2">
       <HandyTextLogo width={120} className="m-4" />
@@ -121,6 +146,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           );
         })}
       </div>
+      {showDebugHint && (
+        <div className="mt-auto mb-2 px-2 py-1.5 text-xs text-mid-gray/60 text-center">
+          <span className="opacity-60">
+            {t("sidebar.debugHint")}{" "}
+            <kbd className="px-1 py-0.5 bg-mid-gray/20 rounded text-[10px] font-mono">
+              {navigator.platform.toLowerCase().includes("mac")
+                ? "⌘⇧D"
+                : "Ctrl+Shift+D"}
+            </kbd>
+          </span>
+        </div>
+      )}
     </div>
   );
 };

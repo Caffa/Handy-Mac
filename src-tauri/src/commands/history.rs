@@ -1,10 +1,11 @@
 use crate::actions::process_transcription_output;
 use crate::managers::{
-    history::{HistoryManager, PaginatedHistory},
+    history::{HistoryManager, PaginatedHistory, UsageStats},
     transcription::TranscriptionManager,
 };
+use parking_lot::Mutex;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 #[specta::specta]
@@ -151,4 +152,67 @@ pub async fn update_recording_retention_period(
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn update_history_entry_tags(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    id: i64,
+    tags: Option<String>,
+) -> Result<(), String> {
+    history_manager
+        .update_tags(id, tags)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn update_history_entry_metadata(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    id: i64,
+    ground_truth: Option<String>,
+    quality: Option<String>,
+    speech_speed: Option<String>,
+) -> Result<(), String> {
+    history_manager
+        .update_metadata(id, ground_truth, quality, speech_speed)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn export_history_json(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+) -> Result<String, String> {
+    history_manager
+        .export_history_json()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn export_history_csv(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+) -> Result<String, String> {
+    history_manager
+        .export_history_csv()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_usage_stats(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+) -> Result<UsageStats, String> {
+    history_manager
+        .get_usage_stats()
+        .map_err(|e| e.to_string())
 }

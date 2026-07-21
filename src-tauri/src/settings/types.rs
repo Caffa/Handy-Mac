@@ -257,10 +257,13 @@ pub enum RecordingRetentionPeriod {
 // ── NoiseSuppressionLevel ──
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "PascalCase")]
 pub enum NoiseSuppressionLevel {
+    #[serde(alias = "low")]
     Low,
+    #[serde(alias = "medium")]
     Medium,
+    #[serde(alias = "high")]
     High,
 }
 

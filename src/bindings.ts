@@ -101,6 +101,14 @@ async changeOverlayPositionSetting(position: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
+async changeOverlayScreenTargetSetting(target: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_overlay_screen_target_setting", { target }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeOverlayStyleSetting(style: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_overlay_style_setting", { style }) };
@@ -125,9 +133,57 @@ async changeWordCorrectionThresholdSetting(threshold: number) : Promise<Result<n
     else return { status: "error", error: e  as any };
 }
 },
+async changeUseAdvancedCustomWordsSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_use_advanced_custom_words_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeWordCorrectionMode(mode: WordCorrectionMode) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_word_correction_mode", { mode }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateAdvancedCustomWords(words: CustomWord[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_advanced_custom_words", { words }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateCustomFillerWords(words: string[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_custom_filler_words", { words }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateWordReplacements(replacements: WordReplacement[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_word_replacements", { replacements }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeExtraRecordingBufferSetting(ms: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_extra_recording_buffer_setting", { ms }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changePreRecordingBufferSetting(ms: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_pre_recording_buffer_setting", { ms }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -351,6 +407,46 @@ async changeVadEnabledSetting(enabled: boolean) : Promise<Result<null, string>> 
     else return { status: "error", error: e  as any };
 }
 },
+async changeVadSensitivitySetting(sensitivity: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_vad_sensitivity_setting", { sensitivity }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeLiveCaptionsEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_live_captions_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeOverlayScaleSetting(scale: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_overlay_scale_setting", { scale }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeNoiseSuppressionEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_noise_suppression_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeNoiseSuppressionLevelSetting(level: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_noise_suppression_level_setting", { level }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeAppLanguageSetting(language: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_app_language_setting", { language }) };
@@ -411,9 +507,17 @@ async changeShowTrayIconSetting(enabled: boolean) : Promise<Result<null, string>
     else return { status: "error", error: e  as any };
 }
 },
-async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetting) : Promise<Result<null, string>> {
+async changeConvertUsToBritishSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_transcribe_accelerator_setting", { accelerator }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_convert_us_to_british_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeWhisperAcceleratorSetting(accelerator: TranscribeAcceleratorSetting) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_whisper_accelerator_setting", { accelerator }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -427,9 +531,73 @@ async changeOrtAcceleratorSetting(accelerator: OrtAcceleratorSetting) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
+async changeWhisperGpuDevice(device: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_whisper_gpu_device", { device }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetting) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_transcribe_accelerator_setting", { accelerator }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeTranscribeGpuDevice(device: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_transcribe_gpu_device", { device }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeHybridModeEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_mode_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeHybridThresholdSecsSetting(secs: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_threshold_secs_setting", { secs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeHybridShortAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_short_audio_model_setting", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeHybridLongAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_long_audio_model_setting", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeAdaptiveParakeetThresholdsSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_adaptive_parakeet_thresholds_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeVerificationModeSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_verification_mode_setting", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -467,6 +635,9 @@ async stopHandyKeysRecording() : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async checkShortcutConflicts(binding: string) : Promise<ConflictInfo[]> {
+    return await TAURI_INVOKE("check_shortcut_conflicts", { binding });
 },
 async triggerUpdateCheck() : Promise<Result<null, string>> {
     try {
@@ -555,6 +726,17 @@ async openAppDataDir() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Open a path in the system file manager or with the default application.
+ */
+async openPath(path: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_path", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Check if Apple Intelligence is available on this device.
  * Called by the frontend when the user selects Apple Intelligence provider.
  */
@@ -581,6 +763,19 @@ async initializeEnigo() : Promise<Result<null, string>> {
 async initializeShortcuts() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("initialize_shortcuts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Confirm routing with edited text.
+ * Called by the frontend when the user confirms the transcription
+ * (either by letting the countdown expire or by clicking "Send").
+ */
+async confirmRouting(text: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("confirm_routing", { text }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -665,6 +860,56 @@ async isModelLoading() : Promise<Result<boolean, string>> {
 async rescanLocalModels() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("rescan_local_models") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async hasAnyModelsAvailable() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("has_any_models_available") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async hasAnyModelsOrDownloads() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("has_any_models_or_downloads") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Check whether benchmarking is available (requires downloaded models and history audio clips).
+ */
+async canBenchmarkModels() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("can_benchmark_models") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Count the number of history audio clips available for benchmarking.
+ */
+async getBenchmarkClipCount() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_benchmark_clip_count") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Run a benchmark of all downloaded models against the user's history audio clips.
+ * Currently returns an error indicating this feature is not yet available on this branch.
+ */
+async benchmarkModels() : Promise<Result<BenchmarkResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("benchmark_models") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -770,8 +1015,131 @@ async getClamshellMicrophone() : Promise<Result<string, string>> {
 async isRecording() : Promise<boolean> {
     return await TAURI_INVOKE("is_recording");
 },
-async setModelUnloadTimeout(timeout: ModelUnloadTimeout) : Promise<void> {
-    await TAURI_INVOKE("set_model_unload_timeout", { timeout });
+/**
+ * Check if uhubctl is available on the system
+ */
+async isUsbWatchdogAvailable() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("is_usb_watchdog_available") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List all USB devices connected to hubs visible to uhubctl
+ */
+async listUsbDevices() : Promise<Result<UsbDevice[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_usb_devices") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Enable or disable the USB watchdog
+ */
+async changeUsbWatchdogEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_usb_watchdog_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update the USB watchdog target device name
+ */
+async changeUsbWatchdogDeviceNameSetting(deviceName: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_usb_watchdog_device_name_setting", { deviceName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Enable or disable the USB watchdog cycle-on-wake setting.
+ */
+async changeUsbWatchdogCycleOnWakeSetting(cycleOnWake: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_usb_watchdog_cycle_on_wake_setting", { cycleOnWake }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Manually trigger a USB power cycle (for testing)
+ */
+async triggerUsbPowerCycle() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("trigger_usb_power_cycle") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Start a short recording for capturing a pronunciation sample.
+ */
+async startPronunciationRecording() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_pronunciation_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Cancel an active pronunciation recording without processing.
+ */
+async cancelPronunciationRecording() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_pronunciation_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop the pronunciation recording and transcribe with ALL downloaded models.
+ */
+async stopAndTranscribePronunciationAllModels(canonicalWord: string) : Promise<Result<PronunciationResult[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_and_transcribe_pronunciation_all_models", { canonicalWord }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop pronunciation recording and schedule deferred processing.
+ */
+async stopAndSchedulePronunciation(canonicalWord: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_and_schedule_pronunciation", { canonicalWord }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setModelUnloadTimeout(timeout: ModelUnloadTimeout) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_model_unload_timeout", { timeout }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setRepetitionSuppressionLevel(level: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_repetition_suppression_level", { level }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async getModelLoadStatus() : Promise<Result<ModelLoadStatus, string>> {
     try {
@@ -845,6 +1213,168 @@ async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
+async updateHistoryEntryTags(id: number, tags: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_history_entry_tags", { id, tags }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateHistoryEntryMetadata(id: number, groundTruth: string | null, quality: string | null, speechSpeed: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_history_entry_metadata", { id, groundTruth, quality, speechSpeed }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async exportHistoryJson() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_history_json") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async exportHistoryCsv() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_history_csv") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getUsageStats() : Promise<Result<UsageStats, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_usage_stats") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createExperimentGroup(recordingId: number) : Promise<Result<ExperimentGroup, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_experiment_group", { recordingId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getExperimentGroup(recordingId: number) : Promise<Result<ExperimentGroup | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_experiment_group", { recordingId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateExperimentGroup(id: number, groundTruth: string | null, speechSpeed: string | null, recordingQuality: string | null, notes: string | null, isComplete: boolean | null) : Promise<Result<ExperimentGroup, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_experiment_group", { id, groundTruth, speechSpeed, recordingQuality, notes, isComplete }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async addTranscriptionVariant(experimentGroupId: number, modelId: string, parameters: string, transcriptionText: string) : Promise<Result<TranscriptionVariant, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_transcription_variant", { experimentGroupId, modelId, parameters, transcriptionText }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getVariantsForExperiment(experimentGroupId: number) : Promise<Result<TranscriptionVariant[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_variants_for_experiment", { experimentGroupId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateTranscriptionVariant(id: number, ranking: number | null, isAcceptable: boolean | null, notes: string | null, matchScore: number | null) : Promise<Result<TranscriptionVariant, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_transcription_variant", { id, ranking, isAcceptable, notes, matchScore }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getCompleteExperiments() : Promise<Result<ExperimentGroup[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_complete_experiments") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Generate transcription variants using multiple models and parameter configurations.
+ */
+async generateVariants(experimentGroupId: number, models: string[]) : Promise<Result<GeneratedVariant[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_variants", { experimentGroupId, models }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get all pending retry entries.
+ */
+async getRetryQueue() : Promise<Result<RetryableTranscription[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_retry_queue") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Manually trigger a retry for a specific entry.
+ */
+async retryTranscription(entryId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retry_transcription", { entryId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove a specific entry from the retry queue.
+ */
+async removeFromRetryQueue(entryId: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_from_retry_queue", { entryId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Clear all pending retry entries.
+ */
+async clearRetryQueue() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_retry_queue") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the count of pending retries.
+ */
+async getRetryQueueCount() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_retry_queue_count") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Checks if the Mac is a laptop by detecting battery presence
  * 
@@ -858,6 +1388,77 @@ async isLaptop() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command to get recent session histories.
+ */
+async getSessionHistory(limit: number | null) : Promise<Result<SessionSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_session_history", { limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command wrapper for conflict detection.
+ * 
+ * Accepts the shortcut string as an owned `String` (Tauri commands cannot
+ * take references) and delegates to [`detect_conflicts_for_shortcut`].
+ */
+async detectConflicts(shortcut: string) : Promise<ConflictInfo[]> {
+    return await TAURI_INVOKE("detect_conflicts", { shortcut });
+},
+async getHealthReport() : Promise<Result<HealthReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_health_report") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getLogEntries(filter: LogFilter) : Promise<Result<LogEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_log_entries", { filter }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command to toggle whether the overlay panel accepts mouse events.
+ * 
+ * When `enabled` is true, the overlay panel accepts mouse events (for interactive
+ * elements like buttons and textareas). When `enabled` is false, all mouse events
+ * pass through to apps below the overlay.
+ * 
+ * On macOS, this controls the NSPanel's `ignoresMouseEvents` property.
+ * On non-macOS platforms, this is a no-op (CSS pointer-events handles this).
+ */
+async setOverlayMousePassthrough(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_overlay_mouse_passthrough", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command to toggle whether the overlay panel can become the key window.
+ * 
+ * When `can_become_key` is true, the overlay panel can receive keyboard input
+ * (for editing text in the router confirmation UI). When false, the panel
+ * returns to its default behavior of not accepting keyboard input.
+ * 
+ * On non-macOS platforms, this is a no-op.
+ */
+async setOverlayCanBecomeKey(canBecomeKey: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_overlay_can_become_key", { canBecomeKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -866,10 +1467,12 @@ async isLaptop() : Promise<Result<boolean, string>> {
 
 export const events = __makeEvents__<{
 historyUpdatePayload: HistoryUpdatePayload,
+recoverableErrorEvent: RecoverableErrorEvent,
 streamPhaseEvent: StreamPhaseEvent,
 streamTextEvent: StreamTextEvent
 }>({
 historyUpdatePayload: "history-update-payload",
+recoverableErrorEvent: "recoverable-error-event",
 streamPhaseEvent: "stream-phase-event",
 streamTextEvent: "stream-text-event"
 })
@@ -905,19 +1508,112 @@ bindings?: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk?: boolean
  * upgrading from before this key existed are blanked by the migration so they
  * see the current release's notes — see `apply_settings_migrations`.
  */
-whats_new_last_seen_version?: string; selected_model?: string; onboarding_completed?: boolean; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; typing_tool?: TypingTool; external_script_path?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; vad_enabled?: boolean; 
+whats_new_last_seen_version?: string; selected_model?: string; onboarding_completed?: boolean; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; overlay_screen_target?: OverlayScreenTarget; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
+/**
+ * Deprecated: Use `word_correction_mode` instead.
+ */
+use_advanced_custom_words?: boolean; 
+/**
+ * Word correction mode. Defaults to WordBias for backward compatibility.
+ */
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; typing_tool?: TypingTool; external_script_path?: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null; adaptive_parakeet_thresholds?: boolean; verification_mode?: boolean; vad_enabled?: boolean; vad_sensitivity?: VadSensitivity; live_captions_enabled?: boolean; 
 /**
  * Which recording overlay to show: None / Minimal / Live. Streaming mode is
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle; overlay_scale?: number; convert_us_to_british?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
+/**
+ * A model that failed during benchmarking.
+ */
+export type BenchmarkModelFailure = { 
+/**
+ * Model ID that failed.
+ */
+model_id: string; 
+/**
+ * Human-readable model name.
+ */
+model_name: string; 
+/**
+ * Reason for failure: "load" or "transcribe".
+ */
+reason: string; 
+/**
+ * Error message from the failure.
+ */
+error: string }
+/**
+ * Complete result from a benchmark run.
+ */
+export type BenchmarkResult = { 
+/**
+ * Scores for models that were successfully benchmarked.
+ */
+scores: BenchmarkScore[]; 
+/**
+ * Models that failed during benchmarking.
+ */
+failed_models: BenchmarkModelFailure[]; 
+/**
+ * Model IDs that were skipped because they already had benchmark data.
+ */
+skipped_model_ids: string[] }
+/**
+ * Score for a single model from a benchmark run.
+ */
+export type BenchmarkScore = { 
+/**
+ * Model ID this score belongs to.
+ */
+model_id: string; 
+/**
+ * Average transcription time in milliseconds across all benchmark clips.
+ */
+avg_ms: number; 
+/**
+ * Relative speed score (0.0–1.0), computed from avg_ms across all benchmarked models.
+ */
+speed_score: number; 
+/**
+ * Number of audio clips used in the benchmark.
+ */
+clip_count: number; 
+/**
+ * Timestamp (epoch seconds) when the benchmark was run.
+ */
+benchmarked_at: number; 
+/**
+ * Whether this model failed to produce any transcription during benchmarking.
+ */
+failed?: boolean }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
+/**
+ * Information about a detected shortcut conflict.
+ */
+export type ConflictInfo = { 
+/**
+ * The platform where this conflict applies (e.g., "macOS", "Windows", "Linux")
+ */
+platform: string; 
+/**
+ * Human-readable name of the reserved shortcut (e.g., "Quit Application")
+ */
+name: string; 
+/**
+ * Whether this shortcut is fully reserved by the system (cannot be overridden)
+ * vs. merely a common shortcut that may conflict (can be overridden)
+ */
+reserved: boolean }
 export type CustomSounds = { start: boolean; stop: boolean }
+/**
+ * A custom word with optional pronunciation variants for advanced fuzzy matching.
+ */
+export type CustomWord = { word: string; pronunciations?: string[] }
 export type EngineType = 
 /**
  * Any GGML/GGUF model loaded through transcribe-cpp (Whisper, Parakeet,
@@ -925,8 +1621,41 @@ export type EngineType =
  * the file, so this one variant covers the whole transcribe-cpp family.
  */
 "TranscribeCpp" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
+export type ErrorRecord = { timestamp_ms: number; event_type: string; message: string; session_id: string | null }
+export type ExperimentGroup = { id: number; recording_id: number; original_transcript: string; ground_truth: string | null; speech_speed: string; recording_quality: string; created_at: number; is_complete: boolean; notes: string | null }
+/**
+ * Result of generating variants for an experiment
+ */
+export type GeneratedVariant = { model_id: string; parameters: string; transcription_text: string }
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
-export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean }
+export type HealthReport = { app_version: string; platform: string; uptime_secs: number; total_sessions: number; successful_sessions: number; failed_sessions: number; avg_transcription_ms: number; p95_transcription_ms: number; model_load_times: ModelLoadStat[]; recent_errors: ErrorRecord[]; usb_watchdog_cycles: number; device_changes: number; current_mic: string; current_model: string; log_level: string }
+export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; model_id: string | null; routed: boolean; 
+/**
+ * JSON string of routing handler results, e.g.
+ * `[{"status":"✅","handler":"Daily","classification":"diary_entry","file_path":null}]`.
+ * Set after the boss_router subprocess completes.
+ */
+routing_result: string | null; 
+/**
+ * JSON array of tags for categorizing recordings, e.g. `["fast", "slow", "test"]`.
+ * Used for research and experimentation purposes.
+ */
+tags: string | null; 
+/**
+ * Ground truth text - what the user actually said (corrected transcription).
+ * Used for transcription accuracy experiments.
+ */
+ground_truth: string | null; 
+/**
+ * Quality rating: "good", "okay", "bad".
+ * User's assessment of recording quality.
+ */
+quality: string | null; 
+/**
+ * Speech speed: "fast", "normal", "slow".
+ * User's assessment of speech speed.
+ */
+speech_speed: string | null }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
@@ -938,8 +1667,11 @@ export type ImplementationChangeResult = { success: boolean;
 reset_bindings: string[] }
 export type KeyboardImplementation = "tauri" | "handy_keys"
 export type LLMPrompt = { id: string; name: string; prompt: string }
+export type LogEntry = { timestamp: string; level: string; event_type: string; session_id: string | null; raw_json: string }
+export type LogFilter = { event_type: string | null; session_id: string | null; level: string | null; limit: number | null }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
 export type ModelInfo = { id: string; name: string; description: string; filename: string; source: ModelSource; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean; supports_streaming: boolean; supports_language_detection: boolean }
+export type ModelLoadStat = { model_id: string; avg_load_ms: number; load_count: number }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }
 /**
  * Where a model comes from and how Handy obtains it — the routing discriminant
@@ -966,8 +1698,10 @@ sha256: string | null } } |
  */
 "Local"
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
+export type NoiseSuppressionLevel = "Low" | "Medium" | "High"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "top" | "bottom"
+export type OverlayScreenTarget = "cursor" | "side_screen"
 /**
  * Which recording overlay to display. `Minimal` and `Live` share one base
  * (the pill); `Live` grows into the panel that shows live transcription text.
@@ -979,10 +1713,214 @@ export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
+/**
+ * Result of transcribing a pronunciation sample with a single model.
+ */
+export type PronunciationResult = { 
+/**
+ * The model ID used for this transcription.
+ */
+model_id: string; 
+/**
+ * Human-readable model name.
+ */
+model_name: string; 
+/**
+ * What the model heard (raw transcription text).
+ */
+transcription: string; 
+/**
+ * Whether this transcription matches the canonical word after normalization.
+ */
+matches_canonical: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
+/**
+ * A recoverable error event payload sent from the backend to the frontend.
+ * 
+ * The frontend should display an error dialog with:
+ * - `message`: User-friendly error description
+ * - `recovery_action`: What kind of recovery is possible
+ * - `error_type`: Category of the error (for i18n and icon selection)
+ * - `context`: Additional context JSON (e.g., model_id, device name)
+ * - `retry_command`: The Tauri command name to call on retry (if applicable)
+ * - `retry_args`: Arguments for the retry command (JSON string)
+ * - `technical_detail`: Technical error info for "Show Details" toggle
+ */
+export type RecoverableErrorEvent = { 
+/**
+ * Unique identifier for this error occurrence (for dedup/tracking retry count)
+ */
+error_id: string; 
+/**
+ * Category of the error
+ */
+error_type: RecoverableErrorType; 
+/**
+ * Whether retry is possible and what kind
+ */
+recovery_action: RecoveryAction; 
+/**
+ * User-friendly error message (already localized key path or plain text)
+ */
+message: string; 
+/**
+ * Optional i18n key for the message (e.g., "errors.modelDownloadFailed")
+ */
+message_key: string | null; 
+/**
+ * Optional i18n interpolation parameters as JSON (e.g., {"model": "Whisper Small"})
+ */
+message_params: string | null; 
+/**
+ * Additional context as JSON (model_id, device name, etc.)
+ */
+context: string | null; 
+/**
+ * Tauri command name to invoke on retry (e.g., "download_model", "set_active_model")
+ */
+retry_command: string | null; 
+/**
+ * JSON-encoded arguments for the retry command
+ */
+retry_args: string | null; 
+/**
+ * Technical error detail for "Show Details" toggle
+ */
+technical_detail: string | null }
+/**
+ * Categories of recoverable errors.
+ * Each variant maps to a user-friendly i18n key prefix in the frontend.
+ */
+export type RecoverableErrorType = 
+/**
+ * Model download failed (network error, verification failure, extraction failure)
+ */
+"model_download" | 
+/**
+ * Model failed to load into memory (OOM, corrupted file, incompatible engine)
+ */
+"model_load" | 
+/**
+ * Transcription failed (engine panic, model not loaded, inference error)
+ */
+"transcription" | 
+/**
+ * Audio device error (permission denied, no device found, device disconnected)
+ */
+"audio_device"
+/**
+ * Whether a recoverable error can be retried automatically or needs user action.
+ */
+export type RecoveryAction = 
+/**
+ * The operation can be retried directly (e.g., re-download, re-load model)
+ */
+"retry" | 
+/**
+ * The operation requires user action before retrying (e.g., grant permissions)
+ */
+"user_action" | 
+/**
+ * The error is permanent and cannot be recovered by retrying
+ */
+"permanent"
+/**
+ * Represents a pending transcription retry.
+ * Contains all information needed to re-attempt transcription.
+ */
+export type RetryableTranscription = { 
+/**
+ * Unique identifier for this retry entry
+ */
+id: string; 
+/**
+ * Path to the saved audio file
+ */
+audio_path: string; 
+/**
+ * Unix timestamp when the audio was recorded
+ */
+timestamp: number; 
+/**
+ * Model ID to use for transcription
+ */
+model_id: string; 
+/**
+ * Fallback models to try if primary fails
+ */
+fallback_models: string[]; 
+/**
+ * Index into fallback_models (0 = primary, 1+ = fallbacks)
+ */
+current_model_index: number; 
+/**
+ * Number of retry attempts made
+ */
+retry_count: number; 
+/**
+ * Maximum retry attempts allowed
+ */
+max_retries: number; 
+/**
+ * Last failure type
+ */
+last_failure: TranscriptionFailure | null; 
+/**
+ * Error message from last attempt
+ */
+last_error: string; 
+/**
+ * When to retry next (None = ready immediately)
+ */
+next_retry_at: number | null; 
+/**
+ * Whether post-processing was requested
+ */
+post_process: boolean; 
+/**
+ * Post-processing prompt if any
+ */
+post_process_prompt: string | null; 
+/**
+ * History entry ID (if created before failure)
+ */
+history_entry_id: number | null; 
+/**
+ * Whether this entry is currently being processed
+ */
+is_processing: boolean }
 export type SecretMap = Partial<{ [key in string]: string }>
+/**
+ * Summary of a completed (or failed) session — stored in the ring buffer
+ * for the frontend to query.
+ */
+export type SessionSummary = { id: string; started_at_ms: number; 
+/**
+ * Total wall-clock duration in milliseconds (start → end).
+ */
+duration_ms: number | null; success: boolean; model_id: string | null; text_length: number | null; had_post_processing: boolean; 
+/**
+ * JSON-encoded phase durations for convenience (avoids HashMap specta issues).
+ */
+phases_json: string | null; 
+/**
+ * Errors encountered during the session.
+ */
+errors: string[] }
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
+/**
+ * Dictionary source for US-to-British spelling conversion.
+ */
+export type SpellingDictionary = 
+/**
+ * DWYL english-words curated list (~180 common pairs).
+ */
+"dwyl" | 
+/**
+ * CSpell dictionary extraction.
+ */
+"cspell"
 /**
  * Phase of the streaming overlay card, emitted to drive its UI state.
  */
@@ -1021,8 +1959,100 @@ export type StreamWorkKind = "transcribing" | "polishing"
  */
 export type Theme = "system" | "light" | "dark"
 export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
+/**
+ * Classification of transcription failure types.
+ * Different failures require different retry strategies.
+ */
+export type TranscriptionFailure = 
+/**
+ * Model failed to load (wrong ID, corrupted, missing files)
+ */
+{ ModelLoadFailure: { model_id: string; error: string } } | 
+/**
+ * Transcription inference failed (engine error)
+ */
+{ InferenceFailure: { model_id: string; error: string } } | 
+/**
+ * Engine panicked during transcription
+ */
+{ EnginePanic: { model_id: string } } | 
+/**
+ * Operation timed out (took too long)
+ */
+{ Timeout: { model_id: string; duration_secs: number } } | 
+/**
+ * GPU/memory resource unavailable
+ */
+{ ResourceUnavailable: { resource: string; error: string } } | 
+/**
+ * Audio was silent/empty (no retry needed)
+ */
+"SilentAudio" | 
+/**
+ * Unknown/uncategorized failure
+ */
+{ Unknown: { error: string } }
+export type TranscriptionVariant = { id: number; experiment_group_id: number; model_id: string; parameters: string; transcription_text: string; match_score: number | null; ranking: number | null; is_acceptable: boolean; created_at: number; notes: string | null }
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
+/**
+ * Usage statistics for the dashboard.
+ */
+export type UsageStats = { 
+/**
+ * Total number of transcriptions ever completed (non-empty text)
+ */
+total_transcriptions: number; 
+/**
+ * Total words transcribed across all sessions
+ */
+total_words: number; 
+/**
+ * Number of transcriptions today (UTC)
+ */
+today_transcriptions: number; 
+/**
+ * Words transcribed today
+ */
+today_words: number; 
+/**
+ * Estimated minutes saved
+ */
+estimated_minutes_saved: number; 
+/**
+ * Consecutive days with at least one transcription
+ */
+current_streak_days: number; 
+/**
+ * Longest streak ever
+ */
+longest_streak_days: number; 
+/**
+ * Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
+ */
+daily_stats: ([string, number, number])[] }
+/**
+ * A USB device discovered by `uhubctl`.
+ */
+export type UsbDevice = { 
+/**
+ * Human-readable device name (e.g. "RØDE Microphones RØDE VideoMic NTG 762210B9")
+ */
+name: string; 
+/**
+ * Hub location ID (e.g. "8-3")
+ */
+hub: string; 
+/**
+ * Port number on the hub (e.g. "1")
+ */
+port: string }
+export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
+export type WordCorrectionMode = "word_bias" | "pronunciation" | "replacement"
+/**
+ * A word replacement rule for exact word-to-word substitution.
+ */
+export type WordReplacement = { mistranscription: string; correction: string }
 
 /** tauri-specta globals **/
 

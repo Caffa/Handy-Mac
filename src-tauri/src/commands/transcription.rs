@@ -1,7 +1,10 @@
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
+use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, State};
 
 #[derive(Serialize, Type)]
@@ -12,16 +15,27 @@ pub struct ModelLoadStatus {
 
 #[tauri::command]
 #[specta::specta]
-pub fn set_model_unload_timeout(app: AppHandle, timeout: ModelUnloadTimeout) {
+pub fn set_model_unload_timeout(app: AppHandle, timeout: ModelUnloadTimeout) -> Result<(), String> {
     let mut settings = get_settings(&app);
     settings.model_unload_timeout = timeout;
     write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_repetition_suppression_level(app: AppHandle, level: u8) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    // Clamp level to valid range (0-3)
+    settings.repetition_suppression_level = level.min(3);
+    write_settings(&app, settings);
+    Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_model_load_status(
-    transcription_manager: State<TranscriptionManager>,
+    transcription_manager: State<'_, Arc<TranscriptionManager>>,
 ) -> Result<ModelLoadStatus, String> {
     Ok(ModelLoadStatus {
         is_loaded: transcription_manager.is_model_loaded(),
@@ -32,7 +46,7 @@ pub fn get_model_load_status(
 #[tauri::command]
 #[specta::specta]
 pub fn unload_model_manually(
-    transcription_manager: State<TranscriptionManager>,
+    transcription_manager: State<'_, Arc<TranscriptionManager>>,
 ) -> Result<(), String> {
     transcription_manager
         .unload_model()
