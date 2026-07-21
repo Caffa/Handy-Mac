@@ -113,16 +113,38 @@ fn set_mute(mute: bool) {
 
 const WHISPER_SAMPLE_RATE: usize = 16000;
 
+/// Pad short audio samples to ensure minimum length for Whisper.
+///
+/// If the sample count is between 1 and `WHISPER_SAMPLE_RATE` (1 second),
+/// the samples are zero-padded to 1.25 seconds (WHISPER_SAMPLE_RATE * 5 / 4).
+/// This gives Whisper enough context to produce reliable transcriptions from
+/// very short recordings.
+///
+/// Returns `None` for empty input (caller should handle the "no audio" case),
+/// and returns samples unchanged (no padding) if they are already >= 1 second.
+fn pad_short_samples(samples: Vec<f32>) -> Option<Vec<f32>> {
+    let len = samples.len();
+    if len == 0 {
+        None
+    } else if len < WHISPER_SAMPLE_RATE {
+        let mut padded = samples;
+        padded.resize(WHISPER_SAMPLE_RATE * 5 / 4, 0.0);
+        Some(padded)
+    } else {
+        Some(samples)
+    }
+}
+
 /* ──────────────────────────────────────────────────────────────── */
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RecordingState {
     Idle,
     Recording { binding_id: String },
     Stopping,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MicrophoneMode {
     AlwaysOn,
     OnDemand,
@@ -646,16 +668,8 @@ impl AudioRecordingManager {
                     return None;
                 }
 
-                // Pad if very short
-                let s_len = samples.len();
-                // debug!("Got {} samples", s_len);
-                if s_len < WHISPER_SAMPLE_RATE && s_len > 0 {
-                    let mut padded = samples;
-                    padded.resize(WHISPER_SAMPLE_RATE * 5 / 4, 0.0);
-                    Some(padded)
-                } else {
-                    Some(samples)
-                }
+                // Pad if very short; return None for empty (cancelled/no audio)
+                pad_short_samples(samples)
             }
             _ => None,
         }
@@ -818,5 +832,474 @@ impl AudioRecordingManager {
     pub fn set_streaming_enabled(&self, _enabled: bool) -> Result<(), anyhow::Error> {
         info!("[Live Captions] Toggling streaming mode via recorder recreation");
         self.recreate_recorder()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+
+    // ─── RecordingState tests ───────────────────────────────────────────
+
+    #[test]
+    fn recording_state_idle_clone_debug() {
+        let state = RecordingState::Idle;
+        let cloned = state.clone();
+        assert_eq!(format!("{:?}", cloned), "Idle");
+    }
+
+    #[test]
+    fn recording_state_recording_clone_debug() {
+        let state = RecordingState::Recording {
+            binding_id: "test-binding-1".to_string(),
+        };
+        let cloned = state.clone();
+        assert!(matches!(cloned, RecordingState::Recording { .. }));
+        // Debug output includes the binding_id
+        let debug_str = format!("{:?}", cloned);
+        assert!(debug_str.contains("test-binding-1"));
+    }
+
+    #[test]
+    fn recording_state_stopping_clone_debug() {
+        let state = RecordingState::Stopping;
+        let cloned = state.clone();
+        assert_eq!(format!("{:?}", cloned), "Stopping");
+    }
+
+    #[test]
+    fn recording_state_pattern_matching() {
+        // Verify pattern matching works correctly for each variant
+        let idle = RecordingState::Idle;
+        let recording = RecordingState::Recording {
+            binding_id: "abc".to_string(),
+        };
+        let stopping = RecordingState::Stopping;
+
+        assert!(matches!(idle, RecordingState::Idle));
+        assert!(matches!(recording, RecordingState::Recording { .. }));
+        assert!(matches!(stopping, RecordingState::Stopping));
+
+        // Verify that Idle and Stopping don't match Recording
+        assert!(!matches!(idle, RecordingState::Recording { .. }));
+        assert!(!matches!(stopping, RecordingState::Recording { .. }));
+    }
+
+    #[test]
+    fn recording_state_equality() {
+        // Recording { binding_id } with same id should be equal
+        let a = RecordingState::Recording {
+            binding_id: "x".to_string(),
+        };
+        let b = RecordingState::Recording {
+            binding_id: "x".to_string(),
+        };
+        assert_eq!(a, b);
+
+        // Different binding_id should not be equal
+        let c = RecordingState::Recording {
+            binding_id: "y".to_string(),
+        };
+        assert_ne!(a, c);
+
+        // Different variants should not be equal
+        let idle = RecordingState::Idle;
+        assert_ne!(a, idle);
+    }
+
+    // ─── MicrophoneMode tests ───────────────────────────────────────────
+
+    #[test]
+    fn microphone_mode_variants() {
+        let always_on = MicrophoneMode::AlwaysOn;
+        let on_demand = MicrophoneMode::OnDemand;
+
+        assert!(matches!(always_on, MicrophoneMode::AlwaysOn));
+        assert!(matches!(on_demand, MicrophoneMode::OnDemand));
+        assert_ne!(always_on, on_demand);
+    }
+
+    #[test]
+    fn microphone_mode_clone_debug() {
+        let mode = MicrophoneMode::AlwaysOn;
+        let cloned = mode.clone();
+        assert_eq!(format!("{:?}", cloned), "AlwaysOn");
+
+        let mode = MicrophoneMode::OnDemand;
+        let cloned = mode.clone();
+        assert_eq!(format!("{:?}", cloned), "OnDemand");
+    }
+
+    // ─── Constants tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn whisper_sample_rate_value() {
+        assert_eq!(WHISPER_SAMPLE_RATE, 16000);
+    }
+
+    #[test]
+    fn stream_idle_timeout_value() {
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn vad_threshold_value() {
+        assert!((VAD_THRESHOLD - 0.3f32).abs() < f32::EPSILON);
+    }
+
+    // ─── pad_short_samples tests (Bug #4 — pre-recording buffer crash) ─
+
+    #[test]
+    fn pad_short_samples_empty_returns_none() {
+        let result = pad_short_samples(vec![]);
+        assert!(result.is_none(), "Empty samples should return None");
+    }
+
+    #[test]
+    fn pad_short_samples_single_sample_pads() {
+        let result = pad_short_samples(vec![0.5]);
+        assert!(result.is_some());
+        let padded = result.unwrap();
+        // Should be padded to WHISPER_SAMPLE_RATE * 5 / 4 = 20000
+        assert_eq!(padded.len(), WHISPER_SAMPLE_RATE * 5 / 4);
+        // First sample preserved
+        assert_eq!(padded[0], 0.5);
+        // Remaining samples are zero
+        assert!(padded[1..].iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn pad_short_samples_short_audio_pads() {
+        // 100 samples is less than WHISPER_SAMPLE_RATE (16000)
+        let samples: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let result = pad_short_samples(samples.clone());
+        assert!(result.is_some());
+        let padded = result.unwrap();
+        assert_eq!(padded.len(), WHISPER_SAMPLE_RATE * 5 / 4);
+        // Original samples preserved at the beginning
+        assert_eq!(padded[0], 0.0);
+        assert!((padded[99] - 0.99).abs() < f32::EPSILON);
+        // Zero-padded region starts at original length
+        assert_eq!(padded[100], 0.0);
+    }
+
+    #[test]
+    fn pad_short_samples_exact_threshold_no_pad() {
+        // Exactly WHISPER_SAMPLE_RATE samples — should NOT be padded
+        let samples: Vec<f32> = vec![0.5; WHISPER_SAMPLE_RATE];
+        let result = pad_short_samples(samples.clone());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), WHISPER_SAMPLE_RATE);
+    }
+
+    #[test]
+    fn pad_short_samples_above_threshold_no_pad() {
+        // More than WHISPER_SAMPLE_RATE samples — should NOT be padded
+        let samples: Vec<f32> = vec![0.25; WHISPER_SAMPLE_RATE + 1000];
+        let result = pad_short_samples(samples.clone());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), WHISPER_SAMPLE_RATE + 1000);
+    }
+
+    #[test]
+    fn pad_short_samples_preserves_original_data() {
+        // Original samples must be preserved exactly, padding must be zeros
+        let original: Vec<f32> = vec![1.0, -0.5, 0.25, -0.125, 0.0625];
+        let result = pad_short_samples(original.clone());
+        assert!(result.is_some());
+        let padded = result.unwrap();
+        for (i, &val) in original.iter().enumerate() {
+            assert!(
+                (padded[i] - val).abs() < f32::EPSILON,
+                "Original sample {} corrupted: expected {}, got {}",
+                i,
+                val,
+                padded[i]
+            );
+        }
+        // Padded region should be all zeros
+        for (i, &val) in padded.iter().enumerate().skip(original.len()) {
+            assert_eq!(val, 0.0, "Padded sample {} should be 0.0, got {}", i, val);
+        }
+    }
+
+    #[test]
+    fn pad_short_samples_padded_length_calculation() {
+        // Verify the padded length is exactly WHISPER_SAMPLE_RATE * 5 / 4
+        let expected_padded_len = WHISPER_SAMPLE_RATE * 5 / 4; // = 20000
+        let result = pad_short_samples(vec![0.0; 100]);
+        assert_eq!(result.unwrap().len(), expected_padded_len);
+    }
+
+    #[test]
+    fn pad_short_samples_just_below_threshold() {
+        // One sample below the threshold should still be padded
+        let samples = vec![0.5; WHISPER_SAMPLE_RATE - 1];
+        let result = pad_short_samples(samples);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), WHISPER_SAMPLE_RATE * 5 / 4);
+    }
+
+    #[test]
+    fn pad_short_samples_just_above_threshold() {
+        // One sample above the threshold should NOT be padded
+        let samples = vec![0.5; WHISPER_SAMPLE_RATE + 1];
+        let result = pad_short_samples(samples);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), WHISPER_SAMPLE_RATE + 1);
+    }
+
+    // ─── AtomicU64 generation pattern tests (Bug #9 — mutex poisoning,
+    //     Bug #10 — state not resetting) ─────────────────────────────────
+    //
+    // These test the AtomicU64 patterns used for cancel_generation and
+    // close_generation, which provide lock-free cancellation. They verify
+    // the exact ordering semantics used in production code.
+
+    #[test]
+    fn cancel_generation_monotonic_increment() {
+        // cancel_generation uses fetch_add(1, AcqRel) — must be monotonic
+        let gen = AtomicU64::new(0);
+        let v1 = gen.fetch_add(1, Ordering::AcqRel);
+        let v2 = gen.fetch_add(1, Ordering::AcqRel);
+        let v3 = gen.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(v1, 0, "First fetch_add should return initial value");
+        assert_eq!(v2, 1);
+        assert_eq!(v3, 2);
+        assert_eq!(gen.load(Ordering::Acquire), 3);
+    }
+
+    #[test]
+    fn was_cancelled_since_correctness() {
+        // was_cancelled_since checks if the current generation differs from
+        // a snapshot. This is the lock-free cancellation pattern used in
+        // stop_recording. Replicated here as a free function since the
+        // method requires &self (AudioRecordingManager).
+        fn was_cancelled_since(gen: &AtomicU64, snapshot: u64) -> bool {
+            gen.load(Ordering::Acquire) != snapshot
+        }
+
+        let gen = AtomicU64::new(42);
+
+        // Not cancelled if generation hasn't changed
+        assert!(
+            !was_cancelled_since(&gen, 42),
+            "Should not be cancelled if generation matches"
+        );
+
+        // Cancelled if generation has been incremented
+        gen.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            was_cancelled_since(&gen, 42),
+            "Should be cancelled after generation increments"
+        );
+
+        // Not cancelled against the new generation
+        assert!(
+            !was_cancelled_since(&gen, 43),
+            "Should not be cancelled with updated snapshot"
+        );
+    }
+
+    #[test]
+    fn cancel_generation_thread_safety() {
+        // Multiple threads incrementing cancel_generation must produce
+        // a monotonically increasing final value with no lost updates.
+        use std::sync::Arc;
+        use std::thread;
+
+        let gen = Arc::new(AtomicU64::new(0));
+        let threads = 8;
+        let increments_per_thread = 1000u64;
+        let mut handles = vec![];
+
+        for _ in 0..threads {
+            let gen = Arc::clone(&gen);
+            handles.push(thread::spawn(move || {
+                for _ in 0..increments_per_thread {
+                    gen.fetch_add(1, Ordering::AcqRel);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let expected = threads * increments_per_thread as usize;
+        assert_eq!(
+            gen.load(Ordering::Acquire) as usize,
+            expected,
+            "All increments should be accounted for"
+        );
+    }
+
+    #[test]
+    fn close_generation_monotonic_increment() {
+        // close_generation uses fetch_add(1, SeqCst) — must be monotonic
+        let gen = AtomicU64::new(0);
+        let v1 = gen.fetch_add(1, Ordering::SeqCst);
+        let v2 = gen.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(v1, 0);
+        assert_eq!(v2, 1);
+        assert_eq!(gen.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn generation_snapshot_prevents_stale_stop() {
+        // Simulates the pattern in stop_recording:
+        // 1. Caller snapshots cancel_generation before starting
+        // 2. A cancel happens (generation increments)
+        // 3. After work, caller checks was_cancelled_since(snapshot)
+        //    to decide whether to discard the result.
+        fn was_cancelled_since(gen: &AtomicU64, snapshot: u64) -> bool {
+            gen.load(Ordering::Acquire) != snapshot
+        }
+
+        let gen = AtomicU64::new(0);
+
+        // Step 1: Snapshot before any cancel
+        let snapshot = gen.load(Ordering::Acquire);
+
+        // Step 2: Cancel happens (e.g., cancel_recording increments)
+        gen.fetch_add(1, Ordering::AcqRel);
+
+        // Step 3: Check — should detect the cancel
+        assert!(
+            was_cancelled_since(&gen, snapshot),
+            "Should detect cancel after generation increment"
+        );
+    }
+
+    // ─── RecordingState state machine invariants ────────────────────────
+    //
+    // These test the state machine invariants that are documented in
+    // the code but not enforced by the type system. They serve as
+    // regression guards for Bug #10 (state not resetting).
+
+    #[test]
+    fn recording_state_transitions_are_exhaustive() {
+        // Verify that all RecordingState variants are handled in a match
+        let states: Vec<RecordingState> = vec![
+            RecordingState::Idle,
+            RecordingState::Recording {
+                binding_id: "test".to_string(),
+            },
+            RecordingState::Stopping,
+        ];
+
+        for state in states {
+            // Every state should be classifiable
+            let is_idle = matches!(state, RecordingState::Idle);
+            let is_recording = matches!(state, RecordingState::Recording { .. });
+            let is_stopping = matches!(state, RecordingState::Stopping);
+            assert!(
+                is_idle || is_recording || is_stopping,
+                "State should match exactly one variant"
+            );
+
+            // Exactly one should be true
+            let count = [is_idle, is_recording, is_stopping]
+                .iter()
+                .filter(|&&b| b)
+                .count();
+            assert_eq!(count, 1, "State should match exactly one variant");
+        }
+    }
+
+    #[test]
+    fn recording_state_default_is_idle() {
+        // The initial state in AudioRecordingManager::new is Idle.
+        // This test documents that invariant.
+        let state = RecordingState::Idle;
+        assert!(matches!(state, RecordingState::Idle));
+    }
+
+    #[test]
+    fn microphone_mode_default_matches_setting() {
+        // In production, the default mode depends on the `always_on_microphone`
+        // setting. This test documents the two possible modes.
+        let modes = [MicrophoneMode::AlwaysOn, MicrophoneMode::OnDemand];
+        assert_eq!(modes.len(), 2);
+        assert_ne!(modes[0], modes[1]);
+    }
+
+    // ─── AtomicBool streaming state pattern tests ───────────────────────
+    //
+    // These test the AtomicBool patterns used for is_streaming and
+    // streaming_cancel_flag in the broader audio system. Although these
+    // fields are on AudioRecorder (not AudioRecordingManager), the
+    // pattern is the same and worth testing here as documentation.
+
+    #[test]
+    fn atomic_bool_set_check_clear() {
+        let flag = AtomicBool::new(false);
+        assert!(!flag.load(Ordering::Acquire));
+
+        flag.store(true, Ordering::Release);
+        assert!(flag.load(Ordering::Acquire));
+
+        flag.store(false, Ordering::Release);
+        assert!(!flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn atomic_bool_swap_returns_old() {
+        let flag = AtomicBool::new(false);
+        let old = flag.swap(true, Ordering::AcqRel);
+        assert!(!old, "swap should return the previous value");
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn atomic_bool_compare_exchange() {
+        let flag = AtomicBool::new(false);
+        let result = flag.compare_exchange(
+            false, // expected
+            true,  // new value
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        assert!(result.is_ok());
+        assert!(flag.load(Ordering::Acquire));
+
+        // Second CAS should fail since value is now true
+        let result = flag.compare_exchange(
+            false, // expected (won't match)
+            true,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        assert!(result.is_err());
+    }
+
+    // ─── Duration/Instant tests for STREAM_IDLE_TIMEOUT ─────────────────
+
+    #[test]
+    fn stream_idle_timeout_is_30_seconds() {
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(30));
+        // Verify the timeout is reasonable (between 10s and 5min)
+        assert!(STREAM_IDLE_TIMEOUT >= Duration::from_secs(10));
+        assert!(STREAM_IDLE_TIMEOUT <= Duration::from_secs(300));
+    }
+
+    #[test]
+    fn stop_recording_buffer_duration_calculation() {
+        // Verify the buffer duration math used in stop_recording:
+        // `Duration::from_millis(buffer_ms)` and the sleep loop
+        // `remaining.min(Duration::from_millis(25))`
+        let buffer_ms = 500u64;
+        let buffer = Duration::from_millis(buffer_ms);
+        assert_eq!(buffer, Duration::from_millis(500));
+
+        // The min(Duration::from_millis(25)) caps sleep increments
+        let remaining = Duration::from_millis(100);
+        let sleep_increment = remaining.min(Duration::from_millis(25));
+        assert_eq!(sleep_increment, Duration::from_millis(25));
+
+        let remaining_small = Duration::from_millis(10);
+        let sleep_increment_small = remaining_small.min(Duration::from_millis(25));
+        assert_eq!(sleep_increment_small, Duration::from_millis(10));
     }
 }

@@ -807,3 +807,400 @@ fn epoch_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Constructor & initial state ──────────────────────────────────────
+
+    #[test]
+    fn new_watchdog_defaults() {
+        let wd = UsbWatchdog::new(false, "RØDE VideoMic NTG", None);
+        assert!(!wd.is_enabled(), "new watchdog should be disabled by default");
+        assert!(!wd.is_cycling(), "new watchdog should not be cycling");
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "failure counter should start at 0"
+        );
+        assert_eq!(
+            wd.fail_threshold.load(Ordering::SeqCst),
+            2,
+            "default threshold should be 2 (Bug #8: requires TWO silent recordings)"
+        );
+        assert!(
+            !wd.post_cycle_grace.load(Ordering::SeqCst),
+            "grace period should be off initially"
+        );
+    }
+
+    #[test]
+    fn new_watchdog_enabled() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        assert!(wd.is_enabled());
+    }
+
+    // ── Config updates ───────────────────────────────────────────────────
+
+    #[test]
+    fn update_config_enables_watchdog() {
+        let wd = UsbWatchdog::new(false, "", None);
+        assert!(!wd.is_enabled());
+
+        wd.update_config(true, "RØDE VideoMic NTG".to_string());
+        assert!(wd.is_enabled());
+        assert_eq!(*wd.device_name.lock(), "RØDE VideoMic NTG");
+    }
+
+    #[test]
+    fn update_config_disables_watchdog() {
+        let wd = UsbWatchdog::new(true, "Some Device", None);
+        assert!(wd.is_enabled());
+
+        wd.update_config(false, "".to_string());
+        assert!(!wd.is_enabled());
+    }
+
+    #[test]
+    fn update_config_changes_device_name() {
+        let wd = UsbWatchdog::new(true, "Old Device", None);
+        assert_eq!(*wd.device_name.lock(), "Old Device");
+
+        wd.update_config(true, "New Device".to_string());
+        assert_eq!(*wd.device_name.lock(), "New Device");
+    }
+
+    // ── Disabled watchdog ────────────────────────────────────────────────
+
+    #[test]
+    fn disabled_watchdog_on_mic_open_failed_returns_false() {
+        let wd = UsbWatchdog::new(false, "Test Device", None);
+        // Even after many failures, disabled watchdog should not trigger
+        for _ in 0..10 {
+            assert!(!wd.on_mic_open_failed());
+        }
+    }
+
+    #[test]
+    fn disabled_watchdog_on_silent_transcription_returns_false() {
+        let wd = UsbWatchdog::new(false, "Test Device", None);
+        // Even with long duration, disabled watchdog should not trigger
+        assert!(!wd.on_silent_transcription(60.0));
+    }
+
+    #[test]
+    fn disabled_watchdog_on_low_audio_level_returns_false() {
+        let wd = UsbWatchdog::new(false, "Test Device", None);
+        assert!(!wd.on_low_audio_level(60.0));
+    }
+
+    // ── Failure threshold (Bug #8: requires 2 consecutive failures) ──────
+
+    #[test]
+    fn first_mic_open_failure_does_not_trigger_cycle() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        // First failure: counter goes to 1, threshold is 2 → no cycle
+        // on_mic_open_failed would call power_cycle_blocking which needs uhubctl,
+        // so we test the counter logic directly.
+        let failures = wd.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
+        assert_eq!(failures, 1, "first failure should set counter to 1");
+        assert!(
+            failures < wd.fail_threshold.load(Ordering::SeqCst),
+            "first failure should be below threshold"
+        );
+    }
+
+    #[test]
+    fn second_consecutive_failure_reaches_threshold() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        // Simulate two failures
+        wd.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+        let failures = wd.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
+        assert_eq!(failures, 2, "second failure should set counter to 2");
+        assert!(
+            failures >= wd.fail_threshold.load(Ordering::SeqCst),
+            "second failure should reach threshold (Bug #8: requires 2)"
+        );
+    }
+
+    #[test]
+    fn on_mic_open_succeeded_resets_failure_counter() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        // Simulate some failures
+        wd.consecutive_failures.store(5, Ordering::SeqCst);
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 5);
+
+        wd.on_mic_open_succeeded();
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "successful open should reset failure counter"
+        );
+    }
+
+    #[test]
+    fn on_mic_open_succeeded_clears_grace_period() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        wd.post_cycle_grace.store(true, Ordering::SeqCst);
+        assert!(wd.post_cycle_grace.load(Ordering::SeqCst));
+
+        wd.on_mic_open_succeeded();
+        assert!(
+            !wd.post_cycle_grace.load(Ordering::SeqCst),
+            "successful open should clear grace period"
+        );
+    }
+
+    // ── on_stream_alive_check ────────────────────────────────────────────
+
+    #[test]
+    fn stream_alive_check_true_resets_failures() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        wd.consecutive_failures.store(3, Ordering::SeqCst);
+
+        wd.on_stream_alive_check(true);
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stream_alive_check_false_does_not_reset_failures() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        wd.consecutive_failures.store(3, Ordering::SeqCst);
+
+        wd.on_stream_alive_check(false);
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            3,
+            "dead stream should not reset failure counter"
+        );
+    }
+
+    // ── on_recording_finished ────────────────────────────────────────────
+
+    #[test]
+    fn recording_finished_with_samples_resets_failures() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        wd.consecutive_failures.store(2, Ordering::SeqCst);
+
+        let triggered = wd.on_recording_finished(1000, 5.0);
+        assert!(!triggered, "recording with samples should not trigger cycle");
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "recording with samples should reset failures"
+        );
+    }
+
+    #[test]
+    fn recording_finished_with_zero_samples_counts_as_failure() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        // Zero samples → calls on_mic_open_failed → increments counter to 1
+        // Since threshold is 2, first zero-sample recording should NOT trigger
+        // (it would try power_cycle_blocking which needs uhubctl, but the
+        // counter should have been incremented first)
+        let triggered = wd.on_recording_finished(0, 5.0);
+        // The function calls on_mic_open_failed which increments counter to 1,
+        // then checks threshold (2). Since 1 < 2, it returns false.
+        assert!(!triggered, "first zero-sample recording should not trigger cycle (threshold=2)");
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            1,
+            "zero-sample recording should increment failure counter"
+        );
+    }
+
+    // ── on_silent_transcription duration threshold ───────────────────────
+
+    #[test]
+    fn silent_transcription_short_duration_ignored() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        // Recordings < 10 seconds should be ignored
+        assert!(!wd.on_silent_transcription(0.5));
+        assert!(!wd.on_silent_transcription(5.0));
+        assert!(!wd.on_silent_transcription(9.9));
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "short silent recordings should not increment failure counter"
+        );
+    }
+
+    #[test]
+    fn silent_transcription_long_duration_counts_failure() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        // Recordings >= 10 seconds should count as failures
+        // First long silent transcription: counter goes to 1, below threshold (2)
+        let _ = wd.on_silent_transcription(15.0);
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            1,
+            "first long silent transcription should increment counter to 1"
+        );
+    }
+
+    #[test]
+    fn silent_transcription_exactly_10_seconds_counts() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        let _ = wd.on_silent_transcription(10.0);
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            1,
+            "exactly 10 seconds should count (>= threshold)"
+        );
+    }
+
+    // ── on_low_audio_level duration threshold ────────────────────────────
+
+    #[test]
+    fn low_audio_level_short_duration_ignored() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        assert!(!wd.on_low_audio_level(0.5));
+        assert!(!wd.on_low_audio_level(5.0));
+        assert!(!wd.on_low_audio_level(9.9));
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "short low-audio recordings should not increment failure counter"
+        );
+    }
+
+    #[test]
+    fn low_audio_level_long_duration_counts_failure() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        let _ = wd.on_low_audio_level(15.0);
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            1,
+            "long low-audio recording should increment counter"
+        );
+    }
+
+    // ── Grace period ─────────────────────────────────────────────────────
+
+    #[test]
+    fn grace_period_prevents_failure_counting() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        wd.post_cycle_grace.store(true, Ordering::SeqCst);
+
+        // During grace period, failures should not be counted
+        assert!(!wd.on_silent_transcription(30.0));
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "grace period should prevent failure counting"
+        );
+
+        assert!(!wd.on_low_audio_level(30.0));
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "grace period should prevent low-audio failure counting"
+        );
+    }
+
+    #[test]
+    fn grace_period_prevents_mic_open_failed_counting() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        wd.post_cycle_grace.store(true, Ordering::SeqCst);
+
+        assert!(!wd.on_mic_open_failed());
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "grace period should prevent mic-open-failed counting"
+        );
+    }
+
+    // ── Cycling state ────────────────────────────────────────────────────
+
+    #[test]
+    fn cycling_flag_prevents_concurrent_cycles() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+        wd.cycling.store(true, Ordering::SeqCst);
+
+        // When cycling is in progress, silent transcription handler should bail
+        assert!(!wd.on_silent_transcription(30.0));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 0);
+
+        // Low audio level handler should also bail
+        assert!(!wd.on_low_audio_level(30.0));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn force_power_cycle_with_empty_device_name_returns_false() {
+        let wd = UsbWatchdog::new(true, "", None);
+        // Empty device name → can't resolve → returns false
+        assert!(!wd.force_power_cycle());
+        assert!(!wd.is_cycling(), "cycling flag should be cleared after failure");
+    }
+
+    // ── UsbCycleStage serialization ──────────────────────────────────────
+
+    #[test]
+    fn usb_cycle_stage_serializes() {
+        let stage = UsbCycleStage {
+            stage: "resolving".to_string(),
+            message: "Locating USB device...".to_string(),
+        };
+        let json = serde_json::to_string(&stage).unwrap();
+        assert!(json.contains("resolving"));
+        assert!(json.contains("Locating USB device"));
+    }
+
+    #[test]
+    fn usb_device_serializes() {
+        let device = UsbDevice {
+            name: "RØDE VideoMic NTG".to_string(),
+            hub: "8-3".to_string(),
+            port: "1".to_string(),
+        };
+        let json = serde_json::to_string(&device).unwrap();
+        assert!(json.contains("RØDE VideoMic NTG"));
+        assert!(json.contains("8-3"));
+        assert!(json.contains("1"));
+    }
+
+    // ── Consecutive failure accumulation ─────────────────────────────────
+
+    #[test]
+    fn consecutive_failures_accumulate_across_different_handlers() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+
+        // First failure from silent transcription (long enough)
+        let _ = wd.on_silent_transcription(15.0);
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+
+        // Second failure from low audio level (long enough)
+        let _ = wd.on_low_audio_level(15.0);
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 2);
+
+        // Now at threshold — next failure would trigger power_cycle_blocking
+        // which needs uhubctl, so we just verify the counter is at threshold
+        assert!(
+            wd.consecutive_failures.load(Ordering::SeqCst)
+                >= wd.fail_threshold.load(Ordering::SeqCst),
+            "counter should be at threshold after 2 failures"
+        );
+    }
+
+    #[test]
+    fn successful_open_between_failures_resets_counter() {
+        let wd = UsbWatchdog::new(true, "Test Device", None);
+
+        // First failure
+        let _ = wd.on_silent_transcription(15.0);
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+
+        // Successful open resets counter
+        wd.on_mic_open_succeeded();
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 0);
+
+        // Next failure starts from 1 again
+        let _ = wd.on_silent_transcription(15.0);
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+    }
+}

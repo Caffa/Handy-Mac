@@ -10,5 +10,6 @@
 
 mod cli_tests;
 mod coordinator_tests;
+mod settings_race_tests;
 mod settings_tests;
 mod transcription_tests;

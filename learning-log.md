@@ -1,4 +1,30 @@
 
+## 2026-07-21: Comprehensive Test Coverage Added
+
+**Problem:** Many critical modules had zero test coverage despite being frequent bug sources (overlay, usb_watchdog, focus, audio manager). Frontend had no test infrastructure at all.
+
+**What was added:**
+
+1. **Rust unit tests (29 new):** `usb_watchdog.rs` — failure threshold logic (Bug #8: requires 2 consecutive failures), grace period, duration thresholds, disabled watchdog, config updates, serialization.
+
+2. **Rust unit tests (6 new):** `focus.rs` — `SavedFrontmostApp` constructor, store/retrieve/clear/overwrite, Finder detection (Bug #14 regression).
+
+3. **Rust integration tests (16 new):** `settings_race_tests.rs` — concurrent serde round-trips, partial JSON merge semantics, debounce simulation, NaN/inf sanitization, concurrent field updates.
+
+4. **Frontend test infrastructure:** Vitest + jsdom setup with Tauri API mocks. 76 tests across `settingsStore.test.ts`, `modelStore.test.ts`, and `useAppState.test.ts`.
+
+5. **Proptest cleanup:** Removed empty `#[ignore]` placeholder tests from `proptest_audio.rs` and `proptest_text.rs`. Documented what needs re-adding when removed symbols are ported back.
+
+6. **Architecture fix:** Added `PartialEq` derive to `RecordingState` and `MicrophoneMode` enums in `audio.rs` to enable test assertions.
+
+**Test counts after changes:**
+- Rust lib tests: 393 total (386 pass, 6 pre-existing failures unrelated to this work)
+- Rust E2E integration tests: 102 total (all pass)
+- Frontend tests: 76 total (all pass)
+- Proptests: 6 total (all pass)
+
+**Lesson:** When adding tests for platform-specific code (macOS ObjC, USB hardware), test the pure logic and data structures that don't require the platform dependency. The `SharedState` pattern in `transcription_coordinator.rs` tests is a good example — it mirrors the production state machine without needing `AppHandle`.
+
 ## 2026-07-21: Model Switching Stuck in "Switching..." Bug
 
 **Problem:** Switching transcription models (e.g., Parakeet Unified EN 0.6B) gets stuck showing "switching..." with a circling animation forever.

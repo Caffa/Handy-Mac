@@ -1,22 +1,23 @@
 //! Property-based tests for audio utility functions.
 //!
-//! Uses proptest to verify invariants of `AudioQualityMetrics::compute`,
-//! `validate_audio`, `AudioValidationResult`, and `NoiseSuppressor::process`.
+//! Uses proptest to verify invariants of `AudioVisualiser::feed` and
+//! `NoiseSuppressor::process`.
 //!
 //! **Approach for NaN/inf**: We filter out NaN and infinity from strategies
 //! where they would produce undefined metrics (log10 of NaN, etc.).
 //! For the no-panic tests, we use `std::panic::catch_unwind` and assert
 //! no panic occurs.
 //!
-//! **Bug found and fixed**: `AudioQualityMetrics::compute` previously panicked
-//! on NaN input because `sort_unstable_by` used `.partial_cmp(b).unwrap()`,
-//! which returns `None` for NaN. Fixed by switching to `total_cmp()`, which
-//! provides a total order including NaN. See `compute_nan_does_not_panic`
-//! regression test.
-//!
-//! TODO: Several symbols referenced below (`AudioQualityMetrics`, `validate_audio`,
-//! `AudioValidationResult`, `compute_audio_quality`) were removed during upstream
-//! alignment. Mark tests that depend on them as #[ignore] until they are re-added.
+//! **Removed symbols**: `AudioQualityMetrics`, `validate_audio`,
+//! `AudioValidationResult`, and `compute_audio_quality` were removed during
+//! upstream alignment. When they are re-added, add proptest tests for:
+//! - `compute` never panics on finite input
+//! - `compute` peak_amplitude == max(|samples|)
+//! - `compute` peak_dbfs ≈ 20 * log10(peak_amplitude) for non-zero peaks
+//! - `validate_audio` never panics on any input
+//! - `validate_audio` empty input → Corrupted
+//! - `validate_audio` Valid.sample_count == samples.len()
+//! - `validate_audio` Silent iff max_amplitude < 0.01 && rms < 0.005
 
 use handy_app_lib::audio_toolkit::audio::AudioVisualiser;
 use handy_app_lib::audio_toolkit::{NoiseSuppressor, NOISE_SUPPRESSION_FRAME_SIZE};
@@ -30,104 +31,7 @@ fn audio_samples() -> impl Strategy<Value = Vec<f32>> {
     prop::collection::vec(-1.0f32..1.0f32, 0..1000)
 }
 
-/// Generate f32 samples including edge cases (NaN, infinity, very small, very large).
-/// Used for no-panic tests where we just verify the function doesn't crash.
-fn audio_samples_any() -> impl Strategy<Value = Vec<f32>> {
-    prop::collection::vec(prop::num::f32::ANY, 0..500)
-}
-
-/// Generate f32 samples excluding NaN and infinity (finite values only).
-/// Used for tests where NaN/inf would produce undefined metrics.
-fn audio_samples_finite() -> impl Strategy<Value = Vec<f32>> {
-    prop::collection::vec(
-        prop::num::f32::ANY.prop_filter("finite", |v| v.is_finite()),
-        0..500,
-    )
-}
-
 const SAMPLE_RATE: u32 = 16000;
-
-// ─── AudioQualityMetrics::compute ───────────────────────────────────────
-// TODO: AudioQualityMetrics and compute_audio_quality were removed during
-// upstream alignment. These tests are ignored until the symbols are re-added.
-
-#[cfg_attr(all(windows, not(debug_assertions)), ignore)]
-#[test]
-#[ignore = "AudioQualityMetrics not yet ported from main"]
-fn proptest_compute_peak_amplitude_placeholder() {}
-
-proptest! {
-    /// Invariant: peak_amplitude == max(|samples|), for well-behaved samples.
-    #[test]
-    #[ignore = "AudioQualityMetrics not yet ported from main"]
-    fn proptest_compute_peak_amplitude(samples in audio_samples()) {
-        // Tests AudioQualityMetrics::compute which doesn't exist yet
-    }
-
-    /// Invariant: for non-empty samples with peak_amplitude > 1e-10,
-    /// peak_dbfs ≈ 20 * log10(peak_amplitude).
-    #[test]
-    #[ignore = "AudioQualityMetrics not yet ported from main"]
-    fn proptest_compute_peak_dbfs(samples in audio_samples()) {
-        // Tests AudioQualityMetrics::compute which doesn't exist yet
-    }
-
-    /// Invariant: compute never panics on well-behaved (finite) input.
-    #[test]
-    #[ignore = "AudioQualityMetrics not yet ported from main"]
-    fn proptest_compute_no_panic(samples in audio_samples_finite()) {
-        // Tests AudioQualityMetrics::compute which doesn't exist yet
-    }
-}
-
-// Separate plain tests for invariants that don't need proptest strategies:
-
-#[test]
-#[ignore = "AudioQualityMetrics not yet ported from main"]
-fn compute_empty_input_metrics() {
-    // Tests AudioQualityMetrics::compute which doesn't exist yet
-}
-
-// ─── NaN Regression Test ────────────────────────────────────────────────
-
-#[test]
-#[ignore = "AudioQualityMetrics not yet ported from main"]
-fn compute_nan_does_not_panic() {
-    // Tests AudioQualityMetrics::compute which doesn't exist yet
-}
-
-// ─── validate_audio ─────────────────────────────────────────────────────
-// TODO: validate_audio and AudioValidationResult were removed during
-// upstream alignment. These tests are ignored until the symbols are re-added.
-
-proptest! {
-    /// Invariant: never panics on any input including NaN/inf.
-    #[test]
-    #[ignore = "validate_audio not yet ported from main"]
-    fn proptest_validate_no_panic(samples in audio_samples_any(), sample_rate in 1u32..96000) {
-        // Tests validate_audio which doesn't exist yet
-    }
-
-    /// Invariant: Valid.sample_count == samples.len()
-    #[test]
-    #[ignore = "validate_audio not yet ported from main"]
-    fn proptest_validate_sample_count(samples in audio_samples()) {
-        // Tests validate_audio which doesn't exist yet
-    }
-
-    /// Invariant: Silent iff max_amplitude < 0.01 && rms < 0.005
-    #[test]
-    #[ignore = "validate_audio not yet ported from main"]
-    fn proptest_validate_silent_classification(samples in audio_samples()) {
-        // Tests validate_audio which doesn't exist yet
-    }
-}
-
-#[test]
-#[ignore = "validate_audio not yet ported from main"]
-fn validate_empty_input_is_corrupted() {
-    // Tests validate_audio which doesn't exist yet
-}
 
 // ─── AudioVisualiser::feed ─────────────────────────────────────────────
 
