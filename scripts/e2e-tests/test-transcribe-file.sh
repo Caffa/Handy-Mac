@@ -196,9 +196,9 @@ main() {
     log_pass "At least one model is available"
 
     # Run tests
-    run_test "Basic headless transcription (--json)" "test_transcribe_file_basic $BINARY $wav_file" || true
-    run_test "Plain text transcription output" "test_transcribe_file_plain $BINARY $wav_file" || true
-    run_test "Repeated transcription (--repeat 3)" "test_transcribe_file_repeat $BINARY $wav_file" || true
+    run_test "Basic headless transcription (--json)" test_transcribe_file_basic "$BINARY" "$wav_file" || true
+    run_test "Plain text transcription output" test_transcribe_file_plain "$BINARY" "$wav_file" || true
+    run_test "Repeated transcription (--repeat 3)" test_transcribe_file_repeat "$BINARY" "$wav_file" || true
 
     # Print summary
     print_summary "Transcription Tests"

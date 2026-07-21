@@ -88,25 +88,35 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Test definitions ──────────────────────────────────────────────────────
-declare -A TEST_RESULTS
+# Use a simple string list instead of associative array for macOS bash 3.2 compat.
+# Format: "name:STATUS" per line, stored in TEST_RESULTS_LIST.
+TEST_RESULTS_LIST=""
 TOTAL_TESTS=0
 TOTAL_PASSED=0
 TOTAL_FAILED=0
 TOTAL_SKIPPED=0
+
+# ── Helper: Record a test result ─────────────────────────────────────────
+record_result() {
+    local name="$1"
+    local status="$2"
+    TEST_RESULTS_LIST="${TEST_RESULTS_LIST}${name}:${status}
+"
+}
 
 # ── Helper: Run a test script ─────────────────────────────────────────────
 run_test_script() {
     local name="$1"
     local script="$2"
     shift 2
-    local args=("$@")
+    local args=("${@:-}")
 
-    ((TOTAL_TESTS++)) || true
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
     if [[ ! -x "$script" ]]; then
         echo -e "${RED}${BOLD}[FAIL]${RESET} ${name}: script not executable: $script"
-        ((TOTAL_FAILED++)) || true
-        TEST_RESULTS["$name"]="FAIL"
+        TOTAL_FAILED=$((TOTAL_FAILED + 1))
+        record_result "$name" "FAIL"
         return 1
     fi
 
@@ -122,18 +132,18 @@ run_test_script() {
     case $rc in
         0)
             echo -e "\n${GREEN}${BOLD}[PASS]${RESET} ${name}\n"
-            ((TOTAL_PASSED++)) || true
-            TEST_RESULTS["$name"]="PASS"
+            TOTAL_PASSED=$((TOTAL_PASSED + 1))
+            record_result "$name" "PASS"
             ;;
         2)
             echo -e "\n${YELLOW}${BOLD}[SKIP]${RESET} ${name}\n"
-            ((TOTAL_SKIPPED++)) || true
-            TEST_RESULTS["$name"]="SKIP"
+            TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+            record_result "$name" "SKIP"
             ;;
         *)
             echo -e "\n${RED}${BOLD}[FAIL]${RESET} ${name} (exit code: $rc)\n"
-            ((TOTAL_FAILED++)) || true
-            TEST_RESULTS["$name"]="FAIL"
+            TOTAL_FAILED=$((TOTAL_FAILED + 1))
+            record_result "$name" "FAIL"
             ;;
     esac
 
@@ -143,9 +153,9 @@ run_test_script() {
 # ── Skip helper ───────────────────────────────────────────────────────────
 skip_test() {
     local name="$1"
-    ((TOTAL_TESTS++)) || true
-    ((TOTAL_SKIPPED++)) || true
-    TEST_RESULTS["$name"]="SKIP"
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+    TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+    record_result "$name" "SKIP"
     echo -e "${YELLOW}${BOLD}[SKIP]${RESET} ${name} (explicitly skipped)"
 }
 
@@ -222,8 +232,8 @@ main() {
     echo -e "${BOLD}╚═══════════════════════════════════════════════════════╝${RESET}"
     echo ""
 
-    for name in "${!TEST_RESULTS[@]}"; do
-        local status="${TEST_RESULTS[$name]}"
+    echo "$TEST_RESULTS_LIST" | while IFS=: read -r name status; do
+        [[ -z "$name" ]] && continue
         case $status in
             PASS) echo -e "  ${GREEN}${BOLD}✓ PASS${RESET}  $name" ;;
             FAIL) echo -e "  ${RED}${BOLD}✗ FAIL${RESET}  $name" ;;

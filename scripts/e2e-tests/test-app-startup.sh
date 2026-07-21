@@ -108,9 +108,9 @@ main() {
     kill_all_handy
 
     # Run tests
-    run_test "App starts without crashing" "test_app_starts $BINARY" || true
-    run_test "--is-active-use returns idle" "test_is_active_use_idle $BINARY" || true
-    run_test "--is-recording returns not-recording" "test_is_not_recording $BINARY" || true
+    run_test "App starts without crashing" test_app_starts "$BINARY" || true
+    run_test "--is-active-use returns idle" test_is_active_use_idle "$BINARY" || true
+    run_test "--is-recording returns not-recording" test_is_not_recording "$BINARY" || true
 
     # Cleanup
     kill_app || true

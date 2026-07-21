@@ -157,8 +157,8 @@ main() {
     fi
 
     # Run tests
-    run_test "Consecutive transcription runs ($num_runs)" "test_consecutive_runs $BINARY $wav_file $num_runs" || true
-    run_test "Memory stability check" "test_memory_stability $BINARY $wav_file 3" || true
+    run_test "Consecutive transcription runs ($num_runs)" test_consecutive_runs "$BINARY" "$wav_file" "$num_runs" || true
+    run_test "Memory stability check" test_memory_stability "$BINARY" "$wav_file" 3 || true
 
     # Print summary
     print_summary "Consecutive Runs Tests"

@@ -238,18 +238,18 @@ main() {
     fi
 
     # Run tests — order matters: not-running tests first, then headless tests
-    run_test "--is-active-use returns 2 when app not running" "test_is_active_use_not_running $BINARY" || true
-    run_test "--is-recording returns 2 when app not running" "test_is_recording_not_running $BINARY" || true
-    run_test "--list-models produces output" "test_list_models $BINARY" || true
-    run_test "--list-models --json outputs valid JSON" "test_list_models_json $BINARY" || true
-    run_test "--list-devices produces output" "test_list_devices $BINARY" || true
-    run_test "--transcribe-file with nonexistent file returns 2" "test_transcribe_nonexistent_file $BINARY" || true
+    run_test "--is-active-use returns 2 when app not running" test_is_active_use_not_running "$BINARY" || true
+    run_test "--is-recording returns 2 when app not running" test_is_recording_not_running "$BINARY" || true
+    run_test "--list-models produces output" test_list_models "$BINARY" || true
+    run_test "--list-models --json outputs valid JSON" test_list_models_json "$BINARY" || true
+    run_test "--list-devices produces output" test_list_devices "$BINARY" || true
+    run_test "--transcribe-file with nonexistent file returns 2" test_transcribe_nonexistent_file "$BINARY" || true
 
     if [[ -n "$invalid_wav" && -f "$invalid_wav" ]]; then
-        run_test "--transcribe-file with invalid WAV returns 2" "test_transcribe_invalid_wav $BINARY $invalid_wav" || true
+        run_test "--transcribe-file with invalid WAV returns 2" test_transcribe_invalid_wav "$BINARY" "$invalid_wav" || true
     fi
 
-    run_test "Conflicting flags are rejected" "test_conflicting_flags $BINARY" || true
+    run_test "Conflicting flags are rejected" test_conflicting_flags "$BINARY" || true
 
     # Print summary
     print_summary "CLI Flags Tests"

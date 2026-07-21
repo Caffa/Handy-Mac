@@ -217,8 +217,8 @@ main() {
     kill_all_handy
 
     # Run tests
-    run_test "Settings file structure is valid" "test_settings_structure $BINARY" || true
-    run_test "Settings persist across restarts" "test_settings_persist $BINARY" || true
+    run_test "Settings file structure is valid" test_settings_structure "$BINARY" || true
+    run_test "Settings persist across restarts" test_settings_persist "$BINARY" || true
 
     # Final cleanup
     kill_all_handy
