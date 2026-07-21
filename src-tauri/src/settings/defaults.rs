@@ -46,6 +46,26 @@ pub fn get_default_settings() -> AppSettings {
             current_binding: default_post_process_shortcut.to_string(),
         },
     );
+    #[cfg(target_os = "windows")]
+    let default_router_shortcut = "ctrl+shift+r";
+    #[cfg(target_os = "macos")]
+    let default_router_shortcut = "option+shift+r";
+    #[cfg(target_os = "linux")]
+    let default_router_shortcut = "ctrl+shift+r";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let default_router_shortcut = "alt+shift+r";
+
+    bindings.insert(
+        "transcribe_with_router".to_string(),
+        ShortcutBinding {
+            id: "transcribe_with_router".to_string(),
+            name: "Transcribe with Router".to_string(),
+            description: "Converts your speech into text and routes it through the configured router script."
+                .to_string(),
+            default_binding: default_router_shortcut.to_string(),
+            current_binding: default_router_shortcut.to_string(),
+        },
+    );
     bindings.insert(
         "cancel".to_string(),
         ShortcutBinding {
@@ -113,6 +133,7 @@ pub fn get_default_settings() -> AppSettings {
         paste_delay_after_ms: default_paste_delay_after_ms(),
         typing_tool: default_typing_tool(),
         external_script_path: None,
+        router_mode_enabled: false,
         router_script_path: None,
         router_env_file: None,
         custom_filler_words: None,

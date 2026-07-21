@@ -1,10 +1,8 @@
 use crate::managers::transcription::TranscriptionManager;
-use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
-use parking_lot::Mutex;
+use crate::settings::{modify_settings, ModelUnloadTimeout};
 use serde::Serialize;
 use specta::Type;
 use std::sync::Arc;
-use std::time::Duration;
 use tauri::{AppHandle, State};
 
 #[derive(Serialize, Type)]
@@ -16,19 +14,14 @@ pub struct ModelLoadStatus {
 #[tauri::command]
 #[specta::specta]
 pub fn set_model_unload_timeout(app: AppHandle, timeout: ModelUnloadTimeout) -> Result<(), String> {
-    let mut settings = get_settings(&app);
-    settings.model_unload_timeout = timeout;
-    write_settings(&app, settings);
+    modify_settings(&app, |s| s.model_unload_timeout = timeout);
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn set_repetition_suppression_level(app: AppHandle, level: u8) -> Result<(), String> {
-    let mut settings = get_settings(&app);
-    // Clamp level to valid range (0-3)
-    settings.repetition_suppression_level = level.min(3);
-    write_settings(&app, settings);
+    modify_settings(&app, |s| s.repetition_suppression_level = level.min(3));
     Ok(())
 }
 

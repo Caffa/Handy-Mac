@@ -1,5 +1,6 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
+use crate::query_state::{mark_state_file_ready, write_query_state};
 use log::{debug, error, info, warn};
 use parking_lot::RwLock;
 use serde::Serialize;
@@ -307,6 +308,11 @@ impl TranscriptionCoordinator {
                         let mut guard = current_state_clone.write();
                         *guard = stage_to_app_state(&stage);
                     }
+                    // Write query-state file for --is-active-use / --is-recording.
+                    {
+                        let is_recording = matches!(stage, Stage::Recording(_));
+                        write_query_state(is_active, is_recording);
+                    }
                 }
                 debug!("Transcription coordinator exited");
             }));
@@ -314,6 +320,12 @@ impl TranscriptionCoordinator {
                 error!("Transcription coordinator panicked: {e:?}");
             }
         });
+
+        // Write the initial Idle state to the query-state file so a concurrent
+        // --is-active-use / --is-recording invocation sees the correct answer
+        // from the moment the coordinator is created.
+        write_query_state(false, false);
+        mark_state_file_ready();
 
         Self {
             tx,
@@ -329,6 +341,16 @@ impl TranscriptionCoordinator {
         self.active_use.load(Ordering::SeqCst)
     }
 
+    /// Derive the query-state booleans from the current `AppState` and write
+    /// them to the state file so a concurrent `--is-active-use` / `--is-recording`
+    /// query instance can read them.
+    fn sync_query_state(&self) {
+        let state = self.current_state.read().clone();
+        let is_active = !matches!(state, AppState::Idle);
+        let is_recording = matches!(state, AppState::Recording { .. });
+        write_query_state(is_active, is_recording);
+    }
+
     /// Get the current application state (thread-safe).
     /// This is the single source of truth for frontend state.
     pub fn get_state(&self) -> AppState {
@@ -341,6 +363,7 @@ impl TranscriptionCoordinator {
         let new_state = AppState::UsbCycling { stage };
         *self.current_state.write() = new_state.clone();
         emit_app_state(app, &new_state);
+        self.sync_query_state();
     }
 
     /// Set the application state to Confirming and emit an app-state event.
@@ -350,6 +373,7 @@ impl TranscriptionCoordinator {
         let new_state = AppState::Confirming { text, binding_id };
         *self.current_state.write() = new_state.clone();
         emit_app_state(app, &new_state);
+        self.sync_query_state();
     }
 
     /// Transition the coordinator's internal Stage to Processing with a fresh
@@ -367,6 +391,7 @@ impl TranscriptionCoordinator {
         let new_state = AppState::Processing { binding_id };
         *self.current_state.write() = new_state.clone();
         emit_app_state(app, &new_state);
+        self.sync_query_state();
     }
 
     /// Set the application state to Idle and emit an app-state event.
@@ -374,6 +399,7 @@ impl TranscriptionCoordinator {
     pub fn set_idle(&self, app: &AppHandle) {
         *self.current_state.write() = AppState::Idle;
         emit_app_state(app, &AppState::Idle);
+        self.sync_query_state();
     }
 
     /// Send a keyboard/signal input event for a transcribe binding.

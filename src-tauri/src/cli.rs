@@ -24,6 +24,14 @@ pub struct CliArgs {
     #[arg(long)]
     pub cancel: bool,
 
+    /// Query flag: returns exit code 0 if active use, 1 if idle, 2 if not running
+    #[arg(long, conflicts_with_all = &["start_hidden", "no_tray", "toggle_transcription", "toggle_post_process", "cancel", "transcribe_file"])]
+    pub is_active_use: bool,
+
+    /// Query flag: returns exit code 0 if recording, 1 if not
+    #[arg(long, conflicts_with_all = &["start_hidden", "no_tray", "toggle_transcription", "toggle_post_process", "cancel", "transcribe_file"])]
+    pub is_recording: bool,
+
     /// Enable debug mode with verbose logging
     #[arg(long)]
     pub debug: bool,

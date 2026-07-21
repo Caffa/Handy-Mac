@@ -22,12 +22,17 @@ use super::types::*;
 /// debounced write flushed.
 pub struct SettingsCache {
     settings: RwLock<AppSettings>,
+    /// Serializes all read-modify-write cycles so concurrent Tauri commands
+    /// cannot clobber each other's changes (e.g. saving a shortcut while
+    /// saving the overlay position).
+    write_ordering: Mutex<()>,
 }
 
 impl SettingsCache {
     pub fn new(settings: AppSettings) -> Self {
         Self {
             settings: RwLock::new(settings),
+            write_ordering: Mutex::new(()),
         }
     }
 
@@ -209,6 +214,37 @@ pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings_immediate", || {
         write_settings_immediate(app, settings);
     });
+}
+
+/// Atomically read, modify, and write settings. This serializes all settings
+/// mutations through a mutex so concurrent Tauri commands cannot clobber each
+/// other's changes — the classic "saving a shortcut overrides the screen
+/// position" bug.
+///
+/// The `updater` closure receives a mutable reference to the current settings.
+/// It should modify only the field(s) it cares about and return any derived
+/// value. The cache and disk writer are updated atomically after the closure
+/// completes. The closure's return value is propagated to the caller.
+pub fn modify_settings<R>(app: &AppHandle, updater: impl FnOnce(&mut AppSettings) -> R) -> R {
+    let Some(cache) = app.try_state::<Arc<SettingsCache>>() else {
+        warn!(
+            "[settings] modify_settings: cache not available, \
+             falling back to non-atomic path"
+        );
+        let mut settings = get_settings(app);
+        let result = updater(&mut settings);
+        write_settings(app, settings);
+        return result;
+    };
+
+    // blocking_lock is safe from sync Tauri command threads — it parks the
+    // OS thread (not a tokio task) until the mutex is available.
+    let _guard = cache.write_ordering.blocking_lock();
+    let mut settings = cache.get();
+    let result = updater(&mut settings);
+    // write_settings updates the cache internally, so the cache stays consistent.
+    write_settings(app, settings);
+    result
 }
 
 // ── Core load/save functions ──

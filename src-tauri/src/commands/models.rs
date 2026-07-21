@@ -1,9 +1,8 @@
 use crate::managers::model::{
-    BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager,
+    BenchmarkResult, ModelInfo, ModelManager,
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
-use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
-use log::{info, warn};
+use crate::settings::{get_settings, modify_settings, ModelUnloadTimeout};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -69,15 +68,16 @@ pub async fn delete_model(
     model_id: String,
 ) -> Result<(), String> {
     // If deleting the active model, unload it and clear the setting
-    let settings = get_settings(&app_handle);
-    if settings.selected_model == model_id {
+    let needs_clear = {
+        let settings = get_settings(&app_handle);
+        settings.selected_model == model_id
+    };
+    if needs_clear {
         transcription_manager
             .unload_model()
             .map_err(|e| format!("Failed to unload model: {}", e))?;
 
-        let mut settings = get_settings(&app_handle);
-        settings.selected_model = String::new();
-        write_settings(&app_handle, settings);
+        modify_settings(&app_handle, |s| s.selected_model = String::new());
     }
 
     model_manager
@@ -111,18 +111,16 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
         return Err(format!("Model not downloaded: {}", model_id));
     }
 
-    let settings = get_settings(app);
-    let unload_timeout = settings.model_unload_timeout;
-    let old_model = settings.selected_model.clone();
-    let old_onboarding_completed = settings.onboarding_completed;
-
-    // Persist the new selection early so the frontend sees the correct model
-    // when it reacts to events emitted by load_model.
-    let mut settings = settings;
-    settings.selected_model = model_id.to_string();
-    settings.onboarding_completed = true;
-
-    write_settings(app, settings);
+    // Atomically read old values and persist the new selection.
+    // This prevents a race where another command overwrites our write.
+    let (unload_timeout, old_model, old_onboarding_completed) = modify_settings(app, |s| {
+        let unload_timeout = s.model_unload_timeout;
+        let old_model = s.selected_model.clone();
+        let old_onboarding_completed = s.onboarding_completed;
+        s.selected_model = model_id.to_string();
+        s.onboarding_completed = true;
+        (unload_timeout, old_model, old_onboarding_completed)
+    });
 
     // Skip eager loading if unload is set to "Immediately" — the model
     // will be loaded on-demand during the next transcription.
@@ -147,10 +145,10 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
 
     // Load the model. On failure, revert the persisted selection.
     if let Err(e) = transcription_manager.load_model(model_id) {
-        let mut settings = get_settings(app);
-        settings.selected_model = old_model;
-        settings.onboarding_completed = old_onboarding_completed;
-        write_settings(app, settings);
+        modify_settings(app, |s| {
+            s.selected_model = old_model;
+            s.onboarding_completed = old_onboarding_completed;
+        });
         return Err(e.to_string());
     }
 

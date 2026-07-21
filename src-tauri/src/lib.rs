@@ -18,6 +18,7 @@ mod logging;
 mod managers;
 mod overlay;
 pub mod portable;
+mod query_state;
 mod session;
 pub mod settings;
 pub mod shortcut;
@@ -34,6 +35,7 @@ mod sleep_wake;
 mod usb_watchdog;
 
 pub use cli::CliArgs;
+pub use query_state::{query_state_file_path, write_query_state, remove_query_state_file};
 #[cfg(debug_assertions)]
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -634,6 +636,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_auto_submit_setting,
             shortcut::change_auto_submit_key_setting,
             shortcut::change_post_process_enabled_setting,
+            shortcut::change_router_mode_enabled_setting,
             shortcut::change_experimental_enabled_setting,
             shortcut::change_post_process_base_url_setting,
             shortcut::change_post_process_api_key_setting,
@@ -795,6 +798,14 @@ pub fn run(cli_args: CliArgs) {
     let headless_mode =
         cli_args.transcribe_file.is_some() || cli_args.list_devices || cli_args.list_models;
 
+    // Query mode: --is-active-use / --is-recording are "headless" too — they
+    // must NOT forward to an already-running instance (single-instance would
+    // exit(0) and the shell script would always see "active use").  Instead
+    // they run as a standalone process that reads the query-state file the
+    // running instance writes.
+    let query_mode = cli_args.is_active_use || cli_args.is_recording;
+    let any_headless = headless_mode || query_mode;
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .device_event_filter(tauri::DeviceEventFilter::Always)
@@ -810,7 +821,7 @@ pub fn run(cli_args: CliArgs) {
                     // headless mode (--transcribe-file/--list-devices/--list-models)
                     // stdout carries only the result (JSON or plain), so send console
                     // logs to stderr instead to keep stdout clean for CI parsing.
-                    Target::new(if headless_mode {
+                    Target::new(if any_headless {
                         TargetKind::Stderr
                     } else {
                         TargetKind::Stdout
@@ -856,8 +867,10 @@ pub fn run(cli_args: CliArgs) {
     // That would make the headless path
     // (--transcribe-file/--list-devices/--list-models) a silent no-op whenever the
     // app is already open, so skip it in headless mode and run a standalone
-    // instance instead.
-    if !headless_mode {
+    // instance instead.  Query mode (--is-active-use/--is-recording) is also
+    // skipped — the second instance would exit(0) via the plugin and the shell
+    // script would always see "active use".
+    if !any_headless {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--toggle-transcription") {
                 signal_handle::send_transcription_input(app, "transcribe", "CLI");
@@ -888,6 +901,29 @@ pub fn run(cli_args: CliArgs) {
         .manage(cli_args.clone())
         .setup(move |app| {
             specta_builder.mount_events(app);
+
+            // ── Query mode: --is-active-use / --is-recording ──────────────
+            // Read the state file written by the running instance and exit
+            // with the appropriate code.  The state file is absent when the
+            // app is not running (exit 2).
+            if query_mode {
+                use std::io::Write;
+                let code = match query_state::read_query_state() {
+                    Some(state) => {
+                        if cli_args.is_active_use {
+                            if state.is_active_use { 0 } else { 1 }
+                        } else if cli_args.is_recording {
+                            if state.is_recording { 0 } else { 1 }
+                        } else {
+                            2
+                        }
+                    }
+                    None => 2, // state file missing → not running
+                };
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().flush();
+                std::process::exit(code);
+            }
 
             // Headless one-shot path (`--transcribe-file` / `--list-devices` /
             // `--list-models`): initialize only what transcription needs — the
@@ -1095,6 +1131,10 @@ pub fn run(cli_args: CliArgs) {
             }
             // Teardown transcribe.cpp before exit
             tauri::RunEvent::Exit => {
+                // Remove the query-state file so a concurrent --is-active-use
+                // invocation sees "not running" (exit code 2).
+                query_state::remove_query_state_file();
+
                 if let Some(tm) = app.try_state::<Arc<TranscriptionManager>>() {
                     let _ = tm.unload_model();
                 }

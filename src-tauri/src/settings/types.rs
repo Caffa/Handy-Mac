@@ -623,6 +623,8 @@ pub struct AppSettings {
     pub typing_tool: TypingTool,
     #[serde(default)]
     pub external_script_path: Option<String>,
+    #[serde(default = "default_router_mode_enabled")]
+    pub router_mode_enabled: bool,
     #[serde(default)]
     pub router_script_path: Option<String>,
     #[serde(default)]
@@ -831,6 +833,10 @@ pub(crate) fn default_theme() -> Theme {
 }
 
 pub(crate) fn default_post_process_enabled() -> bool {
+    false
+}
+
+pub(crate) fn default_router_mode_enabled() -> bool {
     false
 }
 

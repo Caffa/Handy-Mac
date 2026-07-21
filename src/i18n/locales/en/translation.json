@@ -447,6 +447,16 @@
         "label": "Verification Mode",
         "description": "Enable two-pass transcription. After the first transcription, a second model verifies and corrects uncertain segments for improved accuracy."
       },
+      "routerMode": {
+        "label": "Router Mode",
+        "description": "Route transcriptions through an external script for custom processing. The script receives the transcription text and can modify or forward it.",
+        "scriptPathLabel": "Router Script Path",
+        "scriptPathPlaceholder": "/path/to/router-script.sh",
+        "scriptPathDescription": "Path to the script that will process transcriptions. The script receives text via stdin and should output the modified text.",
+        "envFileLabel": "Environment File",
+        "envFilePlaceholder": "/path/to/.env",
+        "envFileDescription": "Optional path to an environment file for the router script. The script can read these variables for configuration."
+      },
       "vadSensitivity": {
         "title": "Voice Detection Sensitivity",
         "description": "Controls when the app starts and stops recording based on voice activity. Higher sensitivity catches speech earlier but may pick up background noise.",
