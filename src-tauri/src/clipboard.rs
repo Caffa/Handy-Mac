@@ -41,11 +41,6 @@ mod macos_ax {
     // AXError codes
     pub const KAX_ERROR_SUCCESS: i32 = 0;
 
-    // AX attribute names
-    pub const KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE: *const i8 =
-        b"AXFocusedUIElement\0".as_ptr() as *const i8;
-    pub const KAX_VALUE_ATTRIBUTE: *const i8 = b"AXValue\0".as_ptr() as *const i8;
-
     // CoreFoundation encoding
     pub const K_CFSTRING_ENCODING_UTF8: u32 = 0x08000100;
 
@@ -54,7 +49,12 @@ mod macos_ax {
         pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
         pub fn AXUIElementCopyAttributeValue(
             element: AXUIElementRef,
-            attribute: *const i8,
+            // `attribute` is a CFStringRef (a CoreFoundation object pointer), NOT
+            // a raw C string. Passing a *const i8 here previously made the framework
+            // call CFStringGetLength on a non-CFString pointer, triggering an Apple
+            // Silicon PAC trap (SIGTRAP / EXC_BREAKPOINT) and crashing the app
+            // after every successful paste. Use the linked kAX* constants below.
+            attribute: CFStringRef,
             value: *mut *mut std::ffi::c_void,
         ) -> AXError;
         pub fn CFGetTypeID(cf: CFTypeRef) -> usize;
@@ -67,6 +67,15 @@ mod macos_ax {
             encoding: CFStringEncoding,
         ) -> bool;
         pub fn CFRelease(cf: CFTypeRef);
+    }
+
+    // Framework-provided CFString constants for AX attribute names.
+    // These are real CFStringRef objects exported by HIServices, so they can be
+    // passed directly to AXUIElementCopyAttributeValue's `attribute` parameter.
+    #[link(kind = "framework", name = "ApplicationServices")]
+    extern "C" {
+        pub static kAXFocusedUIElementAttribute: CFStringRef;
+        pub static kAXValueAttribute: CFStringRef;
     }
 }
 
@@ -150,7 +159,7 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
         let result = unsafe {
             AXUIElementCopyAttributeValue(
                 ax_app,
-                KAX_FOCUSED_UI_ELEMENT_ATTRIBUTE as *const i8,
+                kAXFocusedUIElementAttribute,
                 &mut focused_element_ptr as *mut _,
             )
         };
@@ -172,7 +181,7 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
         let value_result = unsafe {
             AXUIElementCopyAttributeValue(
                 focused_element,
-                KAX_VALUE_ATTRIBUTE as *const i8,
+                kAXValueAttribute,
                 &mut value_ptr as *mut _,
             )
         };
