@@ -14,6 +14,16 @@
     "format:check": "prettier --check . && cd src-tauri && cargo fmt -- --check",
     "format:frontend": "prettier --write .",
     "format:backend": "cd src-tauri && cargo fmt",
+    "test:e2e": "wdio run e2e/wdio.conf.ts",
+    "test:e2e:settings": "wdio run e2e/wdio.conf.ts -- --spec e2e/specs/settings.spec.ts",
+    "test:e2e:lifecycle": "wdio run e2e/wdio.conf.ts -- --spec e2e/specs/app-lifecycle.spec.ts",
+    "test:e2e:rust": "cd src-tauri && cargo test --test e2e",
+    "test:e2e:shell": "bash scripts/e2e-tests/run-all.sh",
+    "test:e2e:shell:startup": "bash scripts/e2e-tests/test-app-startup.sh",
+    "test:e2e:shell:settings": "bash scripts/e2e-tests/test-settings-persistence.sh",
+    "test:e2e:shell:transcribe": "bash scripts/e2e-tests/test-transcribe-file.sh",
+    "test:e2e:shell:consecutive": "bash scripts/e2e-tests/test-consecutive-runs.sh",
+    "test:e2e:shell:cli": "bash scripts/e2e-tests/test-cli-flags.sh",
     "test:playwright": "playwright test",
     "test:playwright:ui": "playwright test --ui",
     "check:translations": "bun scripts/check-translations.ts",
@@ -58,10 +68,15 @@
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
     "@vitejs/plugin-react": "^4.7.0",
+    "@wdio/cli": "^9.12.0",
+    "@wdio/mocha-framework": "^9.12.0",
+    "@wdio/spec-reporter": "^9.12.0",
+    "@wdio/tauri-service": "^1.2.0",
     "eslint": "^9.39.1",
     "eslint-plugin-i18next": "^6.1.3",
     "prettier": "^3.6.2",
     "typescript": "~5.6.3",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "webdriverio": "^9.12.0"
   }
 }

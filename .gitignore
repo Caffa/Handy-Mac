@@ -37,6 +37,11 @@ playwright-report/
 test-results/
 blob-report/
 
+# WebdriverIO E2E
+e2e/fixtures/*.wav
+e2e/fixtures/*.mp3
+e2e/fixtures/*.ogg
+
 .direnv
 .envrc
 
