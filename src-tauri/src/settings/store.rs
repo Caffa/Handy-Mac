@@ -81,7 +81,9 @@ pub(crate) fn settings_to_value(settings: &AppSettings) -> Option<serde_json::Va
 pub(crate) fn open_settings_store(
     app: &AppHandle,
 ) -> Option<Arc<tauri_plugin_store::Store<tauri::Wry>>> {
-    match app.store(crate::portable::store_path(SETTINGS_STORE_PATH)) {
+    let store_path = crate::portable::store_path(SETTINGS_STORE_PATH);
+    info!("[settings] opening store at path: {}", store_path.display());
+    match app.store(store_path) {
         Ok(store) => Some(store),
         Err(e) => {
             error!("Failed to initialize settings store: {}", e);

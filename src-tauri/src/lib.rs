@@ -1129,8 +1129,12 @@ pub fn run(cli_args: CliArgs) {
             tauri::RunEvent::Reopen { .. } => {
                 show_main_window(app);
             }
-            // Teardown transcribe.cpp before exit
+            // Teardown: flush pending settings, clean up model, remove query-state file.
             tauri::RunEvent::Exit => {
+                // Flush any debounced settings writes to disk before exit.
+                // Without this, settings changed within the last 500ms are lost.
+                settings::flush_settings(app);
+
                 // Remove the query-state file so a concurrent --is-active-use
                 // invocation sees "not running" (exit code 2).
                 query_state::remove_query_state_file();
