@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, Globe, RefreshCw, Search } from "lucide-react";
+import { toast } from "sonner";
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
 import { useModelStore } from "@/stores/modelStore";
@@ -122,7 +123,10 @@ export const ModelsSettings: React.FC = () => {
   const handleModelSelect = async (modelId: string) => {
     setSwitchingModelId(modelId);
     try {
-      await selectModel(modelId);
+      const success = await selectModel(modelId);
+      if (!success) {
+        toast.error(t("settings.models.switchFailed"));
+      }
     } finally {
       setSwitchingModelId(null);
     }
