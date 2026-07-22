@@ -367,7 +367,7 @@ const RecordingOverlay: React.FC = () => {
         )}
 
       {/* Router result display / transcription preview */}
-      {isRouter && routerResult && (
+      {isRouter && (routerResult || (transcriptionPreview && state === "confirming")) && (
         <RouterResultDisplay
           routerResult={routerResult}
           isEditing={isEditing}
