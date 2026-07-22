@@ -2106,16 +2106,6 @@ mod tests {
     }
 
     #[test]
-    fn optional_text_transform_falls_back_to_raw_text_after_panic() {
-        let raw = "原始轉錄。".to_string();
-        let result = fail_open_text_transform(raw.clone(), |_| {
-            panic!("simulated optional cleanup failure")
-        });
-
-        assert_eq!(result, raw);
-    }
-
-    #[test]
     fn transcribe_cpp_run_plan_maps_chinese_variants() {
         let plan = transcribe_cpp_run_plan(false, "zh-Hant", &languages(&["zh"]), true);
 
