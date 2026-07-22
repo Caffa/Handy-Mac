@@ -1,10 +1,9 @@
 use crate::audio_toolkit::{
-    is_bluetooth_audio_active, list_input_devices, list_output_devices, process_transcription_text,
-    vad::SmoothedVad, AudioRecorder, SileroVad,
+    is_bluetooth_audio_active, list_input_devices, list_output_devices, vad::SmoothedVad,
+    AudioRecorder, SileroVad,
 };
 use crate::errors::AppError;
 use crate::helpers::clamshell;
-use crate::managers::model::{EngineType, ModelManager};
 use crate::managers::transcription::TranscriptionManager;
 use crate::portable;
 use crate::settings::{get_settings, AppSettings};
@@ -252,11 +251,10 @@ fn create_audio_recorder(
                             // Transcribe the audio samples
                             let transcription_result = tm.lock().transcribe(samples);
                             match transcription_result {
-                                Ok(mut result) if !result.text.is_empty() => {
+                                Ok(result) if !result.text.is_empty() => {
                                     info!(
-                                        "[Live Captions] Streaming transcription succeeded: text_len={}, segments={}",
-                                        result.text.len(),
-                                        result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
+                                        "[Live Captions] Streaming transcription succeeded: text_len={}",
+                                        result.text.len()
                                     );
                                     // Check again after transcription in case it was cancelled mid-work
                                     // Using the Arc<AtomicBool> to avoid lock contention
@@ -265,52 +263,10 @@ fn create_audio_recorder(
                                         return;
                                     }
 
-                                    // Apply text post-processing to live captions so they
-                                    // benefit from the same pipeline as final transcriptions:
-                                    // word corrections, filler removal, spelling conversion,
-                                    // and repetition suppression.
-                                    let settings = get_settings(&app_handle);
-                                    let is_whisper = app_handle
-                                        .try_state::<Arc<ModelManager>>()
-                                        .map(|mm| {
-                                            mm.get_model_info(&result.model_id)
-                                                .map(|info| matches!(info.engine_type, EngineType::Whisper))
-                                                .unwrap_or(false)
-                                        })
-                                        .unwrap_or(false);
-
-                                    // Process each segment's text individually.
-                                    // The top-level `result.text` is already processed by
-                                    // TranscriptionManager::transcribe(), but segment texts
-                                    // are raw from the engine. The frontend uses segment
-                                    // texts for live caption display when available.
-                                    if let Some(ref mut segments) = result.segments {
-                                        for segment in segments.iter_mut() {
-                                            if segment.text.is_empty() {
-                                                continue;
-                                            }
-                                            segment.text = process_transcription_text(
-                                                &segment.text,
-                                                settings.word_correction_mode.clone(),
-                                                &settings.custom_words,
-                                                &settings.advanced_custom_words,
-                                                &settings.word_replacements,
-                                                settings.word_correction_threshold,
-                                                is_whisper,
-                                                &settings.app_language,
-                                                &settings.custom_filler_words,
-                                                settings.convert_us_to_british,
-                                                settings.spelling_dictionary,
-                                                settings.repetition_suppression_level,
-                                            );
-                                        }
-                                    }
-
-                                    // Emit partial transcription event with segments for frontend merge
+                                    // Emit partial transcription event with text for frontend display
                                     info!(
-                                        "[Live Captions] Emitting partial-transcription event: text_len={}, segments={}",
-                                        result.text.len(),
-                                        result.segments.as_ref().map(|s| s.len()).unwrap_or(0)
+                                        "[Live Captions] Emitting partial-transcription event: text_len={}",
+                                        result.text.len()
                                     );
                                     if let Err(e) = app_handle.emit("partial-transcription", &result) {
                                         warn!("Failed to emit partial-transcription event: {}", e);

@@ -55,9 +55,6 @@ interface ModelCardProps {
   downloadProgress?: number;
   downloadSpeed?: number; // MB/s
   showRecommended?: boolean;
-  hybridRole?: "short" | "long" | null;
-  hybridModeEnabled?: boolean;
-  onHybridRoleChange?: (modelId: string, role: "short" | "long" | null) => void;
 }
 
 const ModelCard: React.FC<ModelCardProps> = ({
@@ -73,9 +70,6 @@ const ModelCard: React.FC<ModelCardProps> = ({
   downloadProgress,
   downloadSpeed,
   showRecommended = true,
-  hybridRole = null,
-  hybridModeEnabled = false,
-  onHybridRoleChange,
 }) => {
   const { t } = useTranslation();
   const isFeatured = variant === "featured";
@@ -117,16 +111,6 @@ const ModelCard: React.FC<ModelCardProps> = ({
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
     onDelete?.(model.id);
-  };
-
-  const handleHybridRoleClick = (
-    e: React.MouseEvent,
-    role: "short" | "long",
-  ) => {
-    e.stopPropagation();
-    if (!onHybridRoleChange) return;
-    // Toggle: if already this role, unset; otherwise set
-    onHybridRoleChange(model.id, hybridRole === role ? null : role);
   };
 
   return (
@@ -176,22 +160,6 @@ const ModelCard: React.FC<ModelCardProps> = ({
             )}
             {model.is_custom && (
               <Badge variant="secondary">{t("modelSelector.custom")}</Badge>
-            )}
-            {hybridRole === "short" && (
-              <Badge
-                variant="success"
-                title={t("settings.advanced.hybridMode.shortBadgeTooltip")}
-              >
-                {t("settings.advanced.hybridMode.shortBadge")}
-              </Badge>
-            )}
-            {hybridRole === "long" && (
-              <Badge
-                variant="primary"
-                title={t("settings.advanced.hybridMode.longBadgeTooltip")}
-              >
-                {t("settings.advanced.hybridMode.longBadge")}
-              </Badge>
             )}
             {status === "switching" && (
               <Badge variant="secondary">
@@ -290,34 +258,6 @@ const ModelCard: React.FC<ModelCardProps> = ({
             <span>{t("modelSelector.capabilities.translate")}</span>
           </div>
         )}
-        {hybridModeEnabled &&
-          (status === "available" || status === "active") &&
-          onHybridRoleChange && (
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={(e) => handleHybridRoleClick(e, "short")}
-                className={`px-2 py-0.5 text-[10px] font-semibold rounded-full transition-colors ${
-                  hybridRole === "short"
-                    ? "bg-green-500/20 text-green-400 ring-1 ring-green-500/30"
-                    : "bg-mid-gray/10 text-text/40 hover:bg-mid-gray/20 hover:text-text/60"
-                }`}
-              >
-                {t("settings.advanced.hybridMode.shortBadge")}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => handleHybridRoleClick(e, "long")}
-                className={`px-2 py-0.5 text-[10px] font-semibold rounded-full transition-colors ${
-                  hybridRole === "long"
-                    ? "bg-logo-primary/20 text-logo-primary ring-1 ring-logo-primary/30"
-                    : "bg-mid-gray/10 text-text/40 hover:bg-mid-gray/20 hover:text-text/60"
-                }`}
-              >
-                {t("settings.advanced.hybridMode.longBadge")}
-              </button>
-            </div>
-          )}
         {status === "downloadable" && (
           <span className="flex items-center gap-1.5 ms-auto text-xs text-text/50">
             <Download className="w-3.5 h-3.5" />

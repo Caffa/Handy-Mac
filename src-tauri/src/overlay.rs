@@ -165,7 +165,9 @@ fn swizzle_mouse_tracking() {
             // This keeps the panel click-through during non-interactive phases
             // (router filing, result display) so the transparent window doesn't block clicks.
             if OVERLAY_FORCE_CLICK_THROUGH.load(Ordering::SeqCst) {
-                log::debug!("Overlay mouse entered: force click-through active, keeping ignoresMouseEvents");
+                log::debug!(
+                    "Overlay mouse entered: force click-through active, keeping ignoresMouseEvents"
+                );
                 return;
             }
 
@@ -375,7 +377,10 @@ pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Resul
 /// the overlay shows status text but nothing the user needs to interact with.
 #[tauri::command]
 #[specta::specta]
-pub fn set_overlay_force_click_through(app: AppHandle, force_click_through: bool) -> Result<(), String> {
+pub fn set_overlay_force_click_through(
+    app: AppHandle,
+    force_click_through: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         OVERLAY_FORCE_CLICK_THROUGH.store(force_click_through, Ordering::SeqCst);

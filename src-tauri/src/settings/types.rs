@@ -378,20 +378,15 @@ impl Default for TypingTool {
     }
 }
 
-// ── WhisperAcceleratorSetting ──
+// ── TranscribeAcceleratorSetting ──
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum WhisperAcceleratorSetting {
+pub enum TranscribeAcceleratorSetting {
+    #[default]
     Auto,
     Cpu,
     Gpu,
-}
-
-impl Default for WhisperAcceleratorSetting {
-    fn default() -> Self {
-        WhisperAcceleratorSetting::Auto
-    }
 }
 
 // ── OrtAcceleratorSetting ──
@@ -592,11 +587,11 @@ pub struct AppSettings {
     #[serde(default)]
     pub custom_filler_words: Option<Vec<String>>,
     #[serde(default)]
-    pub whisper_accelerator: WhisperAcceleratorSetting,
+    pub transcribe_accelerator: TranscribeAcceleratorSetting,
     #[serde(default)]
     pub ort_accelerator: OrtAcceleratorSetting,
-    #[serde(default = "default_whisper_gpu_device")]
-    pub whisper_gpu_device: i32,
+    #[serde(default = "default_transcribe_gpu_device")]
+    pub transcribe_gpu_device: i32,
     #[serde(default)]
     pub extra_recording_buffer_ms: u64,
     #[serde(default)]
@@ -607,18 +602,6 @@ pub struct AppSettings {
     pub usb_watchdog_device_name: String,
     #[serde(default)]
     pub usb_watchdog_cycle_on_wake: bool,
-    #[serde(default)]
-    pub hybrid_mode_enabled: bool,
-    #[serde(default = "default_hybrid_threshold_secs")]
-    pub hybrid_threshold_secs: f64,
-    #[serde(default)]
-    pub hybrid_short_audio_model: Option<String>,
-    #[serde(default)]
-    pub hybrid_long_audio_model: Option<String>,
-    #[serde(default = "default_adaptive_parakeet_thresholds")]
-    pub adaptive_parakeet_thresholds: bool,
-    #[serde(default)]
-    pub verification_mode: bool,
     #[serde(default)]
     pub vad_sensitivity: VadSensitivity,
     #[serde(default)]
@@ -886,18 +869,10 @@ pub(crate) fn default_post_process_prompts() -> Vec<LLMPrompt> {
     }]
 }
 
-pub(crate) fn default_whisper_gpu_device() -> i32 {
+pub(crate) fn default_transcribe_gpu_device() -> i32 {
     -1 // auto
 }
 
 pub(crate) fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
-}
-
-pub(crate) fn default_hybrid_threshold_secs() -> f64 {
-    30.0
-}
-
-pub(crate) fn default_adaptive_parakeet_thresholds() -> bool {
-    true
 }

@@ -57,8 +57,6 @@ const RecordingOverlay: React.FC = () => {
     setState,
     overlayScale,
     direction,
-    hybridEnabled,
-    hybridThresholdSecs,
     recordingElapsedSecs,
     // State owned by useOverlaySharedState, shared with sub-hooks
     transcriptionPreview,

@@ -6,7 +6,7 @@ import i18n from "@/i18n";
 import type {
   AppSettings as Settings,
   AudioDevice,
-  WhisperAcceleratorSetting,
+  TranscribeAcceleratorSetting,
   OrtAcceleratorSetting,
   WordReplacement,
 } from "@/bindings";
@@ -175,14 +175,14 @@ const settingUpdaters: {
     commands.changeLazyStreamCloseSetting(value as boolean),
   show_tray_icon: (value) =>
     commands.changeShowTrayIconSetting(value as boolean),
-  whisper_accelerator: (value) =>
-    commands.changeWhisperAcceleratorSetting(
-      value as WhisperAcceleratorSetting,
+  transcribe_accelerator: (value) =>
+    commands.changeTranscribeAcceleratorSetting(
+      value as TranscribeAcceleratorSetting,
     ),
   ort_accelerator: (value) =>
     commands.changeOrtAcceleratorSetting(value as OrtAcceleratorSetting),
-  whisper_gpu_device: (value) =>
-    commands.changeWhisperGpuDevice(value as number),
+  transcribe_gpu_device: (value) =>
+    commands.changeTranscribeGpuDevice(value as number),
   extra_recording_buffer_ms: (value) =>
     commands.changeExtraRecordingBufferSetting(value as number),
   pre_recording_buffer_ms: (value) =>
@@ -193,19 +193,6 @@ const settingUpdaters: {
     commands.changeUsbWatchdogDeviceNameSetting(value as string),
   usb_watchdog_cycle_on_wake: (value) =>
     commands.changeUsbWatchdogCycleOnWakeSetting(value as boolean),
-  hybrid_mode_enabled: (value) =>
-    commands.changeHybridModeEnabledSetting(value as boolean),
-
-  hybrid_threshold_secs: (value) =>
-    commands.changeHybridThresholdSecsSetting(value as number),
-  hybrid_short_audio_model: (value) =>
-    commands.changeHybridShortAudioModelSetting(value as string | null),
-  hybrid_long_audio_model: (value) =>
-    commands.changeHybridLongAudioModelSetting(value as string | null),
-  adaptive_parakeet_thresholds: (value) =>
-    commands.changeAdaptiveParakeetThresholdsSetting(value as boolean),
-  verification_mode: (value) =>
-    commands.changeVerificationModeSetting(value as boolean),
   vad_sensitivity: (value) =>
     commands.changeVadSensitivitySetting(value as string),
   live_captions_enabled: (value) =>

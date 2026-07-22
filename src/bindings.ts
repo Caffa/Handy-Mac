@@ -430,9 +430,9 @@ async changeShowTrayIconSetting(enabled: boolean) : Promise<Result<null, string>
     else return { status: "error", error: e  as any };
 }
 },
-async changeWhisperAcceleratorSetting(accelerator: WhisperAcceleratorSetting) : Promise<Result<null, string>> {
+async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetting) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_whisper_accelerator_setting", { accelerator }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_transcribe_accelerator_setting", { accelerator }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -446,9 +446,9 @@ async changeOrtAcceleratorSetting(accelerator: OrtAcceleratorSetting) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
-async changeWhisperGpuDevice(device: number) : Promise<Result<null, string>> {
+async changeTranscribeGpuDevice(device: number) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_whisper_gpu_device", { device }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_transcribe_gpu_device", { device }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -464,54 +464,6 @@ async changeWhisperGpuDevice(device: number) : Promise<Result<null, string>> {
  */
 async getAvailableAccelerators() : Promise<AvailableAccelerators> {
     return await TAURI_INVOKE("get_available_accelerators");
-},
-async changeHybridModeEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_mode_enabled_setting", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeHybridThresholdSecsSetting(secs: number) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_threshold_secs_setting", { secs }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeHybridShortAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_short_audio_model_setting", { modelId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeHybridLongAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_long_audio_model_setting", { modelId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeAdaptiveParakeetThresholdsSetting(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_adaptive_parakeet_thresholds_setting", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeVerificationModeSetting(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_verification_mode_setting", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
 },
 async changeVadSensitivitySetting(sensitivity: string) : Promise<Result<null, string>> {
     try {
@@ -1422,7 +1374,7 @@ router_script_path?: string | null;
  * Path to a .env file containing env vars (e.g. TELEGRAM_DAILY_LOG_BOT)
  * to pass to the router script subprocess.
  */
-router_env_file?: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; 
+router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; 
 /**
  * Pre-recording buffer in milliseconds for always-on microphone mode.
  * Captures audio from the last N ms before the hotkey is pressed.
@@ -1433,7 +1385,7 @@ pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_d
 /**
  * Automatically power-cycle the USB device when macOS wakes from sleep.
  */
-usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null; adaptive_parakeet_thresholds?: boolean; verification_mode?: boolean; vad_sensitivity?: VadSensitivity; 
+usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; 
 /**
  * Show live captions during recording. When enabled, partial transcriptions
  * are displayed in real-time as you speak, below the volume bars.
@@ -1466,7 +1418,7 @@ noise_suppression_enabled?: boolean;
 noise_suppression_level?: NoiseSuppressionLevel }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
-export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
+export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
 /**
  * A model that failed during benchmarking (could not load or could not transcribe).
  */
@@ -1807,7 +1759,7 @@ longest_streak_days: number;
  */
 daily_stats: [string, number, number][] }
 export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
-export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
+export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 /**
  * Word correction mode selection.

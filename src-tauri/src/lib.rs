@@ -1,8 +1,9 @@
 mod actions;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+
 mod apple_intelligence;
 mod audio_feedback;
 pub mod audio_toolkit;
+pub mod catalog;
 pub mod cli;
 mod clipboard;
 mod commands;
@@ -157,6 +158,12 @@ fn should_force_show_permissions_window(app: &AppHandle) -> bool {
 }
 
 fn initialize_core_logic(app_handle: &AppHandle) {
+    // Pre-initialize the transcribe-cpp backend (Metal/Vulkan context, GPU
+    // device enumeration, etc.) so the first transcription doesn't pay the
+    // full cold-start cost. This is a no-op on platforms where the backend is
+    // demand-initialized.
+    crate::managers::transcription::init_transcribe_backend();
+
     // Note: Enigo (keyboard/mouse simulation) is NOT initialized here.
     // The frontend is responsible for calling the `initialize_enigo` command
     // after onboarding completes. This avoids triggering permission dialogs
@@ -559,16 +566,10 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_keyboard_implementation_setting,
             shortcut::get_keyboard_implementation,
             shortcut::change_show_tray_icon_setting,
-            shortcut::change_whisper_accelerator_setting,
+            shortcut::change_transcribe_accelerator_setting,
             shortcut::change_ort_accelerator_setting,
-            shortcut::change_whisper_gpu_device,
+            shortcut::change_transcribe_gpu_device,
             shortcut::get_available_accelerators,
-            shortcut::change_hybrid_mode_enabled_setting,
-            shortcut::change_hybrid_threshold_secs_setting,
-            shortcut::change_hybrid_short_audio_model_setting,
-            shortcut::change_hybrid_long_audio_model_setting,
-            shortcut::change_adaptive_parakeet_thresholds_setting,
-            shortcut::change_verification_mode_setting,
             shortcut::change_vad_sensitivity_setting,
             shortcut::change_live_captions_enabled_setting,
             shortcut::change_overlay_scale_setting,

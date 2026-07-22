@@ -55,10 +55,6 @@ pub(crate) fn sanitize_floats(settings: &mut AppSettings) {
         error!("overlay_scale is NaN, resetting to default");
         settings.overlay_scale = default_overlay_scale();
     }
-    if settings.hybrid_threshold_secs.is_nan() {
-        error!("hybrid_threshold_secs is NaN, resetting to default");
-        settings.hybrid_threshold_secs = default_hybrid_threshold_secs();
-    }
 }
 
 /// Helper: serialize settings to a serde_json::Value, logging errors instead of panicking.

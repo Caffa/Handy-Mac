@@ -1308,12 +1308,12 @@ fn apply_and_reload_accelerator(app: &AppHandle, s: settings::AppSettings) {
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_whisper_accelerator_setting(
+pub fn change_transcribe_accelerator_setting(
     app: AppHandle,
-    accelerator: settings::WhisperAcceleratorSetting,
+    accelerator: settings::TranscribeAcceleratorSetting,
 ) -> Result<(), String> {
     let mut s = settings::get_settings_safe(&app);
-    s.whisper_accelerator = accelerator;
+    s.transcribe_accelerator = accelerator;
     apply_and_reload_accelerator(&app, s);
     Ok(())
 }
@@ -1332,9 +1332,9 @@ pub fn change_ort_accelerator_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_whisper_gpu_device(app: AppHandle, device: i32) -> Result<(), String> {
+pub fn change_transcribe_gpu_device(app: AppHandle, device: i32) -> Result<(), String> {
     let mut s = settings::get_settings_safe(&app);
-    s.whisper_gpu_device = device;
+    s.transcribe_gpu_device = device;
     apply_and_reload_accelerator(&app, s);
     Ok(())
 }
@@ -1352,73 +1352,6 @@ pub async fn get_available_accelerators(
     tauri::async_runtime::spawn_blocking(crate::managers::transcription::get_available_accelerators)
         .await
         .map_err(|e| format!("get_available_accelerators task failed: {}", e))
-}
-
-// ── Hybrid Mode Settings ──────────────────────────────────────────
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_mode_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_mode_enabled = enabled;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_threshold_secs_setting(app: AppHandle, secs: f64) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_threshold_secs = secs;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_short_audio_model_setting(
-    app: AppHandle,
-    model_id: Option<String>,
-) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_short_audio_model = model_id;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_long_audio_model_setting(
-    app: AppHandle,
-    model_id: Option<String>,
-) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_long_audio_model = model_id;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-// ── Adaptive Thresholds & Verification Mode ─────────────────────
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_adaptive_parakeet_thresholds_setting(
-    app: AppHandle,
-    enabled: bool,
-) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.adaptive_parakeet_thresholds = enabled;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_verification_mode_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.verification_mode = enabled;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
 }
 
 #[tauri::command]

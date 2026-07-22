@@ -512,25 +512,7 @@ impl super::ShortcutAction for TranscribeAction {
                                 }
                             };
 
-                            // Get fallback models from settings (hybrid mode models)
-                            let fallback_models = {
-                                let mut models = Vec::new();
-                                if settings.hybrid_mode_enabled {
-                                    if let Some(short_model) = &settings.hybrid_short_audio_model {
-                                        if short_model != &settings.selected_model {
-                                            models.push(short_model.clone());
-                                        }
-                                    }
-                                    if let Some(long_model) = &settings.hybrid_long_audio_model {
-                                        if long_model != &settings.selected_model
-                                            && !models.contains(long_model)
-                                        {
-                                            models.push(long_model.clone());
-                                        }
-                                    }
-                                }
-                                models
-                            };
+                            let fallback_models: Vec<String> = Vec::new();
 
                             // Save entry with empty text so user can retry
                             let history_entry_id = if wav_saved {
