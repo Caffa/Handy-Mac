@@ -237,6 +237,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(Arc::new(session::SessionTracker::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
     app_handle.manage(Arc::new(SettingsWriter::new()));
+    app_handle.manage(Arc::new(Mutex::new(())));
 
     // Initialize the in-memory settings cache with settings loaded from disk.
     // This must happen AFTER the store plugin is initialized and AFTER

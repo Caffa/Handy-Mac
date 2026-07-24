@@ -119,6 +119,31 @@ pub fn check_shortcut_conflicts(binding: String) -> Vec<ConflictInfo> {
     conflicts::detect_conflicts(&binding)
 }
 
+/// Apply a cancel binding update to settings.
+/// Returns the updated ShortcutBinding.
+fn apply_cancel_binding_update(
+    settings: &mut crate::settings::AppSettings,
+    id: &str,
+    new_binding: String,
+) -> ShortcutBinding {
+    let mut b = settings.bindings.remove(id).unwrap_or_else(|| {
+        settings::get_default_settings()
+            .bindings
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| ShortcutBinding {
+                id: id.to_string(),
+                name: "Cancel".to_string(),
+                description: "Cancels the current recording.".to_string(),
+                default_binding: "escape".to_string(),
+                current_binding: "escape".to_string(),
+            })
+    });
+    b.current_binding = new_binding;
+    settings.bindings.insert(id.to_string(), b.clone());
+    b
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_binding(
@@ -130,6 +155,10 @@ pub fn change_binding(
     if binding.trim().is_empty() {
         return Err("Binding cannot be empty".to_string());
     }
+
+    // Serialize binding updates to prevent TOCTOU races
+    let lock: tauri::State<'_, Arc<Mutex<()>>> = app.state();
+    let _lock = lock.lock();
 
     let mut settings = settings::get_settings_safe(&app);
 
@@ -163,17 +192,17 @@ pub fn change_binding(
     // If this is the cancel binding, just update the settings and return
     // It's managed dynamically, so we don't register/unregister here
     if id == "cancel" {
-        if let Some(mut b) = settings.bindings.get(&id).cloned() {
-            b.current_binding = binding;
-            settings.bindings.insert(id.clone(), b.clone());
-            settings::write_settings_safe(&app, settings);
-            return Ok(BindingResponse {
-                success: true,
-                binding: Some(b.clone()),
-                error: None,
-            });
-        }
+        let b = apply_cancel_binding_update(&mut settings, &id, binding);
+        settings::write_settings_safe(&app, settings);
+        return Ok(BindingResponse {
+            success: true,
+            binding: Some(b),
+            error: None,
+        });
     }
+
+    // Defensive: cancel should never reach the registration path
+    debug_assert!(id != "cancel", "cancel binding should have been handled above");
 
     // Unregister the existing binding
     if let Err(e) = unregister_shortcut(&app, binding_to_modify.clone()) {
@@ -1524,4 +1553,47 @@ pub fn change_noise_suppression_level_setting(app: AppHandle, level: String) -> 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::get_default_settings;
+
+    #[test]
+    fn apply_cancel_binding_inserts_when_missing() {
+        let mut settings = get_default_settings();
+        settings.bindings.remove("cancel");
+        assert!(!settings.bindings.contains_key("cancel"));
+
+        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
+
+        assert_eq!(result.current_binding, "cmd+backspace");
+        assert!(settings.bindings.contains_key("cancel"));
+        assert_eq!(settings.bindings["cancel"].current_binding, "cmd+backspace");
+    }
+
+    #[test]
+    fn apply_cancel_binding_overrides_existing() {
+        let mut settings = get_default_settings();
+        assert_eq!(settings.bindings["cancel"].current_binding, "escape");
+
+        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+shift+x".to_string());
+
+        assert_eq!(result.current_binding, "cmd+shift+x");
+        assert_eq!(settings.bindings["cancel"].current_binding, "cmd+shift+x");
+    }
+
+    #[test]
+    fn apply_cancel_binding_preserves_other_bindings() {
+        let mut settings = get_default_settings();
+        let original_transcribe = settings.bindings["transcribe"].clone();
+
+        apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
+
+        assert_eq!(
+            settings.bindings["transcribe"].current_binding,
+            original_transcribe.current_binding
+        );
+    }
 }
