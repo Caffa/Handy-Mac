@@ -385,6 +385,19 @@ pub fn set_overlay_force_click_through(
     {
         OVERLAY_FORCE_CLICK_THROUGH.store(force_click_through, Ordering::SeqCst);
         log::debug!("set_overlay_force_click_through: {}", force_click_through);
+
+        // When enabling force click-through, also restore ignoresMouseEvents(true)
+        // in case the NSTrackingArea's mouseEntered already disabled it.
+        if force_click_through {
+            if let Some(overlay_window) = app.get_webview_window("recording_overlay") {
+                let window = overlay_window.clone();
+                let _ = overlay_window.run_on_main_thread(move || {
+                    if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
+                        panel.set_ignores_mouse_events(true);
+                    }
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -919,6 +932,15 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     // On macOS, orderFrontRegardless (called by tauri-nspanel's show())
     // activates the Handy app, stealing focus from the user's target app.
     crate::focus::save_frontmost_app(app_handle);
+
+    // Set force click-through on the Rust side for non-interactive router phases.
+    // This eliminates the race where the NSTrackingArea's mouseEntered fires
+    // before the frontend's useEffect can set the flag asynchronously.
+    #[cfg(target_os = "macos")]
+    {
+        let should_force = matches!(mode, OverlayMode::Router) && state == "processing";
+        OVERLAY_FORCE_CLICK_THROUGH.store(should_force, Ordering::SeqCst);
+    }
 
     // Position the window with dynamic height based on state and mode.
     // Dynamic height ensures the window only covers what's needed, keeping
