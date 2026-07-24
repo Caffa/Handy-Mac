@@ -138,6 +138,8 @@
     "modelReady": "Model Ready",
     "loading": "Loading {{modelName}}...",
     "loadingGeneric": "Loading...",
+    "loadingWithQueued": "{{baseText}} → {{pendingModelName}}",
+    "loadingAnotherModel": "another model",
     "modelError": "Model Error",
     "modelUnloaded": "Model Unloaded",
     "noModelDownloadRequired": "No Model - Download Required",

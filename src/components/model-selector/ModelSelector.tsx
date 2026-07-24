@@ -41,8 +41,23 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   // Track pending model switch for optimistic display
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
+  // Track when the current model load started for elapsed time display
+  const [loadingStartTime, setLoadingStartTime] = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState<number>(0);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Update elapsed time display every second while a model is loading
+  useEffect(() => {
+    if (loadingStartTime && modelStatus === "loading") {
+      const interval = setInterval(() => {
+        setElapsedTime(Math.floor((Date.now() - loadingStartTime) / 1000));
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setElapsedTime(0);
+    }
+  }, [loadingStartTime, modelStatus]);
 
   const displayModelId = pendingModelId || currentModel;
 
@@ -78,16 +93,27 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
           case "loading_started":
             setModelStatus("loading");
             setModelError(null);
+            setLoadingStartTime(Date.now());
+            break;
+          case "loading_queued":
+            // Another load is in progress, this one is queued.
+            setModelStatus("loading");
+            setModelError(null);
+            // Keep pendingModelId set so UI shows the queued model.
+            // Don't reset the timer so the queued display continues
+            // counting elapsed time.
             break;
           case "loading_completed":
             setModelStatus("ready");
             setModelError(null);
             setPendingModelId(null);
+            setLoadingStartTime(null);
             break;
           case "loading_failed":
             setModelStatus("error");
             setModelError(error || "Failed to load model");
             setPendingModelId(null);
+            setLoadingStartTime(null);
             break;
           case "unloaded":
             setModelStatus("unloaded");
@@ -216,12 +242,26 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
         return currentModelInfo
           ? getTranslatedModelName(currentModelInfo, t)
           : t("modelSelector.modelReady");
-      case "loading":
-        return currentModelInfo
+      case "loading": {
+        const timeStr = elapsedTime > 0 ? ` (${elapsedTime}s)` : "";
+        const baseText = currentModelInfo
           ? t("modelSelector.loading", {
               modelName: getTranslatedModelName(currentModelInfo, t),
             })
           : t("modelSelector.loadingGeneric");
+
+        if (pendingModelId && pendingModelId !== displayModelId) {
+          const pendingModel = models.find((m) => m.id === pendingModelId);
+          const pendingName = pendingModel
+            ? getTranslatedModelName(pendingModel, t)
+            : t("modelSelector.loadingAnotherModel");
+          return t("modelSelector.loadingWithQueued", {
+            baseText: `${baseText}${timeStr}`,
+            pendingModelName: pendingName,
+          });
+        }
+        return baseText + timeStr;
+      }
       case "extracting":
         return currentModelInfo
           ? t("modelSelector.extracting", {
