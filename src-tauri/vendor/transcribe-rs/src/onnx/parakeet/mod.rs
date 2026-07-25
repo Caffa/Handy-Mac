@@ -518,7 +518,12 @@ impl ParakeetModel {
             .filter_map(|&id| {
                 let idx = id as usize;
                 if idx < self.vocab.len() {
-                    Some(self.vocab[idx].clone())
+                    let token = &self.vocab[idx];
+                    if token == "<unk>" {
+                        None
+                    } else {
+                        Some(token.clone())
+                    }
                 } else {
                     None
                 }

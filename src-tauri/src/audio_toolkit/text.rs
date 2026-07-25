@@ -1061,6 +1061,9 @@ pub fn process_transcription_text(
     spelling_dictionary: SpellingDictionary,
     repetition_suppression_level: u8,
 ) -> String {
+    // Step 0: Strip <unk> tokens that some models (e.g. Parakeet) emit.
+    let text = text.replace("<unk>", "");
+
     // Step 1: Word correction.
     // Determine whether custom words exist (for skipping Whisper models that already
     // received initial_prompt hints) and apply the appropriate correction mode.
@@ -1070,14 +1073,14 @@ pub fn process_transcription_text(
     // WordBias/Pronunciation only apply for non-Whisper models.
     let mut result = match word_correction_mode {
         WordCorrectionMode::Replacement if !word_replacements.is_empty() => {
-            apply_word_replacements(text, word_replacements)
+            apply_word_replacements(&text, word_replacements)
         }
         _ if has_words && !is_whisper => match word_correction_mode {
             WordCorrectionMode::WordBias => {
-                apply_custom_words(text, custom_words, word_correction_threshold)
+                apply_custom_words(&text, custom_words, word_correction_threshold)
             }
             WordCorrectionMode::Pronunciation => {
-                apply_advanced_custom_words(text, advanced_custom_words, word_correction_threshold)
+                apply_advanced_custom_words(&text, advanced_custom_words, word_correction_threshold)
             }
             WordCorrectionMode::Replacement => text.to_string(),
         },
