@@ -192,8 +192,13 @@ pub fn change_binding(
     // If this is the cancel binding, just update the settings and return
     // It's managed dynamically, so we don't register/unregister here
     if id == "cancel" {
-        let b = apply_cancel_binding_update(&mut settings, &id, binding);
+        info!("[CANCEL-DEBUG] Saving cancel binding: '{}' -> '{}'", 
+            settings.bindings.get("cancel").map(|b| b.current_binding.as_str()).unwrap_or("MISSING"),
+            binding);
+        let b = apply_cancel_binding_update(&mut settings, &id, binding.clone());
+        info!("[CANCEL-DEBUG] After apply: current_binding = '{}'", b.current_binding);
         settings::write_settings_safe(&app, settings);
+        info!("[CANCEL-DEBUG] write_settings_safe called");
         return Ok(BindingResponse {
             success: true,
             binding: Some(b),

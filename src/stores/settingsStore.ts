@@ -372,8 +372,10 @@ export const useSettingsStore = create<SettingsStore>()(
 
     checkCustomSounds: async () => {
       try {
-        const sounds = await commands.checkCustomSounds();
-        get().setCustomSounds(sounds);
+        const result = await commands.checkCustomSounds();
+        if (result.status === "ok") {
+          get().setCustomSounds(result.data);
+        }
       } catch (error) {
         console.error("Failed to check custom sounds:", error);
       }

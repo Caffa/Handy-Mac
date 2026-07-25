@@ -193,9 +193,13 @@ enum LoadedEngine {
 
 /// RAII guard that clears the `is_loading` flag and notifies waiters on drop.
 /// Ensures the loading flag is always reset, even on early returns or panics.
+/// If a pending model request was queued while the load was in progress, the
+/// guard auto-loads that model before releasing the slot.
 pub struct LoadingGuard {
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
+    pending_model_id: Arc<Mutex<Option<String>>>,
+    app_handle: AppHandle,
 }
 
 impl Drop for LoadingGuard {
@@ -209,8 +213,40 @@ impl Drop for LoadingGuard {
                 e.into_inner()
             }
         };
-        *is_loading = false;
-        self.loading_condvar.notify_all();
+
+        // Check for a pending model request before releasing the loading slot.
+        // Keep `is_loading` true while the pending model auto-loads so another
+        // switch cannot steal the slot and starve the queued request.
+        let pending = self.pending_model_id.lock().unwrap().take();
+        if let Some(model_id) = pending {
+            info!("Auto-loading pending model: {}", model_id);
+            drop(is_loading);
+
+            let app_handle = self.app_handle.clone();
+            let is_loading = self.is_loading.clone();
+            let loading_condvar = self.loading_condvar.clone();
+            let pending_model_id = self.pending_model_id.clone();
+
+            std::thread::spawn(move || {
+                let _guard = LoadingGuard {
+                    is_loading,
+                    loading_condvar,
+                    pending_model_id,
+                    app_handle: app_handle.clone(),
+                };
+                if let Some(tm) =
+                    app_handle.try_state::<Arc<parking_lot::Mutex<TranscriptionManager>>>()
+                {
+                    let tm_clone = tm.lock().clone();
+                    if let Err(e) = tm_clone.load_model(&model_id) {
+                        warn!("Failed to auto-load pending model {}: {}", model_id, e);
+                    }
+                }
+            });
+        } else {
+            *is_loading = false;
+            self.loading_condvar.notify_all();
+        }
     }
 }
 
@@ -256,6 +292,9 @@ pub struct TranscriptionManager {
     watcher_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
+    /// A model switch requested while another load is in progress.
+    /// When the current load completes, auto-switch to this model.
+    pending_model_id: Arc<Mutex<Option<String>>>,
     reload_model_on_next_use: Arc<AtomicBool>,
     /// Routes real-time audio frames to the active streaming worker; see
     /// [`StreamRouter`]. Shared with the audio recorder so per-frame feeds skip
@@ -296,6 +335,7 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
+            pending_model_id: Arc::new(Mutex::new(None)),
             reload_model_on_next_use: Arc::new(AtomicBool::new(false)),
             router: Arc::new(StreamRouter::new()),
             stream_active: Arc::new(AtomicBool::new(false)),
@@ -399,6 +439,21 @@ impl TranscriptionManager {
         *self.is_loading.lock().unwrap()
     }
 
+    /// Set a pending model request. Called when a switch is requested while
+    /// another load is in progress. The pending model will auto-load when the
+    /// current load completes.
+    pub fn set_pending_model(&self, model_id: &str) {
+        let mut pending = self.pending_model_id.lock().unwrap();
+        *pending = Some(model_id.to_string());
+        info!("Pending model request queued: {}", model_id);
+    }
+
+    /// Take the pending model ID (returns None if no pending request).
+    pub fn take_pending_model(&self) -> Option<String> {
+        let mut pending = self.pending_model_id.lock().unwrap();
+        pending.take()
+    }
+
     /// Accelerator changes should not disturb the current transcription. Mark
     /// the cached engine stale; the next model-use path reloads it with the
     /// latest settings.
@@ -419,6 +474,8 @@ impl TranscriptionManager {
         Some(LoadingGuard {
             is_loading: self.is_loading.clone(),
             loading_condvar: self.loading_condvar.clone(),
+            pending_model_id: self.pending_model_id.clone(),
+            app_handle: self.app_handle.clone(),
         })
     }
 
@@ -533,11 +590,13 @@ impl TranscriptionManager {
                 error: None,
             },
         );
+        debug!("[LOAD-TRACE] loading_started event emitted for {}", model_id);
 
         let model_info = self
             .model_manager
             .get_model_info(model_id)
             .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
+        debug!("[LOAD-TRACE] got model_info for {}, engine_type={:?}", model_id, model_info.engine_type);
 
         if !model_info.is_downloaded {
             let error_msg = "Model not downloaded";
@@ -554,6 +613,7 @@ impl TranscriptionManager {
         }
 
         let model_path = self.model_manager.get_model_path(model_id)?;
+        debug!("[LOAD-TRACE] got model_path: {:?}", model_path);
 
         // Drop the current engine BEFORE building the new one so transcribe-cpp
         // frees the previous native context first — avoids holding two models at
@@ -563,6 +623,7 @@ impl TranscriptionManager {
             let mut engine = self.lock_engine();
             *engine = None;
         }
+        debug!("[LOAD-TRACE] old engine dropped, entering engine_type match for {}", model_id);
         {
             let mut current_model = self.current_model_id.lock().unwrap();
             *current_model = None;
@@ -601,10 +662,18 @@ impl TranscriptionManager {
                         )
                     }
                 };
+                debug!("[LOAD-TRACE] backend resolved: {:?}, gpu_device={}", backend, gpu_device);
                 let model_options = ModelOptions {
                     backend,
                     gpu_device,
                 };
+                // Log transcribe-cpp version for debugging load failures
+                let tc_version = transcribe_cpp::version();
+                let tc_compiled = transcribe_cpp::compiled_version();
+                info!(
+                    "Loading model '{}' via transcribe-cpp (runtime={}, compiled={}, backend={:?}, gpu_device={})",
+                    model_id, tc_version, tc_compiled, backend, gpu_device
+                );
                 let model = Model::load_with(&model_path, &model_options).map_err(|e| {
                     let error_msg = format!("Failed to load whisper model {}: {}", model_id, e);
                     emit_loading_failed(&error_msg);
@@ -643,6 +712,10 @@ impl TranscriptionManager {
                     caps.supports_streaming,
                     caps.supports_translate,
                     caps.supports_language_detect
+                );
+                info!(
+                    "Successfully loaded model '{}' via transcribe-cpp",
+                    model_id
                 );
                 LoadedEngine::TranscribeCpp(session)
             }

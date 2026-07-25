@@ -61,7 +61,12 @@ export const AccelerationSelector: FC<AccelerationSelectorProps> = ({
   const [ortOptions, setOrtOptions] = useState<DropdownOption[]>([]);
 
   useEffect(() => {
-    commands.getAvailableAccelerators().then((available) => {
+    commands.getAvailableAccelerators().then((result) => {
+      if (result.status !== "ok") {
+        console.error("Failed to get available accelerators:", result.error);
+        return;
+      }
+      const available = result.data;
       // Build combined Whisper options: Auto, [GPU devices...], CPU
       const opts: DropdownOption[] = [
         {
@@ -89,7 +94,7 @@ export const AccelerationSelector: FC<AccelerationSelectorProps> = ({
         ? available.ort
         : ["auto", ...available.ort];
       setOrtOptions(
-        ortVals.map((v) => ({
+        ortVals.map((v: string) => ({
           value: v,
           label: ORT_LABELS[v as OrtAcceleratorSetting] ?? v,
         })),
