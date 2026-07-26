@@ -3,13 +3,13 @@
 //! For each enum in `settings/types.rs` that derives `Serialize + Deserialize`,
 //! verifies that `serde_json::from_str(&serde_json::to_string(&x).unwrap()).unwrap() == x`.
 
+use handy_app_lib::audio_toolkit::SpellingDictionary;
 use handy_app_lib::settings::{
     AutoSubmitKey, ClipboardHandling, KeyboardImplementation, ModelUnloadTimeout,
     NoiseSuppressionLevel, OrtAcceleratorSetting, OverlayPosition, OverlayScreenTarget,
     PasteMethod, RecordingRetentionPeriod, SoundTheme, TypingTool, VadSensitivity,
     WhisperAcceleratorSetting, WordCorrectionMode,
 };
-use handy_app_lib::audio_toolkit::SpellingDictionary;
 use proptest::prelude::*;
 
 // ─── Strategy helpers ───────────────────────────────────────────────────

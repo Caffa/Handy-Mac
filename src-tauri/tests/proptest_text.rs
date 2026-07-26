@@ -5,8 +5,7 @@
 //! `detect_repeated_words`, `convert_us_to_british`, and `apply_custom_words`.
 
 use handy_app_lib::audio_toolkit::{
-    apply_custom_words, convert_us_to_british, detect_repeated_words,
-    suppress_repeated_words,
+    apply_custom_words, convert_us_to_british, detect_repeated_words, suppress_repeated_words,
 };
 use proptest::prelude::*;
 
@@ -77,7 +76,10 @@ proptest! {
 #[test]
 fn detect_repeated_empty_yields_nothing() {
     let result = detect_repeated_words("");
-    assert!(result.is_empty(), "Empty string should yield no repetitions");
+    assert!(
+        result.is_empty(),
+        "Empty string should yield no repetitions"
+    );
 }
 
 // ─── convert_us_to_british ───────────────────────────────────────────────

@@ -4,7 +4,6 @@ import { listen } from "@tauri-apps/api/event";
 import { commands } from "@/bindings";
 import { getTranslatedModelName } from "../../lib/utils/modelTranslation";
 import { useModelStore } from "../../stores/modelStore";
-import { useSettings } from "../../hooks/useSettings";
 import ModelStatusButton from "./ModelStatusButton";
 import ModelDropdown from "./ModelDropdown";
 import DownloadProgressDisplay from "./DownloadProgressDisplay";
@@ -37,28 +36,28 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
     selectModel,
   } = useModelStore();
 
-  const { getSetting } = useSettings();
-
-  const hybridModeEnabled = getSetting("hybrid_mode_enabled") ?? false;
-  const hybridShortModel = getSetting("hybrid_short_audio_model") ?? null;
-  const hybridLongModel = getSetting("hybrid_long_audio_model") ?? null;
-
-  // Build hybrid roles map: model_id -> "short" | "long"
-  const hybridRoles = useMemo<Record<string, "short" | "long">>(() => {
-    if (!hybridModeEnabled) return {};
-    const roles: Record<string, "short" | "long"> = {};
-    if (hybridShortModel) roles[hybridShortModel] = "short";
-    if (hybridLongModel) roles[hybridLongModel] = "long";
-    return roles;
-  }, [hybridModeEnabled, hybridShortModel, hybridLongModel]);
-
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [modelError, setModelError] = useState<string | null>(null);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   // Track pending model switch for optimistic display
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
+  // Track when the current model load started for elapsed time display
+  const [loadingStartTime, setLoadingStartTime] = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState<number>(0);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Update elapsed time display every second while a model is loading
+  useEffect(() => {
+    if (loadingStartTime && modelStatus === "loading") {
+      const interval = setInterval(() => {
+        setElapsedTime(Math.floor((Date.now() - loadingStartTime) / 1000));
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setElapsedTime(0);
+    }
+  }, [loadingStartTime, modelStatus]);
 
   const displayModelId = pendingModelId || currentModel;
 
@@ -94,16 +93,27 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
           case "loading_started":
             setModelStatus("loading");
             setModelError(null);
+            setLoadingStartTime(Date.now());
+            break;
+          case "loading_queued":
+            // Another load is in progress, this one is queued.
+            setModelStatus("loading");
+            setModelError(null);
+            // Keep pendingModelId set so UI shows the queued model.
+            // Don't reset the timer so the queued display continues
+            // counting elapsed time.
             break;
           case "loading_completed":
             setModelStatus("ready");
             setModelError(null);
             setPendingModelId(null);
+            setLoadingStartTime(null);
             break;
           case "loading_failed":
             setModelStatus("error");
             setModelError(error || "Failed to load model");
             setPendingModelId(null);
+            setLoadingStartTime(null);
             break;
           case "unloaded":
             setModelStatus("unloaded");
@@ -232,12 +242,26 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
         return currentModelInfo
           ? getTranslatedModelName(currentModelInfo, t)
           : t("modelSelector.modelReady");
-      case "loading":
-        return currentModelInfo
+      case "loading": {
+        const timeStr = elapsedTime > 0 ? ` (${elapsedTime}s)` : "";
+        const baseText = currentModelInfo
           ? t("modelSelector.loading", {
               modelName: getTranslatedModelName(currentModelInfo, t),
             })
           : t("modelSelector.loadingGeneric");
+
+        if (pendingModelId && pendingModelId !== displayModelId) {
+          const pendingModel = models.find((m) => m.id === pendingModelId);
+          const pendingName = pendingModel
+            ? getTranslatedModelName(pendingModel, t)
+            : t("modelSelector.loadingAnotherModel");
+          return t("modelSelector.loadingWithQueued", {
+            baseText: `${baseText}${timeStr}`,
+            pendingModelName: pendingName,
+          });
+        }
+        return baseText + timeStr;
+      }
       case "extracting":
         return currentModelInfo
           ? t("modelSelector.extracting", {
@@ -284,7 +308,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
             models={models}
             currentModelId={displayModelId}
             onModelSelect={handleModelSelect}
-            hybridRoles={hybridRoles}
           />
         )}
       </div>

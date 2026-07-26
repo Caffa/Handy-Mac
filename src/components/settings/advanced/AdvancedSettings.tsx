@@ -20,9 +20,6 @@ import { useSettings } from "../../../hooks/useSettings";
 import { KeyboardImplementationSelector } from "../debug/KeyboardImplementationSelector";
 import { AccelerationSelector } from "../AccelerationSelector";
 import { LazyStreamClose } from "../LazyStreamClose";
-import { HybridMode } from "../HybridMode";
-import { ToggleSwitch } from "../../ui/ToggleSwitch";
-import { VerificationMode } from "../VerificationMode";
 import { OverlayScale } from "../OverlayScale";
 
 export const AdvancedSettings: React.FC = () => {
@@ -68,20 +65,6 @@ export const AdvancedSettings: React.FC = () => {
           />
           <AccelerationSelector descriptionMode="tooltip" grouped={true} />
           <LazyStreamClose descriptionMode="tooltip" grouped={true} />
-          <HybridMode descriptionMode="tooltip" grouped={true} />
-          <ToggleSwitch
-            checked={getSetting("adaptive_parakeet_thresholds") ?? false}
-            onChange={(checked) =>
-              updateSetting("adaptive_parakeet_thresholds", checked)
-            }
-            disabled={isUpdating("adaptive_parakeet_thresholds")}
-            isUpdating={isUpdating("adaptive_parakeet_thresholds")}
-            label={t("settings.advanced.adaptiveThresholds.label")}
-            description={t("settings.advanced.adaptiveThresholds.description")}
-            descriptionMode="tooltip"
-            grouped={true}
-          />
-          <VerificationMode descriptionMode="tooltip" grouped={true} />
         </SettingsGroup>
       )}
     </div>

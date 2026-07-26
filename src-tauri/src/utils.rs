@@ -180,3 +180,18 @@ pub fn is_kde_plasma() -> bool {
 pub fn is_kde_wayland() -> bool {
     is_wayland() && is_kde_plasma()
 }
+
+/// Returns true when running an x64 Windows binary under ARM64 emulation.
+/// GPU acceleration is disabled in this configuration because emulated
+/// Vulkan/Metal interop is unreliable.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub fn is_windows_x64_emulated_on_arm64() -> bool {
+    std::env::var("PROCESSOR_IDENTIFIER")
+        .map(|v| v.to_uppercase().contains("ARM"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+pub fn is_windows_x64_emulated_on_arm64() -> bool {
+    false
+}

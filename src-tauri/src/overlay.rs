@@ -5,6 +5,7 @@ use crate::transcription_coordinator::{emit_app_state, AppState};
 use log::{debug, info};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 use crate::transcription_coordinator::TranscriptionCoordinator;
@@ -43,6 +44,23 @@ static OVERLAY_CAN_BECOME_KEY: AtomicBool = AtomicBool::new(false);
 /// ActiveAlways fires cursor-tracking events even for click-through panels.
 #[cfg(target_os = "macos")]
 static OVERLAY_CURSOR_IN_PANEL: AtomicBool = AtomicBool::new(false);
+
+/// When true, the mouseEntered callback does NOT disable ignoresMouseEvents.
+/// This keeps the panel fully click-through during non-interactive phases
+/// (router filing, result display) so the transparent window doesn't steal clicks.
+static OVERLAY_FORCE_CLICK_THROUGH: AtomicBool = AtomicBool::new(false);
+
+// Cached "overlay is enabled" flag, kept in sync with the overlay_position
+// setting. Avoids reading the Tauri store on every audio callback (~24 Hz
+// during recording). Defaults to false so the audio path doesn't emit until
+// lib.rs::setup populates the cache from initial settings.
+static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(false);
+
+// Throttle mic-level emission to ~30 FPS to mitigate the WebKitWebProcess
+// memory leak (tauri-apps/wry#1489). The raw audio callback fires far faster
+// than the UI needs; capping the rate cuts per-frame eval_script/IPC volume.
+static LAST_MIC_LEVEL_EMIT: AtomicU64 = AtomicU64::new(0);
+const EMIT_THROTTLE_MS: u64 = 33; // ~30 FPS
 
 /// Swizzle the `canBecomeKeyWindow` method on the RecordingOverlayPanel class
 /// to check the `OVERLAY_CAN_BECOME_KEY` global flag instead of always returning false.
@@ -142,6 +160,16 @@ fn swizzle_mouse_tracking() {
             _event: &objc2::runtime::AnyObject,
         ) {
             OVERLAY_CURSOR_IN_PANEL.store(true, Ordering::SeqCst);
+
+            // If force click-through is enabled, don't disable ignoresMouseEvents.
+            // This keeps the panel click-through during non-interactive phases
+            // (router filing, result display) so the transparent window doesn't block clicks.
+            if OVERLAY_FORCE_CLICK_THROUGH.load(Ordering::SeqCst) {
+                log::debug!(
+                    "Overlay mouse entered: force click-through active, keeping ignoresMouseEvents"
+                );
+                return;
+            }
 
             // Disable ignoresMouseEvents so interactive elements (buttons,
             // textareas) can receive mouse events.
@@ -338,6 +366,40 @@ pub fn set_overlay_can_become_key(app: AppHandle, can_become_key: bool) -> Resul
         let _ = (app, can_become_key);
         Ok(())
     }
+}
+
+/// Tauri command to force the overlay panel to stay click-through regardless
+/// of cursor position. When force_click_through is true, the mouseEntered
+/// callback does NOT disable ignoresMouseEvents, so the panel never steals
+/// clicks even when the cursor enters the panel area.
+///
+/// Used during non-interactive phases (router filing, result display) where
+/// the overlay shows status text but nothing the user needs to interact with.
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_force_click_through(
+    app: AppHandle,
+    force_click_through: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        OVERLAY_FORCE_CLICK_THROUGH.store(force_click_through, Ordering::SeqCst);
+        log::debug!("set_overlay_force_click_through: {}", force_click_through);
+
+        // When enabling force click-through, also restore ignoresMouseEvents(true)
+        // in case the NSTrackingArea's mouseEntered already disabled it.
+        if force_click_through {
+            if let Some(overlay_window) = app.get_webview_window("recording_overlay") {
+                let window = overlay_window.clone();
+                let _ = overlay_window.run_on_main_thread(move || {
+                    if let Ok(panel) = window.to_panel::<RecordingOverlayPanel>() {
+                        panel.set_ignores_mouse_events(true);
+                    }
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Tauri command to toggle whether the overlay panel accepts mouse events.
@@ -638,10 +700,12 @@ fn is_mouse_within_monitor(
 
 /// Returns overlay position and window height in logical coordinates (points on macOS).
 ///
-/// Uses monitor position/size directly rather than work_area(), which can
-/// return incorrect coordinates on macOS for monitors with negative positions.
-/// The per-platform OVERLAY_TOP_OFFSET / OVERLAY_BOTTOM_OFFSET constants
-/// already account for system chrome (menu bar, taskbar).
+/// On macOS, the Bottom anchor uses the work area (visibleFrame) so the overlay
+/// tracks the Dock — above it when shown, at the screen edge when hidden. This
+/// relies on tauri 2.11's work_area.position.y fix (#14655), the same bug that
+/// led PR #969 to abandon work_area for full monitor bounds. Top and the other
+/// platforms keep full monitor bounds plus the fixed offsets (work_area is
+/// unreliable on Wayland; Windows' offset clears the taskbar).
 ///
 /// We must use LogicalPosition (not PhysicalPosition) because Tauri/tao
 /// converts PhysicalPosition using the scale factor of the monitor the window
@@ -676,10 +740,20 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
             // Use pill height for positioning so the visible content sits at
             // the same screen position regardless of the taller transparent window.
             let window_extra = window_height - OVERLAY_PILL_HEIGHT;
-            let pos_y = monitor_y + monitor_height
-                - OVERLAY_PILL_HEIGHT
-                - OVERLAY_BOTTOM_OFFSET
-                - window_extra / 2.0;
+
+            // On macOS, use the work area (visibleFrame) so the overlay
+            // tracks the Dock — above it when shown, at the screen edge
+            // when hidden. work_area shares monitor.position's global
+            // coordinate space, so no monitor offset is added.
+            #[cfg(target_os = "macos")]
+            let bottom = {
+                let wa = monitor.work_area();
+                (wa.position.y as f64 + wa.size.height as f64) / scale
+            };
+            #[cfg(not(target_os = "macos"))]
+            let bottom = monitor_y + monitor_height;
+
+            let pos_y = bottom - OVERLAY_PILL_HEIGHT - OVERLAY_BOTTOM_OFFSET - window_extra / 2.0;
             debug!(
                 "calculate_overlay_position: Bottom/None position, y={}",
                 pos_y
@@ -859,6 +933,15 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     // activates the Handy app, stealing focus from the user's target app.
     crate::focus::save_frontmost_app(app_handle);
 
+    // Set force click-through on the Rust side for non-interactive router phases.
+    // This eliminates the race where the NSTrackingArea's mouseEntered fires
+    // before the frontend's useEffect can set the flag asynchronously.
+    #[cfg(target_os = "macos")]
+    {
+        let should_force = matches!(mode, OverlayMode::Router) && state == "processing";
+        OVERLAY_FORCE_CLICK_THROUGH.store(should_force, Ordering::SeqCst);
+    }
+
     // Position the window with dynamic height based on state and mode.
     // Dynamic height ensures the window only covers what's needed, keeping
     // transparent areas click-through at the OS level. Position jumps are
@@ -867,16 +950,12 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     position_overlay_fixed(app_handle, state, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
-        // BUGFIX (2026-07-01): On macOS, give the main thread time to process the
-        // position update before showing the window. The position is set via
-        // run_on_main_thread() which is asynchronous. Without this delay, the window
-        // can be shown before the position update completes, causing it to appear
-        // at the wrong position (center of screen instead of top/bottom).
-        // This is part of the fix for "Visualizer Positioning Bug — Center Screen After Router".
-        #[cfg(target_os = "macos")]
-        {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // NOTE: The 5ms sleep that was here has been replaced with a synchronous
+        // wait inside position_overlay_on_monitor() using a oneshot channel.
+        // position_overlay_on_monitor now blocks until the main thread confirms
+        // the position has been applied, so the window is correctly positioned
+        // before show() is called below. See position_overlay_on_monitor's
+        // #[cfg(target_os = "macos")] block for the recv_timeout logic.
 
         let _ = overlay_window.show();
 
@@ -1004,13 +1083,19 @@ fn position_overlay_on_monitor(
     #[cfg(target_os = "macos")]
     {
         let window = overlay_window.clone();
+        let (position_tx, position_rx) = std::sync::mpsc::channel();
         let _ = overlay_window.run_on_main_thread(move || {
             let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
                 width: actual_width,
                 height: actual_height,
             }));
+            let _ = position_tx.send(());
         });
+        // Wait for the main thread to apply the position before showing the window.
+        // Without this, the window can appear at the wrong position (center of screen)
+        // because show() is called before the async run_on_main_thread completes.
+        let _ = position_rx.recv_timeout(std::time::Duration::from_millis(200));
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1197,6 +1282,9 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
                 .map_or(false, |coord| coord.is_active_use());
 
             if !is_active {
+                // Reset force click-through so next show starts with clean state.
+                OVERLAY_FORCE_CLICK_THROUGH.store(false, Ordering::SeqCst);
+
                 // On macOS, reset ignores_mouse_events to false (accept events)
                 // before hiding, so the next show starts with a clean state.
                 // show_overlay_state will set ignores_mouse_events(true) again
@@ -1231,6 +1319,9 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
         // Hide immediately on main thread - no thread spawn, safer on crash
         let window_clone = overlay_window.clone();
         let _ = overlay_window.run_on_main_thread(move || {
+            // Reset force click-through so next show starts with clean state.
+            OVERLAY_FORCE_CLICK_THROUGH.store(false, Ordering::SeqCst);
+
             // On macOS, reset ignores_mouse_events to false before hiding,
             // so the next show starts with a clean state.
             #[cfg(target_os = "macos")]
@@ -1244,14 +1335,42 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
     }
 }
 
-pub fn emit_levels(app_handle: &AppHandle, levels: &Vec<f32>) {
-    // emit levels to main app
-    let _ = app_handle.emit("mic-level", levels);
+/// Update the cached overlay-enabled flag. Called from `lib.rs` at
+/// startup after settings load, and from `change_overlay_position_setting`
+/// whenever the user changes the overlay position.
+pub fn update_overlay_enabled_cache(enabled: bool) {
+    OVERLAY_ENABLED.store(enabled, Ordering::Relaxed);
+}
 
-    // also emit to the recording overlay if it's open
-    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
-        let _ = overlay_window.emit("mic-level", levels);
+pub fn emit_levels(app_handle: &AppHandle, levels: &Vec<f32>) {
+    // Skip emission when the overlay is disabled. The recording_overlay
+    // window is created at boot regardless of overlay_position, so
+    // without this guard a hidden overlay's WebKit subprocess still
+    // processes every event, driving unbounded memory growth (#1279).
+    if !OVERLAY_ENABLED.load(Ordering::Relaxed) {
+        return;
     }
+
+    // Throttle to ~30 FPS. Even with the overlay enabled, the raw audio
+    // callback fires far faster than the UI needs; capping emission rate
+    // cuts the per-frame `eval_script`/IPC volume that drives the wry
+    // memory growth in issue #1279 (upstream tauri-apps/wry#1489).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let last = LAST_MIC_LEVEL_EMIT.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < EMIT_THROTTLE_MS {
+        return;
+    }
+    LAST_MIC_LEVEL_EMIT.store(now, Ordering::Relaxed);
+
+    // Target only the overlay window. In Tauri 2 both `AppHandle::emit`
+    // and `WebviewWindow::emit` broadcast to all webviews; Tauri's
+    // listener filter then skips webviews with no registered listener
+    // for the event. `emit_to` produces a single eval_script call per
+    // callback, cutting per-callback WebKit dispatch work in half.
+    let _ = app_handle.emit_to("recording_overlay", "mic-level", levels);
 }
 
 // ---------------------------------------------------------------------------
@@ -1333,8 +1452,15 @@ mod tests {
         let after = OVERLAY_SESSION.load(Ordering::SeqCst);
 
         // bump_overlay_session returns the *previous* value (fetch_add semantics)
-        assert_eq!(returned, before, "bump_overlay_session should return the value before increment");
-        assert_eq!(after, before + 1, "OVERLAY_SESSION should increment by 1 after bump");
+        assert_eq!(
+            returned, before,
+            "bump_overlay_session should return the value before increment"
+        );
+        assert_eq!(
+            after,
+            before + 1,
+            "OVERLAY_SESSION should increment by 1 after bump"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1359,7 +1485,10 @@ mod tests {
         // Simulate: stale hide arrives with session_at_call = 0
         let should_hide = should_hide_with_session(session_at_call, false);
 
-        assert!(!should_hide, "Stale hide must be suppressed when session has changed");
+        assert!(
+            !should_hide,
+            "Stale hide must be suppressed when session has changed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1381,7 +1510,10 @@ mod tests {
         // No active recording — is_active = false
         let should_hide = should_hide_with_session(session_at_call, false);
 
-        assert!(should_hide, "Non-stale hide should succeed when session unchanged and not active");
+        assert!(
+            should_hide,
+            "Non-stale hide should succeed when session unchanged and not active"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1415,12 +1547,18 @@ mod tests {
 
         // Step 4: Stale hide from first recording arrives with session_at_call = 0
         let should_hide = should_hide_with_session(stale_hide_session, false);
-        assert!(!should_hide, "Stale hide from first recording must not dismiss second recording's overlay");
+        assert!(
+            !should_hide,
+            "Stale hide from first recording must not dismiss second recording's overlay"
+        );
 
         // Step 5: The new recording's own hide (with correct session) should work
         let current_session = OVERLAY_SESSION.load(Ordering::SeqCst);
         let should_hide_current = should_hide_with_session(current_session, false);
-        assert!(should_hide_current, "Current recording's hide should succeed when recording finishes");
+        assert!(
+            should_hide_current,
+            "Current recording's hide should succeed when recording finishes"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1439,7 +1577,10 @@ mod tests {
         // Session hasn't changed, but recording is still active
         let should_hide = should_hide_with_session(session_at_call, true);
 
-        assert!(!should_hide, "Hide must be suppressed when recording is still active (is_active_use = true)");
+        assert!(
+            !should_hide,
+            "Hide must be suppressed when recording is still active (is_active_use = true)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1456,14 +1597,26 @@ mod tests {
         let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
         bump_overlay_session(); // session changed
 
-        assert!(!should_hide_with_session(session_at_call, true), "Both guards: session changed + active → suppress");
-        assert!(!should_hide_with_session(session_at_call, false), "One guard: session changed → suppress");
+        assert!(
+            !should_hide_with_session(session_at_call, true),
+            "Both guards: session changed + active → suppress"
+        );
+        assert!(
+            !should_hide_with_session(session_at_call, false),
+            "One guard: session changed → suppress"
+        );
 
         // Reset, now test session unchanged but active
         reset_overlay_session();
         let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
-        assert!(!should_hide_with_session(session_at_call, true), "One guard: active → suppress");
-        assert!(should_hide_with_session(session_at_call, false), "No guards: session same + not active → proceed");
+        assert!(
+            !should_hide_with_session(session_at_call, true),
+            "One guard: active → suppress"
+        );
+        assert!(
+            should_hide_with_session(session_at_call, false),
+            "No guards: session same + not active → proceed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1479,28 +1632,35 @@ mod tests {
         reset_overlay_session();
 
         const ITERATIONS: u64 = 1000;
-        let bump_handles: Vec<_> = (0..2).map(|_| {
-            thread::spawn(|| {
-                for _ in 0..ITERATIONS {
-                    bump_overlay_session();
-                }
+        let bump_handles: Vec<_> = (0..2)
+            .map(|_| {
+                thread::spawn(|| {
+                    for _ in 0..ITERATIONS {
+                        bump_overlay_session();
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         let check_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let check_handles: Vec<_> = (0..2).map(|_| {
-            let counter = Arc::clone(&check_counter);
-            thread::spawn(move || {
-                for _ in 0..ITERATIONS {
-                    let session = OVERLAY_SESSION.load(Ordering::SeqCst);
-                    // The session value should always be >= 0 and non-decreasing
-                    // (we can't check monotonicity perfectly due to races, but
-                    // we can check it never overflows or wraps)
-                    assert!(session < u64::MAX / 2, "Session counter should not overflow");
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
+        let check_handles: Vec<_> = (0..2)
+            .map(|_| {
+                let counter = Arc::clone(&check_counter);
+                thread::spawn(move || {
+                    for _ in 0..ITERATIONS {
+                        let session = OVERLAY_SESSION.load(Ordering::SeqCst);
+                        // The session value should always be >= 0 and non-decreasing
+                        // (we can't check monotonicity perfectly due to races, but
+                        // we can check it never overflows or wraps)
+                        assert!(
+                            session < u64::MAX / 2,
+                            "Session counter should not overflow"
+                        );
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         for h in bump_handles {
             h.join().expect("Bump thread should not panic");
@@ -1514,7 +1674,9 @@ mod tests {
         assert!(
             final_session >= 2 * ITERATIONS,
             "Final session ({}) should be >= {} (2 threads × {} iterations)",
-            final_session, 2 * ITERATIONS, ITERATIONS
+            final_session,
+            2 * ITERATIONS,
+            ITERATIONS
         );
 
         // All check iterations should have completed (2 check threads × ITERATIONS each)
@@ -1537,9 +1699,18 @@ mod tests {
         let mut prev = OVERLAY_SESSION.load(Ordering::SeqCst);
         for i in 1..=100 {
             let returned = bump_overlay_session();
-            assert_eq!(returned, prev, "bump_overlay_session should return the previous value");
+            assert_eq!(
+                returned, prev,
+                "bump_overlay_session should return the previous value"
+            );
             let current = OVERLAY_SESSION.load(Ordering::SeqCst);
-            assert_eq!(current, prev + 1, "After bump #{}, session should be {}", i, prev + 1);
+            assert_eq!(
+                current,
+                prev + 1,
+                "After bump #{}, session should be {}",
+                i,
+                prev + 1
+            );
             prev = current;
         }
     }
@@ -1553,9 +1724,152 @@ mod tests {
     fn reset_overlay_session_works() {
         let _guard = TEST_LOCK.lock();
         OVERLAY_SESSION.store(42, Ordering::SeqCst);
-        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 42, "Precondition: session should be 42");
+        assert_eq!(
+            OVERLAY_SESSION.load(Ordering::SeqCst),
+            42,
+            "Precondition: session should be 42"
+        );
 
         reset_overlay_session();
-        assert_eq!(OVERLAY_SESSION.load(Ordering::SeqCst), 0, "After reset, session should be 0");
+        assert_eq!(
+            OVERLAY_SESSION.load(Ordering::SeqCst),
+            0,
+            "After reset, session should be 0"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 10: Initial state — session 0, no bump, no active
+    // Verifies the very first hide succeeds before any recording has started.
+    // Guards: edge case for fresh-app launch.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn initial_state_hide_succeeds() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Before any recording, session = 0, captured = 0 → hide succeeds
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(session_at_call, 0);
+        assert!(
+            should_hide_with_session(session_at_call, false),
+            "Hide should succeed in initial state (session=0, not active)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: Triple recording — third recording's hide succeeds after two bumps
+    // Scenario: Start rec1 (session 1), then rec2 (session 2), then rec3 (session 3).
+    // Stale hides from rec1/rec2 are suppressed; rec3's own hide succeeds.
+    // Guards: Regression test for multi-recording sequences.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn triple_recording_stale_hides_suppressed() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Rec 1 starts
+        let s1 = bump_overlay_session(); // returns 0, session now 1
+
+        // Rec 2 starts
+        let s2 = bump_overlay_session(); // returns 1, session now 2
+
+        // Rec 3 starts
+        let s3 = bump_overlay_session(); // returns 2, session now 3
+
+        // Stale hide from rec1 (session=0) should be suppressed
+        assert!(
+            !should_hide_with_session(s1, false),
+            "Stale hide from rec1 should be suppressed"
+        );
+        // Stale hide from rec2 (session=1) should be suppressed
+        assert!(
+            !should_hide_with_session(s2, false),
+            "Stale hide from rec2 should be suppressed"
+        );
+        // Rec3's own hide (session=2) should be suppressed — session is now 3
+        assert!(
+            !should_hide_with_session(s3, false),
+            "Stale hide from rec3 should be suppressed (session advanced to 3)"
+        );
+        // Current session hide should succeed
+        let current = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(current, 3);
+        assert!(
+            should_hide_with_session(current, false),
+            "Current session hide should succeed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12: Router flow simulation — recording → processing → idle
+    // Guards: Regression test for the router filing race condition.
+    //
+    // Simulates the exact router lifecycle:
+    // 1. User triggers recording (session bumped to 1)
+    // 2. Recording stops → Processing starts → coordinator goes Idle
+    // 3. hide_recording_overlay is called → captures session_at_call = 1
+    //    should_hide_with_session(1, false) → current session is 1 → hide succeeds
+    // 4. User starts a new recording (session bumped to 2)
+    // 5. A stale hide arrives with session_at_call=1 → session is now 2 → suppressed
+    // -----------------------------------------------------------------------
+    #[test]
+    fn router_flow_stale_hide_suppressed() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        // Step 1: User triggers recording via router binding
+        bump_overlay_session(); // returns 0, session now 1
+
+        // Step 2: Recording finishes, router subprocess starts,
+        // coordinator goes Idle (session stays at 1)
+
+        // Step 3: hide_recording_overlay is called for the router recording.
+        // In real code, session_at_call is captured at hide time (not show time).
+        let session_at_call_step3 = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(session_at_call_step3, 1);
+        let should_hide = should_hide_with_session(session_at_call_step3, false);
+        assert!(
+            should_hide,
+            "Router's own hide should succeed (session matches, not active)"
+        );
+
+        // Step 4: User starts a new recording (session bumped to 2)
+        bump_overlay_session(); // returns 1, session now 2
+        let session_now = OVERLAY_SESSION.load(Ordering::SeqCst);
+        assert_eq!(session_now, 2);
+
+        // Step 5: A stale hide from the router arrives (captured session=1)
+        // This is suppressed because session has advanced to 2.
+        let should_hide_stale = should_hide_with_session(session_at_call_step3, false);
+        assert!(
+            !should_hide_stale,
+            "Stale router hide must be suppressed after new recording starts"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 13: Hide suppressed when is_active=true regardless of session
+    // Even with matching session, active recording must prevent hide.
+    // Guards: Edge case for stop-command race.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn active_recording_blocks_hide_even_with_matching_session() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        let session_at_call = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        // Session matches, but is_active=true → hide suppressed
+        assert!(
+            !should_hide_with_session(session_at_call, true),
+            "Active recording must block hide even when session matches"
+        );
+
+        // Now deactivate, hide should succeed
+        assert!(
+            should_hide_with_session(session_at_call, false),
+            "After deactivation, hide should succeed with matching session"
+        );
     }
 }

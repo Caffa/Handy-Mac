@@ -119,6 +119,31 @@ pub fn check_shortcut_conflicts(binding: String) -> Vec<ConflictInfo> {
     conflicts::detect_conflicts(&binding)
 }
 
+/// Apply a cancel binding update to settings.
+/// Returns the updated ShortcutBinding.
+fn apply_cancel_binding_update(
+    settings: &mut crate::settings::AppSettings,
+    id: &str,
+    new_binding: String,
+) -> ShortcutBinding {
+    let mut b = settings.bindings.remove(id).unwrap_or_else(|| {
+        settings::get_default_settings()
+            .bindings
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| ShortcutBinding {
+                id: id.to_string(),
+                name: "Cancel".to_string(),
+                description: "Cancels the current recording.".to_string(),
+                default_binding: "escape".to_string(),
+                current_binding: "escape".to_string(),
+            })
+    });
+    b.current_binding = new_binding;
+    settings.bindings.insert(id.to_string(), b.clone());
+    b
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_binding(
@@ -130,6 +155,10 @@ pub fn change_binding(
     if binding.trim().is_empty() {
         return Err("Binding cannot be empty".to_string());
     }
+
+    // Serialize binding updates to prevent TOCTOU races
+    let lock: tauri::State<'_, Arc<Mutex<()>>> = app.state();
+    let _lock = lock.lock();
 
     let mut settings = settings::get_settings_safe(&app);
 
@@ -163,17 +192,17 @@ pub fn change_binding(
     // If this is the cancel binding, just update the settings and return
     // It's managed dynamically, so we don't register/unregister here
     if id == "cancel" {
-        if let Some(mut b) = settings.bindings.get(&id).cloned() {
-            b.current_binding = binding;
-            settings.bindings.insert(id.clone(), b.clone());
-            settings::write_settings_safe(&app, settings);
-            return Ok(BindingResponse {
-                success: true,
-                binding: Some(b.clone()),
-                error: None,
-            });
-        }
+        let b = apply_cancel_binding_update(&mut settings, &id, binding.clone());
+        settings::write_settings_safe(&app, settings);
+        return Ok(BindingResponse {
+            success: true,
+            binding: Some(b),
+            error: None,
+        });
     }
+
+    // Defensive: cancel should never reach the registration path
+    debug_assert!(id != "cancel", "cancel binding should have been handled above");
 
     // Unregister the existing binding
     if let Err(e) = unregister_shortcut(&app, binding_to_modify.clone()) {
@@ -597,6 +626,10 @@ pub fn change_overlay_position_setting(app: AppHandle, position: String) -> Resu
     };
     settings.overlay_position = parsed;
     settings::write_settings_safe(&app, settings);
+
+    // Keep the cached overlay-enabled flag in sync so emit_levels stops
+    // (or resumes) emitting on the next audio callback.
+    crate::overlay::update_overlay_enabled_cache(parsed != OverlayPosition::None);
 
     // Update overlay position without recreating window
     // Use default Transcribe mode since overlay is likely not visible
@@ -1304,12 +1337,12 @@ fn apply_and_reload_accelerator(app: &AppHandle, s: settings::AppSettings) {
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_whisper_accelerator_setting(
+pub fn change_transcribe_accelerator_setting(
     app: AppHandle,
-    accelerator: settings::WhisperAcceleratorSetting,
+    accelerator: settings::TranscribeAcceleratorSetting,
 ) -> Result<(), String> {
     let mut s = settings::get_settings_safe(&app);
-    s.whisper_accelerator = accelerator;
+    s.transcribe_accelerator = accelerator;
     apply_and_reload_accelerator(&app, s);
     Ok(())
 }
@@ -1328,9 +1361,9 @@ pub fn change_ort_accelerator_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_whisper_gpu_device(app: AppHandle, device: i32) -> Result<(), String> {
+pub fn change_transcribe_gpu_device(app: AppHandle, device: i32) -> Result<(), String> {
     let mut s = settings::get_settings_safe(&app);
-    s.whisper_gpu_device = device;
+    s.transcribe_gpu_device = device;
     apply_and_reload_accelerator(&app, s);
     Ok(())
 }
@@ -1348,73 +1381,6 @@ pub async fn get_available_accelerators(
     tauri::async_runtime::spawn_blocking(crate::managers::transcription::get_available_accelerators)
         .await
         .map_err(|e| format!("get_available_accelerators task failed: {}", e))
-}
-
-// ── Hybrid Mode Settings ──────────────────────────────────────────
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_mode_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_mode_enabled = enabled;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_threshold_secs_setting(app: AppHandle, secs: f64) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_threshold_secs = secs;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_short_audio_model_setting(
-    app: AppHandle,
-    model_id: Option<String>,
-) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_short_audio_model = model_id;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_hybrid_long_audio_model_setting(
-    app: AppHandle,
-    model_id: Option<String>,
-) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.hybrid_long_audio_model = model_id;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-// ── Adaptive Thresholds & Verification Mode ─────────────────────
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_adaptive_parakeet_thresholds_setting(
-    app: AppHandle,
-    enabled: bool,
-) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.adaptive_parakeet_thresholds = enabled;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_verification_mode_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.verification_mode = enabled;
-    settings::write_settings_safe(&app, settings);
-    Ok(())
 }
 
 #[tauri::command]
@@ -1587,4 +1553,47 @@ pub fn change_noise_suppression_level_setting(app: AppHandle, level: String) -> 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::get_default_settings;
+
+    #[test]
+    fn apply_cancel_binding_inserts_when_missing() {
+        let mut settings = get_default_settings();
+        settings.bindings.remove("cancel");
+        assert!(!settings.bindings.contains_key("cancel"));
+
+        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
+
+        assert_eq!(result.current_binding, "cmd+backspace");
+        assert!(settings.bindings.contains_key("cancel"));
+        assert_eq!(settings.bindings["cancel"].current_binding, "cmd+backspace");
+    }
+
+    #[test]
+    fn apply_cancel_binding_overrides_existing() {
+        let mut settings = get_default_settings();
+        assert_eq!(settings.bindings["cancel"].current_binding, "escape");
+
+        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+shift+x".to_string());
+
+        assert_eq!(result.current_binding, "cmd+shift+x");
+        assert_eq!(settings.bindings["cancel"].current_binding, "cmd+shift+x");
+    }
+
+    #[test]
+    fn apply_cancel_binding_preserves_other_bindings() {
+        let mut settings = get_default_settings();
+        let original_transcribe = settings.bindings["transcribe"].clone();
+
+        apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
+
+        assert_eq!(
+            settings.bindings["transcribe"].current_binding,
+            original_transcribe.current_binding
+        );
+    }
 }

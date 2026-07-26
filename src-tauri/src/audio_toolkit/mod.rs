@@ -1,3 +1,4 @@
+pub mod accent_map;
 pub mod audio;
 pub mod constants;
 pub mod noise_suppression;

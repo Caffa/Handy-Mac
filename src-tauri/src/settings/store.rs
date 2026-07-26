@@ -55,10 +55,6 @@ pub(crate) fn sanitize_floats(settings: &mut AppSettings) {
         error!("overlay_scale is NaN, resetting to default");
         settings.overlay_scale = default_overlay_scale();
     }
-    if settings.hybrid_threshold_secs.is_nan() {
-        error!("hybrid_threshold_secs is NaN, resetting to default");
-        settings.hybrid_threshold_secs = default_hybrid_threshold_secs();
-    }
 }
 
 /// Helper: serialize settings to a serde_json::Value, logging errors instead of panicking.
@@ -210,6 +206,44 @@ pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
 
 // ── Core load/save functions ──
 
+/// Rebuilds settings from a store value that failed to deserialize as a whole.
+/// Every stored field that is individually valid is kept; only broken values
+/// (e.g. an enum variant written by a newer or older version) fall back to
+/// their default. This means one bad field can never reset the rest of the
+/// user's configuration (#1619).
+fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
+    let Some(stored_map) = stored.as_object() else {
+        warn!("Stored settings are not a JSON object; falling back to defaults");
+        return get_default_settings();
+    };
+
+    let mut merged = serde_json::to_value(get_default_settings())
+        .expect("default settings serialize to a JSON object");
+
+    for (key, value) in stored_map {
+        let previous = merged
+            .as_object_mut()
+            .expect("merged settings stay an object")
+            .insert(key.clone(), value.clone());
+        if serde_json::from_value::<AppSettings>(merged.clone()).is_err() {
+            // Log only the key: values may hold secrets (e.g. API keys).
+            warn!("Dropping invalid settings field '{key}', keeping its default");
+            let map = merged
+                .as_object_mut()
+                .expect("merged settings stay an object");
+            match previous {
+                Some(previous) => map.insert(key.clone(), previous),
+                None => map.remove(key),
+            };
+        }
+    }
+
+    serde_json::from_value(merged).unwrap_or_else(|e| {
+        warn!("Failed to reassemble salvaged settings ({e}); falling back to defaults");
+        get_default_settings()
+    })
+}
+
 pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     // Initialize store
     let Some(store) = open_settings_store(app) else {
@@ -218,7 +252,7 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     };
 
     let mut settings = if let Some(settings_value) = store.get("settings") {
-        match serde_json::from_value::<AppSettings>(settings_value) {
+        match serde_json::from_value::<AppSettings>(settings_value.clone()) {
             Ok(mut settings) => {
                 debug!("Found existing settings: {:?}", settings);
                 let default_settings = get_default_settings();
@@ -279,12 +313,12 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                 settings
             }
             Err(e) => {
-                warn!("Failed to parse settings: {}", e);
-                let default_settings = get_default_settings();
-                if let Some(value) = settings_to_value(&default_settings) {
+                warn!("Failed to parse stored settings ({e}); salvaging valid fields");
+                let salvaged = salvage_settings(&settings_value);
+                if let Some(value) = settings_to_value(&salvaged) {
                     store.set("settings", value);
                 }
-                default_settings
+                salvaged
             }
         }
     } else {
@@ -474,9 +508,7 @@ pub fn flush_settings(app: &AppHandle) {
         // Use block_in_place because we're in a sync context (Tauri run callback)
         // but need to check the async pending lock.
         let has_pending = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                writer.has_pending().await
-            })
+            tokio::runtime::Handle::current().block_on(async { writer.has_pending().await })
         });
 
         info!("[settings] exit flush: pending={}", has_pending);
@@ -490,11 +522,7 @@ pub fn flush_settings(app: &AppHandle) {
         // hang if the runtime is shutting down.
         let result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    writer.flush(app),
-                )
-                .await
+                tokio::time::timeout(std::time::Duration::from_secs(2), writer.flush(app)).await
             })
         });
 
@@ -508,7 +536,9 @@ pub fn flush_settings(app: &AppHandle) {
                     write_settings_immediate(app, cache.get());
                     info!("[settings] exit flush complete (via direct fallback)");
                 } else {
-                    warn!("[settings] exit flush fallback: cache not available, settings may be lost");
+                    warn!(
+                        "[settings] exit flush fallback: cache not available, settings may be lost"
+                    );
                 }
             }
         }

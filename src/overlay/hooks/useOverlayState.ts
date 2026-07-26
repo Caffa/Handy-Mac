@@ -5,7 +5,7 @@
  * presentational components:
  * - Transcription preview, streaming text, router result
  * - Mic health warnings, USB cycling stage
- * - Overlay settings (scale, hybrid mode, live captions)
+ * - Overlay settings (scale, live captions)
  * - Recording elapsed timer
  * - Refs for audio level tracking, timing, etc.
  *
@@ -73,8 +73,6 @@ interface UseOverlaySharedStateReturn {
   // Overlay settings
   overlayScale: number;
   direction: "ltr" | "rtl";
-  hybridEnabled: boolean;
-  hybridThresholdSecs: number;
   recordingElapsedSecs: number;
   liveCaptionsEnabled: boolean;
   // State values shared with sub-hooks and components
@@ -129,10 +127,6 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
   // ─── These are set from RecordingOverlay via props, not from events.  ───
   const [isVisible, setIsVisible] = useState(false);
   const [state, setState] = useState<OverlayState>("recording");
-
-  // Hybrid mode indicator state
-  const [hybridEnabled, setHybridEnabled] = useState(false);
-  const [hybridThresholdSecs, setHybridThresholdSecs] = useState(20);
 
   // Live captions setting — initialize from module cache if available
   const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(
@@ -237,8 +231,6 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
       try {
         const result = await commands.getAppSettings();
         if (result.status === "ok" && result.data) {
-          setHybridEnabled(result.data.hybrid_mode_enabled ?? false);
-          setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
           const captionsEnabled = result.data.live_captions_enabled ?? false;
           // Update both React state and module-level cache
           cachedLiveCaptionsEnabled = captionsEnabled;
@@ -248,8 +240,10 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
             selectedModel: result.data.selected_model,
           });
         }
-      } catch {
-        // Silently ignore — indicator simply won't show
+      } catch (e) {
+        console.warn("[Live Captions] Settings fetch failed, using cached:", cachedLiveCaptionsEnabled, e);
+        // Use cached value as fallback
+        setLiveCaptionsEnabled(cachedLiveCaptionsEnabled ?? false);
       }
     };
     fetchSettings();
@@ -309,8 +303,6 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
     setState,
     overlayScale,
     direction,
-    hybridEnabled,
-    hybridThresholdSecs,
     recordingElapsedSecs,
     liveCaptionsEnabled,
     // State values shared with sub-hooks and components

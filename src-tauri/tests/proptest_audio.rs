@@ -15,7 +15,9 @@
 //! regression test.
 
 use handy_app_lib::audio_toolkit::audio::{AudioQualityMetrics, AudioVisualiser};
-use handy_app_lib::audio_toolkit::{validate_audio, AudioValidationResult, NoiseSuppressor, NOISE_SUPPRESSION_FRAME_SIZE};
+use handy_app_lib::audio_toolkit::{
+    validate_audio, AudioValidationResult, NoiseSuppressor, NOISE_SUPPRESSION_FRAME_SIZE,
+};
 use handy_app_lib::settings::NoiseSuppressionLevel;
 use proptest::prelude::*;
 
@@ -123,11 +125,11 @@ fn compute_nan_does_not_panic() {
     let mut samples = vec![0.0f32; 200];
     samples[0] = f32::NAN;
     samples[100] = f32::NAN;
-    let result = std::panic::catch_unwind(|| {
-        AudioQualityMetrics::compute(&samples)
-    });
-    assert!(result.is_ok(),
-        "AudioQualityMetrics::compute panicked on NaN input — regression of the total_cmp fix.");
+    let result = std::panic::catch_unwind(|| AudioQualityMetrics::compute(&samples));
+    assert!(
+        result.is_ok(),
+        "AudioQualityMetrics::compute panicked on NaN input — regression of the total_cmp fix."
+    );
 }
 
 // ─── validate_audio ─────────────────────────────────────────────────────
@@ -184,7 +186,11 @@ proptest! {
 fn validate_empty_input_is_corrupted() {
     let result = validate_audio(&[], SAMPLE_RATE);
     if let AudioValidationResult::Corrupted { error } = result {
-        assert!(error.contains("Empty"), "Expected 'Empty' in error, got: {}", error);
+        assert!(
+            error.contains("Empty"),
+            "Expected 'Empty' in error, got: {}",
+            error
+        );
     } else {
         panic!("Expected Corrupted for empty input, got {:?}", result);
     }

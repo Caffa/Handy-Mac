@@ -279,7 +279,7 @@ DMG_VOLUME="/Volumes/$APP_NAME"
 # Phase 1: Wait for app to appear
 echo "   Waiting for Rapidmg to install..."
 APP_APPEARED=false
-for i in {1..60}; do
+for i in {1..180}; do
     if [[ -d "$DEST_APP" ]] && [[ -f "$DEST_BIN" ]]; then
         APP_APPEARED=true
         break
@@ -288,8 +288,29 @@ for i in {1..60}; do
 done
 
 if [[ "$APP_APPEARED" != true ]]; then
-    echo "   ⚠️  $DEST_APP not found after 30s — Rapidmg may still be processing."
-    echo "   Check Rapidmg manually. The DMG is at: $DMG_PATH"
+    echo "   ⚠️  $DEST_APP not found after 90s — Rapidmg may have failed."
+    echo "   Falling back to manual DMG install..."
+    # ─── Fallback: mount DMG and copy .app manually ───
+    DMG_MOUNTED=false
+    hdiutil attach "$DMG_PATH" -nobrowse -quiet 2>/dev/null || true
+    # Find the mounted volume (volume name is "$APP_NAME" = "Handy")
+    VOL_PATH="/Volumes/$APP_NAME"
+    if [[ -d "$VOL_PATH" ]] && [[ -d "$VOL_PATH/$APP_BUNDLE" ]]; then
+        DMG_MOUNTED=true
+        cp -R "$VOL_PATH/$APP_BUNDLE" "$INSTALL_DEST/" 2>&1
+        hdiutil detach "$VOL_PATH" -quiet 2>/dev/null || true
+        if [[ -d "$DEST_APP" ]] && [[ -f "$DEST_BIN" ]]; then
+            APP_APPEARED=true
+            echo "   ✅ Manual install succeeded from DMG fallback."
+        else
+            echo "   ❌ Manual fallback failed — .app not found after copy."
+        fi
+    else
+        echo "   ❌ Could not mount or find $APP_BUNDLE in DMG."
+        echo "   The DMG is at: $DMG_PATH"
+        # Try to detach if partially mounted
+        [[ -d "$VOL_PATH" ]] && hdiutil detach "$VOL_PATH" -quiet 2>/dev/null || true
+    fi
 fi
 
 # Phase 2: Wait for the DMG volume to be ejected.

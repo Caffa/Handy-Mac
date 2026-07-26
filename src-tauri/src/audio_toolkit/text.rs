@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use strsim::levenshtein;
 
+use super::accent_map::TRUNCATED_WORDS;
 use super::spelling_dictionaries::{convert_us_to_british_with_dict, SpellingDictionary};
 use crate::settings::{CustomWord, WordCorrectionMode, WordReplacement};
 
@@ -1024,6 +1025,65 @@ fn extract_word_parts(word: &str) -> (String, &str, String) {
     (prefix, core, suffix)
 }
 
+/// Replaces `<unk>` tokens with accent-aware word recovery.
+///
+/// Models like Parakeet emit `<unk>` for accented characters. Instead of just
+/// stripping them (which truncates words like "fiancé" → "fianc"), this function
+/// tries to recover the correct ASCII equivalent using a dictionary lookup.
+///
+/// # Algorithm
+/// 1. Strip all `<unk>` tokens from the text
+/// 2. For each word, extract the core alphanumeric part (preserving punctuation)
+/// 3. Look up the lowercased core in `TRUNCATED_WORDS`
+/// 4. If found, replace with the correct ASCII form (preserving case pattern)
+///
+/// # Arguments
+/// * `text` - The raw transcription text containing `<unk>` tokens
+///
+/// # Returns
+/// The text with `<unk>` tokens replaced by recovered ASCII words where possible
+///
+/// # Examples
+/// ```text
+/// "my fianc is great"     → "my fiance is great"
+/// "I love caf con leche"   → "I love cafe con leche"
+/// "the jalapeo is hot"     → "the jalapeno is hot"
+/// ```
+fn replace_unk_with_accent_recovery(text: &str) -> String {
+    // Step 1: Strip <unk> tokens
+    let stripped = text.replace("<unk>", "");
+
+    // Step 2: Try to recover truncated words using dictionary
+    let words: Vec<&str> = stripped.split_whitespace().collect();
+    let mut result = Vec::with_capacity(words.len());
+
+    for word in &words {
+        let (prefix, suffix) = extract_punctuation(word);
+
+        // Get the core alphanumeric part for dictionary lookup
+        let core_start = prefix.len();
+        let core_end = word.len() - suffix.len();
+
+        if core_start >= core_end {
+            // No alphanumeric content, keep as-is
+            result.push(word.to_string());
+            continue;
+        }
+
+        let core = &word[core_start..core_end];
+        let core_lower = core.to_lowercase();
+
+        if let Some(&replacement) = TRUNCATED_WORDS.get(core_lower.as_str()) {
+            let corrected = preserve_case_pattern(core, replacement);
+            result.push(format!("{}{}{}", prefix, corrected, suffix));
+        } else {
+            result.push(word.to_string());
+        }
+    }
+
+    result.join(" ")
+}
+
 /// Processes transcription text through the full correction pipeline in a single call.
 ///
 /// This function combines all text processing steps that were previously done as
@@ -1061,6 +1121,12 @@ pub fn process_transcription_text(
     spelling_dictionary: SpellingDictionary,
     repetition_suppression_level: u8,
 ) -> String {
+    // Step 0: Replace <unk> tokens with accent-aware recovery.
+    // Models like Parakeet emit <unk> for accented characters. Instead of just
+    // stripping them (which truncates words like "fiancé" → "fianc"), we try to
+    // recover the correct ASCII equivalent using a dictionary lookup.
+    let text = replace_unk_with_accent_recovery(&text);
+
     // Step 1: Word correction.
     // Determine whether custom words exist (for skipping Whisper models that already
     // received initial_prompt hints) and apply the appropriate correction mode.
@@ -1070,14 +1136,14 @@ pub fn process_transcription_text(
     // WordBias/Pronunciation only apply for non-Whisper models.
     let mut result = match word_correction_mode {
         WordCorrectionMode::Replacement if !word_replacements.is_empty() => {
-            apply_word_replacements(text, word_replacements)
+            apply_word_replacements(&text, word_replacements)
         }
         _ if has_words && !is_whisper => match word_correction_mode {
             WordCorrectionMode::WordBias => {
-                apply_custom_words(text, custom_words, word_correction_threshold)
+                apply_custom_words(&text, custom_words, word_correction_threshold)
             }
             WordCorrectionMode::Pronunciation => {
-                apply_advanced_custom_words(text, advanced_custom_words, word_correction_threshold)
+                apply_advanced_custom_words(&text, advanced_custom_words, word_correction_threshold)
             }
             WordCorrectionMode::Replacement => text.to_string(),
         },
@@ -3062,5 +3128,186 @@ mod tests {
         let text = "I use open a i and openai both";
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "I use OpenAI and OpenAI both");
+    }
+
+    // --- replace_unk_with_accent_recovery tests ---
+
+    #[test]
+    fn test_recovery_fiance() {
+        // fiancé → fianc + <unk> → should recover "fiance"
+        assert_eq!(
+            replace_unk_with_accent_recovery("my fianc is great"),
+            "my fiance is great"
+        );
+    }
+
+    #[test]
+    fn test_recovery_cafe() {
+        // café → caf + <unk> → should recover "cafe"
+        assert_eq!(
+            replace_unk_with_accent_recovery("I love caf con leche"),
+            "I love cafe con leche"
+        );
+    }
+
+    #[test]
+    fn test_recovery_resume() {
+        // résumé → resum + <unk><unk> → should recover "resume"
+        assert_eq!(
+            replace_unk_with_accent_recovery("send me your resum"),
+            "send me your resume"
+        );
+    }
+
+    #[test]
+    fn test_recovery_jalapeno() {
+        // jalapeño → jalapeo + <unk> → should recover "jalapeno"
+        assert_eq!(
+            replace_unk_with_accent_recovery("the jalapeo is hot"),
+            "the jalapeno is hot"
+        );
+    }
+
+    #[test]
+    fn test_recovery_oeuvre() {
+        // œuvre → uvre + <unk> → should recover "oeuvre"
+        assert_eq!(
+            replace_unk_with_accent_recovery("the uvre was magnificent"),
+            "the oeuvre was magnificent"
+        );
+    }
+
+    #[test]
+    fn test_recovery_with_punctuation() {
+        // fiancé! → fianc + <unk>! → should recover "fiance!"
+        assert_eq!(
+            replace_unk_with_accent_recovery("my fianc is great!"),
+            "my fiance is great!"
+        );
+    }
+
+    #[test]
+    fn test_recovery_preserves_case() {
+        // Fianc → should become "Fiance" (capital F preserved)
+        assert_eq!(
+            replace_unk_with_accent_recovery("Fianc is a French word"),
+            "Fiance is a French word"
+        );
+    }
+
+    #[test]
+    fn test_recovery_all_caps() {
+        // FIANC → should become "FIANCE" (all caps preserved)
+        assert_eq!(
+            replace_unk_with_accent_recovery("FIANC is not a word"),
+            "FIANCE is not a word"
+        );
+    }
+
+    #[test]
+    fn test_recovery_no_unk() {
+        // Text without <unk> should pass through unchanged (no truncation)
+        assert_eq!(
+            replace_unk_with_accent_recovery("hello world"),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn test_recovery_empty_string() {
+        assert_eq!(replace_unk_with_accent_recovery(""), "");
+    }
+
+    #[test]
+    fn test_recovery_only_unk() {
+        assert_eq!(replace_unk_with_accent_recovery("<unk>"), "");
+        assert_eq!(replace_unk_with_accent_recovery("<unk> <unk>"), "");
+    }
+
+    #[test]
+    fn test_recovery_mixed_unk_and_normal() {
+        // split_whitespace collapses multiple spaces
+        assert_eq!(
+            replace_unk_with_accent_recovery("hello <unk> world"),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn test_recovery_crepe() {
+        assert_eq!(
+            replace_unk_with_accent_recovery("I ordered a crpe"),
+            "I ordered a crepe"
+        );
+    }
+
+    #[test]
+    fn test_recovery_protege() {
+        assert_eq!(
+            replace_unk_with_accent_recovery("she is my proteg"),
+            "she is my protege"
+        );
+    }
+
+    #[test]
+    fn test_recovery_subpoena() {
+        assert_eq!(
+            replace_unk_with_accent_recovery("the subpna was issued"),
+            "the subpoena was issued"
+        );
+    }
+
+    #[test]
+    fn test_recovery_fetus() {
+        assert_eq!(
+            replace_unk_with_accent_recovery("the ftus is healthy"),
+            "the fetus is healthy"
+        );
+    }
+
+    #[test]
+    fn test_recovery_sentence_context() {
+        // Full sentence with multiple accented words
+        assert_eq!(
+            replace_unk_with_accent_recovery(
+                "my fianc picked up a crpe from the caf"
+            ),
+            "my fiance picked up a crepe from the cafe"
+        );
+    }
+
+    #[test]
+    fn test_recovery_unk_between_words() {
+        // <unk> in the middle of a word (Parakeet sometimes does this)
+        assert_eq!(
+            replace_unk_with_accent_recovery("the jalape<unk>o pepper"),
+            "the jalapeno pepper"
+        );
+    }
+
+    #[test]
+    fn test_recovery_preserves_surrounding_punctuation() {
+        assert_eq!(
+            replace_unk_with_accent_recovery("(fianc) is great"),
+            "(fiance) is great"
+        );
+    }
+
+    #[test]
+    fn test_recovery_unknown_word_unchanged() {
+        // Words not in the dictionary should pass through unchanged
+        assert_eq!(
+            replace_unk_with_accent_recovery("xyznotaword"),
+            "xyznotaword"
+        );
+    }
+
+    #[test]
+    fn test_recovery_numbers_unchanged() {
+        // split_whitespace collapses multiple spaces
+        assert_eq!(
+            replace_unk_with_accent_recovery("123 <unk> 456"),
+            "123 456"
+        );
     }
 }

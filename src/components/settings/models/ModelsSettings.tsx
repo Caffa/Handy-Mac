@@ -12,7 +12,6 @@ import {
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
 import { useModelStore } from "@/stores/modelStore";
-import { useSettings } from "../../../hooks/useSettings";
 import { LANGUAGES } from "@/lib/constants/languages.ts";
 import { commands } from "@/bindings";
 import type { BenchmarkModelFailure, ModelInfo } from "@/bindings";
@@ -56,40 +55,6 @@ export const ModelsSettings: React.FC = () => {
     deleteModel,
     loadModels,
   } = useModelStore();
-  const { getSetting, updateSetting } = useSettings();
-
-  const hybridModeEnabled = getSetting("hybrid_mode_enabled") ?? false;
-  const hybridShortModel = getSetting("hybrid_short_audio_model") ?? null;
-  const hybridLongModel = getSetting("hybrid_long_audio_model") ?? null;
-
-  const handleHybridRoleChange = (
-    modelId: string,
-    role: "short" | "long" | null,
-  ) => {
-    if (role === "short") {
-      updateSetting("hybrid_short_audio_model", modelId);
-    } else if (role === "long") {
-      updateSetting("hybrid_long_audio_model", modelId);
-    } else {
-      // Unassign: figure out which role this model currently holds
-      if (hybridShortModel === modelId) {
-        updateSetting("hybrid_short_audio_model", null);
-      }
-      if (hybridLongModel === modelId) {
-        updateSetting("hybrid_long_audio_model", null);
-      }
-    }
-  };
-
-  // Build hybrid roles map: model_id -> "short" | "long"
-  const hybridRoles = useMemo<Record<string, "short" | "long">>(() => {
-    if (!hybridModeEnabled) return {};
-    const roles: Record<string, "short" | "long"> = {};
-    if (hybridShortModel) roles[hybridShortModel] = "short";
-    if (hybridLongModel) roles[hybridLongModel] = "long";
-    return roles;
-  }, [hybridModeEnabled, hybridShortModel, hybridLongModel]);
-
   // click outside handler for language dropdown
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -530,9 +495,6 @@ export const ModelsSettings: React.FC = () => {
                 downloadProgress={getDownloadProgress(model.id)}
                 downloadSpeed={getDownloadSpeed(model.id)}
                 showRecommended={false}
-                hybridRole={hybridRoles[model.id] ?? null}
-                hybridModeEnabled={hybridModeEnabled}
-                onHybridRoleChange={handleHybridRoleChange}
               />
             ))}
           </div>
@@ -555,9 +517,6 @@ export const ModelsSettings: React.FC = () => {
                   downloadProgress={getDownloadProgress(model.id)}
                   downloadSpeed={getDownloadSpeed(model.id)}
                   showRecommended={false}
-                  hybridRole={hybridRoles[model.id] ?? null}
-                  hybridModeEnabled={hybridModeEnabled}
-                  onHybridRoleChange={handleHybridRoleChange}
                 />
               ))}
             </div>

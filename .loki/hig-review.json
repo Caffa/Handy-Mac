@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-07-17T12:12:14.864Z",
+  "model": "qwen3-vl",
+  "totalScreenshots": 53,
+  "processedScreenshots": 2,
+  "results": [
+    {
+      "component": "chrome_local_Overlay_VisualizerBars_All_Max_Bars.png",
+      "violations": [
+        {
+          "rule": "Touch target size: interactive elements should be ≥44px height",
+          "severity": "high",
+          "description": "The visualizer bar component has a height less than the minimum required 44px for mouse/trackpad interaction.",
+          "suggestion": "Increase the height of the interactive element to at least 44px."
+        }
+      ],
+      "overall": "The component violates touch target size guidelines due to insufficient vertical dimension for user interaction."
+    },
+    {
+      "component": "chrome_local_Overlay_VisualizerBars_Empty_Levels.png",
+      "violations": [
+        {
+          "rule": "Touch target size",
+          "severity": "high",
+          "description": "Interactive element (black oval) has height less than required minimum of 44px",
+          "suggestion": "Increase the height of the interactive element to at least 44px"
+        }
+      ],
+      "overall": "The primary interactive element is too small for touch targets as per HIG, compromising usability."
+    }
+  ],
+  "summary": {
+    "totalViolations": 2,
+    "highSeverity": 2,
+    "mediumSeverity": 0,
+    "lowSeverity": 0,
+    "perComponent": {
+      "chrome_local_Overlay_VisualizerBars_All_Max_Bars.png": 1,
+      "chrome_local_Overlay_VisualizerBars_Empty_Levels.png": 1
+    }
+  }
+}

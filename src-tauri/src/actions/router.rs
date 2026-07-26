@@ -466,14 +466,13 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 }
                             };
 
-                        // ── Show "Filing…" overlay while routing ──
-                        show_processing_overlay_with_mode(&ah, OverlayMode::Router);
+                        // ── Hide overlay during filing — the user should have full
+                        // screen control while the router subprocess runs. ──
+                        utils::hide_recording_overlay(&ah);
 
                         // ── Transition coordinator from Confirming to Processing ──
-                        // This ensures the frontend knows we're still in a router flow
-                        // during the filing/routing phase, so it shows the blue
-                        // visualizer and "Filing…" text instead of the default
-                        // transcribe-mode visualizer and "Processing…" text.
+                        // The coordinator stays in Processing (blocking new recordings)
+                        // but the overlay is hidden so the user can interact freely.
                         if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
                             coordinator.set_processing_with_binding(
                                 &ah,
@@ -649,6 +648,24 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                     coord.notify_processing_finished();
                                 }
 
+                                // ── Show result overlay if no new recording started ──
+                                // After notify_processing_finished(), the coordinator is Idle.
+                                // If a new recording started, is_active_use() will be true
+                                // and we skip showing — the new recording's overlay takes
+                                // priority, and the macOS notification provides feedback.
+                                let should_show_result = {
+                                    let coord = ah_for_router
+                                        .try_state::<TranscriptionCoordinator>();
+                                    !coord.map_or(false, |c| c.is_active_use())
+                                };
+
+                                if should_show_result {
+                                    show_processing_overlay_with_mode(
+                                        &ah_for_router,
+                                        OverlayMode::Router,
+                                    );
+                                }
+
                                 // ── Schedule delayed overlay hide ──
                                 // Give the user 5 seconds to see the router result before
                                 // the overlay hides. hide_recording_overlay() has built-in
@@ -729,24 +746,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             }
                         };
 
-                        let fallback_models = {
-                            let mut models = Vec::new();
-                            if settings.hybrid_mode_enabled {
-                                if let Some(short_model) = &settings.hybrid_short_audio_model {
-                                    if short_model != &settings.selected_model {
-                                        models.push(short_model.clone());
-                                    }
-                                }
-                                if let Some(long_model) = &settings.hybrid_long_audio_model {
-                                    if long_model != &settings.selected_model
-                                        && !models.contains(long_model)
-                                    {
-                                        models.push(long_model.clone());
-                                    }
-                                }
-                            }
-                            models
-                        };
+                        let fallback_models: Vec<String> = Vec::new();
 
                         let history_entry_id = if wav_saved {
                             match hm.save_entry(

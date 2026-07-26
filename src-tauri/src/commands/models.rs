@@ -4,7 +4,7 @@ use crate::managers::model::{
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings_safe, write_settings_safe, ModelUnloadTimeout};
-use log::{info, warn};
+use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -103,15 +103,10 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
         return Err("TranscriptionManager not available".to_string());
     };
 
-    // Atomically claim the loading slot — prevents concurrent model loads
-    // from tray double-clicks or overlapping commands. The guard resets the
-    // flag on drop (including early returns, errors, and panics).
-    let _loading_guard = transcription_manager
-        .lock()
-        .try_start_loading()
-        .ok_or_else(|| "Model load already in progress".to_string())?;
+    debug!("switch_active_model called for model_id={}", model_id);
 
-    // Check if model exists and is available
+    // Validate model exists and is downloaded BEFORE acquiring the loading guard
+    // or persisting settings, so we fail fast on invalid requests.
     let model_info = model_manager
         .get_model_info(model_id)
         .ok_or_else(|| format!("Model not found: {}", model_id))?;
@@ -120,12 +115,15 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
         return Err(format!("Model not downloaded: {}", model_id));
     }
 
+    // Persist the new selection early so that:
+    // 1. The frontend sees the correct model when it reacts to events.
+    // 2. Settings are persisted even when the load is queued (another load
+    //    in progress) — the old code returned before persisting in the
+    //    queue path, leaving backend and frontend out of sync.
     let settings = get_settings_safe(app);
     let unload_timeout = settings.model_unload_timeout;
     let old_model = settings.selected_model.clone();
 
-    // Persist the new selection early so the frontend sees the correct model
-    // when it reacts to events emitted by load_model.
     let mut settings = settings;
     settings.selected_model = model_id.to_string();
 
@@ -147,6 +145,37 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     }
 
     write_settings_safe(app, settings);
+
+    // Atomically claim the loading slot — prevents concurrent model loads
+    // from tray double-clicks or overlapping commands. The guard resets the
+    // flag on drop (including early returns, errors, and panics). If another
+    // load is already in progress, queue this request so it auto-loads next.
+    // Settings have already been persisted above so the queue path is safe.
+    let _loading_guard = match transcription_manager.lock().try_start_loading() {
+        Some(guard) => guard,
+        None => {
+            // Another load is in progress — queue this as a pending request.
+            // Settings are already persisted, so the frontend and backend agree.
+            info!(
+                "Model load already in progress, queueing {} as pending",
+                model_id
+            );
+            transcription_manager.lock().set_pending_model(model_id);
+
+            // Emit event to frontend so it shows the pending state.
+            let _ = app.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "loading_queued".to_string(),
+                    model_id: Some(model_id.to_string()),
+                    model_name: model_manager.get_model_info(model_id).map(|m| m.name),
+                    error: None,
+                },
+            );
+
+            return Ok(());
+        }
+    };
 
     // Skip eager loading if unload is set to "Immediately" — the model
     // will be loaded on-demand during the next transcription.
@@ -170,7 +199,20 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     }
 
     // Load the model. On failure, revert the persisted selection.
-    if let Err(e) = transcription_manager.lock().load_model(model_id) {
+    //
+    // Clone the TranscriptionManager before calling load_model so we can drop
+    // the parking_lot Mutex guard immediately. TranscriptionManager uses interior
+    // mutability (all fields are Arc<Mutex<...>>) so the clone shares the same
+    // underlying state — load_model operates on the Arc-wrapped fields directly.
+    // The LoadingGuard (acquired above) already prevents concurrent loads.
+    //
+    // Previously, `transcription_manager.lock().load_model(model_id)` held the
+    // parking_lot Mutex for the entire duration of the native model load (which
+    // can take seconds for large GGUFs). This could deadlock if another thread
+    // (e.g. LoadingGuard::drop auto-loading a pending model, or transcribe()
+    // waiting on the loading condvar) needed the same Mutex.
+    let tm_clone = transcription_manager.lock().clone();
+    if let Err(e) = tm_clone.load_model(model_id) {
         let mut settings = get_settings_safe(app);
         settings.selected_model = old_model;
         write_settings_safe(app, settings);

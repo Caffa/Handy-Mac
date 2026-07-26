@@ -13,6 +13,12 @@ async changeBinding(id: string, binding: string) : Promise<Result<BindingRespons
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Check a shortcut for conflicts with platform-specific reserved shortcuts.
+ * 
+ * Returns a list of conflicts (may be empty). This does NOT block registration;
+ * it only provides information for the user to decide whether to proceed.
+ */
 async checkShortcutConflicts(binding: string) : Promise<ConflictInfo[]> {
     return await TAURI_INVOKE("check_shortcut_conflicts", { binding });
 },
@@ -430,9 +436,9 @@ async changeShowTrayIconSetting(enabled: boolean) : Promise<Result<null, string>
     else return { status: "error", error: e  as any };
 }
 },
-async changeWhisperAcceleratorSetting(accelerator: WhisperAcceleratorSetting) : Promise<Result<null, string>> {
+async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetting) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_whisper_accelerator_setting", { accelerator }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_transcribe_accelerator_setting", { accelerator }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -446,9 +452,9 @@ async changeOrtAcceleratorSetting(accelerator: OrtAcceleratorSetting) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
-async changeWhisperGpuDevice(device: number) : Promise<Result<null, string>> {
+async changeTranscribeGpuDevice(device: number) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_whisper_gpu_device", { device }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_transcribe_gpu_device", { device }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -462,52 +468,9 @@ async changeWhisperGpuDevice(device: number) : Promise<Result<null, string>> {
  * probes hardware. Run it on the blocking pool so the webview thread
  * stays responsive — see also the startup pre-warm in `lib.rs`.
  */
-async getAvailableAccelerators() : Promise<AvailableAccelerators> {
-    return await TAURI_INVOKE("get_available_accelerators");
-},
-async changeHybridModeEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+async getAvailableAccelerators() : Promise<Result<AvailableAccelerators, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_mode_enabled_setting", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeHybridThresholdSecsSetting(secs: number) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_threshold_secs_setting", { secs }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeHybridShortAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_short_audio_model_setting", { modelId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeHybridLongAudioModelSetting(modelId: string | null) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_hybrid_long_audio_model_setting", { modelId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeAdaptiveParakeetThresholdsSetting(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_adaptive_parakeet_thresholds_setting", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeVerificationModeSetting(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_verification_mode_setting", { enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_available_accelerators") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -591,8 +554,13 @@ async showMainWindowCommand() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async cancelOperation() : Promise<void> {
-    await TAURI_INVOKE("cancel_operation");
+async cancelOperation() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_operation") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async isPortable() : Promise<boolean> {
     return await TAURI_INVOKE("is_portable");
@@ -665,8 +633,13 @@ async openAppDataDir() : Promise<Result<null, string>> {
  * Check if Apple Intelligence is available on this device.
  * Called by the frontend when the user selects Apple Intelligence provider.
  */
-async checkAppleIntelligenceAvailable() : Promise<boolean> {
-    return await TAURI_INVOKE("check_apple_intelligence_available");
+async checkAppleIntelligenceAvailable() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_apple_intelligence_available") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * Try to initialize Enigo (keyboard/mouse simulation).
@@ -834,8 +807,13 @@ async getMicrophoneMode() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getWindowsMicrophonePermissionStatus() : Promise<WindowsMicrophonePermissionStatus> {
-    return await TAURI_INVOKE("get_windows_microphone_permission_status");
+async getWindowsMicrophonePermissionStatus() : Promise<Result<WindowsMicrophonePermissionStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_windows_microphone_permission_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async openMicrophonePrivacySettings() : Promise<Result<null, string>> {
     try {
@@ -896,8 +874,13 @@ async getSelectedOutputDevice() : Promise<Result<string, string>> {
 async playTestSound(soundType: string) : Promise<void> {
     await TAURI_INVOKE("play_test_sound", { soundType });
 },
-async checkCustomSounds() : Promise<CustomSounds> {
-    return await TAURI_INVOKE("check_custom_sounds");
+async checkCustomSounds() : Promise<Result<CustomSounds, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_custom_sounds") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async setClamshellMicrophone(deviceName: string) : Promise<Result<null, string>> {
     try {
@@ -915,20 +898,35 @@ async getClamshellMicrophone() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async isRecording() : Promise<boolean> {
-    return await TAURI_INVOKE("is_recording");
+async isRecording() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("is_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * Check if uhubctl is available on the system
  */
-async isUsbWatchdogAvailable() : Promise<boolean> {
-    return await TAURI_INVOKE("is_usb_watchdog_available");
+async isUsbWatchdogAvailable() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("is_usb_watchdog_available") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * List all USB devices connected to hubs visible to uhubctl
  */
-async listUsbDevices() : Promise<UsbDevice[]> {
-    return await TAURI_INVOKE("list_usb_devices");
+async listUsbDevices() : Promise<Result<UsbDevice[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_usb_devices") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * Enable or disable the USB watchdog
@@ -1037,8 +1035,13 @@ async stopAndTranscribePronunciationAllModels(canonicalWord: string) : Promise<R
     else return { status: "error", error: e  as any };
 }
 },
-async setModelUnloadTimeout(timeout: ModelUnloadTimeout) : Promise<void> {
-    await TAURI_INVOKE("set_model_unload_timeout", { timeout });
+async setModelUnloadTimeout(timeout: ModelUnloadTimeout) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_model_unload_timeout", { timeout }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async getModelLoadStatus() : Promise<Result<ModelLoadStatus, string>> {
     try {
@@ -1056,8 +1059,13 @@ async unloadModelManually() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async setRepetitionSuppressionLevel(level: number) : Promise<void> {
-    await TAURI_INVOKE("set_repetition_suppression_level", { level });
+async setRepetitionSuppressionLevel(level: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_repetition_suppression_level", { level }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<Result<PaginatedHistory, string>> {
     try {
@@ -1123,7 +1131,7 @@ async updateHistoryEntryTags(id: number, tags: string | null) : Promise<Result<n
     else return { status: "error", error: e  as any };
 }
 },
- async updateHistoryEntryMetadata(id: number, groundTruth: string | null, quality: string | null, speechSpeed: string | null) : Promise<Result<null, string>> {
+async updateHistoryEntryMetadata(id: number, groundTruth: string | null, quality: string | null, speechSpeed: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_history_entry_metadata", { id, groundTruth, quality, speechSpeed }) };
 } catch (e) {
@@ -1344,9 +1352,15 @@ async openPath(path: string) : Promise<Result<null, string>> {
 }
 },
 /**
- * Toggle the overlay window's ability to become the key window (accept keyboard input).
- * On macOS, this enables/disables keyboard input in the overlay for text editing.
- * On other platforms, this is a no-op.
+ * Tauri command to toggle the overlay window's ability to become the key window
+ * (accept keyboard input). On macOS, this swizzles the RecordingOverlayPanel's
+ * `canBecomeKeyWindow` method to check a global flag.
+ * 
+ * When `can_become_key` is true, the overlay can accept keyboard focus,
+ * enabling text editing in the transcription preview. When false, the overlay
+ * returns to its default behavior of not accepting keyboard input.
+ * 
+ * On non-macOS platforms, this is a no-op (keyboard input works by default).
  */
 async setOverlayCanBecomeKey(canBecomeKey: boolean) : Promise<Result<null, string>> {
     try {
@@ -1357,14 +1371,45 @@ async setOverlayCanBecomeKey(canBecomeKey: boolean) : Promise<Result<null, strin
 }
 },
 /**
- * Toggle whether the overlay panel accepts mouse events.
- * When enabled=true, the overlay accepts mouse events (for interactive elements).
- * When enabled=false, all mouse events pass through to apps below.
- * On non-macOS platforms, this is a no-op.
+ * Tauri command to toggle whether the overlay panel accepts mouse events.
+ * 
+ * When `enabled` is true, the overlay panel accepts mouse events (for interactive
+ * elements like buttons and textareas). When `enabled` is false, all mouse events
+ * (clicks, scrolls, hovers) pass through to apps below the overlay.
+ * 
+ * This implements the standard macOS pattern for click-through overlays:
+ * - Default: ignores_mouse_events = true (click-through)
+ * - Mouse enters interactive element: ignores_mouse_events = false (accept events)
+ * - Mouse leaves interactive element: ignores_mouse_events = true (click-through)
+ * 
+ * BUGFIX (Fix 5): On macOS, the previous approach relied on React onMouseEnter/
+ * onMouseLeave to toggle click-through. This has a chicken-and-egg problem: the
+ * panel is click-through, so mouse events can't reach the webview to trigger
+ * onMouseEnter. The NSTrackingArea approach works at the OS level and fires
+ * cursorUpdate: events even for click-through panels.
+ * 
+ * On non-macOS platforms, this is a no-op (CSS pointer-events handles this).
  */
 async setOverlayMousePassthrough(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_overlay_mouse_passthrough", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command to force the overlay panel to stay click-through regardless
+ * of cursor position. When force_click_through is true, the mouseEntered
+ * callback does NOT disable ignoresMouseEvents, so the panel never steals
+ * clicks even when the cursor enters the panel area.
+ * 
+ * Used during non-interactive phases (router filing, result display) where
+ * the overlay shows status text but nothing the user needs to interact with.
+ */
+async setOverlayForceClickThrough(forceClickThrough: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_overlay_force_click_through", { forceClickThrough }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1376,8 +1421,10 @@ async setOverlayMousePassthrough(enabled: boolean) : Promise<Result<null, string
 
 
 export const events = __makeEvents__<{
+deviceListChanged: DeviceListChanged,
 historyUpdate: HistoryUpdate
 }>({
+deviceListChanged: "device-list-changed",
 historyUpdate: "history-update"
 })
 
@@ -1390,68 +1437,15 @@ historyUpdate: "history-update"
 export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; overlay_screen_target?: OverlayScreenTarget; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
 /**
  * Deprecated: Use `word_correction_mode` instead.
- * Kept for backward compatibility during migration.
  */
 use_advanced_custom_words?: boolean; 
 /**
  * Word correction mode. Defaults to WordBias for backward compatibility.
- * Migrated from `use_advanced_custom_words` if that field is true.
  */
-word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; 
-/**
- * Path to boss_router.py for the "Transcribe with Router" action.
- * Set to Some(path) to enable router integration.
- */
-router_script_path?: string | null; 
-/**
- * Path to a .env file containing env vars (e.g. TELEGRAM_DAILY_LOG_BOT)
- * to pass to the router script subprocess.
- */
-router_env_file?: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number; 
-/**
- * Pre-recording buffer in milliseconds for always-on microphone mode.
- * Captures audio from the last N ms before the hotkey is pressed.
- * Useful for catching the beginning of speech that starts before pressing the button.
- * Default: 0 (disabled). Recommended: 1000-3000ms.
- */
-pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; 
-/**
- * Automatically power-cycle the USB device when macOS wakes from sleep.
- */
-usb_watchdog_cycle_on_wake?: boolean; hybrid_mode_enabled?: boolean; hybrid_threshold_secs?: number; hybrid_short_audio_model?: string | null; hybrid_long_audio_model?: string | null; adaptive_parakeet_thresholds?: boolean; verification_mode?: boolean; vad_sensitivity?: VadSensitivity; 
-/**
- * Show live captions during recording. When enabled, partial transcriptions
- * are displayed in real-time as you speak, below the volume bars.
- */
-live_captions_enabled?: boolean; 
-/**
- * UI scale factor for the overlay (1.0 = normal, 2.0 = double size).
- * Scales the pill, live captions, and window dimensions proportionally.
- */
-overlay_scale?: number; 
-/**
- * Convert US English spelling to British English after transcription.
- * Applies common spelling conversions like: color → colour, analyze → analyse, etc.
- */
-convert_us_to_british?: boolean; 
- /**
-  * Repetition suppression level (0-3): 0=off, 1=light, 2=moderate, 3=aggressive.
-  * Manual control only - user adjusts when they notice artifacts.
-  */
-repetition_suppression_level?: number; 
-/**
- * Enable noise suppression before VAD for better speech detection in noisy environments.
- * When enabled, background noise is removed before voice activity detection.
- */
-noise_suppression_enabled?: boolean; 
-/**
- * Noise suppression level: "low", "medium", or "high".
- * Higher levels remove more noise but may affect speech quality.
- */
-noise_suppression_level?: NoiseSuppressionLevel }
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; live_captions_enabled?: boolean; overlay_scale?: number; convert_us_to_british?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
-export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
+export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
 /**
  * A model that failed during benchmarking (could not load or could not transcribe).
  */
@@ -1519,22 +1513,65 @@ benchmarked_at: number;
  */
 failed?: boolean }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
-
-export type ConflictInfo = { platform: string; name: string; reserved: boolean }
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
+/**
+ * Information about a detected shortcut conflict.
+ */
+export type ConflictInfo = { 
+/**
+ * The platform where this conflict applies (e.g., "macOS", "Windows", "Linux")
+ */
+platform: string; 
+/**
+ * Human-readable name of the reserved shortcut (e.g., "Quit Application")
+ */
+name: string; 
+/**
+ * Whether this shortcut is fully reserved by the system (cannot be overridden)
+ * vs. merely a common shortcut that may conflict (can be overridden)
+ */
+reserved: boolean }
 export type CustomSounds = { start: boolean; stop: boolean }
 /**
  * A custom word with optional pronunciation variants for advanced fuzzy matching.
- * 
- * When `pronunciations` is non-empty, the matching algorithm will also compare
- * transcription n-grams against each pronunciation variant. Any match replaces
- * the transcript text with the canonical `word`.
- * 
- * Example: `CustomWord { word: "ChargeBee", pronunciations: vec!["charge b", "charge bee"] }`
- * will match "charge b" or "charge bee" in the transcript and replace it with "ChargeBee".
  */
 export type CustomWord = { word: string; pronunciations?: string[] }
-export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
+/**
+ * Payload for the `device-list-changed` event emitted when audio
+ * devices are hot-plugged (added or removed).
+ */
+export type DeviceListChanged = { 
+/**
+ * Input devices that appeared since the last check.
+ */
+added_input: string[]; 
+/**
+ * Input devices that disappeared since the last check.
+ */
+removed_input: string[]; 
+/**
+ * Current list of all input device names.
+ */
+current_input: string[]; 
+/**
+ * Output devices that appeared since the last check.
+ */
+added_output: string[]; 
+/**
+ * Output devices that disappeared since the last check.
+ */
+removed_output: string[]; 
+/**
+ * Current list of all output device names.
+ */
+current_output: string[] }
+export type EngineType = 
+/**
+ * Any GGML/GGUF model loaded through transcribe-cpp (Whisper, Parakeet,
+ * Voxtral, Qwen3-ASR, Nemotron, …). The architecture is auto-detected from
+ * the file, so this one variant covers the whole transcribe-cpp family.
+ */
+"TranscribeCpp" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type ErrorRecord = { timestamp_ms: number; event_type: string; message: string; session_id: string | null }
 export type ExperimentGroup = { id: number; recording_id: number; original_transcript: string; ground_truth: string | null; speech_speed: string; recording_quality: string; created_at: number; is_complete: boolean; notes: string | null }
 /**
@@ -1584,11 +1621,35 @@ export type LLMPrompt = { id: string; name: string; prompt: string }
 export type LogEntry = { timestamp: string; level: string; event_type: string; session_id: string | null; raw_json: string }
 export type LogFilter = { event_type: string | null; session_id: string | null; level: string | null; limit: number | null }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
-export type ModelInfo = { id: string; name: string; description: string; filename: string; url: string | null; sha256: string | null; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean; dynamic_score: BenchmarkScore | null }
+export type ModelInfo = { id: string; name: string; description: string; filename: string; source: ModelSource; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean; supports_streaming: boolean; supports_language_detection: boolean; dynamic_score: BenchmarkScore | null }
 export type ModelLoadStat = { model_id: string; avg_load_ms: number; load_count: number }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }
+/**
+ * Where a model comes from and how Handy obtains it — the routing discriminant
+ * for downloading and on-disk resolution.
+ */
+export type ModelSource = 
+/**
+ * Direct HTTP download from a URL (current blob.handy.computer hosting).
+ */
+{ Url: { url: string; 
+/**
+ * Expected SHA-256 for integrity verification; `None` skips it.
+ */
+sha256: string | null } } | 
+/**
+ * A file inside a Hugging Face Hub repo, fetched via hf-hub into the shared
+ * HF cache (so other tools reuse it). The file within the repo is
+ * [`ModelInfo::filename`].
+ */
+{ HuggingFace: { repo_id: string; revision: string } } | 
+/**
+ * Already present on disk — a user-provided custom model, or one discovered
+ * in a shared cache. Nothing to download.
+ */
+"Local"
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
-export type NoiseSuppressionLevel = "Low" | "Medium" | "High"
+export type NoiseSuppressionLevel = "low" | "medium" | "high"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
 export type OverlayScreenTarget = "cursor" | "side_screen"
@@ -1705,6 +1766,25 @@ errors: string[] }
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
 /**
+ * Dictionary source for US-to-British spelling conversion.
+ */
+export type SpellingDictionary = 
+/**
+ * DWYL english-words curated list (~180 common pairs).
+ * Source: https://github.com/dwyl/english-words
+ * Pros: Human-curated, less noise, well-maintained
+ * Cons: Less comprehensive than CSpell
+ */
+"dwyl" | 
+/**
+ * CSpell dictionary extraction.
+ * Source: https://github.com/streetsidesoftware/cspell-dicts
+ * Pros: Comprehensive, actively maintained, SCOWL-based filtering
+ * Cons: Larger dataset, may include rare words
+ */
+"cspell"
+export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
+/**
  * Classification of transcription failure types.
  * Different failures require different retry strategies.
  */
@@ -1740,22 +1820,6 @@ export type TranscriptionFailure =
 export type TranscriptionVariant = { id: number; experiment_group_id: number; model_id: string; parameters: string; transcription_text: string; match_score: number | null; ranking: number | null; is_acceptable: boolean; created_at: number; notes: string | null }
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 /**
- * A USB device discovered by `uhubctl`.
- */
-export type UsbDevice = { 
-/**
- * Human-readable device name (e.g. "RØDE Microphones RØDE VideoMic NTG 762210B9")
- */
-name: string; 
-/**
- * Hub location ID (e.g. "8-3")
- */
-hub: string; 
-/**
- * Port number on the hub (e.g. "1")
- */
-port: string }
-/**
  * Usage statistics computed from the transcription history.
  */
 export type UsageStats = { 
@@ -1790,38 +1854,30 @@ longest_streak_days: number;
 /**
  * Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
  */
-daily_stats: [string, number, number][] }
-export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
-export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
-export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
+daily_stats: ([string, number, number])[] }
 /**
- * Word correction mode selection.
- * 
- * Determines which word correction algorithm to apply:
- * - `WordBias`: Simple word bias using fuzzy matching (Levenshtein + Soundex)
- * - `Pronunciation`: Advanced matching with pronunciation variants
- * - `Replacement`: Direct word-to-word substitution with exact matching
+ * A USB device discovered by `uhubctl`.
  */
+export type UsbDevice = { 
+/**
+ * Human-readable device name (e.g. "RØDE Microphones RØDE VideoMic NTG 762210B9")
+ */
+name: string; 
+/**
+ * Hub location ID (e.g. "8-3")
+ */
+hub: string; 
+/**
+ * Port number on the hub (e.g. "1")
+ */
+port: string }
+export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
+export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 export type WordCorrectionMode = "word_bias" | "pronunciation" | "replacement"
 /**
  * A word replacement rule for exact word-to-word substitution.
- * 
- * This is a simpler mode than pronunciation matching: when the `mistranslation`
- * appears in the transcript (respecting word boundaries), it is replaced with
- * the `correction`.
- * 
- * Example: `WordReplacement { mistranslation: "open a i", correction: "OpenAI" }`
- * will replace "open a i" with "OpenAI" in the transcript.
  */
-export type WordReplacement = { 
-/**
- * The word or phrase that appears incorrectly in transcripts
- */
-mistranslation: string; 
-/**
- * The correct word or phrase to replace it with
- */
-correction: string }
+export type WordReplacement = { mistranslation: string; correction: string }
 
 /** tauri-specta globals **/
 

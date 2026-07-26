@@ -1,8 +1,9 @@
 mod actions;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+
 mod apple_intelligence;
 mod audio_feedback;
 pub mod audio_toolkit;
+pub mod catalog;
 pub mod cli;
 mod clipboard;
 mod commands;
@@ -157,6 +158,12 @@ fn should_force_show_permissions_window(app: &AppHandle) -> bool {
 }
 
 fn initialize_core_logic(app_handle: &AppHandle) {
+    // Pre-initialize the transcribe-cpp backend (Metal/Vulkan context, GPU
+    // device enumeration, etc.) so the first transcription doesn't pay the
+    // full cold-start cost. This is a no-op on platforms where the backend is
+    // demand-initialized.
+    crate::managers::transcription::init_transcribe_backend();
+
     // Note: Enigo (keyboard/mouse simulation) is NOT initialized here.
     // The frontend is responsible for calling the `initialize_enigo` command
     // after onboarding completes. This avoids triggering permission dialogs
@@ -230,6 +237,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(Arc::new(session::SessionTracker::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
     app_handle.manage(Arc::new(SettingsWriter::new()));
+    app_handle.manage(Arc::new(Mutex::new(())));
 
     // Initialize the in-memory settings cache with settings loaded from disk.
     // This must happen AFTER the store plugin is initialized and AFTER
@@ -559,16 +567,10 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_keyboard_implementation_setting,
             shortcut::get_keyboard_implementation,
             shortcut::change_show_tray_icon_setting,
-            shortcut::change_whisper_accelerator_setting,
+            shortcut::change_transcribe_accelerator_setting,
             shortcut::change_ort_accelerator_setting,
-            shortcut::change_whisper_gpu_device,
+            shortcut::change_transcribe_gpu_device,
             shortcut::get_available_accelerators,
-            shortcut::change_hybrid_mode_enabled_setting,
-            shortcut::change_hybrid_threshold_secs_setting,
-            shortcut::change_hybrid_short_audio_model_setting,
-            shortcut::change_hybrid_long_audio_model_setting,
-            shortcut::change_adaptive_parakeet_thresholds_setting,
-            shortcut::change_verification_mode_setting,
             shortcut::change_vad_sensitivity_setting,
             shortcut::change_live_captions_enabled_setting,
             shortcut::change_overlay_scale_setting,
@@ -667,6 +669,7 @@ pub fn run(cli_args: CliArgs) {
             commands::open_path,
             overlay::set_overlay_can_become_key,
             overlay::set_overlay_mouse_passthrough,
+            overlay::set_overlay_force_click_through,
         ])
         .events(collect_events![
             managers::history::HistoryUpdate,
@@ -911,6 +914,17 @@ pub fn run(cli_args: CliArgs) {
             ));
 
             initialize_core_logic(&app_handle);
+
+            // Populate the overlay-enabled cache from initial settings so the
+            // audio path (overlay::emit_levels, called ~24 Hz during recording)
+            // can do a single atomic load instead of reading the Tauri store.
+            // Kept in sync by shortcut::change_overlay_position_setting.
+            {
+                let settings = settings::get_settings(&app_handle);
+                crate::overlay::update_overlay_enabled_cache(
+                    settings.overlay_position != settings::OverlayPosition::None,
+                );
+            }
 
             // Pre-warm GPU/accelerator enumeration on a background thread.
             // The first call into transcribe_rs::whisper_cpp::gpu::list_gpu_devices
