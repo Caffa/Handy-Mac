@@ -70,6 +70,9 @@ static MIGRATIONS: &[M] = &[
             FOREIGN KEY (experiment_group_id) REFERENCES experiment_groups(id)
         );",
     ),
+    // Migration 12: Add file_name_vad column for VAD-filtered recording reference.
+    // The main file_name now stores the raw (unfiltered) recording.
+    M::up("ALTER TABLE transcription_history ADD COLUMN file_name_vad TEXT;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -147,6 +150,9 @@ pub struct HistoryEntry {
     /// Speech speed: "fast", "normal", "slow".
     /// User's assessment of speech speed.
     pub speech_speed: Option<String>,
+    /// File name of the VAD-filtered WAV recording (for debugging VAD quality).
+    /// The main `file_name` field now stores the raw (unfiltered) recording.
+    pub file_name_vad: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -348,6 +354,7 @@ impl HistoryManager {
             "ground_truth",
             "quality",
             "speech_speed",
+            "file_name_vad",
         ];
 
         // Get actual columns from the database
@@ -391,6 +398,7 @@ impl HistoryManager {
                 "routed" => "routed BOOLEAN NOT NULL DEFAULT 0",
                 "routing_result" => "routing_result TEXT",
                 "tags" => "tags TEXT",
+                "file_name_vad" => "file_name_vad TEXT",
                 // Base columns should never be missing (table creation), but handle gracefully
                 _ => {
                     warn!("Unexpected missing column '{}', skipping", column);
@@ -438,6 +446,7 @@ impl HistoryManager {
             ground_truth: row.get("ground_truth").unwrap_or(None),
             quality: row.get("quality").unwrap_or(None),
             speech_speed: row.get("speech_speed").unwrap_or(None),
+            file_name_vad: row.get("file_name_vad").unwrap_or(None),
         })
     }
 
@@ -457,6 +466,30 @@ impl HistoryManager {
         model_id: Option<String>,
         routed: bool,
     ) -> Result<HistoryEntry> {
+        self.save_entry_with_vad(
+            file_name,
+            transcription_text,
+            post_process_requested,
+            post_processed_text,
+            post_process_prompt,
+            model_id,
+            routed,
+            None,
+        )
+    }
+
+    /// Save a new history entry with an optional VAD-filtered WAV file reference.
+    pub fn save_entry_with_vad(
+        &self,
+        file_name: String,
+        transcription_text: String,
+        post_process_requested: bool,
+        post_processed_text: Option<String>,
+        post_process_prompt: Option<String>,
+        model_id: Option<String>,
+        routed: bool,
+        file_name_vad: Option<String>,
+    ) -> Result<HistoryEntry> {
         let timestamp = Utc::now().timestamp();
         let title = self.format_timestamp_title(timestamp);
 
@@ -472,8 +505,9 @@ impl HistoryManager {
                 post_process_prompt,
                 post_process_requested,
                 model_id,
-                routed
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                routed,
+                file_name_vad
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 &file_name,
                 timestamp,
@@ -485,6 +519,7 @@ impl HistoryManager {
                 post_process_requested,
                 &model_id,
                 routed,
+                &file_name_vad,
             ],
         )?;
 
@@ -505,6 +540,7 @@ impl HistoryManager {
             ground_truth: None,
             quality: None,
             speech_speed: None,
+            file_name_vad,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -555,7 +591,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, file_name_vad
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -594,7 +630,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -745,7 +781,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -759,7 +795,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -771,7 +807,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                      FROM transcription_history
                      ORDER BY id DESC ",
                 )?;
@@ -809,7 +845,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -843,7 +880,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              WHERE LENGTH(transcription_text) > 0
              ORDER BY timestamp DESC
@@ -986,7 +1024,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT ?1",
@@ -1019,7 +1058,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -1067,7 +1107,8 @@ impl HistoryManager {
         let mut stmt = conn.prepare(
             "SELECT id, file_name, timestamp, saved, title, transcription_text,
                     post_processed_text, post_process_prompt, post_process_requested,
-                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed,
+                    file_name_vad
              FROM transcription_history
              ORDER BY id DESC",
         )?;
@@ -1087,7 +1128,8 @@ impl HistoryManager {
         let mut stmt = conn.prepare(
             "SELECT id, file_name, timestamp, saved, title, transcription_text,
                     post_processed_text, post_process_prompt, post_process_requested,
-                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed,
+                    file_name_vad
              FROM transcription_history
              ORDER BY id DESC",
         )?;
@@ -1114,6 +1156,7 @@ impl HistoryManager {
             "ground_truth",
             "quality",
             "speech_speed",
+            "file_name_vad",
         ])?;
 
         for entry in &entries {
@@ -1134,6 +1177,7 @@ impl HistoryManager {
                 entry.ground_truth.clone().unwrap_or_default(),
                 entry.quality.clone().unwrap_or_default(),
                 entry.speech_speed.clone().unwrap_or_default(),
+                entry.file_name_vad.clone().unwrap_or_default(),
             ])?;
         }
 

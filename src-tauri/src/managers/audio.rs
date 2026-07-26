@@ -1367,7 +1367,7 @@ impl AudioRecordingManager {
         }
     }
 
-    pub fn stop_recording(&self, binding_id: &str) -> Option<Vec<f32>> {
+    pub fn stop_recording(&self, binding_id: &str) -> Option<(Vec<f32>, Vec<f32>)> {
         let state = self.state.lock();
 
         match *state {
@@ -1393,7 +1393,7 @@ impl AudioRecordingManager {
                 // the response — allowing other operations to proceed during the wait.
                 let settings = get_settings(&self.app_handle);
 
-                let samples = if settings.extra_recording_buffer_ms > 0 {
+                let (processed_samples, raw_samples) = if settings.extra_recording_buffer_ms > 0 {
                     debug!(
                         "Smart-stop: starting volume-aware buffer (max {}ms)",
                         settings.extra_recording_buffer_ms
@@ -1426,9 +1426,9 @@ impl AudioRecordingManager {
                         )
                         .unwrap_or_else(|e| {
                             error!("smart_stop wait failed: {e}");
-                            Vec::new()
+                            (Vec::new(), Vec::new())
                         }),
-                        None => Vec::new(),
+                        None => (Vec::new(), Vec::new()),
                     }
                 } else {
                     // Phase 1: Send the stop command while holding the lock.
@@ -1454,9 +1454,9 @@ impl AudioRecordingManager {
                     match resp_rx {
                         Some(rx) => AudioRecorder::wait_for_stop_result(rx).unwrap_or_else(|e| {
                             error!("stop wait failed: {e}");
-                            Vec::new()
+                            (Vec::new(), Vec::new())
                         }),
-                        None => Vec::new(),
+                        None => (Vec::new(), Vec::new()),
                     }
                 };
 
@@ -1481,7 +1481,7 @@ impl AudioRecordingManager {
                     .map(|r| r.get_max_level())
                     .unwrap_or(0.0);
 
-                if samples.len() > 0 && max_level < NO_AUDIO_THRESHOLD {
+                if processed_samples.len() > 0 && max_level < NO_AUDIO_THRESHOLD {
                     warn!(
                         "Recording had very low audio level (max RMS: {:.6}, threshold: {:.6}, duration: {:.1}s) - mic may be dead/muted",
                         max_level, NO_AUDIO_THRESHOLD, recording_duration
@@ -1502,7 +1502,7 @@ impl AudioRecordingManager {
                     // Pass recording duration so it can require minimum duration before counting.
                     if self
                         .usb_watchdog
-                        .on_recording_finished(samples.len(), recording_duration)
+                        .on_recording_finished(processed_samples.len(), recording_duration)
                     {
                         // Watchdog completed a power cycle. Restart the stream if needed.
                         if let Err(e) = self.restart_microphone_if_needed() {
@@ -1537,16 +1537,18 @@ impl AudioRecordingManager {
                 // A 3-second minimum gives Whisper enough context to produce a good
                 // transcription without hallucinating. The VAD-based trim_trailing_silence
                 // in the transcription pipeline further cleans up any trailing silence.
-                let s_len = samples.len();
+                // NOTE: Only pad processed_samples (for Whisper), NOT raw_samples.
+                let s_len = processed_samples.len();
                 let min_samples = WHISPER_SAMPLE_RATE * 3; // 3 seconds minimum
-                if s_len > 0 && s_len < min_samples {
+                let padded_processed = if s_len > 0 && s_len < min_samples {
                     let needed_silence = min_samples - s_len;
                     let mut padded = vec![0.0f32; needed_silence];
-                    padded.extend_from_slice(&samples);
-                    Some(padded)
+                    padded.extend_from_slice(&processed_samples);
+                    padded
                 } else {
-                    Some(samples)
-                }
+                    processed_samples
+                };
+                Some((padded_processed, raw_samples))
             }
             _ => None,
         }

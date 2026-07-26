@@ -259,11 +259,11 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             debug!("Starting async router task for binding: {}", binding_id);
 
             let stop_recording_time = Instant::now();
-            let samples = rm.stop_recording(&binding_id);
-            if let Some(samples) = samples {
-                debug!("Recording stopped, sample count: {}", samples.len());
+            let recording_result = rm.stop_recording(&binding_id);
+            if let Some((processed_samples, raw_samples)) = recording_result {
+                debug!("Recording stopped, processed: {}, raw: {}", processed_samples.len(), raw_samples.len());
 
-                if samples.is_empty() {
+                if processed_samples.is_empty() {
                     debug!("Recording produced no audio samples; skipping");
                     if let (Some(ref s), Some(tracker)) =
                         (&sid, ah.try_state::<Arc<SessionTracker>>())
@@ -275,22 +275,30 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                     return;
                 }
 
-                // Save WAV concurrently with transcription
-                let sample_count = samples.len();
+                // Save RAW WAV (what the mic actually captured — unfiltered)
+                let raw_sample_count = raw_samples.len();
                 let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
                 let wav_path = hm.recordings_dir().join(&file_name);
                 let wav_path_for_verify = wav_path.clone();
-                let samples_for_wav = samples.clone();
+                let samples_for_wav = raw_samples;
                 let wav_handle = tauri::async_runtime::spawn_blocking(move || {
                     crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
                 });
 
-                // Transcribe
+                // Save VAD-filtered WAV (for debugging VAD quality)
+                let vad_file_name = format!("handy-{}-vad.wav", chrono::Utc::now().timestamp());
+                let vad_wav_path = hm.recordings_dir().join(&vad_file_name);
+                let vad_samples = processed_samples.clone();
+                let vad_wav_handle = tauri::async_runtime::spawn_blocking(move || {
+                    crate::audio_toolkit::save_wav_file(&vad_wav_path, &vad_samples)
+                });
+
+                // Transcribe using VAD-filtered samples
                 let transcription_time = Instant::now();
                 let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
                     Some(guard) => {
                         guard.clear_streaming_cancel();
-                        guard.transcribe(samples)
+                        guard.transcribe(processed_samples)
                     }
                     None => {
                         warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
@@ -312,32 +320,45 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                     tracker.advance_to_transcribing(
                         s,
                         &model_id,
-                        sample_count,
+                        raw_sample_count,
                         stop_recording_time.elapsed().as_millis() as u64,
                     );
                 }
 
-                // Await WAV save
+                // Await RAW WAV save and verify
                 let wav_saved = match wav_handle.await {
                     Ok(Ok(())) => {
                         match crate::audio_toolkit::verify_wav_file(
                             &wav_path_for_verify,
-                            sample_count,
+                            raw_sample_count,
                         ) {
                             Ok(()) => true,
                             Err(e) => {
-                                error!("WAV verification failed: {}", e);
+                                error!("RAW WAV verification failed: {}", e);
                                 false
                             }
                         }
                     }
                     Ok(Err(e)) => {
-                        error!("Failed to save WAV file: {}", e);
+                        error!("Failed to save RAW WAV file: {}", e);
                         false
                     }
                     Err(e) => {
-                        error!("WAV save task panicked: {}", e);
+                        error!("RAW WAV save task panicked: {}", e);
                         false
+                    }
+                };
+
+                // Await VAD WAV save (best-effort, non-critical)
+                match vad_wav_handle.await {
+                    Ok(Ok(())) => {
+                        debug!("VAD-filtered WAV saved: {}", vad_file_name);
+                    }
+                    Ok(Err(e)) => {
+                        error!("Failed to save VAD WAV file: {}", e);
+                    }
+                    Err(e) => {
+                        error!("VAD WAV save task panicked: {}", e);
                     }
                 };
 
@@ -356,7 +377,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         if transcription_text.is_empty() {
                             warn!("Router transcription returned empty text - skipping routing");
 
-                            let duration_secs = sample_count as f32 / 16000.0;
+                            let duration_secs = raw_sample_count as f32 / 16000.0;
                             if rm.usb_watchdog.on_silent_transcription(duration_secs) {
                                 if let Err(e) = rm.restart_microphone_if_needed() {
                                     error!(
@@ -395,7 +416,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                         // Save to history with routed=true and capture entry ID
                         let history_entry_id: Option<i64> = if wav_saved {
-                            match hm.save_entry(
+                            match hm.save_entry_with_vad(
                                 file_name,
                                 transcription_text.clone(),
                                 false, // post_process_requested
@@ -403,6 +424,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 None,  // post_process_prompt
                                 Some(model_id_for_history),
                                 true, // routed
+                                Some(vad_file_name),
                             ) {
                                 Ok(entry) => Some(entry.id),
                                 Err(err) => {

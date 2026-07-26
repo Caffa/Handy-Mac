@@ -282,30 +282,39 @@ impl super::ShortcutAction for TranscribeAction {
             );
 
             let stop_recording_time = Instant::now();
-            let samples = rm.stop_recording(&binding_id);
-            if let Some(samples) = samples {
+            let recording_result = rm.stop_recording(&binding_id);
+            if let Some((processed_samples, raw_samples)) = recording_result {
                 debug!(
-                    "Recording stopped and samples retrieved in {:?}, sample count: {}",
+                    "Recording stopped and samples retrieved in {:?}, processed: {}, raw: {}",
                     stop_recording_time.elapsed(),
-                    samples.len()
+                    processed_samples.len(),
+                    raw_samples.len()
                 );
 
-                if samples.is_empty() {
+                if processed_samples.is_empty() {
                     debug!("Recording produced no audio samples; skipping persistence");
                     utils::hide_recording_overlay(&ah);
                     change_tray_icon(&ah, TrayIconState::Idle);
                 } else {
-                    // Save WAV concurrently with transcription
-                    let sample_count = samples.len();
+                    // Save RAW WAV (what the mic actually captured — unfiltered)
+                    let raw_sample_count = raw_samples.len();
                     let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
                     let wav_path = hm.recordings_dir().join(&file_name);
                     let wav_path_for_verify = wav_path.clone();
-                    let samples_for_wav = samples.clone();
+                    let samples_for_wav = raw_samples;
                     let wav_handle = tauri::async_runtime::spawn_blocking(move || {
                         crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
                     });
 
-                    // Transcribe concurrently with WAV save
+                    // Save VAD-filtered WAV (for debugging VAD quality)
+                    let vad_file_name = format!("handy-{}-vad.wav", chrono::Utc::now().timestamp());
+                    let vad_wav_path = hm.recordings_dir().join(&vad_file_name);
+                    let vad_samples = processed_samples.clone();
+                    let vad_wav_handle = tauri::async_runtime::spawn_blocking(move || {
+                        crate::audio_toolkit::save_wav_file(&vad_wav_path, &vad_samples)
+                    });
+
+                    // Transcribe concurrently with WAV save (using VAD-filtered samples)
                     let transcription_time = Instant::now();
                     // Use a bounded lock timeout to avoid indefinite blocking when a streaming
                     // transcription is in-flight holding the TM lock (1-5s of GPU work).
@@ -313,7 +322,7 @@ impl super::ShortcutAction for TranscribeAction {
                         Some(guard) => {
                             // Clear the streaming cancel flag before the final transcription.
                             guard.clear_streaming_cancel();
-                            guard.transcribe(samples)
+                            guard.transcribe(processed_samples)
                         }
                         None => {
                             warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
@@ -336,32 +345,45 @@ impl super::ShortcutAction for TranscribeAction {
                         tracker.advance_to_transcribing(
                             s,
                             &model_id,
-                            sample_count,
+                            raw_sample_count,
                             stop_recording_time.elapsed().as_millis() as u64,
                         );
                     }
 
-                    // Await WAV save and verify
+                    // Await RAW WAV save and verify
                     let wav_saved = match wav_handle.await {
                         Ok(Ok(())) => {
                             match crate::audio_toolkit::verify_wav_file(
                                 &wav_path_for_verify,
-                                sample_count,
+                                raw_sample_count,
                             ) {
                                 Ok(()) => true,
                                 Err(e) => {
-                                    error!("WAV verification failed: {}", e);
+                                    error!("RAW WAV verification failed: {}", e);
                                     false
                                 }
                             }
                         }
                         Ok(Err(e)) => {
-                            error!("Failed to save WAV file: {}", e);
+                            error!("Failed to save RAW WAV file: {}", e);
                             false
                         }
                         Err(e) => {
-                            error!("WAV save task panicked: {}", e);
+                            error!("RAW WAV save task panicked: {}", e);
                             false
+                        }
+                    };
+
+                    // Await VAD WAV save (best-effort, non-critical)
+                    match vad_wav_handle.await {
+                        Ok(Ok(())) => {
+                            debug!("VAD-filtered WAV saved: {}", vad_file_name);
+                        }
+                        Ok(Err(e)) => {
+                            error!("Failed to save VAD WAV file: {}", e);
+                        }
+                        Err(e) => {
+                            error!("VAD WAV save task panicked: {}", e);
                         }
                     };
 
@@ -397,7 +419,7 @@ impl super::ShortcutAction for TranscribeAction {
 
                             // Save to history if WAV was saved
                             if wav_saved {
-                                if let Err(err) = hm.save_entry(
+                                if let Err(err) = hm.save_entry_with_vad(
                                     file_name,
                                     transcription.text.clone(),
                                     post_process,
@@ -405,6 +427,7 @@ impl super::ShortcutAction for TranscribeAction {
                                     processed.post_process_prompt.clone(),
                                     Some(transcription.model_id.clone()),
                                     false, // routed: not sent to router
+                                    Some(vad_file_name),
                                 ) {
                                     error!("Failed to save history entry: {}", err);
                                 }
@@ -413,7 +436,7 @@ impl super::ShortcutAction for TranscribeAction {
                             if processed.final_text.is_empty() {
                                 // Transcription returned empty text - may indicate dead mic
                                 warn!("Transcription returned empty text - checking if USB watchdog should cycle");
-                                let duration_secs = sample_count as f32 / 16000.0;
+                                let duration_secs = raw_sample_count as f32 / 16000.0;
                                 if rm.usb_watchdog.on_silent_transcription(duration_secs) {
                                     if let Err(e) = rm.restart_microphone_if_needed() {
                                         error!("Failed to restart microphone after silent transcription USB cycle: {}", e);

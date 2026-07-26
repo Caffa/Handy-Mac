@@ -540,8 +540,8 @@ pub async fn stop_and_schedule_pronunciation(
         return Err("AudioRecordingManager not available".to_string());
     };
 
-    // Stop recording and get audio samples
-    let samples = rm
+    // Stop recording and get audio samples (processed = VAD-filtered, used for Whisper)
+    let (samples, _raw) = rm
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 
@@ -861,8 +861,8 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
         return Err("AudioRecordingManager not available".to_string());
     };
 
-    // Stop recording and get audio samples
-    let samples = rm
+    // Stop recording and get audio samples (processed = VAD-filtered, used for Whisper)
+    let (samples, _raw) = rm
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 

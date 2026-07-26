@@ -25,13 +25,13 @@ use crate::settings::NoiseSuppressionLevel;
 
 enum Cmd {
     Start,
-    Stop(mpsc::Sender<Vec<f32>>),
+    Stop(mpsc::Sender<(Vec<f32>, Vec<f32>)>),
     /// Continue recording for up to `max_buffer_ms` after the hotkey is
     /// released, but stop early when sustained silence is detected (based
     /// on the microphone volume relative to the noise floor).
     SmartStop {
         max_buffer_ms: u64,
-        reply_tx: mpsc::Sender<Vec<f32>>,
+        reply_tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     },
     Shutdown,
 }
@@ -55,7 +55,8 @@ struct SmartStopState {
     /// Maximum duration of the smart buffer.
     max_duration: Duration,
     /// Channel to send the final audio samples on completion.
-    reply_tx: mpsc::Sender<Vec<f32>>,
+    /// The tuple is (processed_samples, raw_samples).
+    reply_tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     /// Estimated noise floor (RMS) built from VAD-noise frames during
     /// the preceding recording.
     noise_floor: f32,
@@ -430,7 +431,7 @@ impl AudioRecorder {
     /// like cancel, level callbacks, and streaming callbacks. By splitting into
     /// send + wait phases, the caller can release the lock between sending the
     /// command and waiting for the response.
-    pub fn stop_send(&self) -> Result<mpsc::Receiver<Vec<f32>>, Box<dyn std::error::Error>> {
+    pub fn stop_send(&self) -> Result<mpsc::Receiver<(Vec<f32>, Vec<f32>)>, Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
@@ -441,15 +442,15 @@ impl AudioRecorder {
     /// Wait for the result of a Stop command sent via `stop_send()`.
     /// Returns the audio samples on success, or an empty vector on timeout.
     pub fn wait_for_stop_result(
-        resp_rx: mpsc::Receiver<Vec<f32>>,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        resp_rx: mpsc::Receiver<(Vec<f32>, Vec<f32>)>,
+    ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         match resp_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for audio samples after 5 seconds - stream may be frozen"
                 );
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -465,7 +466,7 @@ impl AudioRecorder {
     /// FIXED: Added a 5-second timeout to prevent infinite blocking if the
     /// audio stream is frozen (e.g., zombie device, CoreAudio hang). If the
     /// timeout expires, returns an empty sample vector instead of blocking forever.
-    pub fn stop(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn stop(&self) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
@@ -476,13 +477,13 @@ impl AudioRecorder {
         // from becoming completely unresponsive. 5 seconds is generous enough for
         // even the largest audio buffers to be processed.
         match resp_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for audio samples after 5 seconds - stream may be frozen"
                 );
                 // Return empty samples instead of blocking forever
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -501,7 +502,7 @@ impl AudioRecorder {
     pub fn smart_stop_send(
         &self,
         max_buffer_ms: u64,
-    ) -> Result<mpsc::Receiver<Vec<f32>>, Box<dyn std::error::Error>> {
+    ) -> Result<mpsc::Receiver<(Vec<f32>, Vec<f32>)>, Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::SmartStop {
@@ -515,18 +516,18 @@ impl AudioRecorder {
     /// Wait for the result of a SmartStop command sent via `smart_stop_send()`.
     /// Returns the audio samples on success, or an empty vector on timeout.
     pub fn wait_for_smart_stop_result(
-        resp_rx: mpsc::Receiver<Vec<f32>>,
+        resp_rx: mpsc::Receiver<(Vec<f32>, Vec<f32>)>,
         max_buffer_ms: u64,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let timeout = Duration::from_millis(max_buffer_ms) + Duration::from_secs(2);
         match resp_rx.recv_timeout(timeout) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for smart_stop samples after {}ms - stream may be frozen",
                     timeout.as_millis()
                 );
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -549,7 +550,7 @@ impl AudioRecorder {
     ///
     /// FIXED: Added timeout protection (max_buffer_ms + 2 seconds) to prevent
     /// infinite blocking if the audio stream is frozen.
-    pub fn smart_stop(&self, max_buffer_ms: u64) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn smart_stop(&self, max_buffer_ms: u64) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::SmartStop {
@@ -562,13 +563,13 @@ impl AudioRecorder {
         // The smart-stop can take up to max_buffer_ms, so we add a 2-second safety margin.
         let timeout = Duration::from_millis(max_buffer_ms) + Duration::from_secs(2);
         match resp_rx.recv_timeout(timeout) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for smart_stop samples after {}ms - stream may be frozen",
                     timeout.as_millis()
                 );
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -917,6 +918,7 @@ fn run_consumer(
     );
 
     let mut processed_samples = Vec::<f32>::new();
+    let mut raw_samples = Vec::<f32>::new();
     let mut recording = false;
 
     // Streaming transcription: invoke callback every ~2.5 seconds
@@ -999,13 +1001,17 @@ fn run_consumer(
                                     &noise_suppressor,
                                     &mut processed_samples,
                                 );
+                                raw_samples.extend_from_slice(frame);
                             });
                             if let Some(ss) = smart_stop.take() {
                                 log::debug!(
                                     "Smart-stop: max duration reached (no audio) after {}ms",
                                     elapsed.as_millis(),
                                 );
-                                let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                                let _ = ss.reply_tx.send((
+                                    std::mem::take(&mut processed_samples),
+                                    std::mem::take(&mut raw_samples),
+                                ));
                             }
                         }
                     }
@@ -1129,6 +1135,13 @@ fn run_consumer(
                 }
             }
 
+            // Accumulate raw (unfiltered) audio for WAV recording.
+            // This preserves the full audio including "noise" frames that VAD drops,
+            // so the saved recording sounds natural instead of stilted.
+            if recording {
+                raw_samples.extend_from_slice(frame);
+            }
+
             let class = handle_frame(
                 frame,
                 recording,
@@ -1200,10 +1213,13 @@ fn run_consumer(
 
             frame_resampler.finish(&mut |frame: &[f32]| {
                 let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
+                raw_samples.extend_from_slice(frame);
             });
 
             if let Some(ss) = smart_stop.take() {
-                let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                let _ = ss
+                    .reply_tx
+                    .send((std::mem::take(&mut processed_samples), std::mem::take(&mut raw_samples)));
             }
         }
 
@@ -1213,6 +1229,7 @@ fn run_consumer(
                 Cmd::Start => {
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
+                    raw_samples.clear();
 
                     // Prepend pre-buffer if configured (always-on mode)
                     // This captures speech that started BEFORE the hotkey was pressed
@@ -1220,6 +1237,9 @@ fn run_consumer(
                         let pre_buffer_len = pre_buffer.len();
                         processed_samples.reserve(pre_buffer_len);
                         processed_samples.extend(pre_buffer.iter().copied());
+                        // Also prepend pre-buffer to raw_samples
+                        raw_samples.reserve(pre_buffer_len);
+                        raw_samples.extend(pre_buffer.iter().copied());
                         log::debug!(
                             "Pre-buffer: prepended {} samples ({}ms) to recording",
                             pre_buffer_len,
@@ -1249,7 +1269,7 @@ fn run_consumer(
                 Cmd::Stop(reply_tx) => {
                     // If a smart-stop is in progress, resolve it with
                     // whatever samples we have so far so the caller
-                    // doesn’t hang forever on resp_rx.recv().
+                    // doesn't hang forever on resp_rx.recv().
                     if let Some(ss) = smart_stop.take() {
                         frame_resampler.finish(&mut |frame: &[f32]| {
                             let _ = handle_frame(
@@ -1259,8 +1279,12 @@ fn run_consumer(
                                 &noise_suppressor,
                                 &mut processed_samples,
                             );
+                            raw_samples.extend_from_slice(frame);
                         });
-                        let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                        let _ = ss.reply_tx.send((
+                            std::mem::take(&mut processed_samples),
+                            std::mem::take(&mut raw_samples),
+                        ));
                         log::debug!("Smart-stop: resolved by Cmd::Stop (cancel)");
                     }
 
@@ -1282,6 +1306,7 @@ fn run_consumer(
                                         &noise_suppressor,
                                         &mut processed_samples,
                                     );
+                                    raw_samples.extend_from_slice(frame);
                                 });
                             }
                             Ok(AudioChunk::EndOfStream) => break,
@@ -1300,9 +1325,13 @@ fn run_consumer(
                             &noise_suppressor,
                             &mut processed_samples,
                         );
+                        raw_samples.extend_from_slice(frame);
                     });
 
-                    let _ = reply_tx.send(std::mem::take(&mut processed_samples));
+                    let _ = reply_tx.send((
+                        std::mem::take(&mut processed_samples),
+                        std::mem::take(&mut raw_samples),
+                    ));
 
                     // Resume the audio callback so the consumer loop can continue
                     // receiving chunks (important for always-on microphone mode).
