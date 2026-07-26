@@ -240,8 +240,10 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
             selectedModel: result.data.selected_model,
           });
         }
-      } catch {
-        // Silently ignore — indicator simply won't show
+      } catch (e) {
+        console.warn("[Live Captions] Settings fetch failed, using cached:", cachedLiveCaptionsEnabled, e);
+        // Use cached value as fallback
+        setLiveCaptionsEnabled(cachedLiveCaptionsEnabled ?? false);
       }
     };
     fetchSettings();

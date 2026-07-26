@@ -399,7 +399,15 @@ export const useSettingsStore = create<SettingsStore>()(
 
         const updater = settingUpdaters[key];
         if (updater) {
-          await updater(value);
+          const result = await updater(value);
+          // Check if the backend command returned an error result
+          if (result && typeof result === "object" && "status" in result && result.status === "error") {
+            console.error(`Backend rejected setting ${String(key)}:`, (result as unknown as { error: unknown }).error);
+            // Rollback optimistic update on backend error
+            if (settings) {
+              set({ settings: { ...settings, [key]: originalValue } });
+            }
+          }
         } else if (key !== "bindings" && key !== "selected_model") {
           console.warn(`No handler for setting: ${String(key)}`);
         }

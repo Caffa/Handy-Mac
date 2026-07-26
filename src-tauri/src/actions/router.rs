@@ -466,14 +466,13 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 }
                             };
 
-                        // ── Show "Filing…" overlay while routing ──
-                        show_processing_overlay_with_mode(&ah, OverlayMode::Router);
+                        // ── Hide overlay during filing — the user should have full
+                        // screen control while the router subprocess runs. ──
+                        utils::hide_recording_overlay(&ah);
 
                         // ── Transition coordinator from Confirming to Processing ──
-                        // This ensures the frontend knows we're still in a router flow
-                        // during the filing/routing phase, so it shows the blue
-                        // visualizer and "Filing…" text instead of the default
-                        // transcribe-mode visualizer and "Processing…" text.
+                        // The coordinator stays in Processing (blocking new recordings)
+                        // but the overlay is hidden so the user can interact freely.
                         if let Some(coordinator) = ah.try_state::<TranscriptionCoordinator>() {
                             coordinator.set_processing_with_binding(
                                 &ah,
@@ -647,6 +646,24 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                     ah_for_router.try_state::<TranscriptionCoordinator>()
                                 {
                                     coord.notify_processing_finished();
+                                }
+
+                                // ── Show result overlay if no new recording started ──
+                                // After notify_processing_finished(), the coordinator is Idle.
+                                // If a new recording started, is_active_use() will be true
+                                // and we skip showing — the new recording's overlay takes
+                                // priority, and the macOS notification provides feedback.
+                                let should_show_result = {
+                                    let coord = ah_for_router
+                                        .try_state::<TranscriptionCoordinator>();
+                                    !coord.map_or(false, |c| c.is_active_use())
+                                };
+
+                                if should_show_result {
+                                    show_processing_overlay_with_mode(
+                                        &ah_for_router,
+                                        OverlayMode::Router,
+                                    );
                                 }
 
                                 // ── Schedule delayed overlay hide ──

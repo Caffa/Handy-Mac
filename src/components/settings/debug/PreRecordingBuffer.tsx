@@ -29,6 +29,16 @@ export const PreRecordingBuffer: React.FC<PreRecordingBufferProps> = ({
   // Local state for immediate UI feedback during slider drag
   const [localValue, setLocalValue] = useState<number | null>(null);
 
+  // Refs to track the latest values for the unmount cleanup without
+  // re-registering the effect on every render (which would cause the
+  // cleanup to flush stale values prematurely).
+  const latestValueRef = useRef<number | null>(null);
+  const updateSettingRef = useRef(updateSetting);
+  updateSettingRef.current = updateSetting;
+
+  // Keep latestValueRef in sync with state + settings
+  latestValueRef.current = localValue ?? settings?.pre_recording_buffer_ms ?? null;
+
   // Sync local state with settings when they change
   useEffect(() => {
     if (settings?.pre_recording_buffer_ms !== undefined) {
@@ -36,11 +46,19 @@ export const PreRecordingBuffer: React.FC<PreRecordingBufferProps> = ({
     }
   }, [settings?.pre_recording_buffer_ms]);
 
-  // Clean up debounce timer on unmount
+  // Flush pending debounced update on unmount to prevent lost changes.
+  // deps=[] ensures this only runs on unmount, NOT when localValue changes.
+  // We read values from refs to avoid stale closures.
   useEffect(() => {
     return () => {
       if (debounceRef.current !== null) {
         clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+        // Flush the last known value to ensure it's saved
+        const currentValue = latestValueRef.current;
+        if (currentValue != null) {
+          updateSettingRef.current("pre_recording_buffer_ms", currentValue);
+        }
       }
     };
   }, []);
@@ -55,11 +73,21 @@ export const PreRecordingBuffer: React.FC<PreRecordingBufferProps> = ({
         clearTimeout(debounceRef.current);
       }
 
-      // Debounce the backend call to avoid rapid stop/recreate/start cycles
-      debounceRef.current = setTimeout(() => {
+      // Debounce the backend call to avoid rapid stop/recreate/start cycles.
+      // Save immediately on first change, then debounce subsequent rapid changes.
+      if (debounceRef.current === null) {
+        // First change in this interaction — save immediately
         updateSetting("pre_recording_buffer_ms", value);
-        debounceRef.current = null;
-      }, DEBOUNCE_MS);
+        debounceRef.current = setTimeout(() => {
+          debounceRef.current = null;
+        }, DEBOUNCE_MS);
+      } else {
+        // Rapid changes while dragging — debounce
+        debounceRef.current = setTimeout(() => {
+          updateSetting("pre_recording_buffer_ms", value);
+          debounceRef.current = null;
+        }, DEBOUNCE_MS);
+      }
     },
     [updateSetting],
   );
