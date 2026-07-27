@@ -107,6 +107,23 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     };
   }, []);
 
+  // React to src prop changes from parent (e.g., when toggling raw vs VAD audio)
+  useEffect(() => {
+    if (initialSrc !== undefined && initialSrc !== loadedSrc) {
+      // Clean up old blob URL if we created one
+      if (loadedSrc?.startsWith("blob:")) {
+        URL.revokeObjectURL(loadedSrc);
+      }
+      setLoadedSrc(initialSrc);
+      setCurrentTime(0);
+      setDuration(0);
+      if (audioRef.current) {
+        audioRef.current.currentTime = 0;
+        // Don't auto-play here; let user click play or use autoPlay prop separately
+      }
+    }
+  }, [initialSrc, loadedSrc]);
+
   // Auto-play when src becomes available (via onLoadRequest or autoPlay prop)
   const prevLoadedSrc = useRef<string | null>(null);
   useEffect(() => {

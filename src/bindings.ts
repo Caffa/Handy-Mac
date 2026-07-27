@@ -1606,7 +1606,12 @@ quality: string | null;
  * Speech speed: "fast", "normal", "slow".
  * User's assessment of speech speed.
  */
-speech_speed: string | null }
+speech_speed: string | null; 
+/**
+ * File name of the VAD-filtered recording (what went to transcription).
+ * `file_name` is the raw unfiltered audio.
+ */
+file_name_vad: string | null }
 export type HistoryUpdate = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation

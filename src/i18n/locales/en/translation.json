@@ -567,7 +567,11 @@
       "exportJson": "Export JSON",
       "exportCsv": "Export CSV",
       "exportSuccess": "History exported successfully!",
-      "exportError": "Failed to export history. Please try again."
+      "exportError": "Failed to export history. Please try again.",
+      "audioSource": "Audio source",
+      "rawAudio": "Raw",
+      "vadAudio": "VAD-filtered",
+      "vadNotAvailable": "VAD-filtered recording not available for this entry"
     },
     "usage": {
       "title": "Usage Statistics",

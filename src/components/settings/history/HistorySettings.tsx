@@ -100,7 +100,6 @@ const OpenRecordingsButton: React.FC<OpenRecordingsButtonProps> = ({
 
 export const HistorySettings: React.FC = () => {
   const { t } = useTranslation();
-  const osType = useOsType();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -260,27 +259,6 @@ export const HistorySettings: React.FC = () => {
     }
   };
 
-  const getAudioUrl = useCallback(
-    async (fileName: string) => {
-      try {
-        const result = await commands.getAudioFilePath(fileName);
-        if (result.status === "ok") {
-          if (osType === "linux") {
-            const fileData = await readFile(result.data);
-            const blob = new Blob([fileData], { type: "audio/wav" });
-            return URL.createObjectURL(blob);
-          }
-          return convertFileSrc(result.data, "asset");
-        }
-        return null;
-      } catch (error) {
-        console.error("Failed to get audio file path:", error);
-        return null;
-      }
-    },
-    [osType],
-  );
-
   const deleteAudioEntry = async (id: number) => {
     // Optimistically remove
     setEntries((prev) => prev.filter((e) => e.id !== id));
@@ -399,7 +377,6 @@ export const HistorySettings: React.FC = () => {
               entry={entry}
               onToggleSaved={() => toggleSaved(entry.id)}
               onCopyText={() => copyToClipboard(entry.transcription_text)}
-              getAudioUrl={getAudioUrl}
               deleteAudio={deleteAudioEntry}
               retryTranscription={retryHistoryEntry}
               onUpdateMetadata={(gt, q, ss) =>
@@ -456,7 +433,6 @@ interface HistoryEntryProps {
   entry: HistoryEntry;
   onToggleSaved: () => void;
   onCopyText: () => void;
-  getAudioUrl: (fileName: string) => Promise<string | null>;
   deleteAudio: (id: number) => Promise<void>;
   retryTranscription: (id: number) => Promise<void>;
   onUpdateMetadata: (
@@ -470,25 +446,66 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   entry,
   onToggleSaved,
   onCopyText,
-  getAudioUrl,
   deleteAudio,
   retryTranscription,
   onUpdateMetadata,
 }) => {
   const { t, i18n } = useTranslation();
+  const osType = useOsType();
   const [showCopied, setShowCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [editingGroundTruth, setEditingGroundTruth] = useState(false);
   const [groundTruth, setGroundTruth] = useState(
     entry.ground_truth || entry.transcription_text,
   );
+  const [audioMode, setAudioMode] = useState<"raw" | "vad">("raw");
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
 
   const hasTranscription = entry.transcription_text.trim().length > 0;
 
-  const handleLoadAudio = useCallback(
-    () => getAudioUrl(entry.file_name),
-    [getAudioUrl, entry.file_name],
-  );
+  // Load audio source when audioMode changes
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      const fileName =
+        audioMode === "vad" ? entry.file_name_vad : entry.file_name;
+      if (!fileName) {
+        setAudioSrc(null);
+        return;
+      }
+      try {
+        setAudioLoading(true);
+        const result = await commands.getAudioFilePath(fileName);
+        if (cancelled) return;
+        if (result.status === "ok") {
+          if (osType === "linux") {
+            const fileData = await readFile(result.data);
+            const blob = new Blob([fileData], { type: "audio/wav" });
+            setAudioSrc(URL.createObjectURL(blob));
+          } else {
+            setAudioSrc(convertFileSrc(result.data, "asset"));
+          }
+        } else {
+          setAudioSrc(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Failed to load audio source:", error);
+          setAudioSrc(null);
+        }
+      } finally {
+        if (!cancelled) setAudioLoading(false);
+      }
+    };
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [audioMode, entry.file_name, entry.file_name_vad, osType]);
 
   const handleCopyText = () => {
     if (!hasTranscription) {
@@ -726,7 +743,41 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
         </div>
       )}
 
-      <AudioPlayer onLoadRequest={handleLoadAudio} className="w-full" />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-text/60">
+            {t("settings.history.audioSource")}:
+          </span>
+          <button
+            onClick={() => setAudioMode("raw")}
+            className={`px-2 py-0.5 rounded text-xs cursor-pointer ${
+              audioMode === "raw"
+                ? "bg-primary text-white"
+                : "bg-surface-secondary text-text/70 hover:text-text"
+            }`}
+            disabled={audioLoading}
+          >
+            {t("settings.history.rawAudio")}
+          </button>
+          <button
+            onClick={() => setAudioMode("vad")}
+            className={`px-2 py-0.5 rounded text-xs cursor-pointer ${
+              audioMode === "vad"
+                ? "bg-primary text-white"
+                : "bg-surface-secondary text-text/70 hover:text-text"
+            }`}
+            disabled={audioLoading || !entry.file_name_vad}
+            title={
+              !entry.file_name_vad
+                ? t("settings.history.vadNotAvailable")
+                : undefined
+            }
+          >
+            {t("settings.history.vadAudio")}
+          </button>
+        </div>
+        <AudioPlayer src={audioSrc ?? undefined} className="w-full" />
+      </div>
     </div>
   );
 };
