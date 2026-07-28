@@ -136,6 +136,11 @@
     "downloading": "Downloading {{percentage}}%",
     "downloadingMultiple": "Downloading {{count}} models...",
     "modelReady": "Model Ready",
+    "vadSensitivity": {
+      "label": "Voice Detection",
+      "default": "Default for {{engine}} engine",
+      "resetToDefault": "Reset to default"
+    },
     "loading": "Loading {{modelName}}...",
     "loadingGeneric": "Loading...",
     "loadingWithQueued": "{{baseText}} → {{pendingModelName}}",

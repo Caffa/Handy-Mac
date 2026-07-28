@@ -44,6 +44,10 @@ interface UseSettingsReturn {
   ) => Promise<void>;
   updatePostProcessModel: (providerId: string, model: string) => Promise<void>;
   fetchPostProcessModels: (providerId: string) => Promise<string[]>;
+  setModelVadSensitivity: (
+    modelId: string,
+    sensitivity: string | null,
+  ) => Promise<void>;
 }
 
 export const useSettings = (): UseSettingsReturn => {
@@ -80,5 +84,6 @@ export const useSettings = (): UseSettingsReturn => {
     updatePostProcessApiKey: store.updatePostProcessApiKey,
     updatePostProcessModel: store.updatePostProcessModel,
     fetchPostProcessModels: store.fetchPostProcessModels,
+    setModelVadSensitivity: store.setModelVadSensitivity,
   };
 };

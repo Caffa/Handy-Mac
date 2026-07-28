@@ -25,6 +25,10 @@ interface SettingsStore {
 
   // Actions
   initialize: () => Promise<void>;
+  setModelVadSensitivity: (
+    modelId: string,
+    sensitivity: string | null,
+  ) => Promise<void>;
   loadDefaultSettings: () => Promise<void>;
   updateSetting: <K extends keyof Settings>(
     key: K,
@@ -401,8 +405,16 @@ export const useSettingsStore = create<SettingsStore>()(
         if (updater) {
           const result = await updater(value);
           // Check if the backend command returned an error result
-          if (result && typeof result === "object" && "status" in result && result.status === "error") {
-            console.error(`Backend rejected setting ${String(key)}:`, (result as unknown as { error: unknown }).error);
+          if (
+            result &&
+            typeof result === "object" &&
+            "status" in result &&
+            result.status === "error"
+          ) {
+            console.error(
+              `Backend rejected setting ${String(key)}:`,
+              (result as unknown as { error: unknown }).error,
+            );
             // Rollback optimistic update on backend error
             if (settings) {
               set({ settings: { ...settings, [key]: originalValue } });
@@ -677,6 +689,45 @@ export const useSettingsStore = create<SettingsStore>()(
           [providerId]: models,
         },
       })),
+
+    setModelVadSensitivity: async (modelId, sensitivity) => {
+      const { setUpdating, refreshSettings } = get();
+      const updateKey = `model_vad_sensitivity:${modelId}`;
+
+      setUpdating(updateKey, true);
+
+      try {
+        const result = await commands.setModelVadSensitivity(
+          modelId,
+          sensitivity as import("@/bindings").VadSensitivity | null,
+        );
+        if (
+          result &&
+          typeof result === "object" &&
+          "status" in result &&
+          result.status === "error"
+        ) {
+          console.error(
+            `Failed to set VAD sensitivity for ${modelId}:`,
+            (result as unknown as { error: unknown }).error,
+          );
+          throw new Error(
+            String(
+              (result as unknown as { error: unknown }).error ??
+                "Unknown error",
+            ),
+          );
+        }
+        await refreshSettings();
+      } catch (error) {
+        console.error(`Failed to set VAD sensitivity for ${modelId}:`, error);
+        toast.error(i18n.t("errors.settingsLoadFailed"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setUpdating(updateKey, false);
+      }
+    },
 
     // Load default settings from Rust
     loadDefaultSettings: async () => {
