@@ -98,8 +98,9 @@
       }
     },
     "errors": {
+      "downloadModel": "Failed to download model: {{error}}",
       "loadModels": "Failed to load available models",
-      "downloadModel": "Failed to download model: {{error}}"
+      "selectModel": "Failed to select model. Please try again."
     },
     "permissions": {
       "title": "Permissions Required",
@@ -371,6 +372,14 @@
           "top": "Top"
         }
       },
+      "overlayScale": {
+        "label": "Overlay Size",
+        "description": "Scale the overlay pill and live captions. Large mode makes text easier to read.",
+        "options": {
+          "normal": "Normal",
+          "large": "Large (2x)"
+        }
+      },
       "overlayScreenTarget": {
         "title": "Overlay Screen",
         "description": "Choose which screen the visualizer appears on. 'Side Screen' shows it on the screen your mouse is NOT on (requires multiple monitors).",
@@ -470,7 +479,18 @@
         "relaxedTooltip": "Lower sensitivity. Requires clearer speech to trigger. Good for noisy environments to avoid false starts.",
         "veryRelaxed": "Very Relaxed",
         "veryRelaxedTooltip": "Minimum sensitivity. Only triggers on clear, loud speech. Best for very noisy environments or if you speak deliberately.",
-        "placeholder": "Select sensitivity..."
+        "placeholder": "Select sensitivity...",
+        "levels": {
+          "none": "None",
+          "light": "Light",
+          "balanced": "Balanced",
+          "aggressive": "Aggressive",
+          "strongAggressive": "Very Aggressive"
+        },
+        "labels": {
+          "no": "Less sensitive",
+          "strong": "More sensitive"
+        }
       },
       "liveCaptions": {
         "label": "Live Captions",
@@ -578,9 +598,32 @@
       "vadAudio": "VAD-filtered",
       "vadNotAvailable": "VAD-filtered recording not available for this entry"
     },
+    "retryQueue": {
+      "title": "Failed Transcriptions",
+      "retryAll": "Retry All",
+      "clearAll": "Clear",
+      "retrySuccess": "Retry successful",
+      "retryError": "Retry failed: {{error}}",
+      "removeError": "Failed to remove: {{error}}",
+      "removed": "Entry removed",
+      "cleared": "Queue cleared",
+      "clearError": "Failed to clear queue: {{error}}",
+      "batchSuccess": "{{count}} entries retried successfully",
+      "batchFail": "{{count}} entries failed to retry",
+      "retrying": "Retrying...",
+      "retry": "Retry",
+      "readyNow": "Ready now",
+      "retryInMinutes": "Retry in {{mins}}m",
+      "retryInHours": "Retry in {{hours}}h",
+      "attempts": "Attempt {{current}}/{{max}}",
+      "fallback": "Fallback: {{count}} models",
+      "model": "Model: {{modelId}}",
+      "usingFallback": "using fallback"
+    },
     "usage": {
       "title": "Usage Statistics",
       "today": "Today",
+      "last7Days": "Last 7 Days",
       "last30Days": "Last 30 Days",
       "totalTranscriptions": "Total transcriptions",
       "totalWords": "Words transcribed",
@@ -589,7 +632,11 @@
       "currentStreak": "Current streak",
       "bestStreak": "Best",
       "transcriptions": "Transcriptions",
-      "words": "Words"
+      "words": "Words",
+      "loading": "Loading usage statistics...",
+      "loadError": "Failed to load usage statistics: {{error}}",
+      "noActivity": "No activity in the last 7 days",
+      "tooltip": "{{count}} transcriptions, {{words}} words"
     },
     "debug": {
       "title": "Debug",
