@@ -42,12 +42,13 @@ function filterStreamingText(text: string): string {
         lowerText === fw || lowerText === `${fw}.` || lowerText === `${fw},`,
     );
     if (isFiller) {
-      console.log("[Live Captions] Filler filter removed ALL text:", {
-        original: text.substring(0, 100),
-        filtered: "",
-        reason: "single-filler-word",
-      });
-      return "";
+      console.log(
+        "[Live Captions] Preserving single filler word so box appears:",
+        {
+          original: text.substring(0, 100),
+          reason: "single-filler-word-kept",
+        },
+      );
     }
     return trimmed;
   }
@@ -137,9 +138,15 @@ export function useLiveCaptions(
   const stateRef = useRef(state);
   const isVisibleRef = useRef(isVisible);
 
-  useEffect(() => { liveCaptionsEnabledRef.current = liveCaptionsEnabled; }, [liveCaptionsEnabled]);
-  useEffect(() => { stateRef.current = state; }, [state]);
-  useEffect(() => { isVisibleRef.current = isVisible; }, [isVisible]);
+  useEffect(() => {
+    liveCaptionsEnabledRef.current = liveCaptionsEnabled;
+  }, [liveCaptionsEnabled]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
 
   // Clear accumulated segments when recording stops or overlay hides
   // to prevent segments from a previous recording bleeding into the next.
@@ -234,20 +241,16 @@ export function useLiveCaptions(
             const displayText = merged.map((s) => s.text).join(" ");
             const filtered = filterStreamingText(displayText);
 
-            if (!filtered) {
-              console.log(
-                "[Live Captions] Filler filter removed ALL text — raw:",
-                JSON.stringify(displayText),
-                "| keeping previous",
-              );
-              // Don't update streamingText if filter removed all text
-            } else {
-              console.log(
-                "[Live Captions] streamingText set to:",
-                JSON.stringify(filtered),
-              );
-              setStreamingText(filtered);
-            }
+            // Always update streamingText with the filtered display text.
+            // If the filter removed all text (e.g. only filler words), we
+            // set an empty string so stale captions don't persist, but the
+            // single-filler-word path is preserved by filterStreamingText so
+            // the captions box appears as soon as speech starts.
+            console.log(
+              "[Live Captions] streamingText set to:",
+              JSON.stringify(filtered),
+            );
+            setStreamingText(filtered);
 
             segmentsRef.current = merged;
             setStreamingSegments([...merged]);
@@ -262,21 +265,11 @@ export function useLiveCaptions(
                   return prev;
                 }
                 const filtered = filterStreamingText(text);
-                if (!filtered) {
-                  console.log(
-                    "[Live Captions] Filler filter removed ALL text (fallback) — raw:",
-                    JSON.stringify(text),
-                    "| keeping previous:",
-                    JSON.stringify(prev),
-                  );
-                  return prev;
-                } else {
-                  console.log(
-                    "[Live Captions] streamingText set to (fallback):",
-                    JSON.stringify(filtered),
-                  );
-                  return filtered;
-                }
+                console.log(
+                  "[Live Captions] streamingText set to (fallback):",
+                  JSON.stringify(filtered),
+                );
+                return filtered;
               });
             }
           }

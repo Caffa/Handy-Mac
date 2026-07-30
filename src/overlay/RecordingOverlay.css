@@ -143,6 +143,9 @@
   text-align: center;
   line-height: 1.4;
   display: block;
+  /* Captions are visual-only; the overlay window already passes clicks
+     through, and this box should never intercept mouse events. */
+  pointer-events: none;
 }
 
 .live-captions-box.fade-in {
@@ -506,7 +509,8 @@
   align-items: center;
   justify-content: center;
   gap: calc(4px * var(--overlay-scale, 1));
-  padding: calc(10px * var(--overlay-scale, 1)) calc(12px * var(--overlay-scale, 1));
+  padding: calc(10px * var(--overlay-scale, 1))
+    calc(12px * var(--overlay-scale, 1));
   background: rgba(59, 130, 246, 0.08);
   border: 1px solid rgba(59, 130, 246, 0.18);
   border-radius: calc(10px * var(--overlay-scale, 1));

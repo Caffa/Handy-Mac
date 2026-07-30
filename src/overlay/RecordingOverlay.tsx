@@ -135,7 +135,7 @@ const RecordingOverlay: React.FC = () => {
       // Filing... — nothing to interact with
       (state === "processing" && isRouter) ||
       // Router result displayed — just visual cards, no interaction
-      (routerResult !== null);
+      routerResult !== null;
     commands.setOverlayForceClickThrough(forceClickThrough).catch(() => {});
   }, [state, isRouter, routerResult]);
 
@@ -273,74 +273,69 @@ const RecordingOverlay: React.FC = () => {
   return (
     <>
       {showPill && (
-      <div
-        dir={direction}
-        className={getOverlayClassNames()}
-        style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
-      >
-        <div className="overlay-left">{getIcon()}</div>
+        <div
+          dir={direction}
+          className={getOverlayClassNames()}
+          style={{ "--overlay-scale": overlayScale } as React.CSSProperties}
+        >
+          <div className="overlay-left">{getIcon()}</div>
 
-        <div className="overlay-middle">
-          {/* Mic dead or low audio warning - only show during recording */}
-          {backendState.appState.state === "Recording" && (
-            <MicDeadWarning
-              micDeadWarning={micDeadWarning}
-              lowAudioWarning={lowAudioWarning}
-            />
-          )}
-          {/* Only show warning or visualizer, not both */}
-          {(micDeadWarning || lowAudioWarning) && backendState.appState.state === "Recording"
-            ? null
-            : backendState.appState.state === "Recording" && (
-                <VisualizerBars levels={levels} isRouter={isRouter} />
-              )}
-          {/* Processing state: "Filing..." for router, "Processing..." for normal */}
-          {state === "processing" && (
-            <div
-              className={`transcribing-text${isRouter ? " routing-text" : ""}`}
-            >
-              {isRouter ? t("overlay.filing") : t("overlay.processing")}
-            </div>
-          )}
-          {state === "usb-cycling" && (
-            <USBCyclingProgress
-              usbCycleStage={usbCycleStage}
-              usbCyclingElapsed={usbCyclingElapsed}
-            />
-          )}
-          {/* Confirming state */}
-          {state === "confirming" && !routerResult && (
-            <div className="confirming-text">
-              {isEditing
-                ? t("overlay.editing", "Edit text:")
-                : t("overlay.confirming", "Sending in")}
-              {!isEditing && countdown > 0 && (
-                <span className="countdown-timer">
-                  {`${Math.ceil(countdown / 1000)}s`}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="overlay-right">
-          {backendState.appState.state === "Recording" && (
-            <div
-              className="cancel-button"
-              onClick={handleCancel}
-              onMouseEnter={() => commands.setOverlayMousePassthrough(true).catch(() => {})}
-              onMouseLeave={() => commands.setOverlayMousePassthrough(false).catch(() => {})}
-            >
-              <CancelIcon
-                width={33}
-                height={33}
-                color={isRouter ? "#3b82f6" : undefined}
+          <div className="overlay-middle">
+            {/* Mic dead or low audio warning - only show during recording */}
+            {backendState.appState.state === "Recording" && (
+              <MicDeadWarning
+                micDeadWarning={micDeadWarning}
+                lowAudioWarning={lowAudioWarning}
               />
-            </div>
-          )}
+            )}
+            {/* Only show warning or visualizer, not both */}
+            {(micDeadWarning || lowAudioWarning) &&
+            backendState.appState.state === "Recording"
+              ? null
+              : backendState.appState.state === "Recording" && (
+                  <VisualizerBars levels={levels} isRouter={isRouter} />
+                )}
+            {/* Processing state: "Filing..." for router, "Processing..." for normal */}
+            {state === "processing" && (
+              <div
+                className={`transcribing-text${isRouter ? " routing-text" : ""}`}
+              >
+                {isRouter ? t("overlay.filing") : t("overlay.processing")}
+              </div>
+            )}
+            {state === "usb-cycling" && (
+              <USBCyclingProgress
+                usbCycleStage={usbCycleStage}
+                usbCyclingElapsed={usbCyclingElapsed}
+              />
+            )}
+            {/* Confirming state */}
+            {state === "confirming" && !routerResult && (
+              <div className="confirming-text">
+                {isEditing
+                  ? t("overlay.editing", "Edit text:")
+                  : t("overlay.confirming", "Sending in")}
+                {!isEditing && countdown > 0 && (
+                  <span className="countdown-timer">
+                    {`${Math.ceil(countdown / 1000)}s`}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
 
+          <div className="overlay-right">
+            {backendState.appState.state === "Recording" && (
+              <div className="cancel-button" onClick={handleCancel}>
+                <CancelIcon
+                  width={33}
+                  height={33}
+                  color={isRouter ? "#3b82f6" : undefined}
+                />
+              </div>
+            )}
+          </div>
         </div>
-      </div>
       )}
 
       {/* Live captions — decoupled from mic warnings: captions and mic warnings
@@ -365,23 +360,24 @@ const RecordingOverlay: React.FC = () => {
         )}
 
       {/* Router result display / transcription preview */}
-      {isRouter && (routerResult || (transcriptionPreview && state === "confirming")) && (
-        <RouterResultDisplay
-          routerResult={routerResult}
-          isEditing={isEditing}
-          isFadingOut={isFadingOut}
-          transcriptionPreview={transcriptionPreview}
-          editedText={editedText}
-          countdown={countdown}
-          direction={direction}
-          overlayScale={overlayScale}
-          textareaRef={textareaRef}
-          onTranscriptionClick={handleTranscriptionClick}
-          onSendEdited={handleSendEdited}
-          onCancelEdit={handleCancelEdit}
-          onEditedTextChange={handleEditedTextChange}
-        />
-      )}
+      {isRouter &&
+        (routerResult || (transcriptionPreview && state === "confirming")) && (
+          <RouterResultDisplay
+            routerResult={routerResult}
+            isEditing={isEditing}
+            isFadingOut={isFadingOut}
+            transcriptionPreview={transcriptionPreview}
+            editedText={editedText}
+            countdown={countdown}
+            direction={direction}
+            overlayScale={overlayScale}
+            textareaRef={textareaRef}
+            onTranscriptionClick={handleTranscriptionClick}
+            onSendEdited={handleSendEdited}
+            onCancelEdit={handleCancelEdit}
+            onEditedTextChange={handleEditedTextChange}
+          />
+        )}
     </>
   );
 };
