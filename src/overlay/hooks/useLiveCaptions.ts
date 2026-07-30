@@ -64,8 +64,9 @@ function filterStreamingText(text: string): string {
       secondWord === "but";
 
     const filteredText = (() => {
-      if (isContinuation && words.length === 2) return "";
-      if (isContinuation) return words.slice(1).join(" ");
+      // Drop the leading filler word but keep the rest. Even if the second
+      // word is another filler/continuation, showing it keeps the caption box
+      // visible during streaming rather than blanking it mid-utterance.
       return words.slice(1).join(" ");
     })();
 
@@ -226,6 +227,15 @@ export function useLiveCaptions(
             isVisible: currentIsVisible,
           });
 
+          // Ignore late events that arrive after captions are disabled or the
+          // overlay is hidden. The refs are kept in sync by parent effects.
+          if (!currentLiveCaptionsEnabled || !currentIsVisible) {
+            console.log(
+              "[Live Captions] Ignoring stale event — captions disabled or hidden",
+            );
+            return;
+          }
+
           if (segments && segments.length > 0) {
             // Merge segments
             const merged = [...segmentsRef.current];
@@ -242,10 +252,9 @@ export function useLiveCaptions(
             const filtered = filterStreamingText(displayText);
 
             // Always update streamingText with the filtered display text.
-            // If the filter removed all text (e.g. only filler words), we
-            // set an empty string so stale captions don't persist, but the
-            // single-filler-word path is preserved by filterStreamingText so
-            // the captions box appears as soon as speech starts.
+            // The filter no longer drops single filler words, and multi-word
+            // filler continuations now keep the remainder, so the box should
+            // not blank mid-stream unless the backend genuinely returns empty.
             console.log(
               "[Live Captions] streamingText set to:",
               JSON.stringify(filtered),
