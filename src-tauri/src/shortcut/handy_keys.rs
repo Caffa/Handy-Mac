@@ -54,6 +54,9 @@ enum ManagerCommand {
         binding_id: String,
         response: Sender<Result<(), String>>,
     },
+    ResetPressedHotkeys {
+        response: Sender<Result<(), String>>,
+    },
     Shutdown,
 }
 
@@ -134,6 +137,12 @@ impl HandyKeysState {
                     );
                     let is_pressed = event.state == HotkeyState::Pressed;
                     handle_shortcut_event(&app, binding_id, hotkey_string, is_pressed);
+                } else {
+                    debug!(
+                        "handy-keys event with unknown hotkey id {:?}; active bindings={}",
+                        event.id,
+                        hotkey_to_binding.len()
+                    );
                 }
             }
 
@@ -164,6 +173,12 @@ impl HandyKeysState {
                             &mut hotkey_to_binding,
                             &binding_id,
                         );
+                        let _ = response.send(result);
+                    }
+                    ManagerCommand::ResetPressedHotkeys { response } => {
+                        let result = manager
+                            .reset_pressed_hotkeys()
+                            .map_err(|e| format!("Failed to reset pressed hotkeys: {}", e));
                         let _ = response.send(result);
                     }
                     ManagerCommand::Shutdown => {
@@ -256,6 +271,23 @@ impl HandyKeysState {
 
         rx.recv()
             .map_err(|_| "Failed to receive unregister response")?
+    }
+
+    /// Reset the internal pressed-hotkey set inside the manager thread.
+    ///
+    /// This clears any hotkey IDs that remain stuck after missed key-release
+    /// events (e.g. after macOS sleep/wake). It should be called after
+    /// re-registering shortcuts so the new HotkeyIds do not collide with stale
+    /// state, although clearing the set directly also removes the stale entries.
+    pub fn reset_pressed_hotkeys(&self) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.command_sender
+            .lock()
+            .send(ManagerCommand::ResetPressedHotkeys { response: tx })
+            .map_err(|_| "Failed to send reset pressed hotkeys command")?;
+
+        rx.recv()
+            .map_err(|_| "Failed to receive reset pressed hotkeys response")?
     }
 
     /// Start recording mode for a specific binding
@@ -569,7 +601,7 @@ pub fn reset_hotkey_state_after_wake(app: &AppHandle) {
     let default_bindings = settings::get_default_settings().bindings;
     let user_settings = settings::load_or_create_app_settings_safe(app);
 
-    info!("Resetting hotkey state after wake-from-sleep (unregister + re-register all shortcuts)");
+    info!("Resetting handy-keys pressed-hotkey state after wake-from-sleep (unregister + re-register all shortcuts)");
 
     for (id, default_binding) in default_bindings {
         // Cancel shortcut is dynamically registered/unregistered during recording;
@@ -605,4 +637,13 @@ pub fn reset_hotkey_state_after_wake(app: &AppHandle) {
     }
 
     info!("Hotkey state reset complete after wake-from-sleep");
+
+    if let Err(e) = state.reset_pressed_hotkeys() {
+        warn!(
+            "Failed to reset handy-keys pressed-hotkey state after wake-from-sleep: {}",
+            e
+        );
+    } else {
+        info!("Cleared handy-keys pressed-hotkey state after wake-from-sleep");
+    }
 }

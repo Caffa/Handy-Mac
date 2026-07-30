@@ -35,8 +35,11 @@ impl TestHarness {
     /// throttled by the 30ms debounce window.
     fn process(&mut self, cmd: Command) -> StageAction {
         self.core.clear_debounce();
+        // Tests use the pure state machine without a real recorder, so
+        // `recorder_is_recording` is false. The recovery path in production
+        // needs the recorder query; in tests we exercise the pure transitions.
         self.core
-            .process_command(cmd, &self.active_use, &self.current_state)
+            .process_command(cmd, &self.active_use, &self.current_state, false)
     }
 
     /// Send a cancel signal via the AtomicBool (mimics CancelSignal).
@@ -263,6 +266,7 @@ fn test_processing_timeout_returns_expired_action() {
         Command::ProcessingTimeout,
         &h.active_use,
         &h.current_state,
+        false,
     );
     assert!(
         matches!(action, StageAction::ProcessingTimeoutExpired),
@@ -277,6 +281,7 @@ fn test_processing_timeout_returns_expired_action() {
         Command::ProcessingTimeout,
         &h.active_use,
         &h.current_state,
+        false,
     );
     assert!(
         matches!(action, StageAction::None),
@@ -458,6 +463,7 @@ fn test_debounce_ignores_rapid_presses() {
         },
         &h.active_use,
         &h.current_state,
+        false,
     );
     assert!(matches!(action, StageAction::None));
 }

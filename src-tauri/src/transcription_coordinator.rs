@@ -197,6 +197,41 @@ impl CoordinatorCore {
         }
     }
 
+    /// Returns true if a stop input for `binding_id` should be honored even
+    /// when the internal stage doesn't currently match `Recording(binding_id)`.
+    /// This detects cases where the coordinator's state has drifted from the
+    /// audio recorder's real state (e.g. after sleep/wake with HandyKeys, or a
+    /// missed/failed transition), and recovers by forcing the stage to match.
+    fn try_recover_stop(
+        &mut self,
+        binding_id: String,
+        active_use: &AtomicBool,
+        current_state: &RwLock<AppState>,
+        recorder_is_recording: bool,
+    ) -> bool {
+        // We can only recover if we're not already in the middle of a real
+        // Processing stop (in that case the recorder should be stopping on
+        // its own, and forcing it again could double-stop).
+        if matches!(self.stage, Stage::Processing { .. }) {
+            return false;
+        }
+
+        // Defensive: only force a recovery when we have external evidence that
+        // the recorder is actually still capturing. If it isn't, the stage is
+        // most likely correct and the stop event is stale/spurious.
+        if !recorder_is_recording {
+            return false;
+        }
+
+        warn!(
+            "Coordinator stage drift detected: stage={:?}, forcing Recording('{}') so stop can proceed",
+            self.stage, binding_id
+        );
+        self.transition_to(Stage::Recording(binding_id));
+        self.sync_state(active_use, current_state);
+        true
+    }
+
     /// Production constructor with the default 30s timeout.
     fn new_production() -> Self {
         Self::new(PROCESSING_TIMEOUT)
@@ -262,6 +297,7 @@ impl CoordinatorCore {
         cmd: Command,
         active_use: &AtomicBool,
         current_state: &RwLock<AppState>,
+        recorder_is_recording: bool,
     ) -> StageAction {
         match cmd {
             Command::Input {
@@ -306,7 +342,32 @@ impl CoordinatorCore {
                             binding_id,
                             hotkey_string,
                         }
+                    } else if !is_pressed
+                        && self.try_recover_stop(
+                            binding_id.clone(),
+                            active_use,
+                            current_state,
+                            recorder_is_recording,
+                        )
+                    {
+                        // Push-to-talk release arrived while the recorder is still
+                        // active but the coordinator stage drifted (e.g. missed
+                        // release during sleep/wake). Force Recording and then
+                        // perform the normal stop transition.
+                        self.transition_to(Stage::Processing {
+                            since: Instant::now(),
+                            binding_id: Some(binding_id.clone()),
+                        });
+                        self.sync_state(active_use, current_state);
+                        StageAction::StopRecording {
+                            binding_id,
+                            hotkey_string,
+                        }
                     } else {
+                        debug!(
+                            "Ignoring push-to-talk release for '{}': stage={:?}, pressed={}",
+                            binding_id, self.stage, is_pressed
+                        );
                         StageAction::None
                     }
                 } else if is_pressed {
@@ -331,8 +392,33 @@ impl CoordinatorCore {
                             }
                         }
                         _ => {
-                            debug!("Ignoring press for '{binding_id}': pipeline busy");
-                            StageAction::None
+                            // Defensive recovery: if a stop press arrives while the
+                            // recorder is still active but the coordinator stage has
+                            // drifted, force the stage to Recording so the stop can
+                            // proceed. This fixes missed transitions after sleep/wake
+                            // or HandyKeys stale state.
+                            if self.try_recover_stop(
+                                binding_id.clone(),
+                                active_use,
+                                current_state,
+                                recorder_is_recording,
+                            ) {
+                                self.transition_to(Stage::Processing {
+                                    since: Instant::now(),
+                                    binding_id: Some(binding_id.clone()),
+                                });
+                                self.sync_state(active_use, current_state);
+                                StageAction::StopRecording {
+                                    binding_id,
+                                    hotkey_string,
+                                }
+                            } else {
+                                warn!(
+                                    "Ignoring stop press for '{}': pipeline busy (stage={:?})",
+                                    binding_id, self.stage
+                                );
+                                StageAction::None
+                            }
                         }
                     }
                 } else {
@@ -559,7 +645,15 @@ impl TranscriptionCoordinator {
                         return;
                     }
 
-                    let action = core.process_command(cmd, &active_use_clone, &current_state_clone);
+                    let recorder_is_recording = app
+                        .try_state::<Arc<AudioRecordingManager>>()
+                        .is_some_and(|a| a.is_recording());
+                    let action = core.process_command(
+                        cmd,
+                        &active_use_clone,
+                        &current_state_clone,
+                        recorder_is_recording,
+                    );
 
                     // Perform side effects based on the action returned by the core.
                     match action {
