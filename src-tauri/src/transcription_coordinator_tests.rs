@@ -1,32 +1,45 @@
 // State machine tests for `TranscriptionCoordinator`.
 //
 // These tests exercise `CoordinatorCore`, the pure state-machine logic
-// extracted from `TranscriptionCoordinator`. By testing the core directly,
-// we avoid needing a real `AppHandle` — the core only touches plain Rust
-// types (`Stage`, `AtomicBool`, `RwLock<AppState>`).
+// extracted from `TranscriptionCoordinator`. The core needs an `AppHandle`
+// only to clear the handy-keys pressed-hotkey set on session end; otherwise
+// it only touches plain Rust types (`Stage`, `AtomicBool`, `RwLock<AppState>`).
 
 use super::*;
+use tauri::{AppHandle, Runtime};
 
 /// Helper to create a `CoordinatorCore` with a short processing timeout
 /// and shared state flags mirroring the production coordinator.
-struct TestHarness {
+struct TestHarness<R: Runtime> {
     core: CoordinatorCore,
     active_use: Arc<AtomicBool>,
     current_state: Arc<RwLock<AppState>>,
     cancel_flag: Arc<AtomicBool>,
+    app: AppHandle<R>,
 }
 
-impl TestHarness {
+impl TestHarness<tauri::test::MockRuntime> {
     fn new() -> Self {
         Self::with_timeout(Duration::from_millis(500))
     }
 
     fn with_timeout(processing_timeout: Duration) -> Self {
+        // Lightweight mock Tauri app. The core only uses it to clear the
+        // handy-keys pressed-hotkey state on session end. The store plugin
+        // must be initialized so settings helpers can fall back to it when
+        // the in-memory cache is not managed.
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
         Self {
             core: CoordinatorCore::new_for_test(processing_timeout),
             active_use: Arc::new(AtomicBool::new(false)),
             current_state: Arc::new(RwLock::new(AppState::Idle)),
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            app,
         }
     }
 
@@ -38,8 +51,13 @@ impl TestHarness {
         // Tests use the pure state machine without a real recorder, so
         // `recorder_is_recording` is false. The recovery path in production
         // needs the recorder query; in tests we exercise the pure transitions.
-        self.core
-            .process_command(cmd, &self.active_use, &self.current_state, false)
+        self.core.process_command(
+            cmd,
+            &self.active_use,
+            &self.current_state,
+            false,
+            &self.app,
+        )
     }
 
     /// Send a cancel signal via the AtomicBool (mimics CancelSignal).
@@ -267,6 +285,7 @@ fn test_processing_timeout_returns_expired_action() {
         &h.active_use,
         &h.current_state,
         false,
+        &h.app,
     );
     assert!(
         matches!(action, StageAction::ProcessingTimeoutExpired),
@@ -282,6 +301,7 @@ fn test_processing_timeout_returns_expired_action() {
         &h.active_use,
         &h.current_state,
         false,
+        &h.app,
     );
     assert!(
         matches!(action, StageAction::None),
@@ -464,6 +484,7 @@ fn test_debounce_ignores_rapid_presses() {
         &h.active_use,
         &h.current_state,
         false,
+        &h.app,
     );
     assert!(matches!(action, StageAction::None));
 }

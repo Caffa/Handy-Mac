@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::settings::{self, get_settings, KeyboardImplementation, ShortcutBinding};
 
@@ -574,6 +574,36 @@ pub fn stop_handy_keys_recording(app: AppHandle) -> Result<(), String> {
         .try_state::<HandyKeysState>()
         .ok_or("HandyKeysState not initialized")?;
     state.stop_recording()
+}
+
+/// Reset the internal pressed-hotkey set across all active handy-keys shortcuts.
+///
+/// Call this whenever a transcription session ends (normally, via cancel, or
+/// after a processing timeout) so a missed key-release event does not leave
+/// the recording hotkey "stuck" and silently swallow the next press.
+pub fn reset_all_pressed_hotkeys<R: Runtime>(app: &AppHandle<R>) {
+    let settings = get_settings(app);
+    if settings.keyboard_implementation != KeyboardImplementation::HandyKeys {
+        debug!(
+            "Skipping handy-keys pressed-hotkey reset: active implementation is {:?}",
+            settings.keyboard_implementation
+        );
+        return;
+    }
+
+    let state = match app.try_state::<HandyKeysState>() {
+        Some(s) => s,
+        None => {
+            debug!("HandyKeysState not available, cannot reset pressed-hotkey state");
+            return;
+        }
+    };
+
+    if let Err(e) = state.reset_pressed_hotkeys() {
+        warn!("Failed to reset handy-keys pressed-hotkey state: {}", e);
+    } else {
+        info!("Reset handy-keys pressed-hotkey state");
+    }
 }
 
 /// Reset hotkey state after macOS wake-from-sleep.

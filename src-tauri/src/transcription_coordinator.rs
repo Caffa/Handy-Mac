@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Non-blocking cancel signal for the coordinator thread.
 ///
@@ -292,12 +292,13 @@ impl CoordinatorCore {
 
     /// Process a command and return any action the coordinator thread should perform.
     /// Updates `stage` and `active_use`/`current_state` via the provided callbacks.
-    fn process_command(
+    fn process_command<R: Runtime>(
         &mut self,
         cmd: Command,
         active_use: &AtomicBool,
         current_state: &RwLock<AppState>,
         recorder_is_recording: bool,
+        app: &AppHandle<R>,
     ) -> StageAction {
         match cmd {
             Command::Input {
@@ -433,6 +434,7 @@ impl CoordinatorCore {
                     "CoordinatorCore: cancel received, recording_was_active={}",
                     recording_was_active
                 );
+                let was_active = self.stage.is_active();
                 if recording_was_active || matches!(self.stage, Stage::Recording(_)) {
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
@@ -442,6 +444,10 @@ impl CoordinatorCore {
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
                 }
+                if was_active {
+                    info!("Cancel received, resetting handy-keys pressed-hotkey state");
+                    crate::shortcut::handy_keys::reset_all_pressed_hotkeys(app);
+                }
                 StageAction::None
             }
             Command::ProcessingFinished => {
@@ -449,6 +455,8 @@ impl CoordinatorCore {
                     info!("CoordinatorCore: processing finished, reset to Idle");
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
+                    info!("Session complete, resetting handy-keys pressed-hotkey state");
+                    crate::shortcut::handy_keys::reset_all_pressed_hotkeys(app);
                 }
                 StageAction::None
             }
@@ -472,6 +480,8 @@ impl CoordinatorCore {
                     );
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
+                    info!("Processing timeout, resetting handy-keys pressed-hotkey state");
+                    crate::shortcut::handy_keys::reset_all_pressed_hotkeys(app);
                     StageAction::ProcessingTimeoutExpired
                 } else {
                     StageAction::None
@@ -653,6 +663,7 @@ impl TranscriptionCoordinator {
                         &active_use_clone,
                         &current_state_clone,
                         recorder_is_recording,
+                        &app,
                     );
 
                     // Perform side effects based on the action returned by the core.
@@ -730,6 +741,8 @@ impl TranscriptionCoordinator {
                     }
                     emit_app_state(&app, &AppState::Idle);
                     core.stage = Stage::Idle;
+                    info!("Panic recovery, resetting handy-keys pressed-hotkey state");
+                    crate::shortcut::handy_keys::reset_all_pressed_hotkeys(&app);
                     // Brief pause to avoid hot-looping if panic is deterministic
                     thread::sleep(Duration::from_millis(100));
                 }

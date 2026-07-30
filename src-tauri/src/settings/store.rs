@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::RwLock;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -69,9 +69,9 @@ pub(crate) fn settings_to_value(settings: &AppSettings) -> Option<serde_json::Va
 }
 
 /// Helper: open the settings store, logging errors instead of panicking.
-pub(crate) fn open_settings_store(
-    app: &AppHandle,
-) -> Option<Arc<tauri_plugin_store::Store<tauri::Wry>>> {
+pub(crate) fn open_settings_store<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Option<Arc<tauri_plugin_store::Store<R>>> {
     match app.store(crate::portable::store_path(SETTINGS_STORE_PATH)) {
         Ok(store) => Some(store),
         Err(e) => {
@@ -157,7 +157,7 @@ pub(crate) fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
 
 /// Safe wrapper around [`load_or_create_app_settings`] that catches panics
 /// and falls back to defaults.
-pub fn load_or_create_app_settings_safe(app: &AppHandle) -> AppSettings {
+pub fn load_or_create_app_settings_safe<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     safe_settings_operation("load_or_create_app_settings", || {
         load_or_create_app_settings(app)
     })
@@ -170,7 +170,7 @@ pub fn load_or_create_app_settings_safe(app: &AppHandle) -> AppSettings {
 /// Safe wrapper around [`get_settings`] that catches panics and falls back to defaults.
 /// Reads from the in-memory cache when available, eliminating the read-modify-write
 /// race with the debounced disk writer.
-pub fn get_settings_safe(app: &AppHandle) -> AppSettings {
+pub fn get_settings_safe<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     safe_settings_operation("get_settings_safe", || {
         if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             trace!("[settings] get_safe (cache hit)");
@@ -244,7 +244,7 @@ fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
     })
 }
 
-pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
+pub fn load_or_create_app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     // Initialize store
     let Some(store) = open_settings_store(app) else {
         error!("Cannot load settings: store initialization failed, returning defaults");
@@ -339,7 +339,7 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
-pub fn get_settings(app: &AppHandle) -> AppSettings {
+pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     // Prefer the in-memory cache — this is the single source of truth at runtime.
     // Only fall back to the plugin-store path during early startup before
     // SettingsCache is managed (e.g. during load_or_create_app_settings).
@@ -545,12 +545,12 @@ pub fn flush_settings(app: &AppHandle) {
     });
 }
 
-pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
+pub fn get_bindings<R: Runtime>(app: &AppHandle<R>) -> HashMap<String, ShortcutBinding> {
     let settings = get_settings_safe(app);
     settings.bindings
 }
 
-pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
+pub fn get_stored_binding<R: Runtime>(app: &AppHandle<R>, id: &str) -> ShortcutBinding {
     let bindings = get_bindings(app);
 
     if let Some(binding) = bindings.get(id) {

@@ -133,6 +133,7 @@ hf-hub = { git = "https://github.com/cjpais/hf-hub", branch = "cancellable-downl
 tempfile = "3"
 loom = "0.7"
 proptest = "1.5"
+tauri = { version = "2.10.2", features = ["test"] }
 
 [features]
 tsan = []
