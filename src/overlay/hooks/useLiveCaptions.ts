@@ -42,13 +42,12 @@ function filterStreamingText(text: string): string {
         lowerText === fw || lowerText === `${fw}.` || lowerText === `${fw},`,
     );
     if (isFiller) {
-      console.log(
-        "[Live Captions] Preserving single filler word so box appears:",
-        {
-          original: text.substring(0, 100),
-          reason: "single-filler-word-kept",
-        },
-      );
+      console.log("[Live Captions] Filler filter removed ALL text:", {
+        original: text.substring(0, 100),
+        filtered: "",
+        reason: "single-filler-word",
+      });
+      return "";
     }
     return trimmed;
   }
@@ -64,9 +63,8 @@ function filterStreamingText(text: string): string {
       secondWord === "but";
 
     const filteredText = (() => {
-      // Drop the leading filler word but keep the rest. Even if the second
-      // word is another filler/continuation, showing it keeps the caption box
-      // visible during streaming rather than blanking it mid-utterance.
+      if (isContinuation && words.length === 2) return "";
+      if (isContinuation) return words.slice(2).join(" ");
       return words.slice(1).join(" ");
     })();
 

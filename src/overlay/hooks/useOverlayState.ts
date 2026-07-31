@@ -128,7 +128,10 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
   const [isVisible, setIsVisible] = useState(false);
   const [state, setState] = useState<OverlayState>("recording");
 
-  // Live captions setting — initialize from module cache if available
+  // Live captions setting — initialize from module cache if available.
+  // Default to false to match the Rust backend default; otherwise a new
+  // install shows the toggle as enabled while the recorder has streaming
+  // disabled, and captions never appear.
   const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(
     cachedLiveCaptionsEnabled ?? false,
   );
@@ -241,7 +244,11 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
           });
         }
       } catch (e) {
-        console.warn("[Live Captions] Settings fetch failed, using cached:", cachedLiveCaptionsEnabled, e);
+        console.warn(
+          "[Live Captions] Settings fetch failed, using cached:",
+          cachedLiveCaptionsEnabled,
+          e,
+        );
         // Use cached value as fallback
         setLiveCaptionsEnabled(cachedLiveCaptionsEnabled ?? false);
       }
