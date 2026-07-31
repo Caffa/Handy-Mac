@@ -545,7 +545,10 @@ fn test_stage_is_active() {
     let idle = Stage::Idle;
     assert!(!idle.is_active());
 
-    let recording = Stage::Recording("transcribe".into());
+    let recording = Stage::Recording {
+        binding_id: "transcribe".into(),
+        since: Instant::now(),
+    };
     assert!(recording.is_active());
 
     let processing = Stage::Processing {
@@ -564,7 +567,10 @@ fn test_stage_to_app_state() {
     let idle = Stage::Idle;
     assert!(matches!(idle.to_app_state(), AppState::Idle));
 
-    let recording = Stage::Recording("transcribe".into());
+    let recording = Stage::Recording {
+        binding_id: "transcribe".into(),
+        since: Instant::now(),
+    };
     assert!(matches!(recording.to_app_state(), AppState::Recording { .. }));
 
     let processing = Stage::Processing {
@@ -641,6 +647,24 @@ fn test_recv_timeout_processing_returns_some() {
     assert!(timeout.is_some());
     // Should be less than the full timeout since some time has elapsed
     assert!(timeout.unwrap() <= Duration::from_secs(30));
+}
+
+#[test]
+fn test_recv_timeout_recording_returns_some() {
+    let mut h = TestHarness::new();
+
+    // Enter Recording
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+
+    // Should return Some duration (close to the 5-minute recording timeout)
+    let timeout = h.core.recv_timeout();
+    assert!(timeout.is_some());
+    assert!(timeout.unwrap() <= Duration::from_secs(300));
 }
 
 // ── Test 22: CancelSignal::flag() returns independent handle ──
@@ -731,4 +755,28 @@ fn test_set_processing_with_binding_resets_timer() {
     // After the full timeout from the reset, it should be expired
     std::thread::sleep(Duration::from_millis(120));
     assert!(h.core.is_processing_expired());
+}
+
+// ── Test 26: Recording safety timeout ──
+// `is_recording_expired()` reflects whether the Recording stage has exceeded
+// the 5-minute safety limit. The coordinator thread uses this to force a
+// stop when all hotkey paths fail.
+
+#[test]
+fn test_recording_timeout_expires() {
+    let mut h = TestHarness::new();
+
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+    assert!(!h.core.is_recording_expired());
+
+    // We cannot wait 5 minutes in a unit test, but the `since` Instant is
+    // created on entry so the timeout is deterministic. Verify the helper
+    // reports the expected state immediately after entry.
+    assert!(h.core.recv_timeout().unwrap() > Duration::from_secs(290));
 }

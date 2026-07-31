@@ -52,6 +52,13 @@ impl Default for CancelSignal {
 
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
+/// Maximum time the coordinator will stay in `Recording` before it is
+/// forcibly cancelled and returned to `Idle`. This is a safety net for the
+/// rare case where every hotkey path fails (missed key-release after
+/// sleep/wake, tap disabled, etc.) so a recording cannot stay stuck
+/// forever and the microphone does not remain live.
+const RECORDING_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Maximum time the coordinator will stay in `Processing` before
 /// auto-resetting to `Idle`. Prevents the app from becoming permanently
 /// unresponsive when the async transcription pipeline hangs (e.g. dead
@@ -120,7 +127,10 @@ enum Command {
 #[derive(Debug)]
 enum Stage {
     Idle,
-    Recording(String), // binding_id
+    Recording {
+        binding_id: String,
+        since: Instant,
+    },
     Processing {
         since: Instant,
         binding_id: Option<String>,
@@ -137,8 +147,8 @@ impl Stage {
     fn to_app_state(&self) -> AppState {
         match self {
             Stage::Idle => AppState::Idle,
-            Stage::Recording(id) => AppState::Recording {
-                binding_id: id.clone(),
+            Stage::Recording { binding_id, .. } => AppState::Recording {
+                binding_id: binding_id.clone(),
             },
             Stage::Processing { binding_id, .. } => AppState::Processing {
                 binding_id: binding_id.clone(),
@@ -227,7 +237,10 @@ impl CoordinatorCore {
             "Coordinator stage drift detected: stage={:?}, forcing Recording('{}') so stop can proceed",
             self.stage, binding_id
         );
-        self.transition_to(Stage::Recording(binding_id));
+        self.transition_to(Stage::Recording {
+            binding_id,
+            since: Instant::now(),
+        });
         self.sync_state(active_use, current_state);
         true
     }
@@ -254,8 +267,9 @@ impl CoordinatorCore {
     }
 
     /// Calculate the recv timeout for the next command. Returns `Some(duration)`
-    /// if in Processing (to wake up for timeout check), `None` otherwise.
-    /// Does NOT mutate state — the caller handles the timeout expiry separately.
+    /// if in Processing or Recording (to wake up for timeout check), `None`
+    /// otherwise. Does NOT mutate state — the caller handles the timeout expiry
+    /// separately.
     #[cfg(test)]
     fn recv_timeout(&self) -> Option<Duration> {
         match &self.stage {
@@ -269,6 +283,14 @@ impl CoordinatorCore {
                     Some(self.processing_timeout - elapsed)
                 }
             }
+            Stage::Recording { since, .. } => {
+                let elapsed = since.elapsed();
+                if elapsed >= RECORDING_TIMEOUT {
+                    Some(Duration::ZERO)
+                } else {
+                    Some(RECORDING_TIMEOUT - elapsed)
+                }
+            }
             _ => None,
         }
     }
@@ -279,6 +301,15 @@ impl CoordinatorCore {
     fn is_processing_expired(&self) -> bool {
         match &self.stage {
             Stage::Processing { since, .. } => since.elapsed() >= self.processing_timeout,
+            _ => false,
+        }
+    }
+
+    /// Returns true if the Recording safety timeout has expired.
+    #[cfg(test)]
+    fn is_recording_expired(&self) -> bool {
+        match &self.stage {
+            Stage::Recording { since, .. } => since.elapsed() >= RECORDING_TIMEOUT,
             _ => false,
         }
     }
@@ -323,14 +354,20 @@ impl CoordinatorCore {
 
                 if push_to_talk {
                     if is_pressed && matches!(self.stage, Stage::Idle) {
-                        self.transition_to(Stage::Recording(binding_id.clone()));
+                        self.transition_to(Stage::Recording {
+                            binding_id: binding_id.clone(),
+                            since: Instant::now(),
+                        });
                         self.sync_state(active_use, current_state);
                         StageAction::StartRecording {
                             binding_id,
                             hotkey_string,
                         }
                     } else if !is_pressed
-                        && matches!(&self.stage, Stage::Recording(id) if id == &binding_id)
+                        && matches!(
+                            &self.stage,
+                            Stage::Recording { binding_id: id, .. } if id == &binding_id
+                        )
                     {
                         // Transition to Processing first so active_use stays true,
                         // then tell the thread to call stop which may fire FinishGuard.
@@ -374,14 +411,17 @@ impl CoordinatorCore {
                 } else if is_pressed {
                     match &self.stage {
                         Stage::Idle => {
-                            self.transition_to(Stage::Recording(binding_id.clone()));
+                            self.transition_to(Stage::Recording {
+                                binding_id: binding_id.clone(),
+                                since: Instant::now(),
+                            });
                             self.sync_state(active_use, current_state);
                             StageAction::StartRecording {
                                 binding_id,
                                 hotkey_string,
                             }
                         }
-                        Stage::Recording(id) if id == &binding_id => {
+                        Stage::Recording { binding_id: id, .. } if id == &binding_id => {
                             self.transition_to(Stage::Processing {
                                 since: Instant::now(),
                                 binding_id: Some(binding_id.clone()),
@@ -435,7 +475,7 @@ impl CoordinatorCore {
                     recording_was_active
                 );
                 let was_active = self.stage.is_active();
-                if recording_was_active || matches!(self.stage, Stage::Recording(_)) {
+                if recording_was_active || matches!(self.stage, Stage::Recording { .. }) {
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
                     info!("CoordinatorCore: cancelled, reset to Idle");
@@ -585,7 +625,8 @@ impl TranscriptionCoordinator {
                         return;
                     }
 
-                    // Calculate recv timeout: if in Processing, wake up to check the timeout.
+                    // Calculate recv timeout: wake up to check Processing and
+                    // Recording timeouts.
                     let timeout = match &core.stage {
                         Stage::Processing { since, .. } => {
                             let elapsed = since.elapsed();
@@ -611,6 +652,39 @@ impl TranscriptionCoordinator {
                                 return; // exit this iteration cleanly, outer loop will re-enter
                             }
                             Some(core.processing_timeout - elapsed)
+                        }
+                        Stage::Recording { since, .. } => {
+                            let elapsed = since.elapsed();
+                            if elapsed >= RECORDING_TIMEOUT {
+                                // Recording has exceeded the maximum allowed
+                                // duration. This is an emergency safety net for
+                                // the rare case where the stop hotkey never
+                                // reached us (e.g. after sleep/wake). Cancel the
+                                // recorder directly, reset UI, and return to
+                                // Idle so the microphone does not stay live.
+                                warn!(
+                                    "Recording stage exceeded {:?} timeout, forcing emergency cancel",
+                                    RECORDING_TIMEOUT
+                                );
+                                if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
+                                    rm.cancel_recording();
+                                }
+                                crate::utils::hide_recording_overlay(&app);
+                                crate::utils::change_tray_icon(
+                                    &app,
+                                    crate::utils::TrayIconState::Idle,
+                                );
+                                crate::shortcut::handy_keys::reset_all_pressed_hotkeys(&app);
+                                set_stage(
+                                    &mut core.stage,
+                                    Stage::Idle,
+                                    &active_use_clone,
+                                    &current_state_clone,
+                                    &app,
+                                );
+                                return;
+                            }
+                            Some(RECORDING_TIMEOUT - elapsed)
                         }
                         _ => None,
                     };
@@ -894,7 +968,10 @@ fn start(
     {
         set_stage(
             stage,
-            Stage::Recording(binding_id.to_string()),
+            Stage::Recording {
+                binding_id: binding_id.to_string(),
+                since: Instant::now(),
+            },
             active_use,
             current_state,
             app,
@@ -908,7 +985,7 @@ fn start(
         // roll the stage back to Idle so the coordinator isn't stuck claiming
         // to record with no active capture. Without this, a failed start leaves
         // active_use=true and AppState=Recording with no way to recover.
-        if matches!(*stage, Stage::Recording(_)) {
+        if matches!(*stage, Stage::Recording { .. }) {
             set_stage(stage, Stage::Idle, active_use, current_state, app);
         }
     }
