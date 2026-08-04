@@ -236,6 +236,27 @@ fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
         return get_default_settings();
     };
 
+    // Track which per-implementation binding keys were actually present in the
+    // stored JSON. This is the signal used below to decide whether a legacy
+    // binding (only `current_binding`) needs to be migrated into the newer
+    // `tauri_binding` / `handy_keys_binding` fields. We record presence *before*
+    // any merging happens, because a missing key should be treated differently
+    // from an empty key.
+    let mut binding_impl_keys_present: HashMap<String, (bool, bool)> = HashMap::new();
+    if let Some(bindings) = stored_map.get("bindings").and_then(|v| v.as_object()) {
+        for (id, binding) in bindings {
+            if let Some(obj) = binding.as_object() {
+                binding_impl_keys_present.insert(
+                    id.clone(),
+                    (
+                        obj.contains_key("tauri_binding"),
+                        obj.contains_key("handy_keys_binding"),
+                    ),
+                );
+            }
+        }
+    }
+
     let mut merged = serde_json::to_value(get_default_settings())
         .expect("default settings serialize to a JSON object");
 
@@ -254,6 +275,36 @@ fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
                 Some(previous) => map.insert(key.clone(), previous),
                 None => map.remove(key),
             };
+        }
+    }
+
+    // After the deep/top-level merge, force any stored binding that did not
+    // contain `tauri_binding` / `handy_keys_binding` to have an explicit empty
+    // string for those fields. Without this, a deep merge would keep the
+    // default non-empty binding, and `migrate_bindings` would skip the legacy
+    // `current_binding` copy because the per-implementation field would no
+    // longer be empty. We only do this when the stored value for the binding
+    // was an object; non-object values are left for serde to handle.
+    if let Some(merged_bindings) = merged
+        .as_object_mut()
+        .and_then(|m| m.get_mut("bindings"))
+        .and_then(|b| b.as_object_mut())
+    {
+        for (id, (has_tauri, has_handy)) in &binding_impl_keys_present {
+            if let Some(binding_obj) = merged_bindings.get_mut(id).and_then(|b| b.as_object_mut()) {
+                if !has_tauri && !binding_obj.contains_key("tauri_binding") {
+                    binding_obj.insert(
+                        "tauri_binding".to_string(),
+                        serde_json::Value::String(String::new()),
+                    );
+                }
+                if !has_handy && !binding_obj.contains_key("handy_keys_binding") {
+                    binding_obj.insert(
+                        "handy_keys_binding".to_string(),
+                        serde_json::Value::String(String::new()),
+                    );
+                }
+            }
         }
     }
 
@@ -338,9 +389,18 @@ pub fn load_or_create_app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSetting
             }
             Err(e) => {
                 warn!("Failed to parse stored settings ({e}); salvaging valid fields");
-                let salvaged = salvage_settings(&settings_value);
+                let mut salvaged = salvage_settings(&settings_value);
+                // migrate_bindings must run before the salvaged value is saved
+                // back to disk; otherwise the per-implementation binding fields
+                // that salvage_settings deliberately emptied never get filled
+                // from the legacy `current_binding` value at real startup.
+                migrate_bindings(&mut salvaged);
                 if let Some(value) = settings_to_value(&salvaged) {
                     store.set("settings", value);
+                    match store.save() {
+                        Ok(()) => info!("[settings] flushed to disk"),
+                        Err(e) => error!("[settings] disk write FAILED: {e}"),
+                    }
                 }
                 salvaged
             }
@@ -380,14 +440,25 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     };
 
     let mut settings = if let Some(settings_value) = store.get("settings") {
-        serde_json::from_value::<AppSettings>(settings_value).unwrap_or_else(|e| {
-            warn!("Failed to parse settings: {}, returning defaults", e);
-            let default_settings = get_default_settings();
-            if let Some(value) = settings_to_value(&default_settings) {
-                store.set("settings", value);
+        match serde_json::from_value::<AppSettings>(settings_value.clone()) {
+            Ok(settings) => settings,
+            Err(e) => {
+                warn!("Failed to parse settings: {}, salvaging valid fields", e);
+                let mut salvaged = salvage_settings(&settings_value);
+                // Same migration as load_or_create_app_settings: legacy bindings
+                // present in the partial store value must be written back to the
+                // per-implementation fields before saving.
+                migrate_bindings(&mut salvaged);
+                if let Some(value) = settings_to_value(&salvaged) {
+                    store.set("settings", value);
+                    match store.save() {
+                        Ok(()) => info!("[settings] flushed to disk"),
+                        Err(e) => error!("[settings] disk write FAILED: {e}"),
+                    }
+                }
+                salvaged
             }
-            default_settings
-        })
+        }
     } else {
         let default_settings = get_default_settings();
         if let Some(value) = settings_to_value(&default_settings) {
@@ -458,18 +529,31 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
 /// the read-modify-write race with the debounced disk writer.
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings", || {
+        // Diagnostics: log any change to keyboard_implementation so future
+        // unexpected reverts can be traced to the code path that wrote them.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            let previous = cache.get().keyboard_implementation;
+            if previous != settings.keyboard_implementation {
+                warn!(
+                    "[settings] keyboard_implementation changing from {:?} to {:?}",
+                    previous, settings.keyboard_implementation
+                );
+            }
+        }
+
         // Update the in-memory cache first — mirror what write_settings_safe does.
         if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             cache.update(settings.clone());
         }
 
         debug!(
-            "[settings] write: active_model_id={:?} live_captions={} selected_language={} post_process_enabled={} overlay_position={:?}",
+            "[settings] write: active_model_id={:?} live_captions={} selected_language={} post_process_enabled={} overlay_position={:?} keyboard_implementation={:?}",
             settings.selected_model,
             settings.live_captions_enabled,
             settings.selected_language,
             settings.post_process_enabled,
             settings.overlay_position,
+            settings.keyboard_implementation,
         );
 
         if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
@@ -488,6 +572,18 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
 /// Also updates the in-memory cache if available, to keep reads consistent.
 pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
     let _ = safe_settings_operation("write_settings_immediate", || {
+        // Diagnostics: log any change to keyboard_implementation so future
+        // unexpected reverts can be traced to the code path that wrote them.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            let previous = cache.get().keyboard_implementation;
+            if previous != settings.keyboard_implementation {
+                warn!(
+                    "[settings] keyboard_implementation changing from {:?} to {:?}",
+                    previous, settings.keyboard_implementation
+                );
+            }
+        }
+
         // Update the in-memory cache so reads reflect the immediate write.
         if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             cache.update(settings.clone());
@@ -758,5 +854,173 @@ mod tests {
         let out = format!("{:?}", map);
         assert!(!out.contains("secret"));
         assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn salvage_preserves_binding_fields_added_after_user_saved() {
+        // Simulates a settings file that was saved before per-implementation
+        // bindings existed: it has `current_binding` but not `tauri_binding` or
+        // `handy_keys_binding`. A separate *broken* field forces the salvage path.
+        let mut stored = serde_json::to_value(get_default_settings()).unwrap();
+        stored
+            .as_object_mut()
+            .unwrap()
+            .insert("broken_future_field".into(), serde_json::json!("nope"));
+        stored
+            .as_object_mut()
+            .unwrap()
+            .get_mut("bindings")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .get_mut("transcribe")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "current_binding".into(),
+                serde_json::json!("ctrl_right+command_right+y"),
+            );
+        stored
+            .as_object_mut()
+            .unwrap()
+            .get_mut("bindings")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .get_mut("transcribe")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("tauri_binding");
+        stored
+            .as_object_mut()
+            .unwrap()
+            .get_mut("bindings")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .get_mut("transcribe")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("handy_keys_binding");
+
+        let mut salvaged = salvage_settings(&stored);
+        assert!(migrate_bindings(&mut salvaged));
+
+        let binding = salvaged
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding");
+        assert_eq!(binding.current_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.handy_keys_binding, "ctrl_right+command_right+y");
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::Tauri),
+            "ctrl_right+command_right+y"
+        );
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::HandyKeys),
+            "ctrl_right+command_right+y"
+        );
+    }
+
+    #[test]
+    fn salvage_migrates_legacy_binding_after_broken_field_forces_salvage() {
+        // Legacy stored settings with only `current_binding` for a shortcut,
+        // plus a broken unrelated top-level field that forces `salvage_settings`.
+        let stored = serde_json::json!({
+            "bindings": {
+                "transcribe": {
+                    "id": "transcribe",
+                    "name": "Transcribe",
+                    "description": "Converts your speech into text.",
+                    "default_binding": "option+space",
+                    "current_binding": "ctrl_right+command_right+y"
+                }
+            },
+            "broken_future_field": "nope"
+        });
+
+        let mut salvaged = salvage_settings(&stored);
+        assert!(migrate_bindings(&mut salvaged));
+
+        let binding = salvaged
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding");
+        assert_eq!(binding.current_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.handy_keys_binding, "ctrl_right+command_right+y");
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::Tauri),
+            "ctrl_right+command_right+y"
+        );
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::HandyKeys),
+            "ctrl_right+command_right+y"
+        );
+    }
+
+    #[test]
+    fn load_or_create_app_settings_migrates_legacy_binding_in_salvage_path() {
+        // End-to-end simulation of the runtime salvage path: create a mock
+        // app, seed the store with a legacy settings JSON that fails full
+        // deserialization (because of a broken field), then call
+        // `load_or_create_app_settings` directly. The function must both
+        // salvage and migrate the binding, and persist the migrated value
+        // so that subsequent loads no longer need the salvage path.
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        let stored = serde_json::json!({
+            "bindings": {
+                "transcribe": {
+                    "id": "transcribe",
+                    "name": "Transcribe",
+                    "description": "Converts your speech into text.",
+                    "default_binding": "option+space",
+                    "current_binding": "ctrl_right+command_right+y"
+                }
+            },
+            "broken_future_field": "nope"
+        });
+
+        // Seed the store with legacy, partially-broken JSON.
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        store.set("settings", stored);
+        store.save().expect("store saves");
+
+        // This is the real startup path being fixed.
+        let settings = load_or_create_app_settings(&app);
+
+        let binding = settings
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding");
+        assert_eq!(binding.current_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.handy_keys_binding, "ctrl_right+command_right+y");
+
+        // Verify the migrated value was written back to disk.
+        let reloaded_value = store
+            .get("settings")
+            .expect("settings still in store after load");
+        let reloaded: AppSettings = serde_json::from_value(reloaded_value)
+            .expect("reloaded settings deserialize cleanly after migration");
+        let reloaded_binding = reloaded
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding after reload");
+        assert_eq!(reloaded_binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(
+            reloaded_binding.handy_keys_binding,
+            "ctrl_right+command_right+y"
+        );
     }
 }
