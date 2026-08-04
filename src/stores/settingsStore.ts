@@ -8,6 +8,7 @@ import type {
   AudioDevice,
   TranscribeAcceleratorSetting,
   OrtAcceleratorSetting,
+  ShortcutBinding,
   WordReplacement,
 } from "@/bindings";
 import { commands } from "@/bindings";
@@ -444,16 +445,25 @@ export const useSettingsStore = create<SettingsStore>()(
       }
     },
 
-    // Update a specific binding
+    // Update a specific binding for the active keyboard implementation.
+    // We mirror the new value to both the per-implementation field and
+    // `current_binding` so the UI shows the active binding immediately while
+    // the backend persists the dual-storage fields.
     updateBinding: async (id, binding) => {
       const { settings, setUpdating } = get();
       const updateKey = `binding_${id}`;
-      const originalBinding = settings?.bindings?.[id]?.current_binding;
+      const originalBinding = settings?.bindings?.[id];
+      const originalCurrentBinding = originalBinding?.current_binding ?? "";
+      const implField: keyof ShortcutBinding =
+        settings?.keyboard_implementation === "handy_keys"
+          ? "handy_keys_binding"
+          : "tauri_binding";
+      const originalImplBinding = originalBinding?.[implField] ?? "";
 
       setUpdating(updateKey, true);
 
       try {
-        // Optimistic update
+        // Optimistic update: set both per-implementation and mirrored fields.
         set((state) => ({
           settings: state.settings
             ? {
@@ -462,6 +472,7 @@ export const useSettingsStore = create<SettingsStore>()(
                   ...state.settings.bindings,
                   [id]: {
                     ...state.settings.bindings[id]!,
+                    [implField]: binding,
                     current_binding: binding,
                   },
                 },
@@ -493,7 +504,8 @@ export const useSettingsStore = create<SettingsStore>()(
                     ...state.settings.bindings,
                     [id]: {
                       ...state.settings.bindings[id]!,
-                      current_binding: originalBinding,
+                      [implField]: originalImplBinding,
+                      current_binding: originalCurrentBinding,
                     },
                   },
                 }

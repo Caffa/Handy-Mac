@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::settings::{self, get_settings, KeyboardImplementation, ShortcutBinding};
@@ -136,7 +137,15 @@ impl HandyKeysState {
                         binding_id, hotkey_string, event.state
                     );
                     let is_pressed = event.state == HotkeyState::Pressed;
+                    let t = Instant::now();
                     handle_shortcut_event(&app, binding_id, hotkey_string, is_pressed);
+                    let dt = t.elapsed();
+                    if dt > Duration::from_millis(100) {
+                        warn!(
+                            "handle_shortcut_event took {:?} (binding_id={}, hotkey_string={}, is_pressed={})",
+                            dt, binding_id, hotkey_string, is_pressed
+                        );
+                    }
                 } else {
                     debug!(
                         "handy-keys event with unknown hotkey id {:?}; active bindings={}",
@@ -254,8 +263,17 @@ impl HandyKeysState {
             })
             .map_err(|_| "Failed to send register command")?;
 
-        rx.recv()
-            .map_err(|_| "Failed to receive register response")?
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(resp) => resp,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                error!("Manager command timed out (5s); manager thread may be wedged");
+                Err("Manager register command timed out".to_string())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                error!("Manager command channel disconnected");
+                Err("Manager command channel disconnected".to_string())
+            }
+        }
     }
 
     /// Unregister a shortcut binding
@@ -269,8 +287,17 @@ impl HandyKeysState {
             })
             .map_err(|_| "Failed to send unregister command")?;
 
-        rx.recv()
-            .map_err(|_| "Failed to receive unregister response")?
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(resp) => resp,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                error!("Manager command timed out (5s); manager thread may be wedged");
+                Err("Manager unregister command timed out".to_string())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                error!("Manager command channel disconnected");
+                Err("Manager command channel disconnected".to_string())
+            }
+        }
     }
 
     /// Reset the internal pressed-hotkey set inside the manager thread.
@@ -286,8 +313,17 @@ impl HandyKeysState {
             .send(ManagerCommand::ResetPressedHotkeys { response: tx })
             .map_err(|_| "Failed to send reset pressed hotkeys command")?;
 
-        rx.recv()
-            .map_err(|_| "Failed to receive reset pressed hotkeys response")?
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(resp) => resp,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                error!("Manager command timed out (5s); manager thread may be wedged");
+                Err("Manager reset pressed hotkeys command timed out".to_string())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                error!("Manager command channel disconnected");
+                Err("Manager command channel disconnected".to_string())
+            }
+        }
     }
 
     /// Start recording mode for a specific binding
@@ -491,14 +527,19 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        if let Some(cancel_binding) = get_settings(app).bindings.get("cancel").cloned() {
+        let settings = get_settings(app);
+        if let Some(cancel_binding) = settings.bindings.get("cancel").cloned() {
+            let mut active_binding = cancel_binding;
+            active_binding.current_binding = active_binding
+                .binding_for(KeyboardImplementation::HandyKeys)
+                .to_string();
             if let Some(state) = app.try_state::<HandyKeysState>() {
-                if let Err(e) = state.register(&cancel_binding) {
+                if let Err(e) = state.register(&active_binding) {
                     error!("Failed to register cancel shortcut: {}", e);
                 } else {
                     debug!(
                         "Cancel shortcut registered synchronously: {}",
-                        cancel_binding.current_binding
+                        active_binding.current_binding
                     );
                 }
             } else {
@@ -519,9 +560,14 @@ pub fn unregister_cancel_shortcut(app: &AppHandle) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        if let Some(cancel_binding) = get_settings(app).bindings.get("cancel").cloned() {
+        let settings = get_settings(app);
+        if let Some(cancel_binding) = settings.bindings.get("cancel").cloned() {
+            let mut active_binding = cancel_binding;
+            active_binding.current_binding = active_binding
+                .binding_for(KeyboardImplementation::HandyKeys)
+                .to_string();
             if let Some(state) = app.try_state::<HandyKeysState>() {
-                let _ = state.unregister(&cancel_binding);
+                let _ = state.unregister(&active_binding);
                 debug!("Cancel shortcut unregistered synchronously");
             } else {
                 warn!("HandyKeysState not available for cancel shortcut unregistration");
@@ -614,9 +660,16 @@ pub fn reset_all_pressed_hotkeys<R: Runtime>(app: &AppHandle<R>) {
 /// each shortcut, we get fresh `HotkeyId` values that aren't in the stale set,
 /// restoring normal shortcut behavior.
 pub fn reset_hotkey_state_after_wake(app: &AppHandle) {
+    let wake_start = Instant::now();
+    info!("reset_hotkey_state_after_wake: start");
+
     let settings = get_settings(app);
     if settings.keyboard_implementation != KeyboardImplementation::HandyKeys {
         // Tauri implementation uses a different mechanism; nothing to reset.
+        info!(
+            "reset_hotkey_state_after_wake: skipped, active keyboard implementation is {:?}",
+            settings.keyboard_implementation
+        );
         return;
     }
 
@@ -676,4 +729,9 @@ pub fn reset_hotkey_state_after_wake(app: &AppHandle) {
     } else {
         info!("Cleared handy-keys pressed-hotkey state after wake-from-sleep");
     }
+
+    info!(
+        "reset_hotkey_state_after_wake: complete, elapsed={:?}",
+        wake_start.elapsed()
+    );
 }

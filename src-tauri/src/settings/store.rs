@@ -57,6 +57,25 @@ pub(crate) fn sanitize_floats(settings: &mut AppSettings) {
     }
 }
 
+/// Migrate legacy single `current_binding` values into per-implementation
+/// storage. On first load of an older `settings_store.json`, both backends
+/// inherit the existing binding so the user doesn't lose their shortcut.
+/// Returns true if any binding was changed.
+pub(crate) fn migrate_bindings(settings: &mut AppSettings) -> bool {
+    let mut changed = false;
+    for binding in settings.bindings.values_mut() {
+        if binding.tauri_binding.is_empty() && !binding.current_binding.is_empty() {
+            binding.tauri_binding = binding.current_binding.clone();
+            changed = true;
+        }
+        if binding.handy_keys_binding.is_empty() && !binding.current_binding.is_empty() {
+            binding.handy_keys_binding = binding.current_binding.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Helper: serialize settings to a serde_json::Value, logging errors instead of panicking.
 pub(crate) fn settings_to_value(settings: &AppSettings) -> Option<serde_json::Value> {
     match serde_json::to_value(settings) {
@@ -267,6 +286,11 @@ pub fn load_or_create_app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSetting
                     }
                 }
 
+                // Migrate legacy single-binding storage to per-implementation fields
+                if migrate_bindings(&mut settings) {
+                    updated = true;
+                }
+
                 // Migrate new settings fields
                 if settings.router_script_path.is_none()
                     && default_settings.router_script_path.is_some()
@@ -400,6 +424,11 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
             settings.bindings.insert(key, value);
             needs_save = true;
         }
+    }
+
+    // Migrate legacy single-binding storage to per-implementation fields
+    if migrate_bindings(&mut settings) {
+        needs_save = true;
     }
 
     if needs_save {
@@ -577,6 +606,8 @@ pub fn get_stored_binding<R: Runtime>(app: &AppHandle<R>, id: &str) -> ShortcutB
         description: format!("{} shortcut", id),
         default_binding: String::new(),
         current_binding: String::new(),
+        tauri_binding: String::new(),
+        handy_keys_binding: String::new(),
     }
 }
 

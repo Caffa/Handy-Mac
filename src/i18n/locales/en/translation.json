@@ -777,8 +777,7 @@
       },
       "keyboardImplementation": {
         "title": "Keyboard Implementation",
-        "description": "Choose the keyboard shortcut backend.",
-        "bindingsReset": "Keyboard shortcuts were incompatible and reset to defaults"
+        "description": "Choose the keyboard shortcut backend."
       },
       "paths": {
         "appData": "App Data:",

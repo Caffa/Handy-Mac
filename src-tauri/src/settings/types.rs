@@ -92,6 +92,37 @@ pub struct ShortcutBinding {
     pub description: String,
     pub default_binding: String,
     pub current_binding: String,
+    /// Tauri global-shortcut backend binding, stored independently so switching
+    /// implementations never requires re-recording.
+    #[serde(default)]
+    pub tauri_binding: String,
+    /// Handy-keys backend binding, stored independently so switching
+    /// implementations never requires re-recording.
+    #[serde(default)]
+    pub handy_keys_binding: String,
+}
+
+impl ShortcutBinding {
+    /// Return the stored binding for the requested keyboard implementation.
+    /// If the per-implementation field is empty (legacy data), the caller will
+    /// see the empty string and should fall back via migration or default.
+    pub fn binding_for(&self, implementation: KeyboardImplementation) -> &str {
+        match implementation {
+            KeyboardImplementation::Tauri => &self.tauri_binding,
+            KeyboardImplementation::HandyKeys => &self.handy_keys_binding,
+        }
+    }
+
+    /// Update the binding for a specific implementation and mirror it to
+    /// `current_binding` so existing UI and backend code that reads
+    /// `current_binding` always sees the active binding.
+    pub fn set_binding_for(&mut self, implementation: KeyboardImplementation, value: String) {
+        match implementation {
+            KeyboardImplementation::Tauri => self.tauri_binding = value.clone(),
+            KeyboardImplementation::HandyKeys => self.handy_keys_binding = value.clone(),
+        }
+        self.current_binding = value;
+    }
 }
 
 // ── LLMPrompt ──
@@ -275,40 +306,67 @@ impl NoiseSuppressionLevel {
 
 // ── VadSensitivity ──
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VadSensitivity {
-    VeryQuick,
-    Quick,
-    Balanced,
-    Relaxed,
+    /// Minimal VAD filtering: keeps almost everything, including quiet speech.
+    #[default]
     VeryRelaxed,
-}
-
-impl Default for VadSensitivity {
-    fn default() -> Self {
-        VadSensitivity::Balanced
-    }
+    /// Light filtering: removes obvious silence while keeping softer words.
+    Relaxed,
+    /// Moderate filtering: balanced between noise removal and speech capture.
+    Balanced,
+    /// Faster filtering: removes more background sound, may clip softer words.
+    Quick,
+    /// Strongest filtering in the reduced range: cuts quickly on silence.
+    VeryQuick,
 }
 
 impl VadSensitivity {
     pub fn threshold(&self) -> f32 {
         match self {
-            VadSensitivity::VeryQuick => 0.45,
-            VadSensitivity::Quick => 0.38,
-            VadSensitivity::Balanced => 0.30,
-            VadSensitivity::Relaxed => 0.25,
-            VadSensitivity::VeryRelaxed => 0.20,
+            // Narrowed, less aggressive range: the highest threshold is still
+            // lower than the previous VeryQuick (0.45), so even the "strongest"
+            // setting here is more forgiving than before.
+            VadSensitivity::VeryRelaxed => 0.15,
+            VadSensitivity::Relaxed => 0.20,
+            VadSensitivity::Balanced => 0.25,
+            VadSensitivity::Quick => 0.30,
+            VadSensitivity::VeryQuick => 0.35,
         }
     }
 
     pub fn hangover_frames(&self) -> usize {
         match self {
-            VadSensitivity::VeryQuick => 8,
-            VadSensitivity::Quick => 12,
-            VadSensitivity::Balanced => 15,
-            VadSensitivity::Relaxed => 20,
-            VadSensitivity::VeryRelaxed => 30,
+            // Longer hangover at the relaxed end keeps trailing words; shorter
+            // at the quick end makes cuts snappier, but still not as short as
+            // the old aggressive settings.
+            VadSensitivity::VeryRelaxed => 35,
+            VadSensitivity::Relaxed => 30,
+            VadSensitivity::Balanced => 25,
+            VadSensitivity::Quick => 20,
+            VadSensitivity::VeryQuick => 15,
+        }
+    }
+
+    /// Resolve the effective VAD sensitivity for a model, honoring a per-model
+    /// override if present, then falling back to engine-specific defaults, and
+    /// finally the global `vad_sensitivity` setting.
+    pub fn default_for_model(
+        model_id: &str,
+        settings: &AppSettings,
+        model_manager: &crate::managers::model::ModelManager,
+    ) -> Self {
+        if let Some(override_sensitivity) = settings.per_model_vad_sensitivity.get(model_id) {
+            return *override_sensitivity;
+        }
+
+        match model_manager.get_model_info(model_id) {
+            Some(model_info) => match model_info.engine_type {
+                crate::managers::model::EngineType::Parakeet => VadSensitivity::VeryRelaxed,
+                _ => VadSensitivity::Balanced,
+            },
+            None => settings.vad_sensitivity,
         }
     }
 }
@@ -604,6 +662,8 @@ pub struct AppSettings {
     pub usb_watchdog_cycle_on_wake: bool,
     #[serde(default)]
     pub vad_sensitivity: VadSensitivity,
+    #[serde(default)]
+    pub per_model_vad_sensitivity: HashMap<String, VadSensitivity>,
     #[serde(default)]
     pub live_captions_enabled: bool,
     #[serde(default = "default_overlay_scale")]

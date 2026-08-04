@@ -39,10 +39,9 @@ export const KeyboardImplementationSelector: React.FC<
         return;
       }
 
-      // If any bindings were reset due to incompatibility, notify the user
-      if (result.data.reset_bindings.length > 0) {
-        toast.warning(t("settings.debug.keyboardImplementation.bindingsReset"));
-      }
+      // No bindings are reset when switching implementations anymore; both
+      // Tauri and Handy Keys bindings are stored independently so users can
+      // switch back and forth without re-recording.
 
       await refreshSettings();
     } catch (error) {

@@ -80,21 +80,34 @@ pub fn unregister_cancel_shortcut(app: &AppHandle) {
     }
 }
 
-/// Register a shortcut using the appropriate implementation
+/// Register a shortcut using the appropriate implementation.
+/// The implementation-specific binding string is copied into
+/// `current_binding` before dispatching to the backend so existing
+/// implementation code only needs to read `current_binding`.
 pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
     let settings = get_settings(app);
+    let mut active_binding = binding.clone();
+    active_binding.current_binding = binding
+        .binding_for(settings.keyboard_implementation)
+        .to_string();
     match settings.keyboard_implementation {
-        KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, binding),
-        KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, binding),
+        KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, active_binding),
+        KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, active_binding),
     }
 }
 
-/// Unregister a shortcut using the appropriate implementation
+/// Unregister a shortcut using the appropriate implementation.
+/// The implementation-specific binding string is copied into
+/// `current_binding` before dispatching to the backend.
 pub fn unregister_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
     let settings = get_settings(app);
+    let mut active_binding = binding.clone();
+    active_binding.current_binding = binding
+        .binding_for(settings.keyboard_implementation)
+        .to_string();
     match settings.keyboard_implementation {
-        KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, binding),
-        KeyboardImplementation::HandyKeys => handy_keys::unregister_shortcut(app, binding),
+        KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, active_binding),
+        KeyboardImplementation::HandyKeys => handy_keys::unregister_shortcut(app, active_binding),
     }
 }
 
@@ -137,9 +150,11 @@ fn apply_cancel_binding_update(
                 description: "Cancels the current recording.".to_string(),
                 default_binding: "escape".to_string(),
                 current_binding: "escape".to_string(),
+                tauri_binding: "escape".to_string(),
+                handy_keys_binding: "escape".to_string(),
             })
     });
-    b.current_binding = new_binding;
+    b.set_binding_for(settings.keyboard_implementation, new_binding);
     settings.bindings.insert(id.to_string(), b.clone());
     b
 }
@@ -202,7 +217,10 @@ pub fn change_binding(
     }
 
     // Defensive: cancel should never reach the registration path
-    debug_assert!(id != "cancel", "cancel binding should have been handled above");
+    debug_assert!(
+        id != "cancel",
+        "cancel binding should have been handled above"
+    );
 
     // Unregister the existing binding
     if let Err(e) = unregister_shortcut(&app, binding_to_modify.clone()) {
@@ -240,9 +258,11 @@ pub fn change_binding(
         );
     }
 
-    // Create an updated binding
+    // Create an updated binding for the active keyboard implementation.
+    // The per-implementation helper also mirrors the value to `current_binding`
+    // so the frontend immediately sees the new binding.
     let mut updated_binding = binding_to_modify;
-    updated_binding.current_binding = binding;
+    updated_binding.set_binding_for(settings.keyboard_implementation, binding);
 
     // Register the new binding
     if let Err(e) = register_shortcut(&app, updated_binding.clone()) {
@@ -281,8 +301,13 @@ pub fn reset_binding(app: AppHandle, id: String) -> Result<BindingResponse, Stri
 #[tauri::command]
 #[specta::specta]
 pub fn suspend_binding(app: AppHandle, id: String) -> Result<(), String> {
+    let settings = get_settings(&app);
     if let Some(b) = settings::get_bindings(&app).get(&id).cloned() {
-        if let Err(e) = unregister_shortcut(&app, b) {
+        let mut active_binding = b;
+        active_binding.current_binding = active_binding
+            .binding_for(settings.keyboard_implementation)
+            .to_string();
+        if let Err(e) = unregister_shortcut(&app, active_binding) {
             error!("suspend_binding error for id '{}': {}", id, e);
             return Err(e);
         }
@@ -294,8 +319,13 @@ pub fn suspend_binding(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub fn resume_binding(app: AppHandle, id: String) -> Result<(), String> {
+    let settings = get_settings(&app);
     if let Some(b) = settings::get_bindings(&app).get(&id).cloned() {
-        if let Err(e) = register_shortcut(&app, b) {
+        let mut active_binding = b;
+        active_binding.current_binding = active_binding
+            .binding_for(settings.keyboard_implementation)
+            .to_string();
+        if let Err(e) = register_shortcut(&app, active_binding) {
             error!("resume_binding error for id '{}': {}", id, e);
             return Err(e);
         }
@@ -447,7 +477,9 @@ fn unregister_all_shortcuts(app: &AppHandle, implementation: KeyboardImplementat
     }
 }
 
-/// Register all shortcuts for a specific implementation, validating and resetting invalid ones
+/// Register all shortcuts for a specific implementation, validating and resetting invalid ones.
+/// Only the per-implementation field is reset; the other implementation's stored binding is
+/// preserved so switching back later does not require re-recording.
 fn register_all_shortcuts_for_implementation(
     app: &AppHandle,
     implementation: KeyboardImplementation,
@@ -473,27 +505,32 @@ fn register_all_shortcuts_for_implementation(
             .cloned()
             .unwrap_or_else(|| default_binding.clone());
 
+        let impl_binding = binding.binding_for(implementation).to_string();
+
         // Validate the shortcut for the target implementation
-        if let Err(e) =
-            validate_shortcut_for_implementation(&binding.current_binding, implementation)
-        {
+        if let Err(e) = validate_shortcut_for_implementation(&impl_binding, implementation) {
             info!(
                 "Shortcut '{}' ({}) is invalid for {:?}: {}. Resetting to default.",
-                id, binding.current_binding, implementation, e
+                id, impl_binding, implementation, e
             );
 
-            // Reset to default
-            binding.current_binding = default_binding.current_binding.clone();
+            // Reset only the per-implementation field; the other implementation's binding
+            // is preserved so switching back later keeps the user's recorded shortcut.
+            binding.set_binding_for(implementation, default_binding.current_binding.clone());
             current_settings
                 .bindings
                 .insert(id.clone(), binding.clone());
             reset_bindings.push(id.clone());
         }
 
-        // Register with the appropriate implementation
+        // Register with the appropriate implementation. Use a clone with `current_binding`
+        // set to the implementation-specific value so the backend doesn't need to know
+        // about the dual-storage design.
+        let mut active_binding = binding.clone();
+        active_binding.current_binding = impl_binding;
         let result = match implementation {
-            KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, binding),
-            KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, binding),
+            KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, active_binding),
+            KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, active_binding),
         };
 
         if let Err(e) = result {
@@ -1387,16 +1424,20 @@ pub async fn get_available_accelerators(
 #[specta::specta]
 pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Result<(), String> {
     let vad_sensitivity = match sensitivity.as_str() {
-        "very_quick" => settings::VadSensitivity::VeryQuick,
-        "quick" => settings::VadSensitivity::Quick,
-        "balanced" => settings::VadSensitivity::Balanced,
-        "relaxed" => settings::VadSensitivity::Relaxed,
         "very_relaxed" => settings::VadSensitivity::VeryRelaxed,
+        "relaxed" => settings::VadSensitivity::Relaxed,
+        "balanced" => settings::VadSensitivity::Balanced,
+        "quick" => settings::VadSensitivity::Quick,
+        "very_quick" => settings::VadSensitivity::VeryQuick,
         _ => return Err(format!("Invalid VAD sensitivity: {}", sensitivity)),
     };
+
+    info!("Changing VAD sensitivity to '{}'", sensitivity);
+
     let mut settings = settings::get_settings_safe(&app);
     settings.vad_sensitivity = vad_sensitivity;
     settings::write_settings_safe(&app, settings);
+    info!("VAD sensitivity '{}' saved to settings cache", sensitivity);
 
     // Recreate the recorder so the new VAD sensitivity takes effect immediately.
     // vad_threshold and vad_hangover_frames are read in create_audio_recorder()
@@ -1566,7 +1607,8 @@ mod tests {
         settings.bindings.remove("cancel");
         assert!(!settings.bindings.contains_key("cancel"));
 
-        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
+        let result =
+            apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
 
         assert_eq!(result.current_binding, "cmd+backspace");
         assert!(settings.bindings.contains_key("cancel"));
@@ -1578,7 +1620,8 @@ mod tests {
         let mut settings = get_default_settings();
         assert_eq!(settings.bindings["cancel"].current_binding, "escape");
 
-        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+shift+x".to_string());
+        let result =
+            apply_cancel_binding_update(&mut settings, "cancel", "cmd+shift+x".to_string());
 
         assert_eq!(result.current_binding, "cmd+shift+x");
         assert_eq!(settings.bindings["cancel"].current_binding, "cmd+shift+x");

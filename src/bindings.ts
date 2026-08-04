@@ -975,6 +975,18 @@ async triggerUsbPowerCycle() : Promise<Result<boolean, string>> {
 }
 },
 /**
+ * Set a per-model VAD sensitivity override. Pass `None` for `sensitivity` to
+ * clear the override and fall back to the engine-type default or global setting.
+ */
+async setModelVadSensitivity(modelId: string, sensitivity: VadSensitivity | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_model_vad_sensitivity", { modelId, sensitivity }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Start a short recording for capturing a pronunciation sample.
  * 
  * This reuses the existing audio recording infrastructure but uses a special
@@ -1442,7 +1454,7 @@ use_advanced_custom_words?: boolean;
 /**
  * Word correction mode. Defaults to WordBias for backward compatibility.
  */
-word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; live_captions_enabled?: boolean; overlay_scale?: number; convert_us_to_british?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel }
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; per_model_vad_sensitivity?: Partial<{ [key in string]: VadSensitivity }>; live_captions_enabled?: boolean; overlay_scale?: number; convert_us_to_british?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1608,8 +1620,8 @@ quality: string | null;
  */
 speech_speed: string | null; 
 /**
- * File name of the VAD-filtered recording (what went to transcription).
- * `file_name` is the raw unfiltered audio.
+ * File name of the VAD-filtered WAV recording (for debugging VAD quality).
+ * The main `file_name` field now stores the raw (unfiltered) recording.
  */
 file_name_vad: string | null }
 export type HistoryUpdate = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
@@ -1768,7 +1780,17 @@ phases_json: string | null;
  * Errors encountered during the session.
  */
 errors: string[] }
-export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
+export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string; 
+/**
+ * Tauri global-shortcut backend binding, stored independently so switching
+ * implementations never requires re-recording.
+ */
+tauri_binding?: string; 
+/**
+ * Handy-keys backend binding, stored independently so switching
+ * implementations never requires re-recording.
+ */
+handy_keys_binding?: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
 /**
  * Dictionary source for US-to-British spelling conversion.
@@ -1857,7 +1879,7 @@ current_streak_days: number;
  */
 longest_streak_days: number; 
 /**
- * Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
+ * Daily stats for the last 7 days: (date "YYYY-MM-DD", transcription count, word count)
  */
 daily_stats: ([string, number, number])[] }
 /**
@@ -1876,7 +1898,27 @@ hub: string;
  * Port number on the hub (e.g. "1")
  */
 port: string }
-export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
+export type VadSensitivity = 
+/**
+ * Minimal VAD filtering: keeps almost everything, including quiet speech.
+ */
+"very_relaxed" | 
+/**
+ * Light filtering: removes obvious silence while keeping softer words.
+ */
+"relaxed" | 
+/**
+ * Moderate filtering: balanced between noise removal and speech capture.
+ */
+"balanced" | 
+/**
+ * Faster filtering: removes more background sound, may clip softer words.
+ */
+"quick" | 
+/**
+ * Strongest filtering in the reduced range: cuts quickly on silence.
+ */
+"very_quick"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 export type WordCorrectionMode = "word_bias" | "pronunciation" | "replacement"
 /**

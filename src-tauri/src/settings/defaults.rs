@@ -24,6 +24,8 @@ pub fn get_default_settings() -> AppSettings {
             description: "Converts your speech into text.".to_string(),
             default_binding: default_shortcut.to_string(),
             current_binding: default_shortcut.to_string(),
+            tauri_binding: default_shortcut.to_string(),
+            handy_keys_binding: default_shortcut.to_string(),
         },
     );
     #[cfg(target_os = "windows")]
@@ -44,6 +46,8 @@ pub fn get_default_settings() -> AppSettings {
                 .to_string(),
             default_binding: default_post_process_shortcut.to_string(),
             current_binding: default_post_process_shortcut.to_string(),
+            tauri_binding: default_post_process_shortcut.to_string(),
+            handy_keys_binding: default_post_process_shortcut.to_string(),
         },
     );
     #[cfg(target_os = "macos")]
@@ -63,6 +67,8 @@ pub fn get_default_settings() -> AppSettings {
             description: "Records speech, transcribes, and sends text to your router system for classification and filing.".to_string(),
             default_binding: default_router_shortcut.to_string(),
             current_binding: default_router_shortcut.to_string(),
+            tauri_binding: default_router_shortcut.to_string(),
+            handy_keys_binding: default_router_shortcut.to_string(),
         },
     );
 
@@ -85,6 +91,8 @@ pub fn get_default_settings() -> AppSettings {
                 .to_string(),
             default_binding: default_router_shortcut.to_string(),
             current_binding: default_router_shortcut.to_string(),
+            tauri_binding: default_router_shortcut.to_string(),
+            handy_keys_binding: default_router_shortcut.to_string(),
         },
     );
     bindings.insert(
@@ -95,12 +103,14 @@ pub fn get_default_settings() -> AppSettings {
             description: "Cancels the current recording.".to_string(),
             default_binding: "escape".to_string(),
             current_binding: "escape".to_string(),
+            tauri_binding: "escape".to_string(),
+            handy_keys_binding: "escape".to_string(),
         },
     );
 
     AppSettings {
         bindings,
-        push_to_talk: true,
+        push_to_talk: false,
         audio_feedback: false,
         audio_feedback_volume: default_audio_feedback_volume(),
         sound_theme: default_sound_theme(),
@@ -163,7 +173,8 @@ pub fn get_default_settings() -> AppSettings {
         usb_watchdog_enabled: false,
         usb_watchdog_device_name: String::new(),
         usb_watchdog_cycle_on_wake: true,
-        vad_sensitivity: VadSensitivity::Balanced,
+        vad_sensitivity: VadSensitivity::VeryRelaxed,
+        per_model_vad_sensitivity: HashMap::new(),
         live_captions_enabled: false,
         overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
