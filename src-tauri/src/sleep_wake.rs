@@ -19,6 +19,8 @@ use log::{debug, error, info, warn};
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
+use std::time::Instant;
+#[cfg(target_os = "macos")]
 use tauri::Manager;
 
 /// Start listening for macOS wake-from-sleep events.
@@ -199,7 +201,8 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
 /// Handle macOS wake-from-sleep event.
 #[cfg(target_os = "macos")]
 fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
-    info!("Handling system wake event...");
+    let wake_start = Instant::now();
+    info!("on_system_wake: start");
 
     // Reset hotkey state first — this is independent of USB watchdog settings
     // and should happen immediately so shortcuts work right after wake.
@@ -216,18 +219,31 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         } else {
             info!("Wake recovery skipped: cycle-on-wake is disabled (usb_watchdog_cycle_on_wake=false)");
         }
+        info!(
+            "on_system_wake: complete, elapsed={:?}",
+            wake_start.elapsed()
+        );
         return;
     }
 
     let device_name = settings.usb_watchdog_device_name.clone();
     if device_name.is_empty() {
         warn!("Wake recovery skipped: USB watchdog device name not configured (empty setting)");
+        info!(
+            "on_system_wake: complete, elapsed={:?}",
+            wake_start.elapsed()
+        );
         return;
     }
 
     info!(
         "Triggering post-wake recovery for device '{}' (will check stream health then cycle USB if needed)",
         device_name
+    );
+
+    info!(
+        "on_system_wake: complete (USB recovery spawned), elapsed={:?}",
+        wake_start.elapsed()
     );
 
     let ah = app_handle.clone();

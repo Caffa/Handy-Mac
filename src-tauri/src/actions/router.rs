@@ -261,7 +261,11 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             let stop_recording_time = Instant::now();
             let recording_result = rm.stop_recording(&binding_id);
             if let Some((processed_samples, raw_samples)) = recording_result {
-                debug!("Recording stopped, processed: {}, raw: {}", processed_samples.len(), raw_samples.len());
+                debug!(
+                    "Recording stopped, processed: {}, raw: {}",
+                    processed_samples.len(),
+                    raw_samples.len()
+                );
 
                 if processed_samples.is_empty() {
                     debug!("Recording produced no audio samples; skipping");
@@ -676,8 +680,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 // and we skip showing — the new recording's overlay takes
                                 // priority, and the macOS notification provides feedback.
                                 let should_show_result = {
-                                    let coord = ah_for_router
-                                        .try_state::<TranscriptionCoordinator>();
+                                    let coord =
+                                        ah_for_router.try_state::<TranscriptionCoordinator>();
                                     !coord.map_or(false, |c| c.is_active_use())
                                 };
 

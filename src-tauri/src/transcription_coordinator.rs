@@ -29,8 +29,14 @@ impl CancelSignal {
 
     /// Non-blocking cancel signal. Returns immediately.
     pub fn send_cancel(&self) {
+        let t = Instant::now();
         self.flag.store(true, Ordering::SeqCst);
-        info!("CancelSignal: cancel flag set");
+        let dt = t.elapsed();
+        if dt > Duration::from_millis(100) {
+            warn!("CancelSignal::send_cancel took {:?}", dt);
+        } else {
+            debug!("CancelSignal: cancel flag set (took {:?})", dt);
+        }
     }
 
     /// Check and consume the cancel flag. Returns true if a cancel was pending.
@@ -212,24 +218,48 @@ impl CoordinatorCore {
     /// This detects cases where the coordinator's state has drifted from the
     /// audio recorder's real state (e.g. after sleep/wake with HandyKeys, or a
     /// missed/failed transition), and recovers by forcing the stage to match.
-    fn try_recover_stop(
+    fn try_recover_stop<R: Runtime>(
         &mut self,
         binding_id: String,
         active_use: &AtomicBool,
         current_state: &RwLock<AppState>,
         recorder_is_recording: bool,
+        app: &AppHandle<R>,
     ) -> bool {
+        info!(
+            "try_recover_stop: entry, stage={:?}, passed_recorder_is_recording={}",
+            self.stage, recorder_is_recording
+        );
+
+        // Re-sample the recorder state inside this diagnostic function so we
+        // can detect when the passed-in value has become stale (e.g. due to
+        // blocking on a lock or an async gap between recv and processing).
+        let resampled_recorder_is_recording = app
+            .try_state::<Arc<AudioRecordingManager>>()
+            .is_some_and(|a| a.is_recording());
+        if resampled_recorder_is_recording != recorder_is_recording {
+            warn!(
+                "try_recover_stop: recorder state drifted since passed value (passed={}, resampled={})",
+                recorder_is_recording, resampled_recorder_is_recording
+            );
+        }
+
         // We can only recover if we're not already in the middle of a real
         // Processing stop (in that case the recorder should be stopping on
         // its own, and forcing it again could double-stop).
         if matches!(self.stage, Stage::Processing { .. }) {
+            warn!("try_recover_stop: false, reason=already_in_processing_stage");
             return false;
         }
 
         // Defensive: only force a recovery when we have external evidence that
         // the recorder is actually still capturing. If it isn't, the stage is
         // most likely correct and the stop event is stale/spurious.
+        // NOTE: We use the passed-in `recorder_is_recording` value for the
+        // recovery decision, not the re-sampled value, so the re-sampled value
+        // remains purely informational (diagnostics only).
         if !recorder_is_recording {
+            warn!("try_recover_stop: false, reason=passed_recorder_not_recording");
             return false;
         }
 
@@ -369,6 +399,10 @@ impl CoordinatorCore {
                             Stage::Recording { binding_id: id, .. } if id == &binding_id
                         )
                     {
+                        info!(
+                            "Stop input received: stage={:?} recorder_is_recording={}",
+                            self.stage, recorder_is_recording
+                        );
                         // Transition to Processing first so active_use stays true,
                         // then tell the thread to call stop which may fire FinishGuard.
                         self.transition_to(Stage::Processing {
@@ -386,8 +420,13 @@ impl CoordinatorCore {
                             active_use,
                             current_state,
                             recorder_is_recording,
+                            app,
                         )
                     {
+                        info!(
+                            "Stop input received (PTT recovery): stage={:?} recorder_is_recording={}",
+                            self.stage, recorder_is_recording
+                        );
                         // Push-to-talk release arrived while the recorder is still
                         // active but the coordinator stage drifted (e.g. missed
                         // release during sleep/wake). Force Recording and then
@@ -422,6 +461,10 @@ impl CoordinatorCore {
                             }
                         }
                         Stage::Recording { binding_id: id, .. } if id == &binding_id => {
+                            info!(
+                                "Stop input received: stage={:?} recorder_is_recording={}",
+                                self.stage, recorder_is_recording
+                            );
                             self.transition_to(Stage::Processing {
                                 since: Instant::now(),
                                 binding_id: Some(binding_id.clone()),
@@ -443,7 +486,12 @@ impl CoordinatorCore {
                                 active_use,
                                 current_state,
                                 recorder_is_recording,
+                                app,
                             ) {
+                                info!(
+                                    "Stop input received (toggle recovery): stage={:?} recorder_is_recording={}",
+                                    self.stage, recorder_is_recording
+                                );
                                 self.transition_to(Stage::Processing {
                                     since: Instant::now(),
                                     binding_id: Some(binding_id.clone()),
@@ -470,6 +518,7 @@ impl CoordinatorCore {
             Command::Cancel {
                 recording_was_active,
             } => {
+                let cancel_start = Instant::now();
                 info!(
                     "CoordinatorCore: cancel received, recording_was_active={}",
                     recording_was_active
@@ -486,7 +535,16 @@ impl CoordinatorCore {
                 }
                 if was_active {
                     info!("Cancel received, resetting handy-keys pressed-hotkey state");
+                    let t = Instant::now();
                     crate::shortcut::handy_keys::reset_all_pressed_hotkeys(app);
+                    let dt = t.elapsed();
+                    if dt > Duration::from_millis(100) {
+                        warn!("reset_all_pressed_hotkeys during cancel took {:?}", dt);
+                    }
+                }
+                let dt = cancel_start.elapsed();
+                if dt > Duration::from_millis(100) {
+                    warn!("CoordinatorCore cancel command processing took {:?}", dt);
                 }
                 StageAction::None
             }
@@ -612,8 +670,10 @@ impl TranscriptionCoordinator {
                     // This ensures the coordinator transitions to Idle immediately
                     // when cancel is requested, even if a command is pending.
                     if cancel_flag_clone.swap(false, Ordering::SeqCst) {
+                        let t = Instant::now();
                         info!("Coordinator: cancel flag detected, resetting to Idle");
-                        if core.check_cancel() {
+                        let did_cancel = core.check_cancel();
+                        if did_cancel {
                             set_stage(
                                 &mut core.stage,
                                 Stage::Idle,
@@ -621,6 +681,10 @@ impl TranscriptionCoordinator {
                                 &current_state_clone,
                                 &app,
                             );
+                        }
+                        let dt = t.elapsed();
+                        if dt > Duration::from_millis(100) {
+                            warn!("Coordinator cancel flag handling took {:?}", dt);
                         }
                         return;
                     }
@@ -716,8 +780,10 @@ impl TranscriptionCoordinator {
                     // Check cancel flag again after receiving a command.
                     // A cancel may have arrived while we were blocking on recv.
                     if cancel_flag_clone.swap(false, Ordering::SeqCst) {
+                        let t = Instant::now();
                         info!("Coordinator: cancel flag detected after recv, resetting to Idle");
-                        if core.check_cancel() {
+                        let did_cancel = core.check_cancel();
+                        if did_cancel {
                             set_stage(
                                 &mut core.stage,
                                 Stage::Idle,
@@ -726,12 +792,19 @@ impl TranscriptionCoordinator {
                                 &app,
                             );
                         }
+                        let dt = t.elapsed();
+                        if dt > Duration::from_millis(100) {
+                            warn!(
+                                "Coordinator cancel flag handling (after recv) took {:?}",
+                                dt
+                            );
+                        }
                         return;
                     }
 
                     let recorder_is_recording = app
                         .try_state::<Arc<AudioRecordingManager>>()
-                        .is_some_and(|a| a.is_recording());
+                        .is_some_and(|a| a.is_recording_with_log("coordinator"));
                     let action = core.process_command(
                         cmd,
                         &active_use_clone,
@@ -931,13 +1004,18 @@ impl TranscriptionCoordinator {
     }
 
     pub fn notify_cancel(&self, recording_was_active: bool) {
-        if self
-            .tx
-            .send(Command::Cancel {
-                recording_was_active,
-            })
-            .is_err()
-        {
+        let t = Instant::now();
+        let result = self.tx.send(Command::Cancel {
+            recording_was_active,
+        });
+        let dt = t.elapsed();
+        if dt > Duration::from_millis(100) {
+            warn!(
+                "notify_cancel took {:?} (recording_was_active={})",
+                dt, recording_was_active
+            );
+        }
+        if result.is_err() {
             warn!("Transcription coordinator channel closed");
         }
     }

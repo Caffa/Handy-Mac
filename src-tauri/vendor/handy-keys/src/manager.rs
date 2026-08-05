@@ -8,6 +8,7 @@ use std::thread::{self, JoinHandle};
 use crate::error::{Error, Result};
 use crate::listener::{BlockingHotkeys, KeyboardListener};
 use crate::types::{Hotkey, HotkeyEvent, HotkeyId, HotkeyState, KeyEvent};
+use log::warn;
 
 /// Internal state shared between the manager and the processing thread
 struct ManagerState {
@@ -32,6 +33,25 @@ impl ManagerState {
 
         if event.is_key_down {
             // Check for hotkeys that should be pressed
+            let suppressed: Vec<HotkeyId> = self
+                .hotkeys
+                .iter()
+                .filter(|(&id, hotkey)| {
+                    hotkey.modifiers.matches(event.modifiers)
+                        && hotkey.key == event.key
+                        && self.pressed_hotkeys.contains(&id)
+                })
+                .map(|(&id, _)| id)
+                .collect();
+
+            if !suppressed.is_empty() {
+                warn!(
+                    "Hotkey press suppressed: already in pressed_hotkeys set (size={}, contents={:?})",
+                    self.pressed_hotkeys.len(),
+                    self.pressed_hotkeys
+                );
+            }
+
             let to_press: Vec<HotkeyId> = self
                 .hotkeys
                 .iter()
@@ -159,7 +179,24 @@ impl HotkeyManager {
     ) {
         const RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
 
+        // Track unexpectedly long recv_timeout calls. If a single call blocks
+        // significantly longer than the configured 100ms, it suggests the
+        // listener thread is stalled (e.g. after sleep/wake or a dead tap).
+        let mut recv_start = std::time::Instant::now();
+
         while running.load(std::sync::atomic::Ordering::SeqCst) {
+            // Log if the previous recv_timeout call took much longer than
+            // expected. We do this once per loop iteration before the next
+            // blocking call so we only emit when we actually observe a delay.
+            let before_recv = std::time::Instant::now();
+            let elapsed_since_last_recv = before_recv.duration_since(recv_start);
+            if elapsed_since_last_recv >= std::time::Duration::from_millis(500) {
+                warn!(
+                    "handy-keys manager event_loop recv_timeout blocked for {:?}",
+                    elapsed_since_last_recv
+                );
+            }
+
             // Block until we receive an event or timeout (to check running flag)
             match listener.recv_timeout(RECV_TIMEOUT) {
                 Ok(key_event) => {
@@ -176,11 +213,19 @@ impl HotkeyManager {
                 Err(crate::error::Error::Timeout) => {
                     // No event received, loop continues to check running flag
                 }
-                Err(_) => {
-                    // Listener disconnected, exit
+                Err(crate::error::Error::EventLoopNotRunning) => {
+                    warn!("handy-keys manager listener disconnected, exiting event_loop");
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        "handy-keys manager recv_timeout error: {:?}, exiting event_loop",
+                        e
+                    );
                     return;
                 }
             }
+            recv_start = std::time::Instant::now();
         }
     }
 

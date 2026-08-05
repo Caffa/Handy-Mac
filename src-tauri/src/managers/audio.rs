@@ -1375,6 +1375,7 @@ impl AudioRecordingManager {
                 binding_id: ref active,
                 start_time,
             } if active == binding_id => {
+                info!("Stopping recording for binding '{}'", binding_id);
                 // Calculate recording duration for USB watchdog checks
                 let recording_duration = start_time.elapsed().as_secs_f32();
                 debug!("Recording duration: {:.1}s", recording_duration);
@@ -1550,11 +1551,43 @@ impl AudioRecordingManager {
                 };
                 Some((padded_processed, raw_samples))
             }
-            _ => None,
+            RecordingState::Recording {
+                binding_id: ref active,
+                ..
+            } => {
+                warn!(
+                    "stop_recording binding mismatch: requested '{}', active '{}'",
+                    binding_id, active
+                );
+                None
+            }
+            _ => {
+                warn!(
+                    "stop_recording called for '{}' but not currently recording (state={:?})",
+                    binding_id, *state
+                );
+                None
+            }
         }
     }
     pub fn is_recording(&self) -> bool {
         matches!(*self.state.lock(), RecordingState::Recording { .. })
+    }
+
+    /// Diagnostic wrapper around `is_recording()` that logs the result and
+    /// any unexpectedly slow state-lock acquisition. Use this on the
+    /// stop/cancel path to capture whether the recorder state matches the
+    /// coordinator's assumptions without spamming the hot recording loop.
+    pub fn is_recording_with_log(&self, context: &str) -> bool {
+        let t = std::time::Instant::now();
+        let result = self.is_recording();
+        let dt = t.elapsed();
+        if dt > std::time::Duration::from_millis(100) {
+            warn!("is_recording({}) took {:?}, result={}", context, dt, result);
+        } else {
+            debug!("is_recording({}) = {} (took {:?})", context, result, dt);
+        }
+        result
     }
 
     /// Check if the microphone stream is open (always-on mode or BT keep-alive)
@@ -1609,6 +1642,7 @@ impl AudioRecordingManager {
         };
 
         if let RecordingState::Recording { .. } = *state {
+            info!("[CANCEL-TIMING] cancel_recording: state is Recording, beginning stop sequence");
             *state = RecordingState::Idle;
             drop(state);
 
@@ -1625,7 +1659,23 @@ impl AudioRecordingManager {
                 info!("[CANCEL-TIMING] cancel_recording: recorder.try_lock_for(1s) took {:?}, acquired={}", t_recorder_lock.elapsed(), guard.is_some());
                 match guard {
                     Some(guard) => match guard.as_ref() {
-                        Some(rec) => rec.stop_send().ok(),
+                        Some(rec) => {
+                            let t_stop_send = std::time::Instant::now();
+                            let rx = rec.stop_send().ok();
+                            let dt = t_stop_send.elapsed();
+                            if dt > std::time::Duration::from_millis(100) {
+                                warn!(
+                                    "[CANCEL-TIMING] cancel_recording: stop_send() took {:?}",
+                                    dt
+                                );
+                            } else {
+                                info!(
+                                    "[CANCEL-TIMING] cancel_recording: stop_send() took {:?}",
+                                    dt
+                                );
+                            }
+                            rx
+                        }
                         None => {
                             warn!("Recorder not available during cancel");
                             None

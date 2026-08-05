@@ -485,7 +485,9 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
     let default_bindings = settings::get_default_settings().bindings;
     let user_settings = settings::load_or_create_app_settings_safe(app);
 
-    // Register all bindings except cancel (which is dynamic)
+    // Register all bindings except cancel (which is dynamic).
+    // Mirror the stored implementation-specific binding into `current_binding`
+    // so the rest of this backend can keep reading `current_binding`.
     for (id, default_binding) in default_bindings {
         if id == "cancel" {
             continue;
@@ -495,11 +497,14 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
             continue;
         }
 
-        let binding = user_settings
+        let mut binding = user_settings
             .bindings
             .get(&id)
             .cloned()
             .unwrap_or(default_binding);
+        binding.current_binding = binding
+            .binding_for(KeyboardImplementation::HandyKeys)
+            .to_string();
 
         if let Err(e) = state.register(&binding) {
             error!(
@@ -697,11 +702,17 @@ pub fn reset_hotkey_state_after_wake(app: &AppHandle) {
             continue;
         }
 
-        let binding = user_settings
+        let mut binding = user_settings
             .bindings
             .get(&id)
             .cloned()
             .unwrap_or(default_binding);
+
+        // Mirror the stored HandyKeys binding into `current_binding` so the
+        // manager unregister/register calls use the correct hotkey string.
+        binding.current_binding = binding
+            .binding_for(KeyboardImplementation::HandyKeys)
+            .to_string();
 
         if let Err(e) = state.unregister(&binding) {
             warn!(
