@@ -242,6 +242,8 @@ impl super::ShortcutAction for TranscribeAction {
             return;
         };
         let rm = Arc::clone(&rm);
+        // Keep a second Arc handle for the fire-and-forget mute thread used after spawning.
+        let rm_mute = Arc::clone(&rm);
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop transcription");
             utils::hide_recording_overlay(app);
@@ -262,27 +264,37 @@ impl super::ShortcutAction for TranscribeAction {
             .try_state::<Arc<SessionTracker>>()
             .and_then(|t| t.current_session_id());
 
-        change_tray_icon(app, TrayIconState::Transcribing);
-        show_transcribing_overlay(app);
-
-        // Unmute before playing audio feedback so the stop sound is audible
-        rm.remove_mute();
-
-        // Play audio feedback for recording stop
-        play_feedback_sound(app, SoundType::Stop);
-
-        let binding_id = binding_id.to_string(); // Clone binding_id for the async task
+        let binding_id_spawn = binding_id.to_string(); // Clone binding_id for the async task
         let post_process = self.post_process;
 
+        // CRITICAL: Spawn the recording-stop work IMMEDIATELY, before any UI/feedback
+        // call that might synchronously block (e.g. AppleScript mute, overlay JS).
+        // Previously, change_tray_icon / show_transcribing_overlay / remove_mute /
+        // play_feedback_sound ran before the spawn, and when any of them hung after
+        // sleep/wake, the stop recording task never started and the visualizer stayed
+        // open forever. The UI/feedback updates below are fire-and-forget and must not
+        // delay the actual stop_recording() call.
+        info!(
+            "[STOP-DIAGNOSTIC] Spawning async stop task for binding: {}",
+            binding_id_spawn
+        );
         tauri::async_runtime::spawn(async move {
             let _guard = FinishGuard(ah.clone());
-            debug!(
-                "Starting async transcription task for binding: {}",
-                binding_id
+            let async_start = Instant::now();
+            info!(
+                "[STOP-DIAGNOSTIC] Async transcription task started for binding: {}",
+                binding_id_spawn
             );
 
             let stop_recording_time = Instant::now();
-            let recording_result = rm.stop_recording(&binding_id);
+            let recording_result = rm.stop_recording(&binding_id_spawn);
+            info!(
+                "[STOP-DIAGNOSTIC] rm.stop_recording returned in {:?} for binding: {} (result_is_some={})",
+                stop_recording_time.elapsed(),
+                binding_id_spawn,
+                recording_result.is_some()
+            );
+
             if let Some((processed_samples, raw_samples)) = recording_result {
                 debug!(
                     "Recording stopped and samples retrieved in {:?}, processed: {}, raw: {}",
@@ -292,10 +304,15 @@ impl super::ShortcutAction for TranscribeAction {
                 );
 
                 if processed_samples.is_empty() {
-                    debug!("Recording produced no audio samples; skipping persistence");
+                    warn!("[STOP-DIAGNOSTIC] Recording produced no audio samples; hiding overlay");
                     utils::hide_recording_overlay(&ah);
                     change_tray_icon(&ah, TrayIconState::Idle);
                 } else {
+                    info!(
+                        "[STOP-DIAGNOSTIC] Recording has {} processed / {} raw samples; continuing transcription pipeline",
+                        processed_samples.len(),
+                        raw_samples.len()
+                    );
                     // Save RAW WAV (what the mic actually captured — unfiltered)
                     let raw_sample_count = raw_samples.len();
                     let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
@@ -616,7 +633,10 @@ impl super::ShortcutAction for TranscribeAction {
                     }
                 }
             } else {
-                debug!("No samples retrieved from recording stop");
+                warn!(
+                    "[STOP-DIAGNOSTIC] rm.stop_recording returned None (no samples or binding mismatch) for binding: {}",
+                    binding_id_spawn
+                );
                 // ── Structured event: no samples ──
                 if let (Some(ref s), Some(tracker)) = (&sid, ah.try_state::<Arc<SessionTracker>>())
                 {
@@ -625,10 +645,38 @@ impl super::ShortcutAction for TranscribeAction {
                 utils::hide_recording_overlay(&ah);
                 change_tray_icon(&ah, TrayIconState::Idle);
             }
+
+            info!(
+                "[STOP-DIAGNOSTIC] Async transcription task finishing for binding: {} (total elapsed {:?})",
+                binding_id_spawn,
+                async_start.elapsed()
+            );
         });
 
-        debug!(
-            "TranscribeAction::stop completed in {:?}",
+        info!(
+            "[STOP-DIAGNOSTIC] TranscribeAction::stop spawn completed in {:?}",
+            stop_time.elapsed()
+        );
+
+        // UI/feedback updates are intentionally dispatched AFTER spawning the stop work.
+        // They are best-effort: if any of them hangs (e.g. AppleScript mute after
+        // sleep/wake, or overlay JS evaluation), it must not prevent the recording
+        // from stopping and the visualizer from eventually hiding.
+        change_tray_icon(app, TrayIconState::Transcribing);
+        show_transcribing_overlay(app);
+
+        // Unmute in a detached thread so a stuck osascript/System Events cannot block
+        // the stop path. The stop sound may be slightly delayed, but that is far
+        // preferable to a hung recording.
+        std::thread::spawn(move || {
+            rm_mute.remove_mute();
+        });
+
+        // Play audio feedback for recording stop (already spawns its own thread).
+        play_feedback_sound(app, SoundType::Stop);
+
+        info!(
+            "[STOP-DIAGNOSTIC] TranscribeAction::stop UI/feedback dispatched in {:?}",
             stop_time.elapsed()
         );
     }

@@ -224,6 +224,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             return;
         };
         let rm = Arc::clone(&rm);
+        // Keep a second Arc handle for the fire-and-forget mute thread used after spawning.
+        let rm_mute = Arc::clone(&rm);
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop router transcription");
             utils::hide_recording_overlay(app);
@@ -243,23 +245,20 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             .try_state::<Arc<SessionTracker>>()
             .and_then(|t| t.current_session_id());
 
-        // ── KEY DIFFERENCE from TranscribeAction ──
-        // Show routing-specific overlay during transcription + routing
-        change_tray_icon(app, TrayIconState::Transcribing);
-        show_transcribing_overlay_with_mode(app, OverlayMode::Router);
+        let binding_id_spawn = binding_id.to_string(); // Clone for async task
 
-        // Unmute before playing audio feedback
-        rm.remove_mute();
-        play_feedback_sound(app, SoundType::Stop);
-
-        let binding_id = binding_id.to_string(); // Clone for async task
-
+        // CRITICAL: Spawn the recording-stop work IMMEDIATELY, before any UI/feedback
+        // call that might synchronously block (e.g. AppleScript mute, overlay JS).
+        // See the matching comment in TranscribeAction::stop for full rationale.
         tauri::async_runtime::spawn(async move {
             let mut finish_guard = Some(super::transcribe::FinishGuard(ah.clone()));
-            debug!("Starting async router task for binding: {}", binding_id);
+            debug!(
+                "Starting async router task for binding: {}",
+                binding_id_spawn
+            );
 
             let stop_recording_time = Instant::now();
-            let recording_result = rm.stop_recording(&binding_id);
+            let recording_result = rm.stop_recording(&binding_id_spawn);
             if let Some((processed_samples, raw_samples)) = recording_result {
                 debug!(
                     "Recording stopped, processed: {}, raw: {}",
@@ -863,8 +862,25 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             }
         });
 
+        // UI/feedback updates are intentionally dispatched AFTER spawning the stop work.
+        // They are best-effort: if any of them hangs (e.g. AppleScript mute after
+        // sleep/wake, or overlay JS evaluation), it must not prevent the recording
+        // from stopping and the visualizer from eventually hiding.
+        // ── KEY DIFFERENCE from TranscribeAction ──
+        // Show routing-specific overlay during transcription + routing
+        change_tray_icon(app, TrayIconState::Transcribing);
+        show_transcribing_overlay_with_mode(app, OverlayMode::Router);
+
+        // Unmute in a detached thread so a stuck osascript/System Events cannot block
+        // the stop path.
+        std::thread::spawn(move || {
+            rm_mute.remove_mute();
+        });
+
+        play_feedback_sound(app, SoundType::Stop);
+
         debug!(
-            "TranscribeWithRouterAction::stop completed in {:?}",
+            "TranscribeWithRouterAction::stop UI/feedback dispatched in {:?}",
             stop_time.elapsed()
         );
     }
