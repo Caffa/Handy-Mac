@@ -300,8 +300,18 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                 let transcription_time = Instant::now();
                 let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
                     Some(guard) => {
-                        guard.clear_streaming_cancel();
-                        guard.transcribe(processed_samples)
+                        // Capture the shared streaming cancel flag so it can be cleared
+                        // only after the final transcription acquires the `is_transcribing`
+                        // slot. Clearing it before the slot is owned lets queued streaming
+                        // callbacks race ahead and steal the slot, causing
+                        // `AppError::TranscriptionBusy`.
+                        let cancel_flag = guard.streaming_cancel_flag();
+                        guard.transcribe_with_hook(processed_samples, move || {
+                            cancel_flag.store(false, Ordering::Release);
+                            debug!(
+                                "Cleared streaming cancel flag after acquiring transcription slot"
+                            );
+                        })
                     }
                     None => {
                         warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");

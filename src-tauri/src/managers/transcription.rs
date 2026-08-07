@@ -590,13 +590,19 @@ impl TranscriptionManager {
                 error: None,
             },
         );
-        debug!("[LOAD-TRACE] loading_started event emitted for {}", model_id);
+        debug!(
+            "[LOAD-TRACE] loading_started event emitted for {}",
+            model_id
+        );
 
         let model_info = self
             .model_manager
             .get_model_info(model_id)
             .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
-        debug!("[LOAD-TRACE] got model_info for {}, engine_type={:?}", model_id, model_info.engine_type);
+        debug!(
+            "[LOAD-TRACE] got model_info for {}, engine_type={:?}",
+            model_id, model_info.engine_type
+        );
 
         if !model_info.is_downloaded {
             let error_msg = "Model not downloaded";
@@ -623,7 +629,10 @@ impl TranscriptionManager {
             let mut engine = self.lock_engine();
             *engine = None;
         }
-        debug!("[LOAD-TRACE] old engine dropped, entering engine_type match for {}", model_id);
+        debug!(
+            "[LOAD-TRACE] old engine dropped, entering engine_type match for {}",
+            model_id
+        );
         {
             let mut current_model = self.current_model_id.lock().unwrap();
             *current_model = None;
@@ -662,7 +671,10 @@ impl TranscriptionManager {
                         )
                     }
                 };
-                debug!("[LOAD-TRACE] backend resolved: {:?}, gpu_device={}", backend, gpu_device);
+                debug!(
+                    "[LOAD-TRACE] backend resolved: {:?}, gpu_device={}",
+                    backend, gpu_device
+                );
                 let model_options = ModelOptions {
                     backend,
                     gpu_device,
@@ -1241,6 +1253,79 @@ impl TranscriptionManager {
         .emit(&self.app_handle);
     }
 
+    /// Run a full batch transcription on the held engine.
+    ///
+    /// Streaming callers (live captions) should use [`transcribe`], which
+    /// respects the streaming-cancellation flag and returns early when cancelled.
+    ///
+    /// Final-transcription callers (after the user stops recording) should use
+    /// this variant. It ignores the cancellation flag while waiting for the
+    /// `is_transcribing` slot so that a stop-induced cancellation does not abort
+    /// the user's own transcription. The caller-supplied hook is invoked only
+    /// after the slot has been acquired, which is the only safe moment to clear
+    /// the streaming-cancellation flag. Clearing it earlier lets queued
+    /// streaming callbacks race ahead and steal the slot, producing
+    /// `AppError::TranscriptionBusy`.
+    pub fn transcribe_with_hook<F>(
+        &self,
+        audio: Vec<f32>,
+        clear_cancel_after_slot: F,
+    ) -> AppResult<TranscriptionOutput>
+    where
+        F: FnOnce(),
+    {
+        #[cfg(debug_assertions)]
+        if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
+            return Err(AppError::Transcription {
+                message: "Simulated transcription failure (HANDY_FORCE_TRANSCRIPTION_FAILURE)"
+                    .to_string(),
+                source: anyhow::anyhow!("Simulated failure for testing"),
+            });
+        }
+
+        // Wait for any in-progress transcription to complete. Do NOT check the
+        // streaming-cancellation flag here: the final transcription is the
+        // reason the flag was set in the first place, so aborting on it would
+        // always fail the user's recording. The flag is only relevant for
+        // optional streaming work.
+        {
+            let mut is_transcribing = self.is_transcribing.lock();
+            let max_wait = Duration::from_secs(30);
+            let wait_deadline = std::time::Instant::now() + max_wait;
+            while *is_transcribing {
+                let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    warn!("Timed out waiting for previous transcription to complete");
+                    return Err(AppError::TranscriptionBusy);
+                }
+                let _timed_out = self
+                    .transcribing_condvar
+                    .wait_for(&mut is_transcribing, remaining);
+            }
+        }
+
+        // Set transcribing flag for the duration of this transcription.
+        {
+            let mut flag = self.is_transcribing.lock();
+            *flag = true;
+        }
+        let guard = TranscribingGuard {
+            flag: self.is_transcribing.clone(),
+            condvar: self.transcribing_condvar.clone(),
+        };
+
+        // NOW it is safe to clear the streaming cancel flag: we own the
+        // `is_transcribing` slot, so any queued streaming callback that checks
+        // the flag and the slot will see the slot is taken and abort instead of
+        // racing into the engine.
+        clear_cancel_after_slot();
+
+        self.transcribe_internal(audio, guard)
+    }
+
+    /// Convenience wrapper for streaming callers that respect the cancellation
+    /// flag. Returns `TranscriptionBusy` while the flag is set so the audio
+    /// streaming path can skip work when recording has stopped.
     pub fn transcribe(&self, audio: Vec<f32>) -> AppResult<TranscriptionOutput> {
         #[cfg(debug_assertions)]
         if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
@@ -1278,26 +1363,26 @@ impl TranscriptionManager {
         }
 
         // Set transcribing flag for the duration of this transcription.
-        struct TranscribingGuard {
-            flag: Arc<ParkingLotMutex<bool>>,
-            condvar: Arc<ParkingLotCondvar>,
-        }
-        impl Drop for TranscribingGuard {
-            fn drop(&mut self) {
-                let mut flag = self.flag.lock();
-                *flag = false;
-                self.condvar.notify_all();
-            }
-        }
         {
             let mut flag = self.is_transcribing.lock();
             *flag = true;
         }
-        let _guard = TranscribingGuard {
+        let guard = TranscribingGuard {
             flag: self.is_transcribing.clone(),
             condvar: self.transcribing_condvar.clone(),
         };
 
+        self.transcribe_internal(audio, guard)
+    }
+
+    /// Shared body of `transcribe` / `transcribe_with_hook`.
+    /// Kept as a private helper so the public API stays simple while the hook
+    /// variant can inject work immediately after acquiring the slot.
+    fn transcribe_internal(
+        &self,
+        audio: Vec<f32>,
+        _guard: TranscribingGuard,
+    ) -> AppResult<TranscriptionOutput> {
         // Update last activity timestamp
         self.touch_activity();
 
@@ -1637,6 +1722,20 @@ impl TranscriptionManager {
             Ok(output) => Ok(output.text),
             Err(e) => Err(anyhow::anyhow!("Benchmark transcription failed: {e}")),
         }
+    }
+}
+
+/// RAII guard that clears the `is_transcribing` flag and notifies waiters on drop.
+struct TranscribingGuard {
+    flag: Arc<ParkingLotMutex<bool>>,
+    condvar: Arc<ParkingLotCondvar>,
+}
+
+impl Drop for TranscribingGuard {
+    fn drop(&mut self) {
+        let mut flag = self.flag.lock();
+        *flag = false;
+        self.condvar.notify_all();
     }
 }
 
