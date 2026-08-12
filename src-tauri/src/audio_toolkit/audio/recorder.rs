@@ -1139,7 +1139,17 @@ fn run_consumer(
                     streaming_last_invoked = Some(std::time::Instant::now());
                 }
             } else {
-                log::debug!("[STREAM-CB-GATE] not invoking: interval not elapsed");
+                // Interval has not elapsed; this is the normal steady state
+                // during active streaming, so throttle to one log per second.
+                let now = Instant::now();
+                let should_log = match last_gate_log {
+                    None => true,
+                    Some(last) => last.elapsed() >= Duration::from_secs(1),
+                };
+                if should_log {
+                    log::debug!("[STREAM-CB-GATE] not invoking: interval not elapsed");
+                    last_gate_log = Some(now);
+                }
             }
         }
 

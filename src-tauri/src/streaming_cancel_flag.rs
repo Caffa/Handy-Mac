@@ -58,3 +58,15 @@ impl Default for StreamingCancelFlag {
         Self::new()
     }
 }
+
+impl From<Arc<AtomicBool>> for StreamingCancelFlag {
+    /// Wrap an existing `Arc<AtomicBool>` so the same atomic is shared with
+    /// legacy code (e.g. `TranscriptionManager::streaming_cancel_flag`).
+    /// The sequence counter is separate and only used for diagnostics.
+    fn from(flag: Arc<AtomicBool>) -> Self {
+        Self {
+            flag,
+            seq: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}

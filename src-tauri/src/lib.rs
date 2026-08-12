@@ -227,7 +227,13 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // 1. Streaming callback holds TM lock during transcription (seconds)
     // 2. Stop handler tries to call cancel_streaming() which needs TM lock
     // By storing the StreamingCancelFlag separately, stop can cancel without waiting.
-    let streaming_cancel_flag = StreamingCancelFlag::new();
+    // We intentionally use the SAME flag as the TranscriptionManager so that:
+    //   - `transcribe()` can abort on cancellation,
+    //   - `transcribe_with_hook()` can clear it after acquiring the `is_transcribing` slot.
+    let streaming_cancel_flag = {
+        let tm = transcription_manager.lock();
+        StreamingCancelFlag::from(tm.streaming_cancel_flag())
+    };
     app_handle.manage(streaming_cancel_flag);
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
