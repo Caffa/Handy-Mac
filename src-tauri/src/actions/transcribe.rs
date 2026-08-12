@@ -13,6 +13,7 @@ use crate::managers::transcription_retry::{TranscriptionFailure, TranscriptionRe
 use crate::session::SessionTracker;
 use crate::settings::get_settings;
 use crate::shortcut;
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
     self, show_processing_overlay, show_recording_overlay, show_transcribing_overlay,
@@ -20,7 +21,7 @@ use crate::utils::{
 use crate::TranscriptionCoordinator;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -51,6 +52,11 @@ pub(super) struct RecordingErrorEvent {
 pub(crate) struct FinishGuard(pub AppHandle);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
+        let has_coordinator = self.0.try_state::<TranscriptionCoordinator>().is_some();
+        info!(
+            "[FINISH-GUARD] drop firing — requesting Processing→Idle reset (coordinator handle: {})",
+            if has_coordinator { "present" } else { "absent" }
+        );
         // The coordinator will only transition from Processing to Idle,
         // so if we're already Idle (due to cancel), this is a no-op.
         // This prevents race conditions between cancel and finish.
@@ -102,16 +108,37 @@ impl super::ShortcutAction for TranscribeAction {
         };
 
         // Clear any previous streaming cancellation flag when starting a new recording.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(false, Ordering::Release);
-            debug!("Cleared streaming cancel flag for new recording");
-        } else {
-            // Fallback to TM lock if Arc<AtomicBool> not available (shouldn't happen)
-            tm.lock().clear_streaming_cancel();
+        // The cancel flag fast path is intentionally kept lock-free so it can never
+        // block the coordinator thread even when the TM mutex is held by a GPU callback.
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(false, "transcribe_start");
         }
 
-        // Load ASR model and VAD model in parallel
-        tm.lock().initiate_model_load();
+        // Safely kick model load without blocking the coordinator thread on a contended
+        // TranscriptionManager mutex. If the lock is unavailable for 2s, skip the kick
+        // rather than stalling the start path — the next audio chunk will retry loading.
+        if let Some(tm_guard) = tm.try_lock_for(Duration::from_secs(2)) {
+            let lock_dt = start_time.elapsed();
+            tm_guard.clear_streaming_cancel();
+            let before_init = Instant::now();
+            tm_guard.initiate_model_load();
+            let init_dt = before_init.elapsed();
+            debug!(
+                "[START-LOCK] TM lock acquired for '{}' (lock wait+init took {:?}, clear+initiate took {:?})",
+                binding_id, lock_dt, init_dt
+            );
+            if init_dt > Duration::from_millis(100) {
+                warn!(
+                    "[START-LOCK] clear_streaming_cancel + initiate_model_load took {:?} for '{}'",
+                    init_dt, binding_id
+                );
+            }
+        } else {
+            warn!(
+                "[START-LOCK] TM lock NOT acquired within 2s on start for '{}' — skipping model-load kick",
+                binding_id
+            );
+        }
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -224,9 +251,8 @@ impl super::ShortcutAction for TranscribeAction {
         // Cancel any in-progress streaming transcription to prevent wasted work.
         // IMPORTANT: Use the streaming_cancel_flag managed separately in app state
         // instead of tm.lock().cancel_streaming() to avoid blocking.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(true, Ordering::Release);
-            debug!("Cancelled streaming transcription via Arc<AtomicBool>");
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(true, "transcribe_stop");
         } else {
             warn!("Streaming cancel flag not available in app state");
         }
@@ -280,6 +306,11 @@ impl super::ShortcutAction for TranscribeAction {
         );
         tauri::async_runtime::spawn(async move {
             let _guard = FinishGuard(ah.clone());
+
+            // Hide the visualizer immediately so the app feels responsive,
+            // before transcription runs and regardless of success or failure.
+            utils::hide_recording_overlay(&ah);
+
             let async_start = Instant::now();
             info!(
                 "[STOP-DIAGNOSTIC] Async transcription task started for binding: {}",
@@ -625,6 +656,13 @@ impl super::ShortcutAction for TranscribeAction {
                             utils::hide_recording_overlay(&ah);
                             change_tray_icon(&ah, TrayIconState::Idle);
 
+                            // Play the failure/dismissal sound so the user hears
+                            // that the transcription did not complete. We reuse the
+                            // existing stop asset as a fallback because no error
+                            // asset exists yet; the path resolution layer will
+                            // fall back automatically.
+                            play_feedback_sound(&ah, SoundType::Error);
+
                             // Emit a recoverable transcription error for the error dialog system
                             let model_id_for_error = {
                                 let settings = get_settings(&ah);
@@ -636,6 +674,12 @@ impl super::ShortcutAction for TranscribeAction {
                                 Some(&model_id_for_error),
                                 true, // Transcription errors are generally retriable
                             );
+
+                            // Explicitly drop the FinishGuard so the coordinator
+                            // transitions out of Processing immediately. This is
+                            // idempotent and avoids relying on the 30s processing
+                            // timeout if any of the cleanup above stalls.
+                            drop(_guard);
                         }
                     }
                 }
@@ -665,6 +709,11 @@ impl super::ShortcutAction for TranscribeAction {
             stop_time.elapsed()
         );
 
+        // Play audio feedback immediately so the user hears that stop was
+        // registered even if transcription later fails or UI cleanup stalls.
+        // This must happen on the main thread right after spawning the stop work.
+        play_feedback_sound(app, SoundType::Stop);
+
         // UI/feedback updates are intentionally dispatched AFTER spawning the stop work.
         // They are best-effort: if any of them hangs (e.g. AppleScript mute after
         // sleep/wake, or overlay JS evaluation), it must not prevent the recording
@@ -678,9 +727,6 @@ impl super::ShortcutAction for TranscribeAction {
         std::thread::spawn(move || {
             rm_mute.remove_mute();
         });
-
-        // Play audio feedback for recording stop (already spawns its own thread).
-        play_feedback_sound(app, SoundType::Stop);
 
         info!(
             "[STOP-DIAGNOSTIC] TranscribeAction::stop UI/feedback dispatched in {:?}",

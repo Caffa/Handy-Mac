@@ -229,7 +229,7 @@ export function useLiveCaptions(
           // overlay is hidden. The refs are kept in sync by parent effects.
           if (!currentLiveCaptionsEnabled || !currentIsVisible) {
             console.log(
-              "[Live Captions] Ignoring stale event — captions disabled or hidden",
+              `[Live Captions] Ignoring stale event — captions disabled or hidden (currentLiveCaptionsEnabled=${currentLiveCaptionsEnabled}, currentIsVisible=${currentIsVisible})`,
             );
             return;
           }

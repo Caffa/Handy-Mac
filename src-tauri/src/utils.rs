@@ -1,9 +1,10 @@
 use crate::managers::audio::AudioRecordingManager;
 use crate::shortcut;
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::transcription_coordinator::{emit_app_state, AppState, CancelSignal};
 use crate::TranscriptionCoordinator;
 use log::{info, warn};
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
@@ -20,6 +21,14 @@ pub use crate::tray::*;
 /// and proper logging of state transitions for debugging freeze issues.
 /// INSTRUMENTED: Each step is timed so that if the freeze recurs, the log shows
 /// exactly which call blocked.
+///
+/// IMPORTANT: This function may block. It takes parking_lot Mutex locks and can
+/// wait up to several seconds for the audio pipeline to stop. Callers running on
+/// the main thread or on the global shortcut callback MUST offload it with
+/// `tauri::async_runtime::spawn_blocking` (see `cancel_operation` in
+/// `commands/mod.rs`, `CancelAction` in `actions/mod.rs`, and the tray/CLI
+/// handlers in `lib.rs`). Running it synchronously on the main thread causes the
+/// app to freeze / beach-ball.
 pub fn cancel_current_operation(app: &AppHandle) {
     info!(
         "[CANCEL-TIMING] cancel_current_operation START on thread {:?}",
@@ -27,22 +36,23 @@ pub fn cancel_current_operation(app: &AppHandle) {
     );
     let total_start = std::time::Instant::now();
 
-    // CRITICAL: Cancel streaming transcription FIRST (uses AtomicBool, no lock needed).
+    // CRITICAL: Cancel streaming transcription FIRST (uses StreamingCancelFlag, no lock needed).
     // This must happen before any other operations to stop live captions immediately,
     // preventing wasted GPU work on partial audio that will be discarded anyway.
     // IMPORTANT: Use the streaming_cancel_flag managed separately in app state
     // instead of tm.lock().cancel_streaming() to avoid blocking.
     // The streaming callback holds the TM lock during transcription (seconds),
     // and this cancel handler would block waiting for that lock, freezing the UI.
-    // By using the Arc<AtomicBool> directly, we can cancel without waiting.
+    // By using the StreamingCancelFlag directly, we can cancel without waiting.
     {
         let t = std::time::Instant::now();
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            let was_already_cancelled = cancel_flag.swap(true, Ordering::AcqRel);
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            let was_already_cancelled = cancel_flag.load_flag();
+            cancel_flag.set(true, "cancel_current_operation");
             if was_already_cancelled {
                 info!("Streaming transcription was already cancelled");
             } else {
-                info!("Streaming transcription cancelled via Arc<AtomicBool>");
+                info!("Streaming transcription cancelled via StreamingCancelFlag");
             }
         } else {
             warn!("Streaming cancel flag not available in app state");

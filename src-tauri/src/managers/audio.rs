@@ -7,6 +7,7 @@ use crate::helpers::clamshell;
 use crate::managers::transcription::TranscriptionManager;
 use crate::portable;
 use crate::settings::{get_settings, AppSettings};
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
@@ -201,12 +202,12 @@ fn create_audio_recorder(
     // eliminates the need to recreate the entire AudioRecorder when toggling
     // live captions, avoiding stream teardown/restart that causes Bug 1.
     //
-    // If TranscriptionManager isn't available yet, skip the callback but
-    // still create the recorder — the callback can be attached later via
-    // recreate_recorder() when TM becomes available.
-    let cancel_flag = app_handle
-        .try_state::<Arc<Mutex<TranscriptionManager>>>()
-        .map(|tm_state| tm_state.lock().streaming_cancel_flag());
+    // If the shared streaming cancel flag isn't available yet, skip the
+    // callback but still create the recorder — it can be attached later via
+    // recreate_recorder() when the flag is managed.
+    let cancel_flag: Option<StreamingCancelFlag> = app_handle
+        .try_state::<StreamingCancelFlag>()
+        .map(|state| state.inner().clone());
 
     let recorder = match cancel_flag {
         Some(cancel_flag) => {
@@ -215,16 +216,24 @@ fn create_audio_recorder(
                 live_captions_enabled
             );
             recorder
+                .with_streaming_cancel_flag(cancel_flag.clone())
                 .with_streaming_callback({
                     let app_handle = app_handle.clone();
                     let cancel_flag = cancel_flag.clone();
                     move |samples| {
+                        let flag = cancel_flag.load_flag();
+                        let seq = cancel_flag.load_seq();
+                        debug!("[STREAM-CB] entry cancel_flag={} seq={}", flag, seq);
+
                         // Check cancellation WITHOUT lock (atomic load).
                         // This avoids acquiring the TranscriptionManager mutex on
                         // every streaming callback, which would cause lock contention
                         // with the main transcription path.
-                        if cancel_flag.load(Ordering::Acquire) {
-                            debug!("Skipping streaming transcription - cancellation requested");
+                        if flag {
+                            debug!(
+                                "[STREAM-CB] Skipping streaming transcription - cancellation requested seq={}",
+                                seq
+                            );
                             return;
                         }
 
@@ -234,8 +243,11 @@ fn create_audio_recorder(
                         let cancel_flag = cancel_flag.clone();
                         tauri::async_runtime::spawn_blocking(move || {
                             // Re-check cancellation after acquiring blocking thread
-                            if cancel_flag.load(Ordering::Acquire) {
-                                debug!("Skipping streaming transcription (blocking) - cancellation requested");
+                            if cancel_flag.load_flag() {
+                                debug!(
+                                    "[STREAM-CB] Skipping streaming transcription (blocking) - cancellation requested seq={}",
+                                    cancel_flag.load_seq()
+                                );
                                 return;
                             }
 
@@ -248,8 +260,19 @@ fn create_audio_recorder(
                                 }
                             };
 
-                            // Transcribe the audio samples
-                            let transcription_result = tm.lock().transcribe(samples);
+                            // Transcribe the audio samples. We intentionally keep the
+                            // unbounded lock here (instrumentation only) because the
+                            // streaming callback already runs in a blocking task and must
+                            // not return until transcription is finished.
+                            let lock_start = Instant::now();
+                            let tm_guard = tm.lock();
+                            let lock_dt = lock_start.elapsed();
+                            if lock_dt > Duration::from_millis(250) {
+                                warn!("[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)", lock_dt);
+                            } else {
+                                debug!("[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)", lock_dt);
+                            }
+                            let transcription_result = tm_guard.transcribe(samples);
                             match transcription_result {
                                 Ok(result) if !result.text.is_empty() => {
                                     info!(
@@ -258,8 +281,11 @@ fn create_audio_recorder(
                                     );
                                     // Check again after transcription in case it was cancelled mid-work
                                     // Using the Arc<AtomicBool> to avoid lock contention
-                                    if cancel_flag.load(Ordering::Acquire) {
-                                        debug!("Discarding streaming transcription result - cancelled");
+                                    if cancel_flag.load_flag() {
+                                        debug!(
+                                            "[STREAM-CB] Discarding streaming transcription result - cancelled seq={}",
+                                            cancel_flag.load_seq()
+                                        );
                                         return;
                                     }
 
@@ -279,7 +305,14 @@ fn create_audio_recorder(
                                 Err(e) => {
                                     if matches!(e, AppError::ModelNotLoaded) {
                                         info!("[Live Captions] Model not loaded — initiating model load for next streaming cycle");
+                                        let load_lock_start = Instant::now();
                                         tm.lock().initiate_model_load();
+                                        let load_lock_dt = load_lock_start.elapsed();
+                                        if load_lock_dt > Duration::from_millis(250) {
+                                            warn!("[STREAM-LOCK] tm.lock().initiate_model_load() took {:?} (ModelNotLoaded re-kick)", load_lock_dt);
+                                        } else {
+                                            debug!("[STREAM-LOCK] tm.lock().initiate_model_load() took {:?} (ModelNotLoaded re-kick)", load_lock_dt);
+                                        }
                                     } else if matches!(e, AppError::TranscriptionBusy) {
                                         debug!("[Live Captions] Streaming transcription skipped (busy): {}", e);
                                     } else {
@@ -1368,14 +1401,28 @@ impl AudioRecordingManager {
     }
 
     pub fn stop_recording(&self, binding_id: &str) -> Option<(Vec<f32>, Vec<f32>)> {
+        let t_start = std::time::Instant::now();
+        info!(
+            "[STOP-DIAGNOSTIC] stop_recording started for binding '{}'",
+            binding_id
+        );
+
+        let t_state_lock = std::time::Instant::now();
         let state = self.state.lock();
+        info!(
+            "[STOP-DIAGNOSTIC] state.lock acquired in {:?}",
+            t_state_lock.elapsed()
+        );
 
         match *state {
             RecordingState::Recording {
                 binding_id: ref active,
                 start_time,
             } if active == binding_id => {
-                info!("Stopping recording for binding '{}'", binding_id);
+                info!(
+                    "[STOP-DIAGNOSTIC] Stopping recording for binding '{}'",
+                    binding_id
+                );
                 // Calculate recording duration for USB watchdog checks
                 let recording_duration = start_time.elapsed().as_secs_f32();
                 debug!("Recording duration: {:.1}s", recording_duration);
@@ -1401,16 +1448,46 @@ impl AudioRecordingManager {
                     );
                     // Phase 1: Send the smart_stop command while holding the lock.
                     // This is instantaneous — it just sends a message through the channel.
+                    let t_rec_lock = std::time::Instant::now();
                     let resp_rx = {
-                        let guard = self.recorder.lock();
+                        // Diagnostic: try-lock with timeout to detect a wedged recorder mutex.
+                        let guard = match self.recorder.try_lock_for(Duration::from_secs(2)) {
+                            Some(g) => {
+                                info!(
+                                    "[STOP-DIAGNOSTIC] recorder.lock acquired in {:?}",
+                                    t_rec_lock.elapsed()
+                                );
+                                g
+                            }
+                            None => {
+                                warn!(
+                                    "[STOP-DIAGNOSTIC] recorder.lock NOT acquired after 2s on smart_stop — recorder mutex may be wedged; proceeding with None"
+                                );
+                                // Force state to Idle so the UI doesn't stay stuck.
+                                {
+                                    let mut state = self.state.lock();
+                                    *state = RecordingState::Idle;
+                                }
+                                self.is_recording.store(false, Ordering::Release);
+                                return Some((Vec::new(), Vec::new()));
+                            }
+                        };
                         match guard.as_ref() {
-                            Some(rec) => rec
-                                .smart_stop_send(settings.extra_recording_buffer_ms)
-                                .map_err(|e| {
-                                    error!("smart_stop_send() failed: {e}");
-                                    e
-                                })
-                                .ok(),
+                            Some(rec) => {
+                                let t_send = std::time::Instant::now();
+                                let rx = rec
+                                    .smart_stop_send(settings.extra_recording_buffer_ms)
+                                    .map_err(|e| {
+                                        error!("smart_stop_send() failed: {e}");
+                                        e
+                                    })
+                                    .ok();
+                                info!(
+                                    "[STOP-DIAGNOSTIC] smart_stop_send completed in {:?}",
+                                    t_send.elapsed()
+                                );
+                                rx
+                            }
                             None => {
                                 error!("Recorder not available for smart_stop");
                                 None
@@ -1420,7 +1497,8 @@ impl AudioRecordingManager {
                     // Lock is now dropped. Other operations can proceed.
 
                     // Phase 2: Wait for the response without holding the lock.
-                    match resp_rx {
+                    let t_wait = std::time::Instant::now();
+                    let result = match resp_rx {
                         Some(rx) => AudioRecorder::wait_for_smart_stop_result(
                             rx,
                             settings.extra_recording_buffer_ms,
@@ -1430,19 +1508,54 @@ impl AudioRecordingManager {
                             (Vec::new(), Vec::new())
                         }),
                         None => (Vec::new(), Vec::new()),
-                    }
+                    };
+                    info!(
+                        "[STOP-DIAGNOSTIC] smart_stop wait completed in {:?}",
+                        t_wait.elapsed()
+                    );
+                    result
                 } else {
                     // Phase 1: Send the stop command while holding the lock.
+                    let t_rec_lock = std::time::Instant::now();
                     let resp_rx = {
-                        let guard = self.recorder.lock();
+                        // Diagnostic: try-lock with timeout to detect a wedged recorder mutex.
+                        let guard = match self.recorder.try_lock_for(Duration::from_secs(2)) {
+                            Some(g) => {
+                                info!(
+                                    "[STOP-DIAGNOSTIC] recorder.lock acquired in {:?}",
+                                    t_rec_lock.elapsed()
+                                );
+                                g
+                            }
+                            None => {
+                                warn!(
+                                    "[STOP-DIAGNOSTIC] recorder.lock NOT acquired after 2s — recorder mutex may be wedged; proceeding with None"
+                                );
+                                // Force state to Idle so the UI doesn't stay stuck.
+                                {
+                                    let mut state = self.state.lock();
+                                    *state = RecordingState::Idle;
+                                }
+                                self.is_recording.store(false, Ordering::Release);
+                                return Some((Vec::new(), Vec::new()));
+                            }
+                        };
                         match guard.as_ref() {
-                            Some(rec) => rec
-                                .stop_send()
-                                .map_err(|e| {
-                                    error!("stop_send() failed: {e}");
-                                    e
-                                })
-                                .ok(),
+                            Some(rec) => {
+                                let t_send = std::time::Instant::now();
+                                let rx = rec
+                                    .stop_send()
+                                    .map_err(|e| {
+                                        error!("stop_send() failed: {e}");
+                                        e
+                                    })
+                                    .ok();
+                                info!(
+                                    "[STOP-DIAGNOSTIC] stop_send completed in {:?}",
+                                    t_send.elapsed()
+                                );
+                                rx
+                            }
                             None => {
                                 error!("Recorder not available");
                                 None
@@ -1452,22 +1565,39 @@ impl AudioRecordingManager {
                     // Lock is now dropped.
 
                     // Phase 2: Wait for the response without holding the lock.
-                    match resp_rx {
+                    let t_wait = std::time::Instant::now();
+                    let result = match resp_rx {
                         Some(rx) => AudioRecorder::wait_for_stop_result(rx).unwrap_or_else(|e| {
                             error!("stop wait failed: {e}");
                             (Vec::new(), Vec::new())
                         }),
                         None => (Vec::new(), Vec::new()),
-                    }
+                    };
+                    info!(
+                        "[STOP-DIAGNOSTIC] stop wait completed in {:?}",
+                        t_wait.elapsed()
+                    );
+                    result
                 };
 
                 // Now transition to Idle after the buffer is complete.
                 {
+                    let t_idle_lock = std::time::Instant::now();
                     let mut state = self.state.lock();
+                    info!(
+                        "[STOP-DIAGNOSTIC] idle state.lock acquired in {:?}",
+                        t_idle_lock.elapsed()
+                    );
                     *state = RecordingState::Idle;
                 }
 
                 self.is_recording.store(false, Ordering::Release);
+                info!(
+                    "[STOP-DIAGNOSTIC] stop_recording returning {} processed / {} raw samples (total elapsed {:?})",
+                    processed_samples.len(),
+                    raw_samples.len(),
+                    t_start.elapsed()
+                );
 
                 // Check for very low audio levels (potential dead/muted mic)
                 // This detects cases where the mic "works" but captures only silence.

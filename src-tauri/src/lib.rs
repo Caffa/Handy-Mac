@@ -25,6 +25,7 @@ pub mod settings;
 pub mod shortcut;
 mod signal_handle;
 mod sleep_wake;
+mod streaming_cancel_flag;
 mod transcription_coordinator;
 mod tray;
 mod tray_i18n;
@@ -65,6 +66,7 @@ use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKi
 use crate::settings::get_settings_safe;
 use crate::settings::SettingsCache;
 use crate::settings::SettingsWriter;
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 
 // Global atomic to store the file log level filter
 // We use u8 to store the log::LevelFilter as a number
@@ -224,11 +226,8 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // acquiring the TranscriptionManager mutex. This prevents blocking when:
     // 1. Streaming callback holds TM lock during transcription (seconds)
     // 2. Stop handler tries to call cancel_streaming() which needs TM lock
-    // By storing the Arc<AtomicBool> separately, stop can cancel without waiting.
-    let streaming_cancel_flag = {
-        let tm = transcription_manager.lock();
-        tm.streaming_cancel_flag()
-    };
+    // By storing the StreamingCancelFlag separately, stop can cancel without waiting.
+    let streaming_cancel_flag = StreamingCancelFlag::new();
     app_handle.manage(streaming_cancel_flag);
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());

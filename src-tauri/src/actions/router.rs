@@ -14,6 +14,7 @@ use crate::overlay::OverlayMode;
 use crate::session::SessionTracker;
 use crate::settings::get_settings;
 use crate::shortcut;
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
     self, show_processing_overlay_with_mode, show_recording_overlay_with_mode,
@@ -22,7 +23,7 @@ use crate::utils::{
 use crate::TranscriptionCoordinator;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -99,15 +100,37 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         };
 
         // Clear any previous streaming cancellation flag when starting a new recording.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(false, Ordering::Release);
-            debug!("Cleared streaming cancel flag for new router recording");
-        } else {
-            // Fallback to TM lock if Arc<AtomicBool> not available (shouldn't happen)
-            tm.lock().clear_streaming_cancel();
+        // The cancel flag fast path is intentionally kept lock-free so it can never
+        // block the coordinator thread even when the TM mutex is held by a GPU callback.
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(false, "router_start");
         }
 
-        tm.lock().initiate_model_load();
+        // Safely kick model load without blocking the coordinator thread on a contended
+        // TranscriptionManager mutex. If the lock is unavailable for 2s, skip the kick
+        // rather than stalling the start path — the next audio chunk will retry loading.
+        if let Some(tm_guard) = tm.try_lock_for(Duration::from_secs(2)) {
+            let lock_dt = start_time.elapsed();
+            tm_guard.clear_streaming_cancel();
+            let before_init = Instant::now();
+            tm_guard.initiate_model_load();
+            let init_dt = before_init.elapsed();
+            debug!(
+                "[START-LOCK] TM lock acquired for '{}' (router) (lock wait+init took {:?}, clear+initiate took {:?})",
+                binding_id, lock_dt, init_dt
+            );
+            if init_dt > Duration::from_millis(100) {
+                warn!(
+                    "[START-LOCK] clear_streaming_cancel + initiate_model_load took {:?} for '{}' (router)",
+                    init_dt, binding_id
+                );
+            }
+        } else {
+            warn!(
+                "[START-LOCK] TM lock NOT acquired within 2s on start for '{}' — skipping model-load kick (router)",
+                binding_id
+            );
+        }
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -203,9 +226,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         shortcut::unregister_cancel_shortcut(app);
 
         // Cancel any in-progress streaming transcription to prevent wasted work.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(true, Ordering::Release);
-            debug!("Cancelled streaming transcription via Arc<AtomicBool>");
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(true, "router_stop");
         } else {
             warn!("Streaming cancel flag not available in app state");
         }
