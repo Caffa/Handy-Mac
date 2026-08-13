@@ -18,6 +18,7 @@ use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
     self, show_processing_overlay, show_recording_overlay, show_transcribing_overlay,
 };
+use crate::LiveCaptionsTranscriptionManager;
 use crate::TranscriptionCoordinator;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -114,6 +115,9 @@ impl super::ShortcutAction for TranscribeAction {
             cancel_flag.set(false, "transcribe_start");
         }
 
+        let settings = get_settings(app);
+        let live_captions_model = settings.live_captions_model.clone();
+
         // Safely kick model load without blocking the coordinator thread on a contended
         // TranscriptionManager mutex. If the lock is unavailable for 2s, skip the kick
         // rather than stalling the start path — the next audio chunk will retry loading.
@@ -133,12 +137,32 @@ impl super::ShortcutAction for TranscribeAction {
                     init_dt, binding_id
                 );
             }
+
+            // If the user configured a separate live captions model, kick its load
+            // in the dedicated live captions TM and then open its streaming router.
+            // We do both in the same spawned thread so that initiate_model_load_for()
+            // is guaranteed to run before start_stream(). The stream worker itself
+            // waits for the load to finish, but starting the load first avoids any
+            // race where the worker sees is_loading=false before the load begins.
+            if !live_captions_model.is_empty() {
+                if let Some(live_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+                    let live_model_id = live_captions_model.clone();
+                    let live_tm = Arc::clone(&live_tm.0);
+                    std::thread::spawn(move || {
+                        let guard = live_tm.lock();
+                        guard.clear_streaming_cancel();
+                        guard.initiate_model_load_for(&live_model_id);
+                        guard.start_stream();
+                    });
+                }
+            }
         } else {
             warn!(
                 "[START-LOCK] TM lock NOT acquired within 2s on start for '{}' — skipping model-load kick",
                 binding_id
             );
         }
+
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -261,6 +285,10 @@ impl super::ShortcutAction for TranscribeAction {
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
 
         let ah = app.clone();
+        let settings = get_settings(app);
+        let live_captions_model = settings.live_captions_model.clone();
+        let live_captions_enabled = !live_captions_model.is_empty();
+
         let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
             warn!("AudioRecordingManager not available, cannot stop recording");
             utils::hide_recording_overlay(app);
@@ -277,6 +305,9 @@ impl super::ShortcutAction for TranscribeAction {
             return;
         };
         let tm = Arc::clone(&tm);
+        let live_captions_tm: Option<Arc<Mutex<TranscriptionManager>>> = app
+            .try_state::<LiveCaptionsTranscriptionManager>()
+            .map(|s| Arc::clone(&s.0));
         let Some(hm) = app.try_state::<Arc<HistoryManager>>() else {
             warn!("HistoryManager not available, cannot save recording");
             utils::hide_recording_overlay(app);
@@ -325,6 +356,36 @@ impl super::ShortcutAction for TranscribeAction {
                 binding_id_spawn,
                 recording_result.is_some()
             );
+
+            // Finalize any live captions stream before running the main model's
+            // batch transcription. The live captions text is only for display:
+            // the authoritative final transcription always comes from the main
+            // selected_model below. We ignore the result here, but finalize
+            // flushes remaining buffered audio through the live captions model.
+            if live_captions_enabled {
+                if let Some(ref live_tm) = live_captions_tm {
+                    let live = live_tm.clone();
+                    let finalize_result = tauri::async_runtime::spawn_blocking(move || {
+                        let guard = live.lock();
+                        guard.finalize_stream()
+                    })
+                    .await;
+                    match finalize_result {
+                        Ok(Ok(Some(_text))) => {
+                            debug!("Live captions stream finalized successfully");
+                        }
+                        Ok(Ok(None)) => {
+                            debug!("No live captions stream was active");
+                        }
+                        Ok(Err(e)) => {
+                            warn!("Live captions stream finalize failed: {}", e);
+                        }
+                        Err(e) => {
+                            warn!("Live captions stream finalize task panicked: {}", e);
+                        }
+                    }
+                }
+            }
 
             if let Some((processed_samples, raw_samples)) = recording_result {
                 debug!(
@@ -683,6 +744,20 @@ impl super::ShortcutAction for TranscribeAction {
                         }
                     }
                 }
+
+                // After the main transcription pipeline completes (success or
+                // failure), cancel the live captions stream if it is still
+                // active. This releases the live captions engine lease so the
+                // next recording starts fresh and does not feed leftover frames.
+                if live_captions_enabled {
+                    if let Some(ref live_tm) = live_captions_tm {
+                        let live = live_tm.clone();
+                        std::thread::spawn(move || {
+                            let guard = live.lock();
+                            guard.cancel_stream();
+                        });
+                    }
+                }
             } else {
                 warn!(
                     "[STOP-DIAGNOSTIC] rm.stop_recording returned None (no samples or binding mismatch) for binding: {}",
@@ -695,6 +770,18 @@ impl super::ShortcutAction for TranscribeAction {
                 }
                 utils::hide_recording_overlay(&ah);
                 change_tray_icon(&ah, TrayIconState::Idle);
+
+                // If no samples were captured, make sure the live captions
+                // stream is cancelled rather than left dangling.
+                if live_captions_enabled {
+                    if let Some(ref live_tm) = live_captions_tm {
+                        let live = live_tm.clone();
+                        std::thread::spawn(move || {
+                            let guard = live.lock();
+                            guard.cancel_stream();
+                        });
+                    }
+                }
             }
 
             info!(

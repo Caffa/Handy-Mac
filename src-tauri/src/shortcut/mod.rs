@@ -24,7 +24,6 @@ use tauri_plugin_autostart::ManagerExt;
 
 use conflicts::ConflictInfo;
 
-use crate::managers::transcription::TranscriptionManager;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
@@ -33,6 +32,7 @@ use crate::settings::{
     TypingTool, APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
+use crate::LiveCaptionsTranscriptionManager;
 
 // Note: Commands are accessed via shortcut::handy_keys:: in lib.rs
 
@@ -463,9 +463,17 @@ fn unregister_all_shortcuts(app: &AppHandle, implementation: KeyboardImplementat
             continue;
         }
 
+        // Mirror the stored implementation-specific binding into `current_binding`
+        // before dispatching, so we unregister the shortcut that was actually
+        // registered under the old implementation.
+        let mut active_binding = binding.clone();
+        active_binding.current_binding = binding.binding_for(implementation).to_string();
+
         let result = match implementation {
-            KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, binding),
-            KeyboardImplementation::HandyKeys => handy_keys::unregister_shortcut(app, binding),
+            KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, active_binding),
+            KeyboardImplementation::HandyKeys => {
+                handy_keys::unregister_shortcut(app, active_binding)
+            }
         };
 
         if let Err(e) = result {
@@ -525,9 +533,9 @@ fn register_all_shortcuts_for_implementation(
 
         // Register with the appropriate implementation. Use a clone with `current_binding`
         // set to the implementation-specific value so the backend doesn't need to know
-        // about the dual-storage design.
+        // about the dual-storage design. Re-read from `binding` in case it was reset above.
         let mut active_binding = binding.clone();
-        active_binding.current_binding = impl_binding;
+        active_binding.current_binding = binding.binding_for(implementation).to_string();
         let result = match implementation {
             KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, active_binding),
             KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, active_binding),
@@ -1467,15 +1475,35 @@ pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Re
 pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.live_captions_enabled = enabled;
+    let live_captions_model = settings.live_captions_model.clone();
     settings::write_settings_safe(&app, settings.clone());
 
-    // Pre-warm the model when live captions is enabled so it's ready
-    // for the first recording. Without this, the model loads lazily
-    // on first hotkey press, causing a delay before live captions appear.
-    if enabled {
-        if let Some(transcription_manager) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-            transcription_manager.lock().initiate_model_load();
-            debug!("Live captions enabled — pre-warming transcription model");
+    // Pre-warm the model when live captions is enabled AND a dedicated live
+    // captions model is configured. Without this, the model loads lazily on
+    // first hotkey press, causing a delay before live captions appear.
+    // We intentionally target the dedicated live captions TM here, never the
+    // main TM, so the two transcription paths do not steal each other's engine.
+    if enabled && !live_captions_model.is_empty() {
+        if let Some(live_captions_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+            live_captions_tm
+                .0
+                .lock()
+                .initiate_model_load_for(&live_captions_model);
+            debug!(
+                "Live captions enabled — pre-warming live captions model '{}'",
+                live_captions_model
+            );
+        }
+    }
+
+    // When disabling live captions, cancel any active live captions stream
+    // worker so it stops consuming audio immediately. This is especially
+    // important when a dedicated live captions model is configured, because
+    // the streaming router may still be feeding it frames.
+    if !enabled && !live_captions_model.is_empty() {
+        if let Some(live_captions_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+            live_captions_tm.0.lock().cancel_stream();
+            debug!("Live captions disabled — cancelling active live captions stream");
         }
     }
 
@@ -1505,6 +1533,56 @@ pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Re
     } else {
         log::warn!(
             "AudioRecordingManager not initialized, skipping live captions streaming toggle"
+        );
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_captions_model_setting(app: AppHandle, model_id: String) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.live_captions_model = model_id.clone();
+    settings::write_settings_safe(&app, settings.clone());
+
+    // If the user selected a specific live captions model, pre-warm it so
+    // it's ready for the first recording. An empty string means "use the
+    // main transcription model", in which case the main model load already
+    // handles pre-warming.
+    if !model_id.is_empty() {
+        if let Some(live_captions_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+            live_captions_tm.0.lock().initiate_model_load_for(&model_id);
+            debug!(
+                "Live captions model set to '{}' — pre-warming live captions model",
+                model_id
+            );
+        }
+    }
+
+    // Recreate the recorder so the stream router is attached (when a dedicated
+    // live captions model is selected) or detached (when the model is cleared).
+    // The recorder's create_audio_recorder() reads live_captions_model and
+    // decides whether to wire the streaming callback to the live captions TM or
+    // the main TM, so a recreation is required for the change to take effect.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            warn!(
+                "Failed to recreate recorder after live captions model change: {}",
+                e
+            );
+            return Err(format!("Failed to apply live captions model change: {}", e));
+        } else {
+            debug!(
+                "Recorder recreated for live captions model change (model_id='{}')",
+                model_id
+            );
+        }
+    } else {
+        log::warn!(
+            "AudioRecordingManager not initialized, skipping recorder recreation after live captions model change"
         );
     }
 

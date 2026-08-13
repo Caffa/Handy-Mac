@@ -53,6 +53,31 @@ use signal_hook::iterator::Signals;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tauri::image::Image;
+
+/// Wrapper type for the live captions [`TranscriptionManager`] instance.
+///
+/// Tauri's managed state is keyed by type; if both the main and live captions
+/// transcription managers were stored as `Arc<Mutex<TranscriptionManager>>`,
+/// `try_state::<Arc<Mutex<TranscriptionManager>>>()` would return whichever
+/// instance was registered first (the main one). That caused every live
+/// captions code path to operate on the main TM, stealing its engine and
+/// breaking both live captions and final transcription.
+///
+/// This distinct newtype lets the live captions TM be registered and looked up
+/// separately while still exposing the same inner manager API via `.0`.
+pub struct LiveCaptionsTranscriptionManager(pub Arc<Mutex<TranscriptionManager>>);
+
+/// Wrapper type for the live captions streaming cancel flag.
+///
+/// The main transcription path and the live captions streaming path must be
+/// able to cancel independently: stopping a recording must cancel the main
+/// TM's final batch work, but it must NOT cancel the live captions stream
+/// (which finalizes separately). Tauri managed state is keyed by type, so
+/// without a distinct wrapper `try_state::<StreamingCancelFlag>()` would
+/// always return the main flag. This newtype lets the audio recorder pick the
+/// correct cancel flag based on whether a dedicated live captions model is
+/// configured.
+pub struct LiveCaptionsStreamingCancelFlag(pub crate::streaming_cancel_flag::StreamingCancelFlag);
 pub use transcription_coordinator::emit_app_state;
 pub use transcription_coordinator::AppState;
 pub use transcription_coordinator::CancelSignal;
@@ -209,6 +234,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         TranscriptionManager::new(app_handle, model_manager.clone())
             .expect("Failed to initialize transcription manager"),
     ));
+    let live_captions_transcription_manager = Arc::new(Mutex::new(
+        TranscriptionManager::new(app_handle, model_manager.clone())
+            .expect("Failed to initialize live captions transcription manager"),
+    ));
     let retry_queue = Arc::new(Mutex::new(
         TranscriptionRetryQueue::new(app_handle.clone())
             .expect("Failed to initialize transcription retry queue"),
@@ -235,7 +264,21 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         StreamingCancelFlag::from(tm.streaming_cancel_flag())
     };
     app_handle.manage(streaming_cancel_flag);
+    // The live captions TM has its own streaming cancel flag so that cancelling
+    // the live captions stream does not cancel the main model's final batch
+    // transcription. It is wrapped in a distinct managed type so it can be
+    // looked up separately from the main StreamingCancelFlag.
+    let live_captions_streaming_cancel_flag = {
+        let tm = live_captions_transcription_manager.lock();
+        StreamingCancelFlag::from(tm.streaming_cancel_flag())
+    };
+    app_handle.manage(LiveCaptionsStreamingCancelFlag(
+        live_captions_streaming_cancel_flag,
+    ));
     app_handle.manage(transcription_manager.clone());
+    app_handle.manage(LiveCaptionsTranscriptionManager(
+        live_captions_transcription_manager.clone(),
+    ));
     app_handle.manage(history_manager.clone());
     app_handle.manage(retry_queue.clone());
     app_handle.manage(retry_worker.clone());
@@ -321,6 +364,18 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                 match tm.unload_model() {
                     Ok(()) => log::info!("Model unloaded via tray."),
                     Err(e) => log::error!("Failed to unload model via tray: {}", e),
+                }
+                // Also unload the live captions model so VRAM is released
+                // when the user explicitly requests unload.
+                if let Some(live_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+                    let live = live_tm.0.lock();
+                    if live.is_model_loaded() {
+                        if let Err(e) = live.unload_model() {
+                            log::error!("Failed to unload live captions model via tray: {}", e);
+                        } else {
+                            log::info!("Live captions model unloaded via tray.");
+                        }
+                    }
                 }
             }
             "cancel" => {
@@ -578,6 +633,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::get_available_accelerators,
             shortcut::change_vad_sensitivity_setting,
             shortcut::change_live_captions_enabled_setting,
+            shortcut::change_live_captions_model_setting,
             shortcut::change_overlay_scale_setting,
             shortcut::change_noise_suppression_enabled_setting,
             shortcut::change_noise_suppression_level_setting,

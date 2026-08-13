@@ -4,13 +4,13 @@ use crate::audio_toolkit::{
 };
 use crate::errors::AppError;
 use crate::helpers::clamshell;
-use crate::managers::transcription::TranscriptionManager;
 use crate::portable;
 use crate::settings::{get_settings, AppSettings};
 use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
+use crate::LiveCaptionsTranscriptionManager;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -170,9 +170,32 @@ fn create_audio_recorder(
     // Check if live captions is enabled
     let settings = get_settings(app_handle);
     let live_captions_enabled = settings.live_captions_enabled;
+    let live_captions_model = settings.live_captions_model.clone();
     let pre_buffer_ms = settings.pre_recording_buffer_ms;
     let noise_suppression_enabled = settings.noise_suppression_enabled;
     let noise_suppression_level = settings.noise_suppression_level;
+
+    // Decide which transcription manager and cancel flag to wire to the
+    // recorder's streaming callback. When the user has configured a dedicated
+    // live captions model, the stream router and 2.5s batch fallback callback
+    // must both target the live captions TM and use its separate cancel flag.
+    // When no separate model is configured, live captions fall back to the
+    // main TM's 2.5s batch callback and must use the main cancel flag.
+    let use_live_captions_model = !live_captions_model.is_empty();
+
+    // Attach a real-time stream router only when a dedicated live captions
+    // model is configured. The router is what feeds real-time frames to the
+    // live captions model; without it, the recorder falls back to the legacy
+    // 2.5s batch callback path.
+    let stream_router: Option<Arc<crate::managers::transcription::StreamRouter>> =
+        if use_live_captions_model {
+            app_handle
+                .try_state::<LiveCaptionsTranscriptionManager>()
+                .map(|tm| tm.0.lock().stream_router())
+        } else {
+            None
+        };
+    let stream_router_attached = stream_router.is_some();
 
     // Recorder with VAD plus a spectrum-level callback that forwards updates to
     // the frontend, and optionally a streaming transcription callback for live captions.
@@ -184,7 +207,8 @@ fn create_audio_recorder(
             move |levels| {
                 utils::emit_levels(&app_handle, &levels);
             }
-        });
+        })
+        .with_stream_router(stream_router);
 
     // Add noise suppression before VAD if enabled.
     // This improves speech detection accuracy in noisy environments
@@ -202,18 +226,46 @@ fn create_audio_recorder(
     // eliminates the need to recreate the entire AudioRecorder when toggling
     // live captions, avoiding stream teardown/restart that causes Bug 1.
     //
-    // If the shared streaming cancel flag isn't available yet, skip the
-    // callback but still create the recorder — it can be attached later via
-    // recreate_recorder() when the flag is managed.
-    let cancel_flag: Option<StreamingCancelFlag> = app_handle
-        .try_state::<StreamingCancelFlag>()
-        .map(|state| state.inner().clone());
+    // We wire the callback to the correct TM/cancel-flag pair based on
+    // whether a dedicated live captions model is configured.
+    let (cancel_flag, tm_arc): (
+        Option<crate::streaming_cancel_flag::StreamingCancelFlag>,
+        Option<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>,
+    ) = if use_live_captions_model {
+        let cancel_flag = app_handle
+            .try_state::<crate::LiveCaptionsStreamingCancelFlag>()
+            .map(|state| state.0.inner().clone());
+        let tm = app_handle
+            .try_state::<LiveCaptionsTranscriptionManager>()
+            .map(|state| Arc::clone(&state.0));
+        (cancel_flag, tm)
+    } else {
+        let cancel_flag = app_handle
+            .try_state::<StreamingCancelFlag>()
+            .map(|state| state.inner().clone());
+        let tm = app_handle
+            .try_state::<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>()
+            .map(|state| state.inner().clone());
+        (cancel_flag, tm)
+    };
 
-    let recorder = match cancel_flag {
-        Some(cancel_flag) => {
+    let cancel_flag_available = cancel_flag.is_some();
+    let tm_available = tm_arc.is_some();
+
+    info!(
+        "[Live Captions] Recorder config: use_live_captions_model={}, stream_router_attached={}, cancel_flag_available={}, tm_available={}",
+        use_live_captions_model,
+        stream_router_attached,
+        cancel_flag_available,
+        tm_available
+    );
+
+    let recorder = match (cancel_flag, tm_arc) {
+        (Some(cancel_flag), Some(tm)) => {
             info!(
-                "[Live Captions] Setting up streaming callback (enabled={})",
-                live_captions_enabled
+                "[Live Captions] Setting up streaming callback (enabled={}, live_captions_model={})",
+                live_captions_enabled,
+                use_live_captions_model
             );
             recorder
                 .with_streaming_cancel_flag(cancel_flag.clone())
@@ -241,6 +293,7 @@ fn create_audio_recorder(
                         // a blocking task to avoid blocking audio capture.
                         let app_handle = app_handle.clone();
                         let cancel_flag = cancel_flag.clone();
+                        let tm = Arc::clone(&tm);
                         tauri::async_runtime::spawn_blocking(move || {
                             // Re-check cancellation after acquiring blocking thread
                             if cancel_flag.load_flag() {
@@ -250,15 +303,6 @@ fn create_audio_recorder(
                                 );
                                 return;
                             }
-
-                            // Get the transcription manager from app state
-                            let tm = match app_handle.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-                                Some(tm) => tm,
-                                None => {
-                                    warn!("[Live Captions] TranscriptionManager not available for streaming callback — cannot transcribe");
-                                    return;
-                                }
-                            };
 
                             // Transcribe the audio samples. We intentionally keep the
                             // unbounded lock here (instrumentation only) because the
@@ -325,8 +369,12 @@ fn create_audio_recorder(
                 })
                 .with_streaming_enabled(live_captions_enabled)
         }
-        None => {
-            warn!("[Live Captions] TranscriptionManager not available yet — streaming callback will not be attached; live captions will work after next recorder recreation");
+        _ => {
+            warn!(
+                "[Live Captions] Streaming callback not attached: cancel_flag_available={} tm_available={} — live captions will work after next recorder recreation",
+                cancel_flag_available,
+                tm_available
+            );
             recorder
         }
     };
