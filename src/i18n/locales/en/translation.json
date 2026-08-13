@@ -494,7 +494,11 @@
       },
       "liveCaptions": {
         "label": "Live Captions",
-        "description": "Show live captions below the volume bars during recording. Uses additional CPU."
+        "description": "Show live captions below the volume bars during recording. Uses additional CPU.",
+        "modelLabel": "Live captions model",
+        "modelDescription": "Choose a dedicated model for live captions, or use the main transcription model.",
+        "useMainModel": "Use main transcription model",
+        "streaming": "Streaming"
       },
       "noiseSuppression": {
         "label": "Noise Suppression",
@@ -970,6 +974,8 @@
     "filing": "Filing…",
     "micDead": "Microphone not responding",
     "lowAudio": "Low audio - check microphone",
+    "live": "Live",
+    "liveIndicator": "Streaming live",
     "confirming": "Sending in",
     "editing": "Edit text:",
     "send": "Send",

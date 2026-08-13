@@ -159,6 +159,44 @@
   border-color: rgba(59, 130, 246, 0.3);
 }
 
+/* "Live" indicator shown while stream-text events are active. */
+.live-captions-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4px * var(--overlay-scale));
+  margin-inline-end: calc(6px * var(--overlay-scale));
+  font-size: calc(10px * var(--overlay-scale));
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #ef4444;
+  vertical-align: middle;
+}
+
+.live-captions-box.routing-mode .live-captions-indicator {
+  color: #fca5a5;
+}
+
+.live-captions-dot {
+  width: calc(6px * var(--overlay-scale));
+  height: calc(6px * var(--overlay-scale));
+  border-radius: 50%;
+  background: currentColor;
+  animation: live-captions-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes live-captions-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.35);
+  }
+}
+
 .recording-overlay.fade-in {
   opacity: 1;
 }

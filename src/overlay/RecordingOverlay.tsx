@@ -168,7 +168,7 @@ const RecordingOverlay: React.FC = () => {
   });
 
   // ─── Live captions (streaming transcription) ──────────────────────────
-  useLiveCaptions({
+  const { streaming } = useLiveCaptions({
     state,
     isVisible,
     isRecording,
@@ -356,6 +356,7 @@ const RecordingOverlay: React.FC = () => {
             direction={direction}
             overlayScale={overlayScale}
             isRouter={isRouter}
+            streaming={streaming}
           />
         )}
 
