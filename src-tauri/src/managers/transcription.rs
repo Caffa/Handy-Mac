@@ -12,7 +12,7 @@ use parking_lot::{Condvar as ParkingLotCondvar, Mutex as ParkingLotMutex};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -37,6 +37,12 @@ use transcribe_rs::{
 
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const STREAM_FINALIZE_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Number of consecutive non-panic engine failures before we treat the
+/// loaded engine as wedged and force a full reload. The panic path already
+/// drops the engine on the first panic; this threshold lets a single transient
+/// error recover without an expensive reload.
+const ENGINE_HEALTH_RELOAD_THRESHOLD: u32 = 2;
 
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
@@ -321,6 +327,11 @@ pub struct TranscriptionManager {
     is_transcribing: Arc<ParkingLotMutex<bool>>,
     transcribing_condvar: Arc<ParkingLotCondvar>,
     cancel_streaming: Arc<AtomicBool>,
+    /// Consecutive non-panic engine failures. Reaches
+    /// ENGINE_HEALTH_RELOAD_THRESHOLD -> engine is dropped so the next
+    /// initiate_model_load_for actually reloads instead of reusing a wedged
+    /// session. Reset to 0 on any successful transcription or explicit unload.
+    consecutive_engine_failures: Arc<AtomicU32>,
 }
 
 impl TranscriptionManager {
@@ -345,6 +356,7 @@ impl TranscriptionManager {
             is_transcribing: Arc::new(ParkingLotMutex::new(false)),
             transcribing_condvar: Arc::new(ParkingLotCondvar::new()),
             cancel_streaming: Arc::new(AtomicBool::new(false)),
+            consecutive_engine_failures: Arc::new(AtomicU32::new(0)),
         };
 
         // Start the idle watcher
@@ -435,6 +447,35 @@ impl TranscriptionManager {
         self.lock_engine().is_some() || self.active_engine_lease.load(Ordering::Acquire) != 0
     }
 
+    /// Wait for an in-progress model load to finish.
+    ///
+    /// Called while the caller already holds the transcription manager lock.
+    /// The condvar wait releases the `is_loading` mutex internally, so this
+    /// method does not sleep while holding the manager lock. After waking it
+    /// verifies a model is actually loaded; if the load failed or no load ran,
+    /// it returns an error so callers can fail fast instead of trying to
+    /// transcribe against a missing model.
+    ///
+    /// Note: this checks the engine is physically present in the mutex. If the
+    /// engine is leased out to a streaming worker it will report as absent, so
+    /// callers should only use this when they know no stream is active (e.g.
+    /// during retry transcription on non-streaming audio).
+    pub fn wait_for_model_load(&self) -> Result<(), String> {
+        {
+            let mut is_loading = self.is_loading.lock().map_err(|e| e.to_string())?;
+            while *is_loading {
+                is_loading = self
+                    .loading_condvar
+                    .wait(is_loading)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if self.lock_engine().is_none() {
+            return Err("Model failed to load or is currently in use by streaming".to_string());
+        }
+        Ok(())
+    }
+
     pub fn is_model_loading(&self) -> bool {
         *self.is_loading.lock().unwrap()
     }
@@ -482,6 +523,10 @@ impl TranscriptionManager {
     pub fn unload_model(&self) -> Result<()> {
         let unload_start = std::time::Instant::now();
         debug!("Starting to unload model");
+
+        // Any explicit unload resets the engine-health failure counter so a
+        // manual retry or model switch starts from a clean slate.
+        self.consecutive_engine_failures.store(0, Ordering::Release);
 
         {
             let mut engine = self.lock_engine();
@@ -832,22 +877,44 @@ impl TranscriptionManager {
             model_id,
             load_duration.as_millis()
         );
+
+        // A successful load gives us a fresh engine, so reset the failure
+        // counter before this engine goes into the pool.
+        self.consecutive_engine_failures.store(0, Ordering::Release);
+
         Ok(())
     }
 
     /// Kicks off the model loading in a background thread if it's not already loaded
     pub fn initiate_model_load(&self) {
+        let settings = get_settings(&self.app_handle);
+        self.initiate_model_load_for(&settings.selected_model);
+    }
+
+    /// Kicks off loading of a specific model ID in a background thread.
+    ///
+    /// This is the model-agnostic core used by `initiate_model_load` (which
+    /// loads the user's selected model) and by the live captions path, which
+    /// may need a different model loaded in a second TranscriptionManager.
+    /// The load runs in a detached thread so callers never block on the
+    /// potentially multi-second model initialization.
+    pub fn initiate_model_load_for(&self, model_id: &str) {
         let mut is_loading = self.is_loading.lock().unwrap();
         if *is_loading {
             return;
         }
 
         let reload_pending = self.reload_model_on_next_use.load(Ordering::Acquire);
-        if !reload_pending && self.is_model_loaded() {
+        // If a specific model is already loaded and matches the request, skip.
+        let already_loaded = !reload_pending
+            && self.is_model_loaded()
+            && self.get_current_model().as_deref() == Some(model_id);
+        if already_loaded {
             return;
         }
 
         *is_loading = true;
+        let model_id = model_id.to_string();
         let self_clone = self.clone();
         thread::spawn(move || {
             if reload_pending {
@@ -855,9 +922,8 @@ impl TranscriptionManager {
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
             }
-            let settings = get_settings(&self_clone.app_handle);
-            if let Err(e) = self_clone.load_model(&settings.selected_model) {
-                error!("Failed to load model: {}", e);
+            if let Err(e) = self_clone.load_model(&model_id) {
+                error!("Failed to load model '{}': {}", model_id, e);
             }
             let mut is_loading = self_clone.is_loading.lock().unwrap();
             *is_loading = false;
@@ -936,11 +1002,52 @@ impl TranscriptionManager {
         };
 
         // Wait for any in-progress model load to finish (start_stream races the
-        // background load kicked off when recording starts).
+        // background load kicked off when recording starts). We cannot block
+        // indefinitely on the condvar: if the user stops the recording
+        // immediately after starting it, `finalize_stream()`/`cancel_stream()`
+        // close the router and send a command, but this worker would still be
+        // asleep on `is_loading` and unable to reply. That produces a 30-second
+        // hang waiting for `STREAM_FINALIZE_REPLY_TIMEOUT`.
+        //
+        // Fix: wait with a short timeout and poll `rx.try_recv()` between
+        // sleeps. If a `Finalize` or `Cancel` arrives before the model has
+        // loaded, reply with `None` (no usable stream) and exit cleanly.
         {
             let mut is_loading = self.is_loading.lock().unwrap();
             while *is_loading {
-                is_loading = self.loading_condvar.wait(is_loading).unwrap();
+                // Drop the lock while sleeping so the loader thread can
+                // acquire it to set `is_loading = false`.
+                let guard = self
+                    .loading_condvar
+                    .wait_timeout(is_loading, Duration::from_millis(100))
+                    .unwrap();
+                is_loading = guard.0;
+
+                // Check whether the caller already gave up on this stream.
+                while let Ok(cmd) = rx.try_recv() {
+                    match cmd {
+                        StreamCmd::Feed(_) => {
+                            // Audio arrived before the stream could begin.
+                            // Drop it; the caller will fall back to batch.
+                            debug!("Live preview: dropping feed received before model loaded");
+                        }
+                        StreamCmd::Finalize(reply) => {
+                            info!(
+                                "Live preview: finalize received while model still loading; aborting stream"
+                            );
+                            let _ = reply.send(None);
+                            self.router.clear();
+                            return;
+                        }
+                        StreamCmd::Cancel => {
+                            info!(
+                                "Live preview: cancel received while model still loading; aborting stream"
+                            );
+                            self.router.clear();
+                            return;
+                        }
+                    }
+                }
             }
         }
 
@@ -1612,13 +1719,74 @@ impl TranscriptionManager {
             }));
 
             match transcribe_result {
-                Ok(inner_result) => {
-                    // Success or normal error: return the engine unless a model
-                    // switch/unload invalidated it while it was in use.
+                Ok(Ok(text)) => {
+                    // Healthy path: reset failure counter and return engine to the pool.
+                    self.consecutive_engine_failures.store(0, Ordering::Release);
                     self.return_engine(engine, &active_model);
-                    inner_result?
+                    text
+                }
+                Ok(Err(inner_err)) => {
+                    // Non-panic engine error. The engine object is still alive but may
+                    // be wedged (e.g. Metal/Vulkan context lost after sleep). Decide
+                    // whether to keep retrying with it or force a reload based on
+                    // consecutive failure count. Never drop the engine while a stream
+                    // is actively using it; the batch path holds the is_transcribing
+                    // slot, but we double-check defensively.
+                    let failures = self
+                        .consecutive_engine_failures
+                        .fetch_add(1, Ordering::AcqRel)
+                        + 1;
+                    let stream_busy = self.active_engine_lease.load(Ordering::Acquire) != 0
+                        || self.is_streaming();
+                    if failures >= ENGINE_HEALTH_RELOAD_THRESHOLD && !stream_busy {
+                        warn!(
+                            "Engine returned error {} time(s); treating as wedged and forcing reload on next attempt (last error: {})",
+                            failures, inner_err
+                        );
+                        // Drop the wedged engine here (do NOT return_engine). Clear
+                        // current_model_id so is_model_loaded() returns false and the
+                        // next initiate_model_load_for actually reloads.
+                        drop(engine);
+                        {
+                            let mut current_model = self
+                                .current_model_id
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            *current_model = None;
+                        }
+                        let _ = self.app_handle.emit(
+                            "model-state-changed",
+                            ModelStateEvent {
+                                event_type: "unloaded".to_string(),
+                                model_id: None,
+                                model_name: None,
+                                error: Some(format!(
+                                    "Engine failed {} times; forcing reload: {}",
+                                    failures, inner_err
+                                )),
+                            },
+                        );
+                        let message = format!(
+                            "Transcription failed (engine marked wedged after {} consecutive errors): {}",
+                            failures, inner_err
+                        );
+                        return Err(AppError::Transcription {
+                            message,
+                            source: inner_err,
+                        });
+                    }
+                    // Below threshold or stream in flight: keep the engine, return it,
+                    // and surface the error so the caller can retry.
+                    self.return_engine(engine, &active_model);
+                    return Err(AppError::Transcription {
+                        message: format!("Transcription failed: {}", inner_err),
+                        source: inner_err,
+                    });
                 }
                 Err(panic_payload) => {
+                    // Engine panicked — drop it and clear state. Also reset the
+                    // failure counter so a fresh load after a panic starts clean.
+                    self.consecutive_engine_failures.store(0, Ordering::Release);
                     // Engine panicked — do NOT put it back (it's in an unknown state).
                     // The engine is dropped here, effectively unloading it.
                     let panic_msg = panic_payload_message(panic_payload.as_ref());

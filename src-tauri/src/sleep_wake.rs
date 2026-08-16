@@ -17,6 +17,8 @@
 #[cfg(target_os = "macos")]
 use log::{debug, error, info, warn};
 #[cfg(target_os = "macos")]
+use parking_lot::Mutex;
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::time::Instant;
@@ -207,6 +209,27 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
     // Reset hotkey state first — this is independent of USB watchdog settings
     // and should happen immediately so shortcuts work right after wake.
     crate::shortcut::handy_keys::reset_hotkey_state_after_wake(app_handle);
+
+    // Sleep/wake is a known trigger for GPU/Metal context loss that can wedge
+    // a previously-healthy transcribe-cpp session. Mark the transcription
+    // manager(s) stale so the next recording reloads a fresh session instead
+    // of reusing a wedged one. This only flips a flag; an engine currently
+    // leased by a stream is not disturbed because load_model clears
+    // current_model_id before building the new engine, so the stream worker's
+    // return_engine sees a stale model_id and drops its engine rather than
+    // putting it back.
+    if let Some(tm) =
+        app_handle.try_state::<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>()
+    {
+        tm.lock().reload_model_on_next_use();
+        info!("on_system_wake: marked main TranscriptionManager for reload on next use");
+    }
+    if let Some(live_tm) = app_handle.try_state::<crate::LiveCaptionsTranscriptionManager>() {
+        // LiveCaptionsTranscriptionManager wraps a parking_lot::Mutex, whose
+        // lock() returns a guard directly (never a Result).
+        live_tm.0.lock().reload_model_on_next_use();
+        info!("on_system_wake: marked live-captions TranscriptionManager for reload on next use");
+    }
 
     // USB watchdog recovery
     let settings = crate::settings::get_settings_safe(app_handle);

@@ -1450,14 +1450,14 @@ impl AudioRecordingManager {
 
     pub fn stop_recording(&self, binding_id: &str) -> Option<(Vec<f32>, Vec<f32>)> {
         let t_start = std::time::Instant::now();
-        info!(
+        debug!(
             "[STOP-DIAGNOSTIC] stop_recording started for binding '{}'",
             binding_id
         );
 
         let t_state_lock = std::time::Instant::now();
         let state = self.state.lock();
-        info!(
+        debug!(
             "[STOP-DIAGNOSTIC] state.lock acquired in {:?}",
             t_state_lock.elapsed()
         );
@@ -1467,7 +1467,7 @@ impl AudioRecordingManager {
                 binding_id: ref active,
                 start_time,
             } if active == binding_id => {
-                info!(
+                debug!(
                     "[STOP-DIAGNOSTIC] Stopping recording for binding '{}'",
                     binding_id
                 );
@@ -1501,7 +1501,7 @@ impl AudioRecordingManager {
                         // Diagnostic: try-lock with timeout to detect a wedged recorder mutex.
                         let guard = match self.recorder.try_lock_for(Duration::from_secs(2)) {
                             Some(g) => {
-                                info!(
+                                debug!(
                                     "[STOP-DIAGNOSTIC] recorder.lock acquired in {:?}",
                                     t_rec_lock.elapsed()
                                 );
@@ -1530,7 +1530,7 @@ impl AudioRecordingManager {
                                         e
                                     })
                                     .ok();
-                                info!(
+                                debug!(
                                     "[STOP-DIAGNOSTIC] smart_stop_send completed in {:?}",
                                     t_send.elapsed()
                                 );
@@ -1557,7 +1557,7 @@ impl AudioRecordingManager {
                         }),
                         None => (Vec::new(), Vec::new()),
                     };
-                    info!(
+                    debug!(
                         "[STOP-DIAGNOSTIC] smart_stop wait completed in {:?}",
                         t_wait.elapsed()
                     );
@@ -1569,7 +1569,7 @@ impl AudioRecordingManager {
                         // Diagnostic: try-lock with timeout to detect a wedged recorder mutex.
                         let guard = match self.recorder.try_lock_for(Duration::from_secs(2)) {
                             Some(g) => {
-                                info!(
+                                debug!(
                                     "[STOP-DIAGNOSTIC] recorder.lock acquired in {:?}",
                                     t_rec_lock.elapsed()
                                 );
@@ -1598,7 +1598,7 @@ impl AudioRecordingManager {
                                         e
                                     })
                                     .ok();
-                                info!(
+                                debug!(
                                     "[STOP-DIAGNOSTIC] stop_send completed in {:?}",
                                     t_send.elapsed()
                                 );
@@ -1621,7 +1621,7 @@ impl AudioRecordingManager {
                         }),
                         None => (Vec::new(), Vec::new()),
                     };
-                    info!(
+                    debug!(
                         "[STOP-DIAGNOSTIC] stop wait completed in {:?}",
                         t_wait.elapsed()
                     );
@@ -1632,7 +1632,7 @@ impl AudioRecordingManager {
                 {
                     let t_idle_lock = std::time::Instant::now();
                     let mut state = self.state.lock();
-                    info!(
+                    debug!(
                         "[STOP-DIAGNOSTIC] idle state.lock acquired in {:?}",
                         t_idle_lock.elapsed()
                     );
@@ -1640,7 +1640,7 @@ impl AudioRecordingManager {
                 }
 
                 self.is_recording.store(false, Ordering::Release);
-                info!(
+                debug!(
                     "[STOP-DIAGNOSTIC] stop_recording returning {} processed / {} raw samples (total elapsed {:?})",
                     processed_samples.len(),
                     raw_samples.len(),
