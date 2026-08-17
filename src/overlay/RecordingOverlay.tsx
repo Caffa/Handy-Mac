@@ -34,12 +34,14 @@ import { useVisualizer } from "./hooks/useVisualizer";
 import { useLiveCaptions } from "./hooks/useLiveCaptions";
 import { useRouterPreview } from "./hooks/useRouterPreview";
 import { useUSBRecovery } from "./hooks/useUSBRecovery";
+import { useRecordingTimeoutWarning } from "./hooks/useRecordingTimeoutWarning";
 import {
   VisualizerBars,
   LiveCaptionsBox,
   MicDeadWarning,
   USBCyclingProgress,
   RouterResultDisplay,
+  RecordingTimeoutWarning,
 } from "./components";
 import type { OverlayState } from "./hooks/useOverlayState";
 
@@ -69,6 +71,9 @@ const RecordingOverlay: React.FC = () => {
     micDeadWarning,
     lowAudioWarning,
     usbCycleStage,
+    timeoutWarningActive,
+    timeoutWarningSeconds,
+    timeoutWarningKind,
     liveCaptionsEnabled,
     // State setters needed by sub-hooks
     setTranscriptionPreview,
@@ -82,6 +87,9 @@ const RecordingOverlay: React.FC = () => {
     setLowAudioWarning,
     setUsbCycleStage,
     setIsFadingOut,
+    setTimeoutWarningActive,
+    setTimeoutWarningSeconds,
+    setTimeoutWarningKind,
     // Refs shared across hooks
     lastLevelTimeRef,
     recordingStartTimeRef,
@@ -126,18 +134,49 @@ const RecordingOverlay: React.FC = () => {
     setState(backendState.overlayState);
   }, [backendState.overlayState, setState]);
 
+  // ─── Recording timeout warning state ───────────────────────────────────
+  const {
+    active: timeoutWarningHookActive,
+    secondsRemaining: timeoutWarningSecondsRemaining,
+    kind: timeoutWarningHookKind,
+    extend: handleExtendRecording,
+  } = useRecordingTimeoutWarning();
+
+  // Sync the hook's state into useOverlaySharedState so it is reset alongside
+  // other mutable UI state when a new recording starts.
+  useEffect(() => {
+    setTimeoutWarningActive(timeoutWarningHookActive);
+    setTimeoutWarningSeconds(timeoutWarningSecondsRemaining);
+    setTimeoutWarningKind(timeoutWarningHookKind);
+  }, [
+    timeoutWarningHookActive,
+    timeoutWarningSecondsRemaining,
+    timeoutWarningHookKind,
+    setTimeoutWarningActive,
+    setTimeoutWarningSeconds,
+    setTimeoutWarningKind,
+  ]);
+
   // ─── Force click-through during non-interactive overlay phases ─────────
   // When the router is filing (Processing state) or showing results, the
   // overlay has nothing the user needs to interact with. Force click-through
   // so the NSTrackingArea doesn't disable ignoresMouseEvents and steal clicks.
+  // When the timeout warning is active, keep click-through OFF so the Extend
+  // button is clickable on macOS.
   useEffect(() => {
     const forceClickThrough =
       // Filing... — nothing to interact with
       (state === "processing" && isRouter) ||
       // Router result displayed — just visual cards, no interaction
       routerResult !== null;
-    commands.setOverlayForceClickThrough(forceClickThrough).catch(() => {});
-  }, [state, isRouter, routerResult]);
+    // Timeout warning has an interactive Extend button; explicitly disable
+    // forced click-through so the button receives clicks.
+    const effectiveForceClickThrough =
+      forceClickThrough && !timeoutWarningActive;
+    commands
+      .setOverlayForceClickThrough(effectiveForceClickThrough)
+      .catch(() => {});
+  }, [state, isRouter, routerResult, timeoutWarningActive]);
 
   // ─── Reset on new recording ──────────────────────────────────────────
   // When the backend transitions to Recording from any other state,
@@ -281,20 +320,31 @@ const RecordingOverlay: React.FC = () => {
           <div className="overlay-left">{getIcon()}</div>
 
           <div className="overlay-middle">
+            {/* Timeout warning banner — replaces visualizer when active */}
+            {backendState.appState.state === "Recording" &&
+              timeoutWarningActive && (
+                <RecordingTimeoutWarning
+                  active={timeoutWarningActive}
+                  secondsRemaining={timeoutWarningSeconds}
+                  kind={timeoutWarningKind}
+                  onExtend={handleExtendRecording}
+                />
+              )}
             {/* Mic dead or low audio warning - only show during recording */}
-            {backendState.appState.state === "Recording" && (
-              <MicDeadWarning
-                micDeadWarning={micDeadWarning}
-                lowAudioWarning={lowAudioWarning}
-              />
-            )}
+            {!timeoutWarningActive &&
+              backendState.appState.state === "Recording" && (
+                <MicDeadWarning
+                  micDeadWarning={micDeadWarning}
+                  lowAudioWarning={lowAudioWarning}
+                />
+              )}
             {/* Only show warning or visualizer, not both */}
-            {(micDeadWarning || lowAudioWarning) &&
-            backendState.appState.state === "Recording"
-              ? null
-              : backendState.appState.state === "Recording" && (
-                  <VisualizerBars levels={levels} isRouter={isRouter} />
-                )}
+            {!timeoutWarningActive &&
+              (!(micDeadWarning || lowAudioWarning) ||
+                backendState.appState.state !== "Recording") &&
+              backendState.appState.state === "Recording" && (
+                <VisualizerBars levels={levels} isRouter={isRouter} />
+              )}
             {/* Processing state: "Filing..." for router, "Processing..." for normal */}
             {state === "processing" && (
               <div

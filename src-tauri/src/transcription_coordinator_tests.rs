@@ -548,6 +548,8 @@ fn test_stage_is_active() {
     let recording = Stage::Recording {
         binding_id: "transcribe".into(),
         since: Instant::now(),
+        silence_extension: Duration::ZERO,
+        warned: false,
     };
     assert!(recording.is_active());
 
@@ -570,6 +572,8 @@ fn test_stage_to_app_state() {
     let recording = Stage::Recording {
         binding_id: "transcribe".into(),
         since: Instant::now(),
+        silence_extension: Duration::ZERO,
+        warned: false,
     };
     assert!(matches!(recording.to_app_state(), AppState::Recording { .. }));
 
@@ -851,4 +855,153 @@ fn test_hard_recording_cap_eventually_fires() {
         "hard cap remaining should be approximately 1 hour, got {:?}",
         remaining
     );
+}
+
+// ── Test 29: ExtendRecording bumps silence and hard-cap extensions ──
+
+#[test]
+fn test_extend_recording_bumps_deadlines() {
+    let mut h = TestHarness::new();
+
+    // Enter Recording
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+    assert_eq!(h.core.recording_silence_extension(), Duration::ZERO);
+    assert_eq!(h.core.hard_cap_extension(), Duration::ZERO);
+
+    // Extend by 5 minutes
+    h.process(Command::ExtendRecording { seconds: 300 });
+    assert_eq!(
+        h.core.recording_silence_extension(),
+        Duration::from_secs(300)
+    );
+    assert_eq!(h.core.hard_cap_extension(), Duration::from_secs(300));
+
+    // Extend by another 5 minutes
+    h.process(Command::ExtendRecording { seconds: 300 });
+    assert_eq!(
+        h.core.recording_silence_extension(),
+        Duration::from_secs(600)
+    );
+    assert_eq!(h.core.hard_cap_extension(), Duration::from_secs(600));
+}
+
+// ── Test 30: ExtendRecording is ignored when not Recording ──
+
+#[test]
+fn test_extend_recording_ignored_when_not_recording() {
+    let mut h = TestHarness::new();
+
+    // Idle: extend should be a no-op
+    h.process(Command::ExtendRecording { seconds: 300 });
+    assert_eq!(h.core.hard_cap_extension(), Duration::ZERO);
+
+    // Processing: extend should be a no-op
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    h.process(Command::ExtendRecording { seconds: 300 });
+    assert_eq!(h.core.hard_cap_extension(), Duration::ZERO);
+}
+
+// ── Test 31: ExtendRecording re-arms the warning flag ──
+// After a warning fires, extending the deadline should set warned=false so
+// the warning re-fires for the new deadline.
+
+#[test]
+fn test_extend_recording_rearms_warning() {
+    let mut h = TestHarness::new();
+
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+
+    // Simulate that a warning was already emitted by flipping the stage field
+    // directly (the thread-loop warning emission is not exercised in the core
+    // unit tests, but the state mutation is).
+    if let Stage::Recording { ref mut warned, .. } = h.core.stage {
+        *warned = true;
+    }
+
+    // Extend: warned should be cleared so the warning re-arms
+    h.process(Command::ExtendRecording { seconds: 300 });
+    if let Stage::Recording { warned, .. } = h.core.stage {
+        assert!(!warned, "warned should be false after extend");
+    } else {
+        panic!("Expected Recording stage");
+    }
+}
+
+// ── Test 32: recv_timeout accounts for silence extension ──
+
+#[test]
+fn test_recv_timeout_accounts_for_silence_extension() {
+    let mut h = TestHarness::new();
+
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+
+    let before_extend = h.core.recv_timeout().unwrap();
+    assert!(before_extend <= Duration::from_secs(300));
+
+    h.process(Command::ExtendRecording { seconds: 300 });
+    let after_extend = h.core.recv_timeout().unwrap();
+
+    // The returned timeout must be larger after extending by 5 minutes.
+    // We tolerate a small measurement window because Instant is wall-clock.
+    assert!(
+        after_extend > before_extend,
+        "recv_timeout should increase after extend (before={:?}, after={:?})",
+        before_extend,
+        after_extend
+    );
+}
+
+// ── Test 33: Leaving Recording resets the hard-cap extension ──
+
+#[test]
+fn test_hard_cap_extension_resets_when_leaving_recording() {
+    let mut h = TestHarness::new();
+
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::ExtendRecording { seconds: 300 });
+    assert_eq!(h.core.hard_cap_extension(), Duration::from_secs(300));
+
+    // Stop → Processing resets hard cap extension
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+    assert_eq!(h.core.hard_cap_extension(), Duration::ZERO);
 }

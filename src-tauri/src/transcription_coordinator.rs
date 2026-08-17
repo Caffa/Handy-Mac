@@ -71,6 +71,15 @@ const RECORDING_TIMEOUT: Duration = Duration::from_secs(300);
 /// looping audio source, or if VAD gets stuck in Speech.
 const MAX_RECORDING_HARD_CAP: Duration = Duration::from_secs(3600);
 
+/// How long before a recording deadline we start showing the UI warning.
+/// The overlay shows a countdown + extend button inside this window.
+const RECORDING_TIMEOUT_WARN_LEAD: Duration = Duration::from_secs(30);
+
+/// How much time each "Extend" click adds to both the silence window and the
+/// hard cap. Currently 5 minutes per click; both deadlines are bumped equally.
+#[allow(dead_code)]
+const RECORDING_TIMEOUT_EXTEND_STEP: Duration = Duration::from_secs(300);
+
 /// Maximum time the coordinator will stay in `Processing` before
 /// auto-resetting to `Idle`. Prevents the app from becoming permanently
 /// unresponsive when the async transcription pipeline hangs (e.g. dead
@@ -133,6 +142,11 @@ enum Command {
     },
     /// Internal: the processing-timeout timer fired.
     ProcessingTimeout,
+    /// Extend the recording deadlines by `seconds`. Sent by the overlay when
+    /// the user clicks the "Extend" button on the timeout warning banner.
+    ExtendRecording {
+        seconds: u64,
+    },
 }
 
 /// Pipeline lifecycle, owned exclusively by the coordinator thread.
@@ -142,6 +156,12 @@ enum Stage {
     Recording {
         binding_id: String,
         since: Instant,
+        /// Additional silence tolerance accumulated via "Extend" clicks.
+        silence_extension: Duration,
+        /// Whether we've already emitted the 30s warning for the current deadline.
+        /// Reset to false whenever the silence deadline slides (VAD or extend)
+        /// so the warning re-arms for the new deadline.
+        warned: bool,
     },
     Processing {
         since: Instant,
@@ -208,6 +228,10 @@ struct CoordinatorCore {
     /// Processing timeout duration. In production this is 30s; in tests
     /// it can be set to a much shorter value via `new_for_test()`.
     processing_timeout: Duration,
+    /// Additional time added to the 1-hour hard cap by "Extend" clicks.
+    /// Reset to zero whenever the stage leaves Recording so each recording
+    /// session starts with a fresh hard cap.
+    hard_cap_extension: Duration,
 }
 
 impl CoordinatorCore {
@@ -216,6 +240,7 @@ impl CoordinatorCore {
             stage: Stage::Idle,
             last_press: None,
             processing_timeout,
+            hard_cap_extension: Duration::ZERO,
         }
     }
 
@@ -276,6 +301,8 @@ impl CoordinatorCore {
         self.transition_to(Stage::Recording {
             binding_id,
             since: Instant::now(),
+            silence_extension: Duration::ZERO,
+            warned: false,
         });
         self.sync_state(active_use, current_state);
         true
@@ -319,12 +346,17 @@ impl CoordinatorCore {
                     Some(self.processing_timeout - elapsed)
                 }
             }
-            Stage::Recording { since, .. } => {
+            Stage::Recording {
+                since,
+                silence_extension,
+                ..
+            } => {
                 let elapsed = since.elapsed();
-                if elapsed >= RECORDING_TIMEOUT {
+                let deadline = *silence_extension + RECORDING_TIMEOUT;
+                if elapsed >= deadline {
                     Some(Duration::ZERO)
                 } else {
-                    Some(RECORDING_TIMEOUT - elapsed)
+                    Some(deadline - elapsed)
                 }
             }
             _ => None,
@@ -345,9 +377,30 @@ impl CoordinatorCore {
     #[cfg(test)]
     fn is_recording_expired(&self) -> bool {
         match &self.stage {
-            Stage::Recording { since, .. } => since.elapsed() >= RECORDING_TIMEOUT,
+            Stage::Recording {
+                since,
+                silence_extension,
+                ..
+            } => since.elapsed() >= RECORDING_TIMEOUT + *silence_extension,
             _ => false,
         }
+    }
+
+    /// Test-only accessor for the current recording silence extension.
+    #[cfg(test)]
+    fn recording_silence_extension(&self) -> Duration {
+        match &self.stage {
+            Stage::Recording {
+                silence_extension, ..
+            } => *silence_extension,
+            _ => Duration::ZERO,
+        }
+    }
+
+    /// Test-only accessor for the current hard-cap extension.
+    #[cfg(test)]
+    fn hard_cap_extension(&self) -> Duration {
+        self.hard_cap_extension
     }
 
     /// Clear the debounce timer so the next press event is not debounced.
@@ -380,7 +433,7 @@ impl CoordinatorCore {
                     let now = Instant::now();
                     if self
                         .last_press
-                        .map_or(false, |t| now.duration_since(t) < DEBOUNCE)
+                        .is_some_and(|t| now.duration_since(t) < DEBOUNCE)
                     {
                         debug!("Debounced press for '{binding_id}'");
                         return StageAction::None;
@@ -393,6 +446,8 @@ impl CoordinatorCore {
                         self.transition_to(Stage::Recording {
                             binding_id: binding_id.clone(),
                             since: Instant::now(),
+                            silence_extension: Duration::ZERO,
+                            warned: false,
                         });
                         self.sync_state(active_use, current_state);
                         StageAction::StartRecording {
@@ -409,6 +464,7 @@ impl CoordinatorCore {
                             "Stop input received: stage={:?} recorder_is_recording={}",
                             self.stage, recorder_is_recording
                         );
+                        self.hard_cap_extension = Duration::ZERO;
                         // Transition to Processing first so active_use stays true,
                         // then tell the thread to call stop which may fire FinishGuard.
                         self.transition_to(Stage::Processing {
@@ -433,6 +489,7 @@ impl CoordinatorCore {
                             "Stop input received (PTT recovery): stage={:?} recorder_is_recording={}",
                             self.stage, recorder_is_recording
                         );
+                        self.hard_cap_extension = Duration::ZERO;
                         // Push-to-talk release arrived while the recorder is still
                         // active but the coordinator stage drifted (e.g. missed
                         // release during sleep/wake). Force Recording and then
@@ -459,6 +516,8 @@ impl CoordinatorCore {
                             self.transition_to(Stage::Recording {
                                 binding_id: binding_id.clone(),
                                 since: Instant::now(),
+                                silence_extension: Duration::ZERO,
+                                warned: false,
                             });
                             self.sync_state(active_use, current_state);
                             StageAction::StartRecording {
@@ -471,6 +530,7 @@ impl CoordinatorCore {
                                 "Stop input received: stage={:?} recorder_is_recording={}",
                                 self.stage, recorder_is_recording
                             );
+                            self.hard_cap_extension = Duration::ZERO;
                             self.transition_to(Stage::Processing {
                                 since: Instant::now(),
                                 binding_id: Some(binding_id.clone()),
@@ -498,6 +558,7 @@ impl CoordinatorCore {
                                     "Stop input received (toggle recovery): stage={:?} recorder_is_recording={}",
                                     self.stage, recorder_is_recording
                                 );
+                                self.hard_cap_extension = Duration::ZERO;
                                 self.transition_to(Stage::Processing {
                                     since: Instant::now(),
                                     binding_id: Some(binding_id.clone()),
@@ -531,6 +592,7 @@ impl CoordinatorCore {
                 );
                 let was_active = self.stage.is_active();
                 if recording_was_active || matches!(self.stage, Stage::Recording { .. }) {
+                    self.hard_cap_extension = Duration::ZERO;
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
                     info!("CoordinatorCore: cancelled, reset to Idle");
@@ -557,10 +619,34 @@ impl CoordinatorCore {
             Command::ProcessingFinished => {
                 if matches!(self.stage, Stage::Processing { .. }) {
                     info!("CoordinatorCore: processing finished, reset to Idle");
+                    self.hard_cap_extension = Duration::ZERO;
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
                     info!("Session complete, resetting handy-keys pressed-hotkey state");
                     crate::shortcut::handy_keys::reset_all_pressed_hotkeys(app);
+                }
+                StageAction::None
+            }
+            Command::ExtendRecording { seconds } => {
+                if let Stage::Recording {
+                    ref mut silence_extension,
+                    ref mut warned,
+                    ..
+                } = self.stage
+                {
+                    let delta = Duration::from_secs(seconds);
+                    *silence_extension += delta;
+                    self.hard_cap_extension += delta;
+                    *warned = false;
+                    info!(
+                        "Recording extended by {:?}: silence_extension={:?}, hard_cap_extension={:?}",
+                        delta, silence_extension, self.hard_cap_extension
+                    );
+                } else {
+                    debug!(
+                        "Ignoring ExtendRecording({}) command: not currently Recording",
+                        seconds
+                    );
                 }
                 StageAction::None
             }
@@ -582,6 +668,7 @@ impl CoordinatorCore {
                         "Processing stage timed out after {:?}, auto-resetting to Idle",
                         self.processing_timeout
                     );
+                    self.hard_cap_extension = Duration::ZERO;
                     self.transition_to(Stage::Idle);
                     self.sync_state(active_use, current_state);
                     info!("Processing timeout, resetting handy-keys pressed-hotkey state");
@@ -628,6 +715,45 @@ fn set_stage(
         *guard = new_app_state.clone();
     }
     emit_app_state(app, &new_app_state);
+}
+
+/// Payload for the `recording-timeout-warning` event emitted ~30s before a
+/// recording deadline (silence window or 1-hour hard cap). Mirrors the Rust
+/// deadline calculation so the overlay can show a countdown without recomputing
+/// it from absolute timestamps.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct RecordingTimeoutWarning {
+    /// Seconds remaining until the closest deadline (silence or hard cap).
+    pub seconds_remaining: u64,
+    /// Which deadline is driving the warning.
+    pub kind: RecordingTimeoutWarningKind,
+    /// Approximate Unix-epoch milliseconds when the deadline will hit. This is
+    /// a wall-clock estimate for the frontend countdown; small drift between
+    /// Rust Instant and JS Date is acceptable because we re-emit on every loop
+    /// wake while inside the warning window.
+    pub deadline_at_epoch_ms: u64,
+}
+
+/// Which recording deadline is about to expire.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingTimeoutWarningKind {
+    /// The silence-window deadline (5 minutes + any extensions).
+    Silence,
+    /// The absolute 1-hour hard cap (+ any extensions).
+    HardCap,
+}
+
+/// Emit a `recording-timeout-warning` event to both the overlay window and the
+/// main window. The overlay uses it to show the countdown + extend button; the
+/// main window gets it so any future settings UI can react if needed.
+pub fn emit_recording_timeout_warning(app: &AppHandle, warning: &RecordingTimeoutWarning) {
+    // Emit to overlay window (primary consumer)
+    if let Some(overlay) = app.get_webview_window("recording_overlay") {
+        let _ = overlay.emit("recording-timeout-warning", warning);
+    }
+    // Also emit to main window for settings UI and other consumers
+    let _ = app.emit("recording-timeout-warning", warning);
 }
 
 /// Serialises all transcription lifecycle events through a single thread
@@ -740,30 +866,44 @@ impl TranscriptionCoordinator {
                             }
                             Some(core.processing_timeout - elapsed)
                         }
-                        Stage::Recording { since, binding_id } => {
+                        Stage::Recording {
+                            since,
+                            binding_id,
+                            silence_extension,
+                            warned,
+                        } => {
                             let elapsed = since.elapsed();
 
                             // VAD-based sliding timeout: if the user is still
                             // talking, reset the silence deadline so continuous
                             // speech can extend the session. Silence for longer
-                            // than RECORDING_TIMEOUT still triggers emergency
-                            // cancel. We use the AudioRecordingManager's shared
-                            // atomic value, which is elapsed ms since recording
-                            // start, to avoid cross-thread Instant arithmetic.
+                            // than RECORDING_TIMEOUT + extensions still triggers
+                            // emergency cancel. We use the AudioRecordingManager's
+                            // shared atomic value, which is elapsed ms since
+                            // recording start, to avoid cross-thread Instant
+                            // arithmetic.
                             let mut since = *since;
+                            let mut warned_local = *warned;
+                            let silence_extension_local = *silence_extension;
+                            let binding_id_local = binding_id.clone();
                             if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
                                 let voice_elapsed =
                                     Duration::from_millis(rm.last_voice_activity_ms());
+                                // Two-clock design: `elapsed` is the coordinator's
+                                // local time since it entered the Recording stage,
+                                // while `voice_elapsed` is a monotonic stamp from
+                                // the recorder (ms since its own recording start).
+                                // `since` resets whenever recent voice is detected,
+                                // so the two values can diverge. `saturating_sub`
+                                // keeps the combination safe regardless of which
+                                // value is currently larger.
                                 let silence = elapsed.saturating_sub(voice_elapsed);
-                                if silence < RECORDING_TIMEOUT {
+                                if silence < RECORDING_TIMEOUT + silence_extension_local {
                                     // User spoke within the timeout window. Reset
                                     // the silence deadline to now, giving a fresh
                                     // RECORDING_TIMEOUT of silence tolerance.
                                     since = Instant::now();
-                                    core.stage = Stage::Recording {
-                                        binding_id: binding_id.clone(),
-                                        since,
-                                    };
+                                    warned_local = false;
                                 }
                             }
 
@@ -772,24 +912,26 @@ impl TranscriptionCoordinator {
                             // VAD gets stuck or a continuous audio source loops.
                             let hard_cap_elapsed =
                                 recording_start.map_or(Duration::ZERO, |start| start.elapsed());
-                            if hard_cap_elapsed >= MAX_RECORDING_HARD_CAP {
+                            let hard_cap_deadline =
+                                MAX_RECORDING_HARD_CAP + core.hard_cap_extension;
+                            if hard_cap_elapsed >= hard_cap_deadline {
                                 warn!(
                                     "Recording exceeded hard cap of {:?}, forcing emergency cancel",
-                                    MAX_RECORDING_HARD_CAP
+                                    hard_cap_deadline
                                 );
                                 if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
                                     rm.cancel_recording();
                                 }
-                                if let Some(backup) = crate::emergency_save::get_emergency_backup()
-                                {
-                                    backup.cancel_recording();
-                                }
+                                // AudioRecordingManager::cancel_recording() already
+                                // cancels the emergency backup, so don't duplicate
+                                // that work here.
                                 crate::utils::hide_recording_overlay(&app);
                                 crate::utils::change_tray_icon(
                                     &app,
                                     crate::utils::TrayIconState::Idle,
                                 );
                                 crate::shortcut::handy_keys::reset_all_pressed_hotkeys(&app);
+                                core.hard_cap_extension = Duration::ZERO;
                                 set_stage(
                                     &mut core.stage,
                                     Stage::Idle,
@@ -800,8 +942,64 @@ impl TranscriptionCoordinator {
                                 return;
                             }
 
-                            let elapsed = since.elapsed();
-                            if elapsed >= RECORDING_TIMEOUT {
+                            let silence_deadline = RECORDING_TIMEOUT + silence_extension_local;
+                            let silence_deadline_remaining =
+                                silence_deadline.saturating_sub(since.elapsed());
+                            let hard_cap_remaining =
+                                hard_cap_deadline.saturating_sub(hard_cap_elapsed);
+
+                            // The effective deadline is the sooner of the two.
+                            // We report that kind to the frontend so the warning
+                            // text can say "Recording ending in Ns" vs
+                            // "Recording hard limit in Ns".
+                            let (effective_remaining, kind) =
+                                if silence_deadline_remaining <= hard_cap_remaining {
+                                    (
+                                        silence_deadline_remaining,
+                                        RecordingTimeoutWarningKind::Silence,
+                                    )
+                                } else {
+                                    (hard_cap_remaining, RecordingTimeoutWarningKind::HardCap)
+                                };
+
+                            // Warning emission: fire once when we enter the 30s
+                            // window, then re-emit on every loop wake while still
+                            // inside the window so a freshly opened overlay stays
+                            // in sync. The frontend handles deduplication by
+                            // resetting its local countdown from the new payload.
+                            if effective_remaining <= RECORDING_TIMEOUT_WARN_LEAD {
+                                if !warned_local {
+                                    info!(
+                                        "Recording timeout warning: {:?} remaining ({:?})",
+                                        effective_remaining, kind
+                                    );
+                                }
+                                let now_epoch_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or(Duration::ZERO)
+                                    .as_millis()
+                                    as u64;
+                                let warning = RecordingTimeoutWarning {
+                                    seconds_remaining: effective_remaining.as_secs(),
+                                    kind: kind.clone(),
+                                    deadline_at_epoch_ms: now_epoch_ms
+                                        + effective_remaining.as_millis() as u64,
+                                };
+                                emit_recording_timeout_warning(&app, &warning);
+                                warned_local = true;
+                            }
+
+                            // Push the re-armed `warned` flag back into the stage
+                            // so the warning only re-fires after a VAD slide or
+                            // an extend resets it.
+                            core.stage = Stage::Recording {
+                                binding_id: binding_id_local,
+                                since,
+                                silence_extension: silence_extension_local,
+                                warned: warned_local,
+                            };
+
+                            if effective_remaining == Duration::ZERO {
                                 // Recording has exceeded the maximum allowed
                                 // duration. This is an emergency safety net for
                                 // the rare case where the stop hotkey never
@@ -810,21 +1008,21 @@ impl TranscriptionCoordinator {
                                 // Idle so the microphone does not stay live.
                                 warn!(
                                     "Recording stage exceeded {:?} timeout, forcing emergency cancel",
-                                    RECORDING_TIMEOUT
+                                    silence_deadline
                                 );
                                 if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
                                     rm.cancel_recording();
                                 }
-                                if let Some(backup) = crate::emergency_save::get_emergency_backup()
-                                {
-                                    backup.cancel_recording();
-                                }
+                                // AudioRecordingManager::cancel_recording() already
+                                // cancels the emergency backup, so don't duplicate
+                                // that work here.
                                 crate::utils::hide_recording_overlay(&app);
                                 crate::utils::change_tray_icon(
                                     &app,
                                     crate::utils::TrayIconState::Idle,
                                 );
                                 crate::shortcut::handy_keys::reset_all_pressed_hotkeys(&app);
+                                core.hard_cap_extension = Duration::ZERO;
                                 set_stage(
                                     &mut core.stage,
                                     Stage::Idle,
@@ -834,7 +1032,23 @@ impl TranscriptionCoordinator {
                                 );
                                 return;
                             }
-                            Some(RECORDING_TIMEOUT - elapsed)
+
+                            // Choose the next recv_timeout so we wake up at the
+                            // 30s warning mark (if not yet warned) and then stay
+                            // on every loop iteration while inside the warning
+                            // window to keep re-emitting the countdown.
+                            if warned_local {
+                                Some(effective_remaining)
+                            } else if effective_remaining > RECORDING_TIMEOUT_WARN_LEAD {
+                                Some(std::cmp::min(
+                                    effective_remaining,
+                                    RECORDING_TIMEOUT_WARN_LEAD,
+                                ))
+                            } else {
+                                // Should not happen because we're outside the
+                                // warning window, but stay safe.
+                                Some(effective_remaining)
+                            }
                         }
                         _ => None,
                     };
@@ -870,6 +1084,7 @@ impl TranscriptionCoordinator {
                         Command::ProcessingFinished => "ProcessingFinished",
                         Command::ProcessingTimeout => "ProcessingTimeout",
                         Command::SetProcessingWithBinding { .. } => "SetProcessingWithBinding",
+                        Command::ExtendRecording { .. } => "ExtendRecording",
                     };
 
                     // Check cancel flag again after receiving a command.
@@ -1087,6 +1302,12 @@ impl TranscriptionCoordinator {
         emit_app_state(app, &AppState::Idle);
     }
 
+    /// Send a request to extend the current recording's deadlines by `seconds`.
+    /// Has no effect if the coordinator is not currently Recording.
+    pub fn extend_recording(&self, seconds: u64) {
+        let _ = self.tx.send(Command::ExtendRecording { seconds });
+    }
+
     /// Send a keyboard/signal input event for a transcribe binding.
     /// For signal-based toggles, use `is_pressed: true` and `push_to_talk: false`.
     pub fn send_input(
@@ -1159,13 +1380,15 @@ fn start(
     action.start(app, binding_id, hotkey_string);
     if app
         .try_state::<Arc<AudioRecordingManager>>()
-        .map_or(false, |a| a.is_recording())
+        .is_some_and(|a| a.is_recording())
     {
         set_stage(
             stage,
             Stage::Recording {
                 binding_id: binding_id.to_string(),
                 since: Instant::now(),
+                silence_extension: Duration::ZERO,
+                warned: false,
             },
             active_use,
             current_state,
