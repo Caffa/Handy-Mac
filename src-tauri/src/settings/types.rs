@@ -415,6 +415,11 @@ impl SoundTheme {
     pub fn to_stop_path(&self) -> String {
         format!("resources/{}_stop.wav", self.as_str())
     }
+
+    pub fn to_error_path(&self) -> String {
+        // Reuse the stop sound for errors until a dedicated error asset is added.
+        self.to_stop_path()
+    }
 }
 
 // ── TypingTool ──
@@ -666,6 +671,8 @@ pub struct AppSettings {
     pub per_model_vad_sensitivity: HashMap<String, VadSensitivity>,
     #[serde(default)]
     pub live_captions_enabled: bool,
+    #[serde(default)]
+    pub live_captions_model: String,
     #[serde(default = "default_overlay_scale")]
     pub overlay_scale: f64,
     #[serde(default)]

@@ -176,6 +176,7 @@ pub fn get_default_settings() -> AppSettings {
         vad_sensitivity: VadSensitivity::VeryRelaxed,
         per_model_vad_sensitivity: HashMap::new(),
         live_captions_enabled: false,
+        live_captions_model: String::new(),
         overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
         spelling_dictionary: SpellingDictionary::default(),

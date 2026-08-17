@@ -1099,6 +1099,15 @@ fn run_consumer(
                                     std::mem::take(&mut raw_samples),
                                 ));
                             }
+                            // Finalise the emergency backup after a successful
+                            // smart-stop (max duration) completion.
+                            if let Some(backup) = emergency_backup.take() {
+                                backup.complete_recording();
+                                log::info!(
+                                    "[EMERGENCY-BACKUP] completed (smart-stop max duration)"
+                                );
+                            }
+                            last_voice_activity_ms.store(0, Ordering::Relaxed);
                         }
                     }
                     continue;
@@ -1381,6 +1390,15 @@ fn run_consumer(
                     std::mem::take(&mut raw_samples),
                 ));
             }
+            // Finalise the emergency backup after a successful smart-stop
+            // (trailing buffer exhausted) completion.
+            if let Some(backup) = emergency_backup.take() {
+                backup.complete_recording();
+                log::info!(
+                    "[EMERGENCY-BACKUP] completed (smart-stop trailing buffer)"
+                );
+            }
+            last_voice_activity_ms.store(0, Ordering::Relaxed);
         }
 
         // non-blocking check for a command

@@ -632,6 +632,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_transcribe_gpu_device,
             shortcut::get_available_accelerators,
             shortcut::change_vad_sensitivity_setting,
+            shortcut::set_model_vad_sensitivity,
             shortcut::change_live_captions_enabled_setting,
             shortcut::change_live_captions_model_setting,
             shortcut::change_overlay_scale_setting,

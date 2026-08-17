@@ -484,6 +484,14 @@ async changeVadSensitivitySetting(sensitivity: string) : Promise<Result<null, st
     else return { status: "error", error: e  as any };
 }
 },
+async setModelVadSensitivity(modelId: string, sensitivity: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_model_vad_sensitivity", { modelId, sensitivity }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeLiveCaptionsEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_live_captions_enabled_setting", { enabled }) };
@@ -1891,7 +1899,7 @@ current_streak_days: number;
  */
 longest_streak_days: number; 
 /**
- * Daily stats for the last 7 days: (date "YYYY-MM-DD", transcription count, word count)
+ * Daily stats for the last 30 days: (date "YYYY-MM-DD", transcription count, word count)
  */
 daily_stats: ([string, number, number])[] }
 /**

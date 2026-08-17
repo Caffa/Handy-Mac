@@ -1428,17 +1428,31 @@ pub async fn get_available_accelerators(
         .map_err(|e| format!("get_available_accelerators task failed: {}", e))
 }
 
+/// Parse a string into a `VadSensitivity` enum value.
+///
+/// Returns `Ok(None)` if the input is `None`, allowing callers to treat a
+/// missing value as "remove any override".
+fn parse_vad_sensitivity(
+    sensitivity: Option<String>,
+) -> Result<Option<settings::VadSensitivity>, String> {
+    match sensitivity {
+        None => Ok(None),
+        Some(s) => match s.as_str() {
+            "very_relaxed" => Ok(Some(settings::VadSensitivity::VeryRelaxed)),
+            "relaxed" => Ok(Some(settings::VadSensitivity::Relaxed)),
+            "balanced" => Ok(Some(settings::VadSensitivity::Balanced)),
+            "quick" => Ok(Some(settings::VadSensitivity::Quick)),
+            "very_quick" => Ok(Some(settings::VadSensitivity::VeryQuick)),
+            _ => Err(format!("Invalid VAD sensitivity: {}", s)),
+        },
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Result<(), String> {
-    let vad_sensitivity = match sensitivity.as_str() {
-        "very_relaxed" => settings::VadSensitivity::VeryRelaxed,
-        "relaxed" => settings::VadSensitivity::Relaxed,
-        "balanced" => settings::VadSensitivity::Balanced,
-        "quick" => settings::VadSensitivity::Quick,
-        "very_quick" => settings::VadSensitivity::VeryQuick,
-        _ => return Err(format!("Invalid VAD sensitivity: {}", sensitivity)),
-    };
+    let vad_sensitivity = parse_vad_sensitivity(Some(sensitivity.clone()))?
+        .ok_or_else(|| "VAD sensitivity cannot be empty".to_string())?;
 
     info!("Changing VAD sensitivity to '{}'", sensitivity);
 
@@ -1466,6 +1480,37 @@ pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Re
             );
         }
     }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_model_vad_sensitivity(
+    app: AppHandle,
+    model_id: String,
+    sensitivity: Option<String>,
+) -> Result<(), String> {
+    let parsed = parse_vad_sensitivity(sensitivity)?;
+
+    let mut settings = settings::get_settings_safe(&app);
+    match parsed {
+        Some(s) => {
+            info!(
+                "Setting per-model VAD sensitivity for '{}' to '{:?}'",
+                model_id, s
+            );
+            settings.per_model_vad_sensitivity.insert(model_id, s);
+        }
+        None => {
+            info!(
+                "Removing per-model VAD sensitivity override for '{}'",
+                model_id
+            );
+            settings.per_model_vad_sensitivity.remove(&model_id);
+        }
+    }
+    settings::write_settings_safe(&app, settings);
 
     Ok(())
 }

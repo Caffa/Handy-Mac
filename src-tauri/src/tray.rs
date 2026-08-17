@@ -405,6 +405,7 @@ mod tests {
             model_id: None,
             routed: false,
             routing_result: None,
+            file_name_vad: None,
             tags: None,
             ground_truth: None,
             quality: None,

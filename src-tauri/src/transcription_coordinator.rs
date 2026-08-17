@@ -322,6 +322,7 @@ impl CoordinatorCore {
     /// Process a cancel flag. Returns true if the coordinator should reset to Idle.
     fn check_cancel(&mut self) -> bool {
         if self.stage.is_active() {
+            self.hard_cap_extension = Duration::ZERO;
             self.transition_to(Stage::Idle);
             true
         } else {
@@ -628,6 +629,8 @@ impl CoordinatorCore {
                 StageAction::None
             }
             Command::ExtendRecording { seconds } => {
+                // Clamp extension to a 1-hour ceiling to prevent unbounded values.
+                let seconds = seconds.min(3600);
                 if let Stage::Recording {
                     ref mut silence_extension,
                     ref mut warned,
