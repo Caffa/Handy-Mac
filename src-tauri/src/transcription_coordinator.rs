@@ -65,6 +65,12 @@ const DEBOUNCE: Duration = Duration::from_millis(30);
 /// forever and the microphone does not remain live.
 const RECORDING_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Hard ceiling on total recording duration. The sliding VAD-based timeout can
+/// extend a continuous-speech session, but it can never grow beyond this cap.
+/// This prevents an unbounded recording if the user leaves the mic on with a
+/// looping audio source, or if VAD gets stuck in Speech.
+const MAX_RECORDING_HARD_CAP: Duration = Duration::from_secs(3600);
+
 /// Maximum time the coordinator will stay in `Processing` before
 /// auto-resetting to `Idle`. Prevents the app from becoming permanently
 /// unresponsive when the async transcription pipeline hangs (e.g. dead
@@ -663,6 +669,11 @@ impl TranscriptionCoordinator {
         thread::spawn(move || {
             let mut core = CoordinatorCore::new_production();
             let mut should_exit = false;
+            // Total elapsed-time tracking for the hard recording cap. Set when
+            // we first observe Recording and cleared when we leave it, so the
+            // 1-hour ceiling measures wall-clock recording duration regardless
+            // of how often VAD resets the 5-minute silence deadline.
+            let mut recording_start: Option<Instant> = None;
 
             loop {
                 let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -687,6 +698,18 @@ impl TranscriptionCoordinator {
                             warn!("Coordinator cancel flag handling took {:?}", dt);
                         }
                         return;
+                    }
+
+                    // Synchronise the total-recording clock with the core stage.
+                    // We start the clock when the core enters Recording and stop
+                    // it when it leaves, so the hard cap measures real recording
+                    // time even though the core's `since` may be reset by VAD.
+                    match &core.stage {
+                        Stage::Recording { .. } if recording_start.is_none() => {
+                            recording_start = Some(Instant::now());
+                        }
+                        Stage::Recording { .. } => {}
+                        _ => recording_start = None,
                     }
 
                     // Calculate recv timeout: wake up to check Processing and
@@ -717,7 +740,66 @@ impl TranscriptionCoordinator {
                             }
                             Some(core.processing_timeout - elapsed)
                         }
-                        Stage::Recording { since, .. } => {
+                        Stage::Recording { since, binding_id } => {
+                            let elapsed = since.elapsed();
+
+                            // VAD-based sliding timeout: if the user is still
+                            // talking, reset the silence deadline so continuous
+                            // speech can extend the session. Silence for longer
+                            // than RECORDING_TIMEOUT still triggers emergency
+                            // cancel. We use the AudioRecordingManager's shared
+                            // atomic value, which is elapsed ms since recording
+                            // start, to avoid cross-thread Instant arithmetic.
+                            let mut since = *since;
+                            if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
+                                let voice_elapsed =
+                                    Duration::from_millis(rm.last_voice_activity_ms());
+                                let silence = elapsed.saturating_sub(voice_elapsed);
+                                if silence < RECORDING_TIMEOUT {
+                                    // User spoke within the timeout window. Reset
+                                    // the silence deadline to now, giving a fresh
+                                    // RECORDING_TIMEOUT of silence tolerance.
+                                    since = Instant::now();
+                                    core.stage = Stage::Recording {
+                                        binding_id: binding_id.clone(),
+                                        since,
+                                    };
+                                }
+                            }
+
+                            // Hard cap on total recording time, independent of
+                            // voice activity. Prevents runaway recordings even if
+                            // VAD gets stuck or a continuous audio source loops.
+                            let hard_cap_elapsed =
+                                recording_start.map_or(Duration::ZERO, |start| start.elapsed());
+                            if hard_cap_elapsed >= MAX_RECORDING_HARD_CAP {
+                                warn!(
+                                    "Recording exceeded hard cap of {:?}, forcing emergency cancel",
+                                    MAX_RECORDING_HARD_CAP
+                                );
+                                if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
+                                    rm.cancel_recording();
+                                }
+                                if let Some(backup) = crate::emergency_save::get_emergency_backup()
+                                {
+                                    backup.cancel_recording();
+                                }
+                                crate::utils::hide_recording_overlay(&app);
+                                crate::utils::change_tray_icon(
+                                    &app,
+                                    crate::utils::TrayIconState::Idle,
+                                );
+                                crate::shortcut::handy_keys::reset_all_pressed_hotkeys(&app);
+                                set_stage(
+                                    &mut core.stage,
+                                    Stage::Idle,
+                                    &active_use_clone,
+                                    &current_state_clone,
+                                    &app,
+                                );
+                                return;
+                            }
+
                             let elapsed = since.elapsed();
                             if elapsed >= RECORDING_TIMEOUT {
                                 // Recording has exceeded the maximum allowed
@@ -732,6 +814,10 @@ impl TranscriptionCoordinator {
                                 );
                                 if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
                                     rm.cancel_recording();
+                                }
+                                if let Some(backup) = crate::emergency_save::get_emergency_backup()
+                                {
+                                    backup.cancel_recording();
                                 }
                                 crate::utils::hide_recording_overlay(&app);
                                 crate::utils::change_tray_icon(
@@ -776,6 +862,15 @@ impl TranscriptionCoordinator {
                             }
                         }
                     };
+                    let recv_at = Instant::now();
+                    // Capture the command name before process_command consumes `cmd`.
+                    let cmd_name = match cmd {
+                        Command::Input { .. } => "Input",
+                        Command::Cancel { .. } => "Cancel",
+                        Command::ProcessingFinished => "ProcessingFinished",
+                        Command::ProcessingTimeout => "ProcessingTimeout",
+                        Command::SetProcessingWithBinding { .. } => "SetProcessingWithBinding",
+                    };
 
                     // Check cancel flag again after receiving a command.
                     // A cancel may have arrived while we were blocking on recv.
@@ -812,6 +907,18 @@ impl TranscriptionCoordinator {
                         recorder_is_recording,
                         &app,
                     );
+                    let process_dt = recv_at.elapsed();
+                    if process_dt > Duration::from_millis(250) {
+                        warn!(
+                            "[CMD-CHAN] processed command {} recv→process took {:?} (stage now {:?})",
+                            cmd_name, process_dt, core.stage
+                        );
+                    } else {
+                        debug!(
+                            "[CMD-CHAN] processed command {} recv→process took {:?} (stage now {:?})",
+                            cmd_name, process_dt, core.stage
+                        );
+                    }
 
                     // Perform side effects based on the action returned by the core.
                     match action {
@@ -989,16 +1096,26 @@ impl TranscriptionCoordinator {
         is_pressed: bool,
         push_to_talk: bool,
     ) {
-        if self
-            .tx
-            .send(Command::Input {
-                binding_id: binding_id.to_string(),
-                hotkey_string: hotkey_string.to_string(),
-                is_pressed,
-                push_to_talk,
-            })
-            .is_err()
-        {
+        let send_start = Instant::now();
+        let result = self.tx.send(Command::Input {
+            binding_id: binding_id.to_string(),
+            hotkey_string: hotkey_string.to_string(),
+            is_pressed,
+            push_to_talk,
+        });
+        let dt = send_start.elapsed();
+        if dt > Duration::from_millis(100) {
+            warn!(
+                "[CMD-CHAN] send_input enqueued for '{}' (send took {:?})",
+                binding_id, dt
+            );
+        } else {
+            debug!(
+                "[CMD-CHAN] send_input enqueued for '{}' (send took {:?})",
+                binding_id, dt
+            );
+        }
+        if result.is_err() {
             warn!("Transcription coordinator channel closed");
         }
     }
@@ -1057,7 +1174,7 @@ fn start(
         // Bump overlay session — any pending hide from previous session is now invalid
         crate::overlay::bump_overlay_session();
     } else {
-        debug!("Start for '{binding_id}' did not begin recording; staying idle");
+        warn!("[START-ROLLBACK] start dispatched for '{}' but is_recording()=false — rolling stage back to Idle (start hotkey may appear dead if this repeats)", binding_id);
         // process_command optimistically transitioned to Recording before
         // dispatching StartRecording. If the audio device failed to start,
         // roll the stage back to Idle so the coordinator isn't stuck claiming

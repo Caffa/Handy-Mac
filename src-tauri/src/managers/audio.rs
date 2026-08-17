@@ -162,6 +162,7 @@ fn create_audio_recorder(
     app_handle: &tauri::AppHandle,
     vad_threshold: f32,
     vad_hangover_frames: usize,
+    last_voice_activity_ms: Arc<AtomicU64>,
 ) -> Result<AudioRecorder, anyhow::Error> {
     let silero = SileroVad::new(vad_path, vad_threshold)
         .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
@@ -202,6 +203,7 @@ fn create_audio_recorder(
     let mut recorder = AudioRecorder::new()
         .map_err(|e| anyhow::anyhow!("Failed to create AudioRecorder: {}", e))?
         .with_vad(Box::new(smoothed_vad))
+        .with_voice_activity_stamp(last_voice_activity_ms)
         .with_level_callback({
             let app_handle = app_handle.clone();
             move |levels| {
@@ -431,6 +433,10 @@ pub struct AudioRecordingManager {
     prev_input_devices: Arc<Mutex<Vec<String>>>,
     /// Previous output device names (for change detection)
     prev_output_devices: Arc<Mutex<Vec<String>>>,
+    /// Shared voice-activity timestamp (elapsed ms since recording start).
+    /// The recorder stamps this when VAD detects speech; the coordinator reads
+    /// it to reset the 5-minute silence timeout.
+    last_voice_activity_ms: Arc<AtomicU64>,
 }
 
 impl AudioRecordingManager {
@@ -480,6 +486,7 @@ impl AudioRecordingManager {
             device_monitor_stop: Arc::new(Mutex::new(None)),
             prev_input_devices: Arc::new(Mutex::new(Vec::new())),
             prev_output_devices: Arc::new(Mutex::new(Vec::new())),
+            last_voice_activity_ms: Arc::new(AtomicU64::new(0)),
         };
 
         // Check for Bluetooth output devices — if detected, keep the mic
@@ -927,6 +934,7 @@ impl AudioRecordingManager {
                 &self.app_handle,
                 vad_threshold,
                 vad_hangover_frames,
+                Arc::clone(&self.last_voice_activity_ms),
             )?);
         }
         Ok(())
@@ -1041,6 +1049,7 @@ impl AudioRecordingManager {
             &self.app_handle,
             vad_threshold,
             vad_hangover_frames,
+            Arc::clone(&self.last_voice_activity_ms),
         )?;
 
         *recorder_opt = Some(new_recorder);
@@ -1389,7 +1398,7 @@ impl AudioRecordingManager {
         let mut state = self.state.lock();
         if let RecordingState::Idle = *state {
             if let Some(rec) = self.recorder.lock().as_ref() {
-                if rec.start().is_ok() {
+                if rec.start(binding_id).is_ok() {
                     self.is_recording.store(true, Ordering::Release);
                     *state = RecordingState::Recording {
                         binding_id: binding_id.to_string(),
@@ -1768,6 +1777,14 @@ impl AudioRecordingManager {
         result
     }
 
+    /// Return the elapsed milliseconds since recording start at which VAD last
+    /// detected speech. The coordinator uses this to implement a sliding timeout:
+    /// if speech has occurred within the last `RECORDING_TIMEOUT`, the deadline
+    /// is reset.
+    pub fn last_voice_activity_ms(&self) -> u64 {
+        self.last_voice_activity_ms.load(Ordering::Acquire)
+    }
+
     /// Check if the microphone stream is open (always-on mode or BT keep-alive)
     pub fn is_stream_open(&self) -> bool {
         self.is_open.load(Ordering::Acquire)
@@ -1800,6 +1817,19 @@ impl AudioRecordingManager {
             "[CANCEL-TIMING] cancel_recording START on thread {:?}",
             std::thread::current().id()
         );
+
+        // Mark the emergency backup as cancelled (renames in-progress file to
+        // *_cancelled.wav). Do this before we tear down the recorder so a crash
+        // during stop still leaves a recoverable file. The recorder worker
+        // also owns a clone of the global backup and will drop its reference
+        // after the stop reply, but the explicit cancel here is authoritative.
+        if let Some(backup) = crate::emergency_save::get_emergency_backup() {
+            let cancelled_path = backup.cancel_recording();
+            log::info!(
+                "[EMERGENCY-BACKUP] cancel_recording finalised: {:?}",
+                cancelled_path
+            );
+        }
 
         let t_state_lock = std::time::Instant::now();
         let mut state = match self.state.try_lock_for(std::time::Duration::from_secs(2)) {

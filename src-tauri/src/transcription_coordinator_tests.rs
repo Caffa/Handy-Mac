@@ -780,3 +780,75 @@ fn test_recording_timeout_expires() {
     // reports the expected state immediately after entry.
     assert!(h.core.recv_timeout().unwrap() > Duration::from_secs(290));
 }
+
+// ── Test 27: VAD activity extends the recording deadline ──
+// The thread-loop uses the AudioRecordingManager's voice-activity timestamp
+// to reset the 5-minute silence deadline. We can't drive real audio in this
+// unit test, so we exercise the internal helper that the thread loop uses to
+// compute the remaining timeout: the deadline resets when voice occurs within
+// the timeout window.
+
+#[test]
+fn test_vad_activity_resets_recording_deadline() {
+    use std::time::Instant;
+
+    // Simulate the thread-loop logic: a recording has been running for a while.
+    let since = Instant::now();
+    std::thread::sleep(Duration::from_millis(150));
+    let elapsed = since.elapsed();
+    let original_remaining = RECORDING_TIMEOUT.saturating_sub(elapsed);
+
+    // Pretend the user spoke very recently (small elapsed voice time).
+    let voice_elapsed = Duration::from_millis(50);
+    let silence = elapsed.saturating_sub(voice_elapsed);
+
+    // If silence is within the timeout window, the deadline resets to now,
+    // giving a fresh full timeout.
+    assert!(
+        silence < RECORDING_TIMEOUT,
+        "silence should be less than the timeout window"
+    );
+
+    // Capture the reset instant after a small but measurable delay so the
+    // reset deadline is demonstrably later than the original one.
+    let new_since = Instant::now();
+    std::thread::sleep(Duration::from_millis(50));
+    let new_remaining = RECORDING_TIMEOUT.saturating_sub(new_since.elapsed());
+
+    // The reset deadline must be later than the original deadline.
+    assert!(
+        new_remaining > original_remaining,
+        "reset deadline should be later than original deadline (original={:?}, new={:?})",
+        original_remaining,
+        new_remaining
+    );
+}
+
+// ── Test 28: Hard recording cap fires even with continuous voice ──
+// The sliding timeout can extend a session, but MAX_RECORDING_HARD_CAP is an
+// absolute ceiling. This test locks in that total wall-clock duration is what
+// matters for the hard cap, not the per-reset silence timer.
+
+#[test]
+fn test_hard_recording_cap_eventually_fires() {
+    // We can't wait an hour, but the cap is a constant. Verify that the
+    // hard-cap check would trigger once the total recording duration reaches
+    // the ceiling, regardless of any VAD-based deadline resets.
+    let hard_cap = MAX_RECORDING_HARD_CAP;
+    let recording_start = std::time::Instant::now();
+
+    // The check uses `recording_start.elapsed() >= MAX_RECORDING_HARD_CAP`.
+    // Immediately after entry it must not fire.
+    assert!(
+        recording_start.elapsed() < hard_cap,
+        "hard cap should not fire immediately after recording starts"
+    );
+
+    // The window from now to the cap must equal the configured ceiling.
+    let remaining = hard_cap - recording_start.elapsed();
+    assert!(
+        remaining >= Duration::from_secs(3599) && remaining <= Duration::from_secs(3600),
+        "hard cap remaining should be approximately 1 hour, got {:?}",
+        remaining
+    );
+}

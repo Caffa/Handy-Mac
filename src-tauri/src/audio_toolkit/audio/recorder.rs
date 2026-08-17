@@ -21,11 +21,14 @@ use crate::audio_toolkit::{
     vad::{self, VadFrame},
     VoiceActivityDetector,
 };
+use crate::emergency_save;
 use crate::settings::NoiseSuppressionLevel;
 use crate::streaming_cancel_flag::StreamingCancelFlag;
 
 enum Cmd {
-    Start,
+    Start {
+        binding_id: String,
+    },
     Stop(mpsc::Sender<(Vec<f32>, Vec<f32>)>),
     /// Continue recording for up to `max_buffer_ms` after the hotkey is
     /// released, but stop early when sustained silence is detected (based
@@ -125,6 +128,12 @@ pub struct AudioRecorder {
     /// clears this unconditionally on `Cmd::Start` as a belt-and-suspenders
     /// defense against stale cancellation state from a previous session.
     streaming_cancel_flag: Option<StreamingCancelFlag>,
+    /// Optional real-time audio frame router. When present and open, each
+    /// resampled 16 kHz frame produced by the frame resampler is forwarded to
+    /// the streaming transcription worker. This bypasses the slower 2.5 s
+    /// batch streaming callback path. When absent or closed, the recorder
+    /// falls back to the legacy batch callback.
+    stream_router: Option<Arc<crate::managers::transcription::StreamRouter>>,
     /// Timestamp (ms since epoch) of the last audio chunk received by
     /// the consumer thread. Used to detect dead microphone streams.
     last_chunk_ms: Arc<AtomicU64>,
@@ -140,6 +149,11 @@ pub struct AudioRecorder {
     /// of audio continuously and prepends it to recordings when they start.
     /// Only effective in always-on microphone mode.
     pre_buffer_ms: Arc<AtomicU32>,
+    /// Shared timestamp (ms since recording start) of the most recent VAD
+    /// speech frame. The coordinator reads this to implement a sliding
+    /// timeout: as long as the user keeps talking, the 5-minute deadline is
+    /// reset. Stored as elapsed ms so a single u64 can be read without locks.
+    last_voice_activity_ms: Arc<AtomicU64>,
 }
 
 impl AudioRecorder {
@@ -154,11 +168,20 @@ impl AudioRecorder {
             streaming_cb: None,
             streaming_enabled: Arc::new(AtomicBool::new(false)),
             streaming_cancel_flag: None,
+            stream_router: None,
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
             opened_at_ms: Arc::new(AtomicU64::new(0)),
             max_level: Arc::new(AtomicU32::new(0)),
             pre_buffer_ms: Arc::new(AtomicU32::new(0)),
+            last_voice_activity_ms: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Attach a shared voice-activity timestamp. The recorder will stamp it
+    /// whenever VAD classifies a frame as Speech while recording.
+    pub fn with_voice_activity_stamp(mut self, stamp: Arc<AtomicU64>) -> Self {
+        self.last_voice_activity_ms = stamp;
+        self
     }
 
     pub fn with_vad(mut self, vad: Box<dyn VoiceActivityDetector>) -> Self {
@@ -199,6 +222,18 @@ impl AudioRecorder {
     /// previous session.
     pub fn with_streaming_cancel_flag(mut self, flag: StreamingCancelFlag) -> Self {
         self.streaming_cancel_flag = Some(flag);
+        self
+    }
+
+    /// Attach a real-time stream router for per-frame streaming
+    /// transcription. When the router is open, the recorder feeds each
+    /// resampled 16 kHz frame directly to the router instead of waiting for
+    /// the 2.5 s batch streaming callback.
+    pub fn with_stream_router(
+        mut self,
+        router: Option<Arc<crate::managers::transcription::StreamRouter>>,
+    ) -> Self {
+        self.stream_router = router;
         self
     }
 
@@ -280,9 +315,12 @@ impl AudioRecorder {
         // at runtime without recreating the recorder (Strategy pattern).
         let streaming_enabled = self.streaming_enabled.clone();
         let streaming_cancel_flag = self.streaming_cancel_flag.clone();
+        // Move the optional real-time stream router into the worker thread
+        let stream_router = self.stream_router.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
         let pre_buffer_ms = self.pre_buffer_ms.load(Ordering::Relaxed);
+        let last_voice_activity_ms = self.last_voice_activity_ms.clone();
 
         let worker = std::thread::spawn(move || {
             let stop_flag = Arc::new(AtomicBool::new(false));
@@ -382,10 +420,12 @@ impl AudioRecorder {
                         streaming_cb,
                         streaming_enabled,
                         streaming_cancel_flag,
+                        stream_router,
                         stop_flag,
                         last_chunk_ms,
                         max_level,
                         pre_buffer_ms,
+                        last_voice_activity_ms,
                     );
 
                     // Pause the stream before dropping to prevent heap corruption.
@@ -432,9 +472,11 @@ impl AudioRecorder {
         }
     }
 
-    pub fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn start(&self, binding_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(tx) = &self.cmd_tx {
-            tx.send(Cmd::Start)?;
+            tx.send(Cmd::Start {
+                binding_id: binding_id.to_string(),
+            })?;
         }
         Ok(())
     }
@@ -929,10 +971,12 @@ fn run_consumer(
     streaming_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     streaming_enabled: Arc<AtomicBool>,
     streaming_cancel_flag: Option<StreamingCancelFlag>,
+    stream_router: Option<Arc<crate::managers::transcription::StreamRouter>>,
     stop_flag: Arc<AtomicBool>,
     last_chunk_ms: Arc<AtomicU64>,
     max_level: Arc<AtomicU32>,
     pre_buffer_ms: u32,
+    last_voice_activity_ms: Arc<AtomicU64>,
 ) {
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
@@ -979,6 +1023,21 @@ fn run_consumer(
         0
     };
     let mut pre_buffer: VecDeque<f32> = VecDeque::with_capacity(pre_buffer_max_samples);
+
+    // Emergency backup state for this recording. We hold an Option so we can
+    // take() it on stop/complete/cancel, ensuring the in-progress file is only
+    // touched while a recording is active.
+    let mut emergency_backup: Option<Arc<emergency_save::EmergencyBackup>> = None;
+    // Throttle emergency-backup disk writes to every 5 seconds. Writing the WAV
+    // on every frame would serialize file I/O onto the audio path and starve
+    // the callback; batching to 5 s keeps the backup reasonably fresh without
+    // blocking per-frame processing.
+    const BACKUP_INTERVAL: Duration = Duration::from_secs(5);
+    let mut last_backup_update: Option<Instant> = None;
+    // Instant when the current recording began. Used to convert voice-activity
+    // timestamps into elapsed milliseconds that the coordinator can compare
+    // against its own Instant-based timeout without cross-thread Instant math.
+    let mut recording_start_instant: Option<Instant> = None;
 
     // ---------- spectrum visualisation setup ---------------------------- //
     const BUCKETS: usize = 16;
@@ -1091,6 +1150,24 @@ fn run_consumer(
             }
         }
 
+        // ---------- emergency backup update ------------------------------- //
+        // Periodically flush the current processed samples to disk. We do this
+        // in the outer worker loop (not inside the per-frame closure) because
+        // write_wav_backup takes a mutex and performs file I/O. Throttling to
+        // 5 s limits mutex contention and keeps the backup reasonably fresh.
+        if recording {
+            if let Some(backup) = emergency_backup.as_ref() {
+                let should_update = match last_backup_update {
+                    None => true,
+                    Some(last) => last.elapsed() >= BACKUP_INTERVAL,
+                };
+                if should_update {
+                    backup.update_samples(&processed_samples, constants::WHISPER_SAMPLE_RATE);
+                    last_backup_update = Some(Instant::now());
+                }
+            }
+        }
+
         // ---------- streaming transcription callback ----------------------- //
         // Invoke the streaming callback periodically during active recording
         // to enable real-time partial transcription display.
@@ -1102,10 +1179,12 @@ fn run_consumer(
         // second naming the first clause that prevented invocation. This avoids
         // flooding the log while still making it obvious why streaming is not
         // running when expected.
+        let stream_router_active = stream_router.as_ref().is_some_and(|r| r.is_open());
         let gate_ok = recording
             && streaming_enabled.load(Ordering::Acquire)
             && streaming_cb.is_some()
-            && consecutive_speech_frames >= MIN_SPEECH_FRAMES_BEFORE_STREAMING;
+            && consecutive_speech_frames >= MIN_SPEECH_FRAMES_BEFORE_STREAMING
+            && !stream_router_active;
         if !gate_ok {
             let now = Instant::now();
             let should_log = match last_gate_log {
@@ -1119,6 +1198,8 @@ fn run_consumer(
                     "streaming disabled"
                 } else if streaming_cb.is_none() {
                     "no streaming callback"
+                } else if stream_router_active {
+                    "stream router active"
                 } else {
                     "<3 speech frames"
                 };
@@ -1165,6 +1246,13 @@ fn run_consumer(
         let mut smart_stop_triggered = false;
 
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
+            // Forward each resampled 16 kHz frame to the real-time stream router
+            // before the batch callback runs. This provides per-frame streaming
+            // transcription; when no router is open the feed is a cheap no-op.
+            if let Some(router) = &stream_router {
+                router.feed(frame);
+            }
+
             let rms = compute_rms(frame);
 
             // Track max audio level during recording for noise detection
@@ -1212,12 +1300,21 @@ fn run_consumer(
                 &mut processed_samples,
             );
 
-            // Track consecutive speech frames for streaming transcription
-            // Reset on noise, increment on speech to avoid false starts
+            // Track consecutive speech frames for streaming transcription and
+            // update the shared voice-activity timestamp used by the coordinator
+            // for the sliding recording timeout. We stamp elapsed ms since the
+            // recording started so a single u64 can be read without needing a
+            // shared Instant (which isn't Send in all contexts and would require
+            // a lock). This avoids wall-clock skew and keeps the coordinator's
+            // silence calculation simple.
             if recording {
                 match class {
                     FrameClass::Speech => {
                         consecutive_speech_frames = consecutive_speech_frames.saturating_add(1);
+                        if let Some(start) = recording_start_instant {
+                            let elapsed = (Instant::now() - start).as_millis() as u64;
+                            last_voice_activity_ms.store(elapsed, Ordering::Relaxed);
+                        }
                     }
                     FrameClass::Noise => {
                         consecutive_speech_frames = 0;
@@ -1289,10 +1386,23 @@ fn run_consumer(
         // non-blocking check for a command
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                Cmd::Start => {
+                Cmd::Start { binding_id } => {
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
                     raw_samples.clear();
+
+                    // Start or re-attach the global emergency backup. We use
+                    // the OnceLock-based global so the recorder doesn't need
+                    // an extra constructor parameter, matching how lib.rs
+                    // initializes the backup before any recording can begin.
+                    emergency_backup = emergency_save::get_emergency_backup().map(Arc::clone);
+                    if let Some(backup) = emergency_backup.as_ref() {
+                        backup.start_recording(&binding_id);
+                        log::info!("[EMERGENCY-BACKUP] started for binding '{}'", binding_id);
+                    }
+                    last_backup_update = None;
+                    recording_start_instant = Some(Instant::now());
+                    last_voice_activity_ms.store(0, Ordering::Relaxed);
 
                     // Prepend pre-buffer if configured (always-on mode)
                     // This captures speech that started BEFORE the hotkey was pressed
@@ -1333,6 +1443,17 @@ fn run_consumer(
                     }
                 }
                 Cmd::Stop(reply_tx) => {
+                    log::info!("[STOP-DIAGNOSTIC] Consumer thread received Cmd::Stop");
+                    // Finalise the emergency backup as a successful recording
+                    // (delete the in-progress file). Do this before draining
+                    // audio so a crash during drain still leaves a recoverable
+                    // backup from the last periodic update.
+                    if let Some(backup) = emergency_backup.take() {
+                        backup.complete_recording();
+                        log::info!("[EMERGENCY-BACKUP] completed successfully");
+                    }
+                    recording_start_instant = None;
+                    last_voice_activity_ms.store(0, Ordering::Relaxed);
                     log::info!("[STOP-DIAGNOSTIC] Consumer thread received Cmd::Stop");
                     // If a smart-stop is in progress, resolve it with
                     // whatever samples we have so far so the caller
@@ -1444,6 +1565,13 @@ fn run_consumer(
                 }
                 Cmd::Shutdown => {
                     stop_flag.store(true, Ordering::Relaxed);
+                    // Leave the emergency backup in its in-progress state if a
+                    // recording was active. The next app launch will run
+                    // recover_orphaned_recordings() and surface the file. The
+                    // recording_start_instant drop is implicit; clearing the
+                    // voice-activity stamp prevents a stale value from being
+                    // read by the coordinator after the worker exits.
+                    last_voice_activity_ms.store(0, Ordering::Relaxed);
                     return;
                 }
             }
