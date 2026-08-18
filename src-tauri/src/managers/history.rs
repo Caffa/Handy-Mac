@@ -3,7 +3,7 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use csv::Writer;
 use log::{debug, error, info, warn};
 use rusqlite::{params, Connection, OptionalExtension};
-use rusqlite_migration::{Migrations, M};
+use rusqlite_migration::{Error as MigrationError, MigrationDefinitionError, Migrations, M};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::fs;
@@ -210,8 +210,34 @@ impl HistoryManager {
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         debug!("Database version before migration: {}", version_before);
 
-        // Apply any pending migrations
-        migrations.to_latest(&mut conn)?;
+        // Apply any pending migrations. If the database was previously migrated by a build
+        // that defined more migrations than the current binary (e.g., an experimental branch was
+        // rolled back), rusqlite_migration returns DatabaseTooFarAhead. As long as the actual
+        // schema already contains all expected columns, we can safely clamp user_version back to
+        // the latest migration defined by the current code instead of crashing on startup.
+        if let Err(e) = migrations.to_latest(&mut conn) {
+            if let MigrationError::MigrationDefinition(
+                MigrationDefinitionError::DatabaseTooFarAhead,
+            ) = e
+            {
+                warn!(
+                    "Database user_version ({}) is ahead of the current migrations ({}). \
+                     This can happen after running an experimental build with extra migrations. \
+                     Verifying schema and clamping user_version if safe.",
+                    version_before,
+                    MIGRATIONS.len()
+                );
+                self.verify_and_fix_schema(&conn)?;
+                conn.pragma_update(None, "user_version", MIGRATIONS.len() as i32)?;
+                info!(
+                    "Database user_version clamped from {} to {}. Startup continuing.",
+                    version_before,
+                    MIGRATIONS.len()
+                );
+            } else {
+                return Err(e.into());
+            }
+        }
 
         // Get version after migration
         let version_after: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
