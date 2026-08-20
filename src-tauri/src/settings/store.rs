@@ -527,7 +527,7 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
 /// Also updates the in-memory cache immediately so that subsequent reads
 /// (via `get_settings` or `get_settings_safe`) see the new value, eliminating
 /// the read-modify-write race with the debounced disk writer.
-pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+pub fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings", || {
         // Diagnostics: log any change to keyboard_implementation so future
         // unexpected reverts can be traced to the code path that wrote them.
@@ -570,7 +570,7 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
 
 /// Write settings to disk immediately, bypassing the debounce timer.
 /// Also updates the in-memory cache if available, to keep reads consistent.
-pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
+pub fn write_settings_immediate<R: Runtime>(app: &AppHandle<R>, mut settings: AppSettings) {
     let _ = safe_settings_operation("write_settings_immediate", || {
         // Diagnostics: log any change to keyboard_implementation so future
         // unexpected reverts can be traced to the code path that wrote them.
@@ -609,64 +609,32 @@ pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
     });
 }
 
-/// Flush any pending debounced settings to disk.
+/// Flush any pending debounced settings to disk synchronously.
 ///
-/// On exit (`RunEvent::ExitRequested`) we must ensure in-flight settings
-/// are persisted. The previous implementation unconditionally called
-/// `block_in_place` + `block_on` which can deadlock if the Tokio runtime
-/// is already tearing down.
+/// Called from Tauri's `RunEvent::ExitRequested` run callback, which executes
+/// on the main event-loop thread with **no active Tokio runtime context**.
+/// That means any use of `tokio::runtime::Handle::current()`, `block_in_place`,
+/// or `block_on` would panic (or deadlock if the runtime is already tearing
+/// down). The panic is swallowed by `safe_settings_operation`, so the pending
+/// write would be silently dropped — which is exactly how custom words were
+/// lost on quit.
 ///
-/// This version:
-/// 1. Checks whether there is a pending write first (cheap, async lock).
-/// 2. If no pending write, returns immediately — no blocking needed.
-/// 3. If there IS a pending write, does a synchronous disk write via
-///    `write_settings_immediate` (which calls `store.save()` synchronously)
-///    wrapped in a `block_in_place` + `block_on` with a 2-second timeout
-///    guard so a deadlocked runtime cannot hang the app on quit.
-pub fn flush_settings(app: &AppHandle) {
+/// Instead, this function relies on the fact that `write_settings` and
+/// `write_settings_immediate` always update the in-memory `SettingsCache`
+/// synchronously before scheduling a disk write. On exit we simply grab the
+/// current cache value and perform a synchronous `write_settings_immediate`.
+/// If the cache is not available there is nothing authoritative to flush, so
+/// we log a warning and return without panicking or blocking.
+pub fn flush_settings<R: Runtime>(app: &AppHandle<R>) {
     let _ = safe_settings_operation("flush_settings", || {
-        let Some(writer) = app.try_state::<Arc<SettingsWriter>>() else {
-            info!("[settings] exit flush: no writer registered, nothing to flush");
+        let Some(cache) = app.try_state::<Arc<SettingsCache>>() else {
+            warn!("[settings] exit flush: SettingsCache not available, cannot flush pending changes");
             return;
         };
 
-        // Use block_in_place because we're in a sync context (Tauri run callback)
-        // but need to check the async pending lock.
-        let has_pending = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async { writer.has_pending().await })
-        });
-
-        info!("[settings] exit flush: pending={}", has_pending);
-
-        if !has_pending {
-            info!("[settings] exit flush complete (nothing to write)");
-            return;
-        }
-
-        // There is a pending write. Flush it with a timeout so we don't
-        // hang if the runtime is shutting down.
-        let result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(2), writer.flush(app)).await
-            })
-        });
-
-        match result {
-            Ok(()) => info!("[settings] exit flush complete"),
-            Err(_) => {
-                warn!("[settings] exit flush timed out after 2s — performing direct disk write as fallback");
-                // Fallback: write directly from the pending settings if we can
-                // grab them, then do a synchronous save.
-                if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
-                    write_settings_immediate(app, cache.get());
-                    info!("[settings] exit flush complete (via direct fallback)");
-                } else {
-                    warn!(
-                        "[settings] exit flush fallback: cache not available, settings may be lost"
-                    );
-                }
-            }
-        }
+        let settings = cache.get();
+        write_settings_immediate(app, settings);
+        info!("[settings] exit flush complete");
     });
 }
 
@@ -758,7 +726,7 @@ impl SettingsWriter {
 
     /// Schedule a settings write. If a write is already pending the new value
     /// replaces it and the debounce timer is restarted.
-    pub async fn write(&self, app: AppHandle, settings: AppSettings) {
+    pub async fn write<R: Runtime>(&self, app: AppHandle<R>, settings: AppSettings) {
         {
             let mut pending = self.pending.lock().await;
             *pending = Some(settings);
@@ -789,7 +757,7 @@ impl SettingsWriter {
     }
 
     /// Flush any pending settings to disk immediately.
-    pub async fn flush(&self, app: &AppHandle) {
+    pub async fn flush<R: Runtime>(&self, app: &AppHandle<R>) {
         {
             let mut timer = self.timer.lock().await;
             if let Some(handle) = timer.take() {
@@ -800,7 +768,7 @@ impl SettingsWriter {
     }
 
     /// Internal flush: write the pending settings (if any) to the store.
-    async fn flush_inner(&self, app: &AppHandle) {
+    async fn flush_inner<R: Runtime>(&self, app: &AppHandle<R>) {
         let maybe_settings = {
             let mut pending = self.pending.lock().await;
             pending.take()
@@ -960,6 +928,148 @@ mod tests {
         assert_eq!(
             binding.binding_for(KeyboardImplementation::HandyKeys),
             "ctrl_right+command_right+y"
+        );
+    }
+
+    /// Verifies that `salvage_settings` preserves `custom_words` (and related
+    /// per-field settings) when an unrelated top-level field is broken. This
+    /// is the load path used whenever a stored settings file fails full
+    /// deserialization. If salvage dropped custom_words, the user's words would
+    /// silently revert to defaults on the next launch — matching the reported
+    /// symptom.
+    #[test]
+    fn salvage_settings_preserves_custom_words_across_broken_field() {
+        let mut stored = serde_json::to_value(get_default_settings()).unwrap();
+        let map = stored.as_object_mut().unwrap();
+        // Add user custom words as they would appear on disk.
+        map.insert(
+            "custom_words".into(),
+            serde_json::json!(["Zettelkasten", "MacBook"]),
+        );
+        map.insert(
+            "advanced_custom_words".into(),
+            serde_json::json!([{ "word": "Kubernetes", "pronunciations": [] }]),
+        );
+        map.insert(
+            "word_replacements".into(),
+            serde_json::json!([{ "mistranslation": "teh", "correction": "the" }]),
+        );
+        map.insert("custom_filler_words".into(), serde_json::json!(["um", "uh"]));
+        // An unrelated invalid field forces the salvage path.
+        map.insert("broken_future_field".into(), serde_json::json!("nope"));
+
+        let salvaged = salvage_settings(&stored);
+
+        assert_eq!(
+            salvaged.custom_words,
+            vec!["Zettelkasten".to_string(), "MacBook".to_string()]
+        );
+        assert_eq!(salvaged.advanced_custom_words.len(), 1);
+        assert_eq!(salvaged.advanced_custom_words[0].word, "Kubernetes");
+        assert_eq!(salvaged.word_replacements.len(), 1);
+        assert_eq!(salvaged.custom_filler_words, Some(vec!["um".to_string(), "uh".to_string()]));
+    }
+
+    /// Verifies that `flush_settings` can write the in-memory cache to disk
+    /// from a thread with no Tokio runtime context. This mirrors Tauri's
+    /// `RunEvent::ExitRequested` callback, which runs on the main event-loop
+    /// thread without an active runtime. The previous async implementation
+    /// panicked in this situation and the panic was swallowed, so custom words
+    /// were lost on quit.
+    #[test]
+    fn flush_settings_writes_cache_to_disk_without_runtime() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        app.manage(Arc::new(SettingsWriter::new()));
+
+        let mut settings = get_default_settings();
+        settings.custom_words = vec!["Zettelkasten".to_string(), "MacBook".to_string()];
+        app.manage(Arc::new(SettingsCache::new(settings)));
+
+        // Run the flush from a plain std::thread with no Tokio runtime — exactly
+        // the context in which Tauri invokes `RunEvent::ExitRequested`.
+        let flushed = std::thread::spawn({
+            let app = app.clone();
+            move || std::panic::catch_unwind(AssertUnwindSafe(|| flush_settings(&app)))
+        })
+        .join()
+        .expect("flush thread should not panic");
+
+        assert!(
+            flushed.is_ok(),
+            "flush_settings must not panic outside a Tokio runtime context"
+        );
+
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        let stored_value = store
+            .get("settings")
+            .expect("settings should be written to disk");
+        let stored: AppSettings = serde_json::from_value(stored_value)
+            .expect("stored settings should deserialize");
+
+        assert_eq!(
+            stored.custom_words,
+            vec!["Zettelkasten".to_string(), "MacBook".to_string()]
+        );
+    }
+
+    /// Regression test for the exact user-reported scenario: custom words are
+    /// added in the UI, `write_settings` updates the cache and schedules a
+    /// debounced disk flush, then the app is quit before the debounce fires.
+    /// `flush_settings` must persist the cached words even when called from a
+    /// thread with no Tokio runtime.
+    #[test]
+    fn flush_settings_preserves_debounced_custom_words_on_exit() {
+        let rt = tokio::runtime::Runtime::new().expect("test runtime");
+
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        app.manage(Arc::new(SettingsWriter::new()));
+        app.manage(Arc::new(SettingsCache::new(get_default_settings())));
+
+        rt.block_on(async {
+            let mut settings = get_settings_safe(&app);
+            settings.custom_words = vec!["Kubernetes".to_string(), "Terraform".to_string()];
+            // This updates the cache immediately and schedules a debounced write
+            // that we intentionally do not let fire.
+            write_settings(&app, settings);
+        });
+
+        // Ensure the debounce task has not had time to run.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let flushed = std::thread::spawn({
+            let app = app.clone();
+            move || std::panic::catch_unwind(AssertUnwindSafe(|| flush_settings(&app)))
+        })
+        .join()
+        .expect("flush thread should not panic");
+
+        assert!(
+            flushed.is_ok(),
+            "flush_settings must not panic outside a Tokio runtime context"
+        );
+
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        let stored_value = store
+            .get("settings")
+            .expect("settings should be written to disk");
+        let stored: AppSettings = serde_json::from_value(stored_value)
+            .expect("stored settings should deserialize");
+
+        assert_eq!(
+            stored.custom_words,
+            vec!["Kubernetes".to_string(), "Terraform".to_string()]
         );
     }
 
