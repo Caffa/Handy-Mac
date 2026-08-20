@@ -2760,6 +2760,75 @@ mod tests {
             convert_us_to_british("Click the dialog box"),
             "Click the dialog box"
         );
+
+        // meter/metre: measuring device vs unit of length
+        assert_eq!(convert_us_to_british("meter"), "meter");
+        assert_eq!(convert_us_to_british("meters"), "meters");
+        assert_eq!(convert_us_to_british("parking meter"), "parking meter");
+
+        // draft/draught: preliminary version vs air current / beer / board game
+        assert_eq!(convert_us_to_british("draft"), "draft");
+        assert_eq!(convert_us_to_british("drafts"), "drafts");
+        assert_eq!(convert_us_to_british("bank draft"), "bank draft");
+
+        // disk/disc: computing storage vs optical media / body disc
+        assert_eq!(convert_us_to_british("disk"), "disk");
+        assert_eq!(convert_us_to_british("hard disk"), "hard disk");
+
+        // license/licence: US noun+verb vs UK noun only
+        assert_eq!(convert_us_to_british("license"), "license");
+        assert_eq!(convert_us_to_british("licenses"), "licenses");
+        assert_eq!(convert_us_to_british("licensed"), "licensed");
+        assert_eq!(
+            convert_us_to_british("I need to license the software"),
+            "I need to license the software"
+        );
+
+        // font/fount: typeface vs source/fountain
+        assert_eq!(convert_us_to_british("font"), "font");
+        assert_eq!(convert_us_to_british("fonts"), "fonts");
+        assert_eq!(convert_us_to_british("Change the font"), "Change the font");
+
+        // dependent/dependant: adjective vs noun in British English
+        assert_eq!(convert_us_to_british("dependent"), "dependent");
+        assert_eq!(
+            convert_us_to_british("dependent on you"),
+            "dependent on you"
+        );
+
+        // naught/nought: nothing vs digit zero
+        assert_eq!(convert_us_to_british("naught"), "naught");
+        assert_eq!(convert_us_to_british("all for naught"), "all for naught");
+    }
+
+    #[test]
+    fn test_us_to_british_story_not_converted() {
+        // "story" and "storey" are DIFFERENT words in British English:
+        // - story (noun): a narrative or account
+        // - storey (noun): a floor/level of a building
+        // They should NOT be auto-converted as context determines which to use.
+        assert_eq!(convert_us_to_british("story"), "story");
+        assert_eq!(convert_us_to_british("stories"), "stories");
+        assert_eq!(convert_us_to_british("storyteller"), "storyteller");
+        assert_eq!(convert_us_to_british("Tell me a story"), "Tell me a story");
+        // But "storey" (already British) should remain unchanged
+        assert_eq!(convert_us_to_british("storey"), "storey");
+        assert_eq!(convert_us_to_british("storeys"), "storeys");
+    }
+
+    #[test]
+    fn test_us_to_british_other_false_friends_not_converted() {
+        // gage/gauge: pledge vs measuring instrument
+        assert_eq!(convert_us_to_british("gage"), "gage");
+        assert_eq!(convert_us_to_british("gages"), "gages");
+
+        // potter/putter: pottery maker vs golf club
+        assert_eq!(convert_us_to_british("potter"), "potter");
+        assert_eq!(convert_us_to_british("potters"), "potters");
+
+        // prize/prise: award vs lever open
+        assert_eq!(convert_us_to_british("prize"), "prize");
+        assert_eq!(convert_us_to_british("prizes"), "prizes");
     }
 
     #[test]
@@ -3269,9 +3338,7 @@ mod tests {
     fn test_recovery_sentence_context() {
         // Full sentence with multiple accented words
         assert_eq!(
-            replace_unk_with_accent_recovery(
-                "my fianc picked up a crpe from the caf"
-            ),
+            replace_unk_with_accent_recovery("my fianc picked up a crpe from the caf"),
             "my fiance picked up a crepe from the cafe"
         );
     }
@@ -3305,9 +3372,6 @@ mod tests {
     #[test]
     fn test_recovery_numbers_unchanged() {
         // split_whitespace collapses multiple spaces
-        assert_eq!(
-            replace_unk_with_accent_recovery("123 <unk> 456"),
-            "123 456"
-        );
+        assert_eq!(replace_unk_with_accent_recovery("123 <unk> 456"), "123 456");
     }
 }

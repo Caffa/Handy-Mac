@@ -53,6 +53,16 @@ impl Default for SpellingDictionary {
 /// - catalog/catalogue (computing vs traditional)
 /// - dialog/dialogue (UI vs conversation)
 /// - disk/disc (computing vs optical media)
+/// - story/storey (narrative vs building level)
+/// - meter/metre (measuring device vs unit of length)
+/// - draft/draught (plan vs air current / beer / board game)
+/// - license/licence (US noun+verb vs UK noun only; verb stays "license")
+/// - font/fount (typeface vs source/fountain)
+/// - gage/gauge (pledge vs measuring instrument)
+/// - dependent/dependant (adjective vs noun in British English)
+/// - naught/nought (nothing vs digit zero)
+/// - potter/putter (pottery maker vs golf club)
+/// - prize/prise (award vs lever open)
 ///
 /// Excludes archaic spellings:
 /// - waggon (archaic, modern British uses "wagon")
@@ -94,7 +104,7 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("rumored", "rumoured"),
             ("splendor", "splendour"),
             ("savor", "savour"),
-            ("savors", "savourings"),
+            ("savors", "savours"),
             ("vigor", "vigour"),
             ("valor", "valour"),
             ("vapor", "vapour"),
@@ -133,8 +143,9 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("fiberglass", "fibreglass"),
             ("liter", "litre"),
             ("liters", "litres"),
-            ("meter", "metre"),
-            ("meters", "metres"),
+            // NOTE: meter/metre excluded - semantic ambiguity (measuring device vs unit of length)
+            // ("meter", "metre"),
+            // ("meters", "metres"),
             ("theater", "theatre"),
             ("theaters", "theatres"),
             ("theatrical", "theatrical"),
@@ -213,9 +224,10 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("offensive", "offensive"),
             ("pretense", "pretence"),
             ("pretenses", "pretences"),
-            ("license", "licence"),
-            ("licenses", "licences"),
-            ("licensed", "licenced"),
+            // NOTE: license/licence excluded - UK noun/verb split
+            // ("license", "licence"),
+            // ("licenses", "licences"),
+            // ("licensed", "licenced"),
         ],
     );
 
@@ -287,15 +299,18 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("behavior", "behaviour"),
             ("behaviors", "behaviours"),
             ("behavioral", "behavioural"),
-            ("catalog", "catalogue"), // Note: computing context may prefer "catalog"
+            // NOTE: catalog/catalogue excluded - semantic ambiguity (computing vs traditional)
+            // ("catalog", "catalogue"), // Note: computing context may prefer "catalog"
             ("counselor", "counsellor"),
             ("counselors", "counsellors"),
-            ("disk", "disc"), // Note: computing context may prefer "disk"
+            // NOTE: disk/disc excluded - semantic ambiguity (computing storage vs optical media/body disc)
+            // ("disk", "disc"), // Note: computing context may prefer "disk"
             ("donut", "doughnut"),
             ("donuts", "doughnuts"),
-            ("draft", "draught"),
-            ("drafts", "draughts"),
-            ("draftsman", "draughtsman"),
+            // NOTE: draft/draught excluded - semantic ambiguity (plan/air-current vs board-game/beer)
+            // ("draft", "draught"),
+            // ("drafts", "draughts"),
+            // ("draftsman", "draughtsman"),
             ("encyclopedia", "encyclopaedia"),
             ("enrollment", "enrolment"),
             ("enroll", "enrol"),
@@ -324,8 +339,7 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("willful", "wilful"),
             ("smolder", "smoulder"),
             ("smoldering", "smouldering"),
-            ("story", "storey"),
-            ("stories", "storeys"), // Note: building level only
+            // NOTE: story/storey excluded - semantic ambiguity (narrative vs building level)
             ("tidbit", "titbit"),
             ("tidbits", "titbits"),
             ("woolen", "woollen"),
@@ -391,7 +405,8 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("coziest", "cosiest"),
             // NOTE: curb/kerb excluded - semantic ambiguity (curb=restrain vs kerb=road edge)
             ("crawfish", "crayfish"),
-            ("dependent", "dependant"), // Note: British distinguishes dependent/dependant
+            // NOTE: dependent/dependant excluded - UK adjective (dependent) vs noun (dependant)
+            // ("dependent", "dependant"), // Note: British distinguishes dependent/dependant
             ("demeanor", "demeanour"),
             // NOTE: dialog/dialogue excluded - semantic ambiguity (UI vs conversation)
             ("distill", "distil"),
@@ -401,11 +416,13 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("endeavor", "endeavour"),
             ("endeavors", "endeavours"),
             ("fervor", "fervour"),
-            ("font", "fount"),
+            // NOTE: font/fount excluded - semantic ambiguity (typeface vs source/fountain)
+            // ("font", "fount"),
             ("fueled", "fuelled"),
             ("fueling", "fuelling"),
             ("furor", "furore"),
-            ("gage", "gauge"),
+            // NOTE: gage/gauge excluded - semantic ambiguity (pledge vs measuring instrument)
+            // ("gage", "gauge"),
             ("glamor", "glamour"), // Same
             ("generalization", "generalisation"),
             ("generalizations", "generalisations"),
@@ -429,7 +446,8 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("misdemeanor", "misdemeanour"),
             ("mustache", "moustache"),
             ("mustaches", "moustaches"),
-            ("naught", "nought"),
+            // NOTE: naught/nought excluded - semantic ambiguity (nothing vs digit zero)
+            // ("naught", "nought"),
             ("neighborhood", "neighbourhood"),
             ("omelet", "omelette"),
             ("omelets", "omelettes"),
@@ -440,9 +458,11 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("plow", "plough"),
             ("plows", "ploughs"),
             ("plowing", "ploughing"),
-            ("potter", "putter"), // Note: different meanings
-            ("prize", "prise"),
-            ("prizes", "prises"), // Note: prize = award, prise = leverage
+            // NOTE: potter/putter excluded - semantic ambiguity (pottery maker vs golf club)
+            // ("potter", "putter"), // Note: different meanings
+            // NOTE: prize/prise excluded - semantic ambiguity (award vs lever open)
+            // ("prize", "prise"),
+            // ("prizes", "prises"), // Note: prize = award, prise = leverage
             // NOTE: program/programme excluded - semantic ambiguity (software vs TV show)
             // Both spellings are valid in British English with different meanings
             ("reflection", "reflexion"),
@@ -541,7 +561,7 @@ static CSPELL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(
             ("harbor", "harbour"),
             ("harbors", "harbours"),
             ("savor", "savour"),
-            ("savors", "savourings"),
+            ("savors", "savours"),
             ("vigor", "vigour"),
             ("valor", "valour"),
             ("ardor", "ardour"),
@@ -567,7 +587,8 @@ static CSPELL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(
             ("fiber", "fibre"),
             ("fibers", "fibres"),
             ("liter", "litre"),
-            ("meters", "metres"),
+            // NOTE: meter/metre excluded - semantic ambiguity (measuring device vs unit of length)
+            // ("meters", "metres"),
             ("theater", "theatre"),
             ("theaters", "theatres"),
             ("specter", "spectre"),
@@ -612,8 +633,9 @@ static CSPELL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(
             ("defenses", "defences"),
             ("offense", "offence"),
             ("offenses", "offences"),
-            ("license", "licence"),
-            ("licenses", "licences"),
+            // NOTE: license/licence excluded - UK noun/verb split
+            // ("license", "licence"),
+            // ("licenses", "licences"),
         ],
     );
 
@@ -656,7 +678,8 @@ static CSPELL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(
             ("mustache", "moustache"),
             ("pajamas", "pyjamas"),
             ("donut", "doughnut"),
-            ("disk", "disc"),
+            // NOTE: disk/disc excluded - semantic ambiguity (computing storage vs optical media/body disc)
+            // ("disk", "disc"),
             ("aging", "ageing"),
             ("encyclopedia", "encyclopaedia"),
             ("maneuver", "manoeuvre"),
@@ -665,8 +688,7 @@ static CSPELL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(
             ("smolder", "smoulder"),
             ("woolen", "woollen"),
             ("tidbit", "titbit"),
-            ("story", "storey"),
-            ("stories", "storeys"),
+            // NOTE: story/storey excluded - semantic ambiguity (narrative vs building level)
             ("fulfill", "fulfil"),
             ("enrollment", "enrolment"),
         ],
@@ -930,10 +952,36 @@ mod tests {
 
     #[test]
     fn test_no_conversion_for_excluded_words() {
-        let dict = SpellingDictionary::Dwyl;
+        let dwyl = SpellingDictionary::Dwyl;
+        let cspell = SpellingDictionary::Cspell;
+
         // These words should NOT be converted (semantic ambiguity)
-        assert_eq!(convert_us_to_british_with_dict("check", dict), "check");
-        assert_eq!(convert_us_to_british_with_dict("tire", dict), "tire");
+        for dict in [dwyl, cspell] {
+            assert_eq!(convert_us_to_british_with_dict("check", dict), "check");
+            assert_eq!(convert_us_to_british_with_dict("tire", dict), "tire");
+
+            // meter/metre: measuring device vs unit of length
+            assert_eq!(convert_us_to_british_with_dict("meter", dict), "meter");
+            assert_eq!(convert_us_to_british_with_dict("meters", dict), "meters");
+
+            // draft/draught: plan vs air current / beer / board game
+            assert_eq!(convert_us_to_british_with_dict("draft", dict), "draft");
+            assert_eq!(convert_us_to_british_with_dict("drafts", dict), "drafts");
+
+            // disk/disc: computing storage vs optical media / body disc
+            assert_eq!(convert_us_to_british_with_dict("disk", dict), "disk");
+
+            // license/licence: US noun+verb vs UK noun only
+            assert_eq!(convert_us_to_british_with_dict("license", dict), "license");
+            assert_eq!(
+                convert_us_to_british_with_dict("licenses", dict),
+                "licenses"
+            );
+
+            // story/storey: narrative vs building level
+            assert_eq!(convert_us_to_british_with_dict("story", dict), "story");
+            assert_eq!(convert_us_to_british_with_dict("stories", dict), "stories");
+        }
     }
 
     #[test]
