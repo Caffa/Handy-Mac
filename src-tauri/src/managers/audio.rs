@@ -163,6 +163,7 @@ fn create_audio_recorder(
     vad_threshold: f32,
     vad_hangover_frames: usize,
     last_voice_activity_ms: Arc<AtomicU64>,
+    close_generation: Arc<AtomicU64>,
 ) -> Result<AudioRecorder, anyhow::Error> {
     let silero = SileroVad::new(vad_path, vad_threshold)
         .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
@@ -204,6 +205,7 @@ fn create_audio_recorder(
         .map_err(|e| anyhow::anyhow!("Failed to create AudioRecorder: {}", e))?
         .with_vad(Box::new(smoothed_vad))
         .with_voice_activity_stamp(last_voice_activity_ms)
+        .with_close_generation(close_generation)
         .with_level_callback({
             let app_handle = app_handle.clone();
             move |levels| {
@@ -269,11 +271,17 @@ fn create_audio_recorder(
                 live_captions_enabled,
                 use_live_captions_model
             );
+            // Capture the recorder/stream generation at callback creation
+            // time. Already-spawned tasks check it at entry and right before
+            // emit so they return early when the stream has been closed.
+            let close_generation = recorder.close_generation.clone();
+            let callback_generation = close_generation.load(Ordering::SeqCst);
             recorder
                 .with_streaming_cancel_flag(cancel_flag.clone())
                 .with_streaming_callback({
                     let app_handle = app_handle.clone();
                     let cancel_flag = cancel_flag.clone();
+                    let close_generation = close_generation.clone();
                     move |samples| {
                         let flag = cancel_flag.load_flag();
                         let seq = cancel_flag.load_seq();
@@ -296,12 +304,25 @@ fn create_audio_recorder(
                         let app_handle = app_handle.clone();
                         let cancel_flag = cancel_flag.clone();
                         let tm = Arc::clone(&tm);
+                        let captured_generation = callback_generation;
+                        let close_generation = close_generation.clone();
                         tauri::async_runtime::spawn_blocking(move || {
                             // Re-check cancellation after acquiring blocking thread
                             if cancel_flag.load_flag() {
                                 debug!(
                                     "[STREAM-CB] Skipping streaming transcription (blocking) - cancellation requested seq={}",
                                     cancel_flag.load_seq()
+                                );
+                                return;
+                            }
+
+                            // Guard against late execution after the recorder/stream
+                            // has been closed or recreated.
+                            let current_generation = close_generation.load(Ordering::SeqCst);
+                            if current_generation != captured_generation {
+                                debug!(
+                                    "[STREAM-CB] Generation mismatch ({} != {}), skipping transcription from stale task",
+                                    current_generation, captured_generation
                                 );
                                 return;
                             }
@@ -331,6 +352,17 @@ fn create_audio_recorder(
                                         debug!(
                                             "[STREAM-CB] Discarding streaming transcription result - cancelled seq={}",
                                             cancel_flag.load_seq()
+                                        );
+                                        return;
+                                    }
+
+                                    // Re-check generation right before emitting the event,
+                                    // in case the stream was closed while transcription ran.
+                                    let current_generation = close_generation.load(Ordering::SeqCst);
+                                    if current_generation != captured_generation {
+                                        debug!(
+                                            "[STREAM-CB] Generation mismatch ({} != {}) before emit, discarding stale transcription result",
+                                            current_generation, captured_generation
                                         );
                                         return;
                                     }
@@ -496,9 +528,6 @@ impl AudioRecordingManager {
         if bt_active {
             info!("Bluetooth output device detected at startup — enabling mic stream keep-alive to prevent audio dropouts");
             manager.bt_keep_alive.store(true, Ordering::Release);
-            manager.start_microphone_stream()?;
-        } else if matches!(mode, MicrophoneMode::AlwaysOn) {
-            manager.start_microphone_stream()?;
         }
 
         // Start background liveness monitor to detect zombie streams after sleep/wake
@@ -506,6 +535,25 @@ impl AudioRecordingManager {
 
         // Start background device hot-plug monitor
         manager.start_device_monitor();
+
+        // Defer opening the always-on/BT mic stream off the main thread.
+        // Synchronously opening cpal/CoreAudio on the main thread during app
+        // startup has been observed to cause heap corruption (SIGABRT) when
+        // other Tauri initialization is happening concurrently. The stream is
+        // not required to be ready before we return the manager; the liveness
+        // monitor will self-heal if it isn't open yet.
+        let should_open_stream = bt_active || matches!(mode, MicrophoneMode::AlwaysOn);
+        if should_open_stream {
+            let manager_clone = manager.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                if let Err(e) = manager_clone.start_microphone_stream() {
+                    error!("Deferred always-on/BT microphone stream open failed: {}", e);
+                } else {
+                    info!("Deferred always-on/BT microphone stream opened successfully");
+                }
+            });
+        }
 
         Ok(manager)
     }
@@ -525,6 +573,12 @@ impl AudioRecordingManager {
         let bt_keep_alive = self.bt_keep_alive.clone();
 
         let handle = std::thread::spawn(move || {
+            // Cooldown before the first check so the deferred startup stream
+            // open has time to complete before the liveness monitor decides the
+            // stream is dead and tries to self-heal it.
+            info!("Liveness monitor: sleeping 2 seconds before first check to allow deferred stream startup");
+            std::thread::sleep(Duration::from_secs(2));
+
             loop {
                 // Check every 3 seconds
                 std::thread::sleep(Duration::from_secs(3));
@@ -935,6 +989,7 @@ impl AudioRecordingManager {
                 vad_threshold,
                 vad_hangover_frames,
                 Arc::clone(&self.last_voice_activity_ms),
+                Arc::clone(&self.close_generation),
             )?);
         }
         Ok(())
@@ -1050,6 +1105,7 @@ impl AudioRecordingManager {
             vad_threshold,
             vad_hangover_frames,
             Arc::clone(&self.last_voice_activity_ms),
+            Arc::clone(&self.close_generation),
         )?;
 
         *recorder_opt = Some(new_recorder);

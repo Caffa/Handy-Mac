@@ -72,29 +72,6 @@ pub fn get_default_settings() -> AppSettings {
         },
     );
 
-    // Duplicate router binding entry (preserved from original)
-    #[cfg(target_os = "macos")]
-    let default_router_shortcut = "option+ctrl+space";
-    #[cfg(target_os = "windows")]
-    let default_router_shortcut = "ctrl+alt+space";
-    #[cfg(target_os = "linux")]
-    let default_router_shortcut = "ctrl+alt+space";
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    let default_router_shortcut = "alt+ctrl+space";
-
-    bindings.insert(
-        "transcribe_with_router".to_string(),
-        ShortcutBinding {
-            id: "transcribe_with_router".to_string(),
-            name: "Transcribe with Router".to_string(),
-            description: "Records speech, transcribes, and routes to your notes via boss_router."
-                .to_string(),
-            default_binding: default_router_shortcut.to_string(),
-            current_binding: default_router_shortcut.to_string(),
-            tauri_binding: default_router_shortcut.to_string(),
-            handy_keys_binding: default_router_shortcut.to_string(),
-        },
-    );
     bindings.insert(
         "cancel".to_string(),
         ShortcutBinding {

@@ -154,6 +154,11 @@ pub struct AudioRecorder {
     /// timeout: as long as the user keeps talking, the 5-minute deadline is
     /// reset. Stored as elapsed ms so a single u64 can be read without locks.
     last_voice_activity_ms: Arc<AtomicU64>,
+    /// Generation counter for stream close/recreation. Incremented by
+    /// `AudioRecorder::close()` and observed by long-lived streaming
+    /// callbacks so they can bail out if the recorder/stream they were
+    /// created for has been torn down.
+    pub(crate) close_generation: Arc<AtomicU64>,
 }
 
 impl AudioRecorder {
@@ -174,6 +179,7 @@ impl AudioRecorder {
             max_level: Arc::new(AtomicU32::new(0)),
             pre_buffer_ms: Arc::new(AtomicU32::new(0)),
             last_voice_activity_ms: Arc::new(AtomicU64::new(0)),
+            close_generation: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -181,6 +187,14 @@ impl AudioRecorder {
     /// whenever VAD classifies a frame as Speech while recording.
     pub fn with_voice_activity_stamp(mut self, stamp: Arc<AtomicU64>) -> Self {
         self.last_voice_activity_ms = stamp;
+        self
+    }
+
+    /// Attach a shared stream close-generation counter. Long-lived streaming
+    /// callbacks can observe this to return early when the recorder has been
+    /// closed/recreated after they were spawned.
+    pub fn with_close_generation(mut self, gen: Arc<AtomicU64>) -> Self {
+        self.close_generation = gen;
         self
     }
 
@@ -414,8 +428,8 @@ impl AudioRecorder {
                         sample_rate,
                         vad,
                         noise_suppressor,
-                        sample_rx,
-                        cmd_rx,
+                        &sample_rx,
+                        &cmd_rx,
                         level_cb,
                         streaming_cb,
                         streaming_enabled,
@@ -428,15 +442,40 @@ impl AudioRecorder {
                         last_voice_activity_ms,
                     );
 
-                    // Pause the stream before dropping to prevent heap corruption.
-                    // On macOS, cpal::Stream::pause() is asynchronous — CoreAudio's IO
-                    // thread may still be executing the last callback invocation when
-                    // pause() returns. If we drop immediately, internal buffers are
-                    // deallocated while the callback is still in-flight, causing
-                    // nanov2 malloc heap corruption → SIGABRT.
-                    // 100ms is a generous safety margin (typical buffer period is 5–23ms).
+                    // Deterministic teardown barrier: wait for the cpal callback
+                    // to actually stop producing data. The callback sets stop_flag
+                    // when it sees Cmd::Shutdown, sends any final samples, and then
+                    // sends EndOfStream. We drain the channel until EndOfStream or a
+                    // timeout so we know the callback thread is quiescent before we
+                    // pause and drop the stream. This avoids the heap corruption that
+                    // occurs when internal CoreAudio buffers are freed while the
+                    // callback is still in-flight.
+                    let t_drain = std::time::Instant::now();
+                    loop {
+                        match sample_rx.recv_timeout(Duration::from_millis(500)) {
+                            Ok(AudioChunk::EndOfStream) => {
+                                log::info!(
+                                    "[TEARDOWN-BARRIER] EndOfStream received after {:?}",
+                                    t_drain.elapsed()
+                                );
+                                break;
+                            }
+                            Ok(_) => continue,
+                            Err(_) => {
+                                log::warn!(
+                                    "[TEARDOWN-BARRIER] Timed out waiting for EndOfStream after {:?}",
+                                    t_drain.elapsed()
+                                );
+                                break;
+                            }
+                        }
+                    }
+
+                    // Pause the stream before dropping. The barrier above ensures
+                    // the callback is quiescent; the short sleep is an extra safety
+                    // margin for any backend-specific async completion.
                     let _ = stream.pause();
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                     drop(stream);
                 }
                 Err(error_message) => {
@@ -642,6 +681,10 @@ impl AudioRecorder {
     }
 
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Increment the close generation so that any streaming callbacks
+        // already in flight know this recorder/stream is no longer valid and
+        // can bail out early instead of locking the TM or emitting stale events.
+        self.close_generation.fetch_add(1, Ordering::SeqCst);
         if let Some(tx) = self.cmd_tx.take() {
             let _ = tx.send(Cmd::Shutdown);
         }
@@ -965,8 +1008,8 @@ fn run_consumer(
     in_sample_rate: u32,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
     noise_suppressor: Option<Arc<Mutex<NoiseSuppressor>>>,
-    sample_rx: mpsc::Receiver<AudioChunk>,
-    cmd_rx: mpsc::Receiver<Cmd>,
+    sample_rx: &mpsc::Receiver<AudioChunk>,
+    cmd_rx: &mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     streaming_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     streaming_enabled: Arc<AtomicBool>,
@@ -1394,9 +1437,7 @@ fn run_consumer(
             // (trailing buffer exhausted) completion.
             if let Some(backup) = emergency_backup.take() {
                 backup.complete_recording();
-                log::info!(
-                    "[EMERGENCY-BACKUP] completed (smart-stop trailing buffer)"
-                );
+                log::info!("[EMERGENCY-BACKUP] completed (smart-stop trailing buffer)");
             }
             last_voice_activity_ms.store(0, Ordering::Relaxed);
         }
