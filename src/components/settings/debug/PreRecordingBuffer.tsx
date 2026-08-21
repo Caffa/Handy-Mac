@@ -6,6 +6,7 @@ import { useSettings } from "../../../hooks/useSettings";
 interface PreRecordingBufferProps {
   descriptionMode?: "tooltip" | "inline";
   grouped?: boolean;
+  disabledHint?: string;
 }
 
 /**
@@ -21,13 +22,17 @@ const DEBOUNCE_MS = 500;
 export const PreRecordingBuffer: React.FC<PreRecordingBufferProps> = ({
   descriptionMode = "tooltip",
   grouped = false,
+  disabledHint,
 }) => {
   const { t } = useTranslation();
-  const { settings, updateSetting } = useSettings();
+  const { settings, updateSetting, getSetting } = useSettings();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Local state for immediate UI feedback during slider drag
   const [localValue, setLocalValue] = useState<number | null>(null);
+
+  const alwaysOnMicrophone = getSetting("always_on_microphone") ?? false;
+  const isDisabled = !alwaysOnMicrophone;
 
   // Refs to track the latest values for the unmount cleanup without
   // re-registering the effect on every render (which would cause the
@@ -37,7 +42,8 @@ export const PreRecordingBuffer: React.FC<PreRecordingBufferProps> = ({
   updateSettingRef.current = updateSetting;
 
   // Keep latestValueRef in sync with state + settings
-  latestValueRef.current = localValue ?? settings?.pre_recording_buffer_ms ?? null;
+  latestValueRef.current =
+    localValue ?? settings?.pre_recording_buffer_ms ?? null;
 
   // Sync local state with settings when they change
   useEffect(() => {
@@ -103,7 +109,9 @@ export const PreRecordingBuffer: React.FC<PreRecordingBufferProps> = ({
       description={t("settings.debug.preRecordingBuffer.description")}
       descriptionMode={descriptionMode}
       grouped={grouped}
+      disabled={isDisabled}
       formatValue={(v) => `${v}ms`}
+      disabledHint={disabledHint}
     />
   );
 };

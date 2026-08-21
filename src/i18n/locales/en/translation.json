@@ -205,12 +205,23 @@
         "conflictWarning": "Shortcut \"{{shortcut}}\" may conflict with system shortcuts:\n{{conflictList}}"
       },
       "language": {
-        "title": "Language",
+        "title": "Transcription language",
         "description": "Select the language for speech recognition. Auto will automatically determine the language, while selecting a specific language can improve accuracy for that language.",
-        "descriptionUnsupported": "Parakeet model automatically detects the language. No manual selection is needed.",
+        "descriptionUnsupported": "The current model automatically detects the language. No manual selection is needed.",
         "searchPlaceholder": "Search languages...",
         "noResults": "No languages found",
         "auto": "Auto"
+      },
+      "micReadiness": {
+        "title": "Mic readiness",
+        "description": "Keep the microphone warm to reduce the delay before transcription starts.",
+        "off": "Off",
+        "brief": "Keep open 30s after recording",
+        "always": "Always on"
+      },
+      "capturePadding": {
+        "title": "Capture padding",
+        "preRecordingDisabledHint": "Only available when Mic readiness is set to Always on."
       },
       "pushToTalk": {
         "label": "Push To Talk",
@@ -793,12 +804,12 @@
         "description": "Delay before sending paste keystroke (in milliseconds). Increase if wrong text is being pasted."
       },
       "recordingBuffer": {
-        "title": "Recording Buffer",
-        "description": "Maximum extra time (ms) to keep recording after releasing the key. The buffer stops early when the microphone detects silence, so it rarely waits the full duration. 0 = no extra buffer."
+        "title": "Post-recording buffer",
+        "description": "Maximum extra time (ms) to keep recording after you release the shortcut. The buffer stops early when the microphone detects silence, so it rarely waits the full duration. 0 = no extra buffer."
       },
       "preRecordingBuffer": {
-        "title": "Pre-Recording Buffer",
-        "description": "Capture audio from before you pressed the hotkey. When using Always-On microphone mode, stores the last N ms of audio continuously. When you press the hotkey, this audio is prepended to capture words you started saying before pressing. Recommended: 1000-3000ms. Only works with Always-On microphone mode."
+        "title": "Pre-recording buffer",
+        "description": "Capture audio from before you press the shortcut. Stores the last N ms of audio continuously while the microphone is kept warm, then prepends it to the recording so words you start before pressing the shortcut are not lost. Recommended: 1000-3000ms."
       },
       "usbWatchdog": {
         "label": "USB Power Watchdog",
@@ -956,7 +967,7 @@
     "needsUserAction": "This requires your action before retrying."
   },
   "appLanguage": {
-    "title": "Application Language",
+    "title": "Interface language",
     "description": "Change the language of the Handy interface"
   },
   "overlay": {

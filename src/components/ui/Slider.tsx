@@ -14,6 +14,7 @@ interface SliderProps {
   grouped?: boolean;
   showValue?: boolean;
   formatValue?: (value: number) => string;
+  disabledHint?: string;
 }
 
 export const Slider: React.FC<SliderProps> = ({
@@ -29,6 +30,7 @@ export const Slider: React.FC<SliderProps> = ({
   grouped = false,
   showValue = true,
   formatValue = (v) => v.toFixed(2),
+  disabledHint,
 }) => {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onChange(parseFloat(e.target.value));
@@ -68,6 +70,9 @@ export const Slider: React.FC<SliderProps> = ({
             </span>
           )}
         </div>
+        {disabled && disabledHint && (
+          <p className="text-xs text-mid-gray mt-1">{disabledHint}</p>
+        )}
       </div>
     </SettingContainer>
   );
