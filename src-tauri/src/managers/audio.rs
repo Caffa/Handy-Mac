@@ -4,6 +4,7 @@ use crate::audio_toolkit::{
 };
 use crate::errors::AppError;
 use crate::helpers::clamshell;
+use crate::managers::model::{EngineType, ModelManager};
 use crate::portable;
 use crate::settings::{get_settings, AppSettings};
 use crate::streaming_cancel_flag::StreamingCancelFlag;
@@ -1779,13 +1780,59 @@ impl AudioRecordingManager {
                 // Whisper to miss the first words. By padding at the start, we give
                 // Whisper context and ensure the captured speech timing is preserved.
                 // A 3-second minimum gives Whisper enough context to produce a good
-                // transcription without hallucinating. The VAD-based trim_trailing_silence
-                // in the transcription pipeline further cleans up any trailing silence.
-                // NOTE: Only pad processed_samples (for Whisper), NOT raw_samples.
+                // transcription without hallucinating.
+                //
+                // This pad is applied only when the selected model loads through
+                // EngineType::TranscribeCpp (the GGUF/GGML path). That family includes
+                // Whisper plus other ASR archs (Parakeet-GGUF, Voxtral, Qwen3-ASR,
+                // SenseVoice, Moonshine-GGUF, ...); the pad was calibrated for Whisper's
+                // short-clip hallucination mode and is conservatively applied to the
+                // whole TranscribeCpp family because (a) leading silence is generally
+                // benign for ASR models and (b) the AudioRecordingManager layer has no
+                // access to the loaded model's arch() (that probe happens later in
+                // TranscriptionManager, transcription.rs:1586). ONNX engines (Parakeet,
+                // Moonshine, SenseVoice, GigaAM, Canary, Cohere) are excluded entirely.
+                //
+                // NOTE: trailing silence is currently NOT trimmed from the pipeline.
+                // `audio_toolkit::vad::trim_trailing_silence` exists but is dead code.
+                // Investigate enabling it for future cleanup only after testing against
+                // first-word clipping regressions.
                 let s_len = processed_samples.len();
                 let min_samples = WHISPER_SAMPLE_RATE * 3; // 3 seconds minimum
-                let padded_processed = if s_len > 0 && s_len < min_samples {
+                let engine_type = self
+                    .app_handle
+                    .try_state::<Arc<ModelManager>>()
+                    .and_then(|mm| mm.get_model_info(&settings.selected_model))
+                    .map(|info| info.engine_type);
+                let is_whisper_family = match engine_type {
+                    Some(EngineType::TranscribeCpp) => {
+                        debug!(
+                            "Applying 3s leading silence pad for TranscribeCpp engine (selected_model={})",
+                            settings.selected_model
+                        );
+                        true
+                    }
+                    Some(other) => {
+                        debug!(
+                            "Skipping 3s leading silence pad for non-Whisper engine {:?} (selected_model={})",
+                            other, settings.selected_model
+                        );
+                        false
+                    }
+                    None => {
+                        debug!(
+                            "No model info for '{}'; skipping 3s leading silence pad",
+                            settings.selected_model
+                        );
+                        false
+                    }
+                };
+                let padded_processed = if is_whisper_family && s_len > 0 && s_len < min_samples {
                     let needed_silence = min_samples - s_len;
+                    debug!(
+                        "Padding {}-sample processed clip with {} samples of leading silence",
+                        s_len, needed_silence
+                    );
                     let mut padded = vec![0.0f32; needed_silence];
                     padded.extend_from_slice(&processed_samples);
                     padded

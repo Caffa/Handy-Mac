@@ -83,7 +83,14 @@ export const SECTIONS_CONFIG = {
     labelKey: "sidebar.postProcessing",
     icon: Sparkles,
     component: PostProcessingSettings,
-    enabled: (settings) => settings?.experimental_enabled ?? false,
+    // Show the tab if the user has already enabled post-processing
+    // (so they can disable it / edit config) OR if experimental mode
+    // is on (the normal entry path). Without the post_process_enabled
+    // fallback, a user who enabled post-processing then disabled
+    // experimental would be locked out of the feature entirely.
+    enabled: (settings) =>
+      (settings?.post_process_enabled ?? false) ||
+      (settings?.experimental_enabled ?? false),
   },
   debug: {
     labelKey: "sidebar.debug",
