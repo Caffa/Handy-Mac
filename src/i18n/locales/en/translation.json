@@ -527,6 +527,9 @@
     },
     "postProcessing": {
       "title": "Post Process",
+      "enable": {
+        "title": "Post-processing"
+      },
       "hotkey": {
         "title": "Hotkey"
       },
