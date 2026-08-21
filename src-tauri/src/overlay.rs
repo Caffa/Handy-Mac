@@ -76,9 +76,8 @@ const EMIT_THROTTLE_MS: u64 = 33; // ~30 FPS
 #[cfg(target_os = "macos")]
 fn swizzle_can_become_key_window() {
     use objc2::runtime::AnyClass;
-    use std::ffi::CStr;
 
-    let class_name = CStr::from_bytes_with_nul(b"RecordingOverlayPanel\0").unwrap();
+    let class_name = c"RecordingOverlayPanel";
     let Some(class) = AnyClass::get(class_name) else {
         log::error!("swizzle_can_become_key_window: RecordingOverlayPanel class not found");
         return;
@@ -106,7 +105,7 @@ fn swizzle_can_become_key_window() {
         // Type encoding for canBecomeKeyWindow method:
         // Return type: BOOL (encoded as "B" on macOS ARM64 where BOOL = bool)
         // The self and _cmd parameters are implicit in ObjC encoding.
-        let types = CStr::from_bytes_with_nul(b"B\0").unwrap();
+        let types = c"B";
         let imp: objc2::runtime::Imp = std::mem::transmute::<
             unsafe extern "C-unwind" fn(
                 *mut objc2::runtime::AnyObject,
@@ -142,9 +141,8 @@ fn swizzle_can_become_key_window() {
 #[cfg(target_os = "macos")]
 fn swizzle_mouse_tracking() {
     use objc2::runtime::AnyClass;
-    use std::ffi::CStr;
 
-    let class_name = CStr::from_bytes_with_nul(b"RecordingOverlayPanel\0").unwrap();
+    let class_name = c"RecordingOverlayPanel";
     let Some(class) = AnyClass::get(class_name) else {
         log::error!("swizzle_mouse_tracking: RecordingOverlayPanel class not found");
         return;
@@ -179,7 +177,7 @@ fn swizzle_mouse_tracking() {
         }
 
         let mouse_entered_sel = objc2::sel!(mouseEntered:);
-        let types = CStr::from_bytes_with_nul(b"v@:@\0").unwrap();
+        let types = c"v@:@";
         let imp: objc2::runtime::Imp = std::mem::transmute::<
             unsafe extern "C-unwind" fn(
                 &objc2::runtime::AnyObject,
@@ -216,7 +214,7 @@ fn swizzle_mouse_tracking() {
         }
 
         let mouse_exited_sel = objc2::sel!(mouseExited:);
-        let types = CStr::from_bytes_with_nul(b"v@:@\0").unwrap();
+        let types = c"v@:@";
         let imp: objc2::runtime::Imp = std::mem::transmute::<
             unsafe extern "C-unwind" fn(
                 &objc2::runtime::AnyObject,
@@ -700,12 +698,11 @@ fn is_mouse_within_monitor(
 
 /// Returns overlay position and window height in logical coordinates (points on macOS).
 ///
-/// On macOS, the Bottom anchor uses the work area (visibleFrame) so the overlay
-/// tracks the Dock — above it when shown, at the screen edge when hidden. This
-/// relies on tauri 2.11's work_area.position.y fix (#14655), the same bug that
-/// led PR #969 to abandon work_area for full monitor bounds. Top and the other
-/// platforms keep full monitor bounds plus the fixed offsets (work_area is
-/// unreliable on Wayland; Windows' offset clears the taskbar).
+/// The Y coordinate calculation in this function must stay in sync with
+/// `position_overlay_on_monitor()`. The creation-time position is used by
+/// macOS `create_recording_overlay`, while the runtime function repositions the
+/// overlay every time it is shown. If the two formulas differ, the visualizer
+/// will jump/shift the first time it appears after startup or after router use.
 ///
 /// We must use LogicalPosition (not PhysicalPosition) because Tauri/tao
 /// converts PhysicalPosition using the scale factor of the monitor the window
@@ -722,10 +719,11 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
     let window_height = calculate_overlay_window_height(monitor_height);
 
     let settings = settings::get_settings_safe(app_handle);
+    let overlay_scale = settings.overlay_scale;
 
     debug!(
-        "calculate_overlay_position: overlay_position={:?}, monitor=({},{}) {}x{}",
-        settings.overlay_position, monitor_x, monitor_y, monitor_width, monitor_height
+        "calculate_overlay_position: overlay_position={:?}, overlay_scale={}, monitor=({},{}) {}x{}",
+        settings.overlay_position, overlay_scale, monitor_x, monitor_y, monitor_width, monitor_height
     );
 
     // Center the window which is wider than the pill
@@ -737,23 +735,15 @@ fn calculate_overlay_position(app_handle: &AppHandle) -> Option<(f64, f64, f64)>
             pos_y
         }
         OverlayPosition::Bottom | OverlayPosition::None => {
-            // Use pill height for positioning so the visible content sits at
-            // the same screen position regardless of the taller transparent window.
-            let window_extra = window_height - OVERLAY_PILL_HEIGHT;
-
-            // On macOS, use the work area (visibleFrame) so the overlay
-            // tracks the Dock — above it when shown, at the screen edge
-            // when hidden. work_area shares monitor.position's global
-            // coordinate space, so no monitor offset is added.
-            #[cfg(target_os = "macos")]
-            let bottom = {
-                let wa = monitor.work_area();
-                (wa.position.y as f64 + wa.size.height as f64) / scale
-            };
-            #[cfg(not(target_os = "macos"))]
-            let bottom = monitor_y + monitor_height;
-
-            let pos_y = bottom - OVERLAY_PILL_HEIGHT - OVERLAY_BOTTOM_OFFSET - window_extra / 2.0;
+            // Anchor the pill to the bottom of the screen using the exact same
+            // formula as `position_overlay_on_monitor()`. This prevents the
+            // visualizer from jumping the first time the overlay is shown after
+            // creation or after the router hides the window. Both pill height
+            // and the CSS top margin are scaled to match runtime behavior.
+            let pill_height = OVERLAY_PILL_HEIGHT * overlay_scale;
+            let pill_margin = 4.0 * overlay_scale;
+            let pos_y =
+                monitor_y + monitor_height - OVERLAY_BOTTOM_OFFSET - pill_height - pill_margin;
             debug!(
                 "calculate_overlay_position: Bottom/None position, y={}",
                 pos_y
@@ -864,7 +854,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
             .build()
         {
             Ok(panel) => {
-                let _ = panel.hide();
+                panel.hide();
 
                 // Swizzle canBecomeKeyWindow on the RecordingOverlayPanel class
                 // so it checks OVERLAY_CAN_BECOME_KEY instead of always returning false.
@@ -1005,6 +995,7 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
 /// - Regular recording/transcribing: minimal height (100px, pill only)
 /// - Recording with live captions: 280px for multi-line text
 /// - Router confirming/processing: full height for transcription preview
+///
 /// Helper function to position overlay window on a specific monitor.
 /// Used by update_overlay_position for both cursor-based and fallback positioning.
 ///
@@ -1279,7 +1270,7 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
             // GUARD 2: Active use check at the latest possible moment
             let is_active = app_handle_clone
                 .try_state::<Arc<TranscriptionCoordinator>>()
-                .map_or(false, |coord| coord.is_active_use());
+                .is_some_and(|coord| coord.is_active_use());
 
             if !is_active {
                 // Reset force click-through so next show starts with clean state.
