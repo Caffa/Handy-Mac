@@ -1440,7 +1440,10 @@ impl TranscriptionManager {
             // killing legitimate long transcriptions.
             let held_for = {
                 let guard = self.is_transcribing_since.lock();
-                guard.as_ref().copied().map(|s| wait_start.duration_since(s))
+                guard
+                    .as_ref()
+                    .copied()
+                    .map(|s| Instant::now().duration_since(s))
             };
             if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
                 error!(
@@ -1552,10 +1555,9 @@ impl TranscriptionManager {
             });
         }
 
-        let guard = self.try_acquire_transcribing_slot(
-            TRANSCRIBING_SLOT_WAIT_TIMEOUT,
-            || self.is_streaming_cancelled(),
-        )?;
+        let guard = self.try_acquire_transcribing_slot(TRANSCRIBING_SLOT_WAIT_TIMEOUT, || {
+            self.is_streaming_cancelled()
+        })?;
 
         // Cancelled after acquiring the slot: bail out without touching the engine.
         if self.is_streaming_cancelled() {
@@ -1610,6 +1612,9 @@ impl TranscriptionManager {
                     error!("[IS_LOADING-WATCHDOG] timed out waiting for model load");
                     *is_loading = false;
                     self.loading_condvar.notify_all();
+                    // Clear any pending model request so a stale LoadingGuard::drop
+                    // does not spawn another load after this watchdog fires.
+                    self.take_pending_model();
                     return Err(AppError::ModelNotLoaded);
                 }
 
@@ -2008,8 +2013,9 @@ impl TranscriptionManager {
 /// RAII guard that clears the `is_transcribing` flag and notifies waiters on drop.
 /// Critical invariant: if the slot was force-released by a later waiter while this
 /// guard's owner was still running, the stale Drop must be a no-op. It must NOT
-/// overwrite the new owner's timestamp. We detect this by checking whether the
-/// flag is still true before clearing it.
+/// overwrite the new owner's timestamp. We detect this by recording the instant
+/// at which we acquired the slot and only clearing if that same instant is still
+/// stored in `is_transcribing_since`.
 struct TranscribingGuard {
     flag: Arc<ParkingLotMutex<bool>>,
     timestamp: Arc<ParkingLotMutex<Option<Instant>>>,
@@ -2020,10 +2026,12 @@ struct TranscribingGuard {
 impl Drop for TranscribingGuard {
     fn drop(&mut self) {
         let mut flag = self.flag.lock();
-        // Only clear the slot if it is still held. If a later acquire force-released
-        // the slot and started a new transcription, this stale Drop must not
-        // clobber the new owner's flag or timestamp.
-        if *flag {
+        // Only clear the slot if it is still held *and* still owned by this guard.
+        // If a later acquire force-released the slot and started a new
+        // transcription, `is_transcribing_since` will contain a different
+        // instant (or None), so this stale Drop must not clobber the new owner.
+        let still_mine = *self.timestamp.lock() == Some(self.acquired_at);
+        if *flag && still_mine {
             *flag = false;
             *self.timestamp.lock() = None;
             self.condvar.notify_all();
@@ -2033,7 +2041,8 @@ impl Drop for TranscribingGuard {
             );
         } else {
             debug!(
-                "[SLOT] stale TranscribingGuard drop skipped (slot already released)"
+                "[SLOT] stale TranscribingGuard drop skipped (owned={})",
+                still_mine
             );
         }
     }
@@ -2641,7 +2650,10 @@ mod tests {
         while *is_transcribing {
             let held_for = {
                 let guard = since.lock();
-                guard.as_ref().copied().map(|s| wait_start.duration_since(s))
+                guard
+                    .as_ref()
+                    .copied()
+                    .map(|s| wait_start.duration_since(s))
             };
             if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
                 *is_transcribing = false;
@@ -2700,6 +2712,63 @@ mod tests {
         assert!(!*guard, "is_loading should have been cleared on timeout");
     }
 
+    /// Dropping a guard whose slot was already force-released by a later owner
+    /// must not clear the new owner's flag or overwrite its timestamp.
+    #[test]
+    fn stale_transcribing_guard_drop_does_not_clobber_new_owner() {
+        use parking_lot::{Condvar as ParkingLotCondvar, Mutex as ParkingLotMutex};
+
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Owner A acquires the slot and stores its timestamp.
+        let a_acquired_at = Instant::now();
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(a_acquired_at);
+        }
+        let a_guard = TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at: a_acquired_at,
+        };
+        // Keep A's guard alive by moving it into a variable that outlives B.
+        let _a_holder = a_guard;
+
+        // Simulate the slot being force-released by setting the timestamp to an
+        // old instant, then a new owner B acquires the slot with a fresh timestamp.
+        let b_acquired_at = Instant::now() - Duration::from_secs(5);
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(b_acquired_at);
+        }
+
+        // Drop owner A's stale guard.
+        drop(_a_holder);
+
+        // Owner B's slot must still be held and the timestamp must not be clobbered.
+        let flag_after = *flag.lock();
+        let since_after = *since.lock();
+        assert!(flag_after, "stale TranscribingGuard drop cleared the slot");
+        assert_eq!(
+            since_after,
+            Some(b_acquired_at),
+            "stale TranscribingGuard drop overwrote the new owner's timestamp"
+        );
+
+        // Clean up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
     /// A panic inside the model-load thread still clears `is_loading` and wakes
     /// waiters, because the thread's reset guard runs on unwind.
     #[test]
@@ -2720,7 +2789,9 @@ mod tests {
                     let mut guard = match self.is_loading.lock() {
                         Ok(g) => g,
                         Err(e) => {
-                            warn!("Recovered poisoned is_loading mutex during model-load thread exit");
+                            warn!(
+                                "Recovered poisoned is_loading mutex during model-load thread exit"
+                            );
                             e.into_inner()
                         }
                     };
