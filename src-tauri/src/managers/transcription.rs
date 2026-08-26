@@ -49,12 +49,28 @@ const ENGINE_HEALTH_RELOAD_THRESHOLD: u32 = 2;
 /// larger to avoid killing legitimate long transcriptions.
 const TRANSCRIBING_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// If the wait timeout above expires and the current owner has held the slot
+/// for at least this long, the waiter force-releases the slot once and retries
+/// acquisition. This recovers when a streaming/batch worker wedges inside the
+/// engine call and the user tries to start a new recording shortly after.
+/// Set equal to the wait timeout so we only recover from holds that were
+/// already stale when the waiter arrived.
+const TRANSCRIBING_SLOT_FORCE_RELEASE_ON_OWN_TIMEOUT: Duration = TRANSCRIBING_SLOT_WAIT_TIMEOUT;
+
 /// If a transcription claims the `is_transcribing` slot for longer than this
 /// and the owner did not release it, the next waiter force-releases it. This
 /// recovers from worker threads that wedge without clearing the flag (e.g. a
 /// panic that is swallowed or a GPU callback that never returns). Keep this
 /// large — it only has to be shorter than the forever-hang it replaces.
 const TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER: Duration = Duration::from_secs(60);
+
+/// Background idle-watchdog threshold for force-releasing a stuck
+/// `is_transcribing` slot. This must be significantly longer than any realistic
+/// final transcription, because the watcher runs while *not* recording and a long
+/// final transcription also runs after `is_recording` becomes false. The waiter
+/// watchdog above handles active recovery; this one only catches the case
+/// where the slot is left stuck during an idle gap.
+const TRANSCRIBING_SLOT_BG_FORCE_RELEASE_AFTER: Duration = Duration::from_secs(300);
 
 /// Maximum time `transcribe_internal` will wait for a model load to finish.
 /// Prevents a wedged loader thread from blocking the final-transcription path
@@ -415,6 +431,10 @@ impl TranscriptionManager {
                         continue;
                     }
 
+                    // Proactive background watchdog: recover a wedged transcription
+                    // slot even when no waiter is currently blocked on it.
+                    manager_cloned.check_and_force_release_transcribing_slot();
+
                     if let Some(limit_seconds) = timeout.to_seconds() {
                         let last = manager_cloned.last_activity.load(Ordering::Relaxed);
                         let now_ms = TranscriptionManager::now_ms();
@@ -466,6 +486,26 @@ impl TranscriptionManager {
         // The engine may be leased out to the streaming worker (taken out of
         // the mutex). It's still loaded, just in use, so report true.
         self.lock_engine().is_some() || self.active_engine_lease.load(Ordering::Acquire) != 0
+    }
+
+    /// Best-effort variant of [`is_model_loaded`] that never blocks waiting for
+    /// the engine mutex. Used by the tray menu rebuild, which runs on the main
+    /// thread and must not freeze the UI if a background streaming or
+    /// transcription thread currently holds the engine lock.
+    pub fn try_is_model_loaded(&self) -> bool {
+        match self.engine.try_lock() {
+            Ok(guard) => guard.is_some() || self.active_engine_lease.load(Ordering::Acquire) != 0,
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                warn!("Engine mutex was poisoned by a previous panic, recovering");
+                e.into_inner().is_some() || self.active_engine_lease.load(Ordering::Acquire) != 0
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // Contended case: fall back to the lease counter. If a lease is
+                // active the model is definitely loaded; otherwise report false
+                // rather than block.
+                self.active_engine_lease.load(Ordering::Acquire) != 0
+            }
+        }
     }
 
     /// Wait for an in-progress model load to finish.
@@ -612,6 +652,34 @@ impl TranscriptionManager {
     /// Get a clone of the streaming cancel flag.
     pub fn streaming_cancel_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancel_streaming)
+    }
+
+    /// Proactive background recovery for the `is_transcribing` slot. Called by
+    /// the idle watcher every 10s when not recording. Uses a much longer
+    /// threshold than the waiter-side watchdog so it never interrupts a
+    /// legitimate long final transcription; it only catches slots left stuck
+    /// during an idle gap.
+    pub fn check_and_force_release_transcribing_slot(&self) {
+        let mut is_transcribing = self.is_transcribing.lock();
+        if !*is_transcribing {
+            return;
+        }
+        let held_for = {
+            let guard = self.is_transcribing_since.lock();
+            guard
+                .as_ref()
+                .copied()
+                .map(|s| Instant::now().duration_since(s))
+        };
+        if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_BG_FORCE_RELEASE_AFTER) {
+            error!(
+                "[SLOT-WATCHDOG-BG] proactive force-release of is_transcribing held for {:?}",
+                held_for
+            );
+            *is_transcribing = false;
+            *self.is_transcribing_since.lock() = None;
+            self.transcribing_condvar.notify_all();
+        }
     }
 
     /// Unloads the model immediately if the setting is enabled and the model is loaded
@@ -1432,6 +1500,7 @@ impl TranscriptionManager {
     {
         let wait_start = Instant::now();
         let deadline = wait_start + max_wait;
+        let mut force_released_once = false;
 
         let mut is_transcribing = self.is_transcribing.lock();
         while *is_transcribing {
@@ -1462,7 +1531,32 @@ impl TranscriptionManager {
 
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                warn!("Timed out waiting for previous transcription to complete");
+                let held_for = {
+                    let guard = self.is_transcribing_since.lock();
+                    guard
+                        .as_ref()
+                        .copied()
+                        .map(|s| Instant::now().duration_since(s))
+                };
+                if !force_released_once
+                    && held_for.map_or(false, |d| {
+                        d >= TRANSCRIBING_SLOT_FORCE_RELEASE_ON_OWN_TIMEOUT
+                    })
+                {
+                    warn!(
+                        "[SLOT-RECOVER] force-releasing is_transcribing held for {:?} after wait timeout",
+                        held_for
+                    );
+                    *is_transcribing = false;
+                    *self.is_transcribing_since.lock() = None;
+                    self.transcribing_condvar.notify_all();
+                    force_released_once = true;
+                    continue;
+                }
+                warn!(
+                    "[SLOT-BUSY] returning TranscriptionBusy; held_for={:?}",
+                    held_for
+                );
                 return Err(AppError::TranscriptionBusy);
             }
 
@@ -2040,9 +2134,8 @@ impl Drop for TranscribingGuard {
                 self.acquired_at.elapsed()
             );
         } else {
-            debug!(
-                "[SLOT] stale TranscribingGuard drop skipped (owned={})",
-                still_mine
+            warn!(
+                "[SLOT-STALE-DROP] stale TranscribingGuard drop skipped (wedged owner recovered)"
             );
         }
     }
@@ -2653,7 +2746,7 @@ mod tests {
                 guard
                     .as_ref()
                     .copied()
-                    .map(|s| wait_start.duration_since(s))
+                    .map(|s| Instant::now().duration_since(s))
             };
             if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
                 *is_transcribing = false;
@@ -2764,6 +2857,290 @@ mod tests {
         {
             let mut g = flag.lock();
             *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn slot_force_releases_on_wait_timeout_then_acquires() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Simulate a transcription that grabbed the slot 5s ago. The inner 60s
+        // watchdog cannot fire during a 30s wait, but the outer
+        // FORCE_RELEASE_ON_OWN_TIMEOUT path (>=30s held at timeout) will fire
+        // at the 30s deadline (held = 35s) and let us acquire the slot.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - Duration::from_secs(5));
+        }
+
+        let guard = TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at: Instant::now(),
+        };
+
+        // Helper mirrors try_acquire_transcribing_slot's timeout branch.
+        let acquired =
+            try_acquire_test_slot(&flag, &since, &condvar, Duration::from_secs(30), || false);
+
+        assert!(
+            acquired.is_some(),
+            "should acquire via the outer FORCE_RELEASE_ON_OWN_TIMEOUT path"
+        );
+        let new_guard = acquired.unwrap();
+        assert!(*flag.lock(), "slot should be held by the new guard");
+        assert_eq!(*since.lock(), Some(new_guard.acquired_at));
+
+        // Clean up: drop old guard then new guard.
+        drop(guard);
+        drop(new_guard);
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn slot_returns_busy_if_retaken_after_force_release() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // First stale owner held for 31s.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - Duration::from_secs(31));
+        }
+
+        // A second owner retakes the slot inside the on_force_release hook.
+        // Because the helper drops its lock before invoking the hook, this
+        // second owner can acquire the same outer lock, set the flag, and
+        // release it. When the helper re-acquires the lock, the slot is busy
+        // and the helper returns None.
+        let second_owner_timestamp = Instant::now();
+        let flag_for_hook = flag.clone();
+        let since_for_hook = since.clone();
+        let b_took = Arc::new(ParkingLotMutex::new(false));
+        let b_took_for_hook = b_took.clone();
+
+        let acquired = try_acquire_test_slot_with_hook(
+            &flag,
+            &since,
+            &condvar,
+            Duration::from_millis(10),
+            || false,
+            || {
+                let mut g = flag_for_hook.lock();
+                *g = true;
+                *since_for_hook.lock() = Some(second_owner_timestamp);
+                *b_took_for_hook.lock() = true;
+                // g drops here, releasing the lock.
+            },
+        );
+
+        assert!(*b_took.lock(), "second owner should have retaken the slot");
+        assert!(
+            acquired.is_none(),
+            "should return busy when another owner retakes the slot after force-release"
+        );
+
+        // Clean up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn background_watchdog_force_releases_idle_held_slot() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Stale owner held for 70s.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - Duration::from_secs(70));
+        }
+
+        check_and_force_release_test_slot(&flag, &since, &condvar);
+
+        assert!(!*flag.lock(), "watchdog should clear the stale slot");
+        assert_eq!(*since.lock(), None);
+    }
+
+    #[test]
+    fn stale_guard_drop_after_background_force_release_is_noop() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Owner A acquires the slot.
+        let a_acquired_at = Instant::now();
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(a_acquired_at);
+        }
+        let a_guard = TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at: a_acquired_at,
+        };
+
+        // Background watchdog force-releases A's slot.
+        check_and_force_release_test_slot(&flag, &since, &condvar);
+
+        // New owner B acquires with a fresh timestamp.
+        let b_acquired_at = Instant::now();
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(b_acquired_at);
+            condvar.notify_all();
+        }
+
+        // Dropping the stale A guard must not clobber B.
+        drop(a_guard);
+        assert!(
+            *flag.lock(),
+            "stale guard drop should not clear the active slot"
+        );
+        assert_eq!(
+            *since.lock(),
+            Some(b_acquired_at),
+            "stale guard drop should not overwrite the new owner's timestamp"
+        );
+
+        // Clean up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    /// Helpers for the slot-recovery tests above. They mirror the production
+    /// logic in `try_acquire_transcribing_slot` and
+    /// `check_and_force_release_transcribing_slot` but do not need an AppHandle.
+    fn try_acquire_test_slot(
+        flag: &Arc<ParkingLotMutex<bool>>,
+        since: &Arc<ParkingLotMutex<Option<Instant>>>,
+        condvar: &Arc<ParkingLotCondvar>,
+        max_wait: Duration,
+        cancel_check: impl Fn() -> bool,
+    ) -> Option<TranscribingGuard> {
+        try_acquire_test_slot_with_hook(flag, since, condvar, max_wait, cancel_check, || {})
+    }
+
+    fn try_acquire_test_slot_with_hook(
+        flag: &Arc<ParkingLotMutex<bool>>,
+        since: &Arc<ParkingLotMutex<Option<Instant>>>,
+        condvar: &Arc<ParkingLotCondvar>,
+        max_wait: Duration,
+        cancel_check: impl Fn() -> bool,
+        on_force_release: impl FnMut(),
+    ) -> Option<TranscribingGuard> {
+        let wait_start = Instant::now();
+        let deadline = wait_start + max_wait;
+        let mut force_released_once = false;
+        let mut on_force_release = on_force_release;
+
+        let mut is_transcribing = flag.lock();
+        while *is_transcribing {
+            let held_for = {
+                let guard = since.lock();
+                guard
+                    .as_ref()
+                    .copied()
+                    .map(|s| Instant::now().duration_since(s))
+            };
+
+            // Inner watchdog: force-release if the owner has held far too long.
+            if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+                *is_transcribing = false;
+                *since.lock() = None;
+                condvar.notify_all();
+            }
+
+            if cancel_check() {
+                return None;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // Outer recovery: this waiter's own timeout has expired. If the
+                // slot has been held for at least the wait timeout, force-release
+                // it once and retry acquisition.
+                if !force_released_once
+                    && held_for.map_or(false, |d| {
+                        d >= TRANSCRIBING_SLOT_FORCE_RELEASE_ON_OWN_TIMEOUT
+                    })
+                {
+                    *is_transcribing = false;
+                    *since.lock() = None;
+                    condvar.notify_all();
+                    force_released_once = true;
+                    drop(is_transcribing);
+                    on_force_release();
+                    is_transcribing = flag.lock();
+                    continue;
+                }
+                return None;
+            }
+
+            let slice = remaining.min(Duration::from_millis(100));
+            let timed_out = condvar.wait_for(&mut is_transcribing, slice).timed_out();
+            if timed_out && cancel_check() {
+                return None;
+            }
+        }
+
+        let acquired_at = Instant::now();
+        *is_transcribing = true;
+        *since.lock() = Some(acquired_at);
+        drop(is_transcribing);
+
+        Some(TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at,
+        })
+    }
+
+    fn check_and_force_release_test_slot(
+        flag: &Arc<ParkingLotMutex<bool>>,
+        since: &Arc<ParkingLotMutex<Option<Instant>>>,
+        condvar: &Arc<ParkingLotCondvar>,
+    ) {
+        let mut is_transcribing = flag.lock();
+        if !*is_transcribing {
+            return;
+        }
+        let held_for = {
+            let guard = since.lock();
+            guard
+                .as_ref()
+                .copied()
+                .map(|s| Instant::now().duration_since(s))
+        };
+        if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+            *is_transcribing = false;
             *since.lock() = None;
             condvar.notify_all();
         }

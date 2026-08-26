@@ -328,74 +328,95 @@ fn create_audio_recorder(
                                 return;
                             }
 
-                            // Transcribe the audio samples. We intentionally keep the
-                            // unbounded lock here (instrumentation only) because the
-                            // streaming callback already runs in a blocking task and must
-                            // not return until transcription is finished.
+                            // Transcribe the audio samples. Use a bounded acquisition lock so
+                            // a wedged prior streaming callback cannot block this frame forever.
                             let lock_start = Instant::now();
-                            let tm_guard = tm.lock();
-                            let lock_dt = lock_start.elapsed();
-                            if lock_dt > Duration::from_millis(250) {
-                                warn!("[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)", lock_dt);
-                            } else {
-                                debug!("[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)", lock_dt);
-                            }
-                            let transcription_result = tm_guard.transcribe(samples);
-                            match transcription_result {
-                                Ok(result) if !result.text.is_empty() => {
-                                    info!(
-                                        "[Live Captions] Streaming transcription succeeded: text_len={}",
-                                        result.text.len()
+                            let tm_guard = tm.try_lock_for(Duration::from_secs(2));
+                            match tm_guard {
+                                None => {
+                                    warn!(
+                                        "[STREAM-LOCK] timed out acquiring TM lock after 2s, skipping frame"
                                     );
-                                    // Check again after transcription in case it was cancelled mid-work
-                                    // Using the Arc<AtomicBool> to avoid lock contention
-                                    if cancel_flag.load_flag() {
-                                        debug!(
-                                            "[STREAM-CB] Discarding streaming transcription result - cancelled seq={}",
-                                            cancel_flag.load_seq()
-                                        );
-                                        return;
-                                    }
-
-                                    // Re-check generation right before emitting the event,
-                                    // in case the stream was closed while transcription ran.
-                                    let current_generation = close_generation.load(Ordering::SeqCst);
-                                    if current_generation != captured_generation {
-                                        debug!(
-                                            "[STREAM-CB] Generation mismatch ({} != {}) before emit, discarding stale transcription result",
-                                            current_generation, captured_generation
-                                        );
-                                        return;
-                                    }
-
-                                    // Emit partial transcription event with text for frontend display
-                                    info!(
-                                        "[Live Captions] Emitting partial-transcription event: text_len={}",
-                                        result.text.len()
-                                    );
-                                    if let Err(e) = app_handle.emit("partial-transcription", &result) {
-                                        warn!("Failed to emit partial-transcription event: {}", e);
-                                    }
+                                    return;
                                 }
-                                Ok(_) => {
-                                    // Empty transcription - skip
-                                    debug!("[Live Captions] Streaming transcription returned empty text");
-                                }
-                                Err(e) => {
-                                    if matches!(e, AppError::ModelNotLoaded) {
-                                        info!("[Live Captions] Model not loaded — initiating model load for next streaming cycle");
-                                        let load_lock_start = Instant::now();
-                                        tm.lock().initiate_model_load();
-                                        let load_lock_dt = load_lock_start.elapsed();
-                                        if load_lock_dt > Duration::from_millis(250) {
-                                            warn!("[STREAM-LOCK] tm.lock().initiate_model_load() took {:?} (ModelNotLoaded re-kick)", load_lock_dt);
-                                        } else {
-                                            debug!("[STREAM-LOCK] tm.lock().initiate_model_load() took {:?} (ModelNotLoaded re-kick)", load_lock_dt);
-                                        }
-                                    } else if matches!(e, AppError::TranscriptionBusy) {
-                                        debug!("[Live Captions] Streaming transcription skipped (busy): {}", e);
+                                Some(guard) => {
+                                    let lock_dt = lock_start.elapsed();
+                                    if lock_dt > Duration::from_millis(250) {
+                                        warn!("[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)", lock_dt);
                                     } else {
-                                        warn!("[Live Captions] Streaming transcription failed: {}", e);
+                                        debug!("[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)", lock_dt);
+                                    }
+                                    // Clone any state needed after the guard is dropped.
+                                    let app_handle = app_handle.clone();
+                                    let tm = Arc::clone(&tm);
+                                    let cancel_flag = cancel_flag.clone();
+                                    let close_generation = close_generation.clone();
+                                    let transcription_result = guard.transcribe(samples);
+                                    drop(guard);
+
+                                    match transcription_result {
+                                        Ok(result) if !result.text.is_empty() => {
+                                            info!(
+                                                "[Live Captions] Streaming transcription succeeded: text_len={}",
+                                                result.text.len()
+                                            );
+                                            // Check again after transcription in case it was cancelled mid-work
+                                            // Using the Arc<AtomicBool> to avoid lock contention
+                                            if cancel_flag.load_flag() {
+                                                debug!(
+                                                    "[STREAM-CB] Discarding streaming transcription result - cancelled seq={}",
+                                                    cancel_flag.load_seq()
+                                                );
+                                                return;
+                                            }
+
+                                            // Re-check generation right before emitting the event,
+                                            // in case the stream was closed while transcription ran.
+                                            let current_generation = close_generation.load(Ordering::SeqCst);
+                                            if current_generation != captured_generation {
+                                                debug!(
+                                                    "[STREAM-CB] Generation mismatch ({} != {}) before emit, discarding stale transcription result",
+                                                    current_generation, captured_generation
+                                                );
+                                                return;
+                                            }
+
+                                            // Emit partial transcription event with text for frontend display
+                                            info!(
+                                                "[Live Captions] Emitting partial-transcription event: text_len={}",
+                                                result.text.len()
+                                            );
+                                            if let Err(e) = app_handle.emit("partial-transcription", &result) {
+                                                warn!("Failed to emit partial-transcription event: {}", e);
+                                            }
+                                        }
+                                        Ok(_) => {
+                                            // Empty transcription - skip
+                                            debug!("[Live Captions] Streaming transcription returned empty text");
+                                        }
+                                        Err(e) => {
+                                            if matches!(e, AppError::ModelNotLoaded) {
+                                                info!("[Live Captions] Model not loaded — initiating model load for next streaming cycle");
+                                                // Re-acquire briefly for the model load re-kick; a bounded lock prevents
+                                                // a wedged prior streaming callback from blocking this frame forever.
+                                                let load_lock_start = Instant::now();
+                                                if let Some(load_guard) = tm.try_lock_for(Duration::from_secs(2)) {
+                                                    load_guard.initiate_model_load();
+                                                } else {
+                                                    warn!("[STREAM-LOCK] timed out acquiring TM lock for model-load re-kick after 2s, skipping");
+                                                }
+                                                let load_lock_dt = load_lock_start.elapsed();
+                                                if load_lock_dt > Duration::from_millis(250) {
+                                                    warn!("[STREAM-LOCK] model-load re-kick took {:?}", load_lock_dt);
+                                                } else {
+                                                    debug!("[STREAM-LOCK] model-load re-kick took {:?}", load_lock_dt);
+                                                }
+                                            } else if matches!(e, AppError::TranscriptionBusy) {
+                                                debug!("[Live Captions] Streaming transcription skipped (busy): {}", e);
+                                            } else {
+                                                warn!("[Live Captions] Streaming transcription failed: {}", e);
+                                            }
+                                        }
                                     }
                                 }
                             }
