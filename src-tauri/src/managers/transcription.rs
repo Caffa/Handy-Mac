@@ -938,17 +938,51 @@ impl TranscriptionManager {
         let model_id = model_id.to_string();
         let self_clone = self.clone();
         thread::spawn(move || {
+            // This guard guarantees that `is_loading` is cleared and waiters
+            // are notified in every exit path, including panics inside the load
+            // thread. It deliberately runs *after* any pending-model auto-load
+            // recursion in LoadingGuard::drop so that nested failures still
+            // release the slot.
+            struct ResetLoadingGuard {
+                is_loading: Arc<Mutex<bool>>,
+                loading_condvar: Arc<Condvar>,
+            }
+            impl Drop for ResetLoadingGuard {
+                fn drop(&mut self) {
+                    let mut guard = match self.is_loading.lock() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            warn!("Recovered poisoned is_loading mutex during model-load thread exit — a panic occurred earlier this session");
+                            e.into_inner()
+                        }
+                    };
+                    *guard = false;
+                    self.loading_condvar.notify_all();
+                }
+            }
+            let _reset_guard = ResetLoadingGuard {
+                is_loading: self_clone.is_loading.clone(),
+                loading_condvar: self_clone.loading_condvar.clone(),
+            };
+
             if reload_pending {
                 self_clone
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
             }
-            if let Err(e) = self_clone.load_model(&model_id) {
-                error!("Failed to load model '{}': {}", model_id, e);
+
+            let load_result = catch_unwind(AssertUnwindSafe(|| self_clone.load_model(&model_id)));
+            match load_result {
+                Ok(Ok(())) => {
+                    info!("Model '{}' loaded successfully", model_id);
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to load model '{}': {}", model_id, e);
+                }
+                Err(_) => {
+                    error!("[MODEL-LOAD] load thread panicked for model '{}'", model_id);
+                }
             }
-            let mut is_loading = self_clone.is_loading.lock().unwrap();
-            *is_loading = false;
-            self_clone.loading_condvar.notify_all();
         });
     }
 
@@ -1559,10 +1593,31 @@ impl TranscriptionManager {
 
         // Check if model is loaded, if not try to load it
         {
-            // If the model is loading, wait for it to complete.
-            let mut is_loading = self.is_loading.lock().unwrap();
+            // If the model is loading, wait bounded for it to complete. The
+            // watchdog below prevents a wedged loader thread from blocking the
+            // final-transcription path forever. On timeout we defensively clear
+            // the flag and fail fast.
+            let mut is_loading = match self.is_loading.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    warn!("Recovered poisoned is_loading mutex in transcribe_internal — a panic occurred earlier this session");
+                    e.into_inner()
+                }
+            };
+            let wait_start = Instant::now();
             while *is_loading {
-                is_loading = self.loading_condvar.wait(is_loading).unwrap();
+                if wait_start.elapsed() >= MODEL_LOAD_WAIT_TIMEOUT {
+                    error!("[IS_LOADING-WATCHDOG] timed out waiting for model load");
+                    *is_loading = false;
+                    self.loading_condvar.notify_all();
+                    return Err(AppError::ModelNotLoaded);
+                }
+
+                let guard = self
+                    .loading_condvar
+                    .wait_timeout(is_loading, Duration::from_millis(100))
+                    .unwrap();
+                is_loading = guard.0;
             }
 
             let engine_guard = self.lock_engine();
