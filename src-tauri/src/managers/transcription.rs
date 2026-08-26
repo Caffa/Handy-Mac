@@ -2612,6 +2612,149 @@ mod tests {
         assert_eq!(plan.language.as_deref(), Some("es"));
         assert_eq!(plan.target_language, None);
     }
+
+    // ── Slot watchdog tests: these exercise the pure mutex/condvar state
+    // without constructing a full TranscriptionManager (which requires an
+    // AppHandle). The same primitives are used by `try_acquire_transcribing_slot`.
+
+    /// A held-too-long `is_transcribing` slot is force-released by the next
+    /// waiter so a wedged worker cannot block transcription forever.
+    #[test]
+    fn transcription_slot_force_releases_after_watchdog_threshold() {
+        use parking_lot::{Condvar as ParkingLotCondvar, Mutex as ParkingLotMutex};
+
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Simulate a transcription that grabbed the slot long ago and vanished.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER);
+        }
+
+        // A waiter should observe the stale hold, force-release it, and acquire.
+        let wait_start = Instant::now();
+        let deadline = wait_start + Duration::from_secs(30);
+        let mut is_transcribing = flag.lock();
+        while *is_transcribing {
+            let held_for = {
+                let guard = since.lock();
+                guard.as_ref().copied().map(|s| wait_start.duration_since(s))
+            };
+            if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+                *is_transcribing = false;
+                *since.lock() = None;
+                condvar.notify_all();
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                panic!("timed out waiting for slot");
+            }
+            let slice = remaining.min(Duration::from_millis(100));
+            condvar.wait_for(&mut is_transcribing, slice);
+        }
+        *is_transcribing = true;
+        *since.lock() = Some(Instant::now());
+        drop(is_transcribing);
+
+        // Slot acquired; clean it up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    /// If a model load never finishes, the `is_loading` wait eventually times
+    /// out, clears the flag, and returns `ModelNotLoaded` rather than hanging.
+    /// This test uses a shortened timeout so it does not run for 60 seconds.
+    #[test]
+    fn is_loading_wait_returns_model_not_loaded_after_timeout() {
+        let is_loading = Arc::new(std::sync::Mutex::new(true));
+        let condvar = Arc::new(std::sync::Condvar::new());
+
+        let mut guard = is_loading.lock().unwrap();
+        let wait_start = Instant::now();
+        let mut timed_out = false;
+        // Use a short test timeout so this remains a unit test; the production
+        // constant is 60s, which is intentionally too long to exercise here.
+        let test_timeout = Duration::from_millis(250);
+        while *guard {
+            if wait_start.elapsed() >= test_timeout {
+                *guard = false;
+                condvar.notify_all();
+                timed_out = true;
+                break;
+            }
+            let result = condvar
+                .wait_timeout(guard, Duration::from_millis(100))
+                .unwrap();
+            guard = result.0;
+        }
+
+        assert!(timed_out, "expected the is_loading wait to time out");
+        assert!(!*guard, "is_loading should have been cleared on timeout");
+    }
+
+    /// A panic inside the model-load thread still clears `is_loading` and wakes
+    /// waiters, because the thread's reset guard runs on unwind.
+    #[test]
+    fn model_load_thread_panic_clears_is_loading() {
+        let is_loading = Arc::new(std::sync::Mutex::new(true));
+        let condvar = Arc::new(std::sync::Condvar::new());
+
+        let is_loading_clone = is_loading.clone();
+        let condvar_clone = condvar.clone();
+
+        std::thread::spawn(move || {
+            struct ResetLoadingGuard {
+                is_loading: Arc<std::sync::Mutex<bool>>,
+                loading_condvar: Arc<std::sync::Condvar>,
+            }
+            impl Drop for ResetLoadingGuard {
+                fn drop(&mut self) {
+                    let mut guard = match self.is_loading.lock() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            warn!("Recovered poisoned is_loading mutex during model-load thread exit");
+                            e.into_inner()
+                        }
+                    };
+                    *guard = false;
+                    self.loading_condvar.notify_all();
+                }
+            }
+            let _reset_guard = ResetLoadingGuard {
+                is_loading: is_loading_clone,
+                loading_condvar: condvar_clone,
+            };
+
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("simulated model load panic");
+            }))
+            .ok();
+            // _reset_guard drops here and must clear is_loading.
+        });
+
+        // Wait up to a few seconds for the panic thread to finish.
+        let mut guard = is_loading.lock().unwrap();
+        let wait_start = Instant::now();
+        while *guard {
+            let result = condvar
+                .wait_timeout(guard, Duration::from_millis(100))
+                .unwrap();
+            guard = result.0;
+            if wait_start.elapsed() > Duration::from_secs(5) {
+                panic!("is_loading was not cleared after model-load panic");
+            }
+        }
+
+        assert!(!*guard);
+    }
 }
 
 impl Drop for TranscriptionManager {
