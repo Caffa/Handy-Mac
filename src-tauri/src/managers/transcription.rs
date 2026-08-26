@@ -1661,6 +1661,12 @@ impl TranscriptionManager {
         // Perform transcription with the appropriate engine.
         // We use catch_unwind to prevent engine panics from poisoning the mutex,
         // which would make the app hang indefinitely on subsequent operations.
+        debug!(
+            "[ENGINE] starting transcription for model '{}' on {:.2}s of audio",
+            active_model,
+            audio_len as f64 / 16_000.0
+        );
+        let engine_start = Instant::now();
         let result = {
             let mut engine_guard = self.lock_engine();
 
@@ -1896,7 +1902,8 @@ impl TranscriptionManager {
                     // The engine is dropped here, effectively unloading it.
                     let panic_msg = panic_payload_message(panic_payload.as_ref());
                     error!(
-                        "Transcription engine panicked: {}. Model has been unloaded.",
+                        "[ENGINE-PANIC] Transcription engine panicked after {:?}: {}. Model has been unloaded.",
+                        engine_start.elapsed(),
                         panic_msg
                     );
 
@@ -1970,8 +1977,8 @@ impl TranscriptionManager {
         let audio_secs = audio_len as f64 / 16_000.0;
         let speedup = real_time_factor(audio_secs, elapsed_secs);
         info!(
-            "Transcription completed in {:.2}s for {:.2}s of audio ({:.2}x real-time){}",
-            elapsed_secs, audio_secs, speedup, translation_note
+            "[ENGINE] transcription completed for model '{}' in {:.2}s for {:.2}s of audio ({:.2}x real-time){}",
+            active_model, elapsed_secs, audio_secs, speedup, translation_note
         );
 
         if final_result.is_empty() {

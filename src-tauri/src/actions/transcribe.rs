@@ -446,6 +446,12 @@ impl super::ShortcutAction for TranscribeAction {
                         }
                     };
 
+                    if matches!(transcription_result, Err(AppError::TranscriptionBusy)) {
+                        warn!(
+                            "[TRANSCRIBE-STOP] TranscriptionBusy returned — the TM is_transcribing slot may be wedged"
+                        );
+                    }
+
                     // ── Structured session tracking: advance to Transcribing phase ──
                     let model_id = transcription_result
                         .as_ref()
