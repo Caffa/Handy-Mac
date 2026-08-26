@@ -44,6 +44,23 @@ const STREAM_FINALIZE_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 /// error recover without an expensive reload.
 const ENGINE_HEALTH_RELOAD_THRESHOLD: u32 = 2;
 
+/// Maximum time a caller will wait for an in-progress transcription to finish
+/// before declaring the slot busy. The watchdog below is independent and much
+/// larger to avoid killing legitimate long transcriptions.
+const TRANSCRIBING_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// If a transcription claims the `is_transcribing` slot for longer than this
+/// and the owner did not release it, the next waiter force-releases it. This
+/// recovers from worker threads that wedge without clearing the flag (e.g. a
+/// panic that is swallowed or a GPU callback that never returns). Keep this
+/// large — it only has to be shorter than the forever-hang it replaces.
+const TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER: Duration = Duration::from_secs(60);
+
+/// Maximum time `transcribe_internal` will wait for a model load to finish.
+/// Prevents a wedged loader thread from blocking the final-transcription path
+/// indefinitely; if this fires we defensively clear the flag and fail fast.
+const MODEL_LOAD_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -325,6 +342,9 @@ pub struct TranscriptionManager {
     active_engine_lease: Arc<AtomicU64>,
     /// Flag to prevent concurrent transcription calls (streaming vs final).
     is_transcribing: Arc<ParkingLotMutex<bool>>,
+    /// Timestamp when the current owner acquired `is_transcribing`. Used by
+    /// the slot watchdog to detect a flag stuck by a wedged/panicked worker.
+    is_transcribing_since: Arc<ParkingLotMutex<Option<Instant>>>,
     transcribing_condvar: Arc<ParkingLotCondvar>,
     cancel_streaming: Arc<AtomicBool>,
     /// Consecutive non-panic engine failures. Reaches
@@ -354,6 +374,7 @@ impl TranscriptionManager {
             active_stream_worker: Arc::new(AtomicU64::new(0)),
             active_engine_lease: Arc::new(AtomicU64::new(0)),
             is_transcribing: Arc::new(ParkingLotMutex::new(false)),
+            is_transcribing_since: Arc::new(ParkingLotMutex::new(None)),
             transcribing_condvar: Arc::new(ParkingLotCondvar::new()),
             cancel_streaming: Arc::new(AtomicBool::new(false)),
             consecutive_engine_failures: Arc::new(AtomicU32::new(0)),
@@ -1360,6 +1381,86 @@ impl TranscriptionManager {
         .emit(&self.app_handle);
     }
 
+    /// Acquire the `is_transcribing` slot, waiting up to `max_wait`. If the slot
+    /// is currently held and the hold duration has exceeded
+    /// `TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER`, the slot is force-released so
+    /// the caller can proceed.
+    ///
+    /// `cancel_check` is called between waits; if it returns true, acquisition
+    /// is aborted with `AppError::TranscriptionBusy`.
+    fn try_acquire_transcribing_slot<F>(
+        &self,
+        max_wait: Duration,
+        cancel_check: F,
+    ) -> AppResult<TranscribingGuard>
+    where
+        F: Fn() -> bool,
+    {
+        let wait_start = Instant::now();
+        let deadline = wait_start + max_wait;
+
+        let mut is_transcribing = self.is_transcribing.lock();
+        while *is_transcribing {
+            // Watchdog: if the current owner has held the slot for too long,
+            // force-release it. This recovers from a wedged worker without
+            // killing legitimate long transcriptions.
+            let held_for = {
+                let guard = self.is_transcribing_since.lock();
+                guard.as_ref().copied().map(|s| wait_start.duration_since(s))
+            };
+            if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+                error!(
+                    "[SLOT-WATCHDOG] force-releasing is_transcribing held for {:?}",
+                    held_for
+                );
+                *is_transcribing = false;
+                *self.is_transcribing_since.lock() = None;
+                self.transcribing_condvar.notify_all();
+            }
+
+            if cancel_check() {
+                debug!("[SLOT] aborting acquisition: cancellation requested while waiting");
+                return Err(AppError::TranscriptionBusy);
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                warn!("Timed out waiting for previous transcription to complete");
+                return Err(AppError::TranscriptionBusy);
+            }
+
+            // Wait in small slices so we can re-check the watchdog and cancel
+            // flag without blocking until the full remaining timeout.
+            let slice = remaining.min(Duration::from_millis(100));
+            let timed_out = self
+                .transcribing_condvar
+                .wait_for(&mut is_transcribing, slice)
+                .timed_out();
+            if timed_out && cancel_check() {
+                return Err(AppError::TranscriptionBusy);
+            }
+        }
+
+        // Own the slot.
+        *is_transcribing = true;
+        let acquired_at = Instant::now();
+        *self.is_transcribing_since.lock() = Some(acquired_at);
+        drop(is_transcribing);
+
+        let guard = TranscribingGuard {
+            flag: self.is_transcribing.clone(),
+            timestamp: self.is_transcribing_since.clone(),
+            condvar: self.transcribing_condvar.clone(),
+            acquired_at,
+        };
+
+        debug!(
+            "[SLOT] acquired is_transcribing after {:?}",
+            acquired_at.duration_since(wait_start)
+        );
+        Ok(guard)
+    }
+
     /// Run a full batch transcription on the held engine.
     ///
     /// Streaming callers (live captions) should use [`transcribe`], which
@@ -1390,36 +1491,10 @@ impl TranscriptionManager {
             });
         }
 
-        // Wait for any in-progress transcription to complete. Do NOT check the
-        // streaming-cancellation flag here: the final transcription is the
-        // reason the flag was set in the first place, so aborting on it would
-        // always fail the user's recording. The flag is only relevant for
-        // optional streaming work.
-        {
-            let mut is_transcribing = self.is_transcribing.lock();
-            let max_wait = Duration::from_secs(30);
-            let wait_deadline = std::time::Instant::now() + max_wait;
-            while *is_transcribing {
-                let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    warn!("Timed out waiting for previous transcription to complete");
-                    return Err(AppError::TranscriptionBusy);
-                }
-                let _timed_out = self
-                    .transcribing_condvar
-                    .wait_for(&mut is_transcribing, remaining);
-            }
-        }
-
-        // Set transcribing flag for the duration of this transcription.
-        {
-            let mut flag = self.is_transcribing.lock();
-            *flag = true;
-        }
-        let guard = TranscribingGuard {
-            flag: self.is_transcribing.clone(),
-            condvar: self.transcribing_condvar.clone(),
-        };
+        let guard = self.try_acquire_transcribing_slot(
+            TRANSCRIBING_SLOT_WAIT_TIMEOUT,
+            || false, // final transcription ignores the streaming cancel flag
+        )?;
 
         // NOW it is safe to clear the streaming cancel flag: we own the
         // `is_transcribing` slot, so any queued streaming callback that checks
@@ -1443,41 +1518,16 @@ impl TranscriptionManager {
             });
         }
 
-        // Wait for any in-progress transcription to complete.
-        {
-            let mut is_transcribing = self.is_transcribing.lock();
-            let max_wait = Duration::from_secs(30);
-            let wait_deadline = std::time::Instant::now() + max_wait;
-            while *is_transcribing {
-                if self.is_streaming_cancelled() {
-                    debug!("Transcribe aborted: streaming cancellation requested while waiting for in-progress transcription");
-                    return Err(AppError::TranscriptionBusy);
-                }
-                let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    warn!("Timed out waiting for previous transcription to complete");
-                    return Err(AppError::TranscriptionBusy);
-                }
-                let _timed_out = self
-                    .transcribing_condvar
-                    .wait_for(&mut is_transcribing, remaining);
-            }
-        }
+        let guard = self.try_acquire_transcribing_slot(
+            TRANSCRIBING_SLOT_WAIT_TIMEOUT,
+            || self.is_streaming_cancelled(),
+        )?;
 
+        // Cancelled after acquiring the slot: bail out without touching the engine.
         if self.is_streaming_cancelled() {
             debug!("Transcribe aborted: streaming cancellation requested after acquiring transcribing slot");
             return Err(AppError::TranscriptionBusy);
         }
-
-        // Set transcribing flag for the duration of this transcription.
-        {
-            let mut flag = self.is_transcribing.lock();
-            *flag = true;
-        }
-        let guard = TranscribingGuard {
-            flag: self.is_transcribing.clone(),
-            condvar: self.transcribing_condvar.clone(),
-        };
 
         self.transcribe_internal(audio, guard)
     }
@@ -1894,16 +1944,36 @@ impl TranscriptionManager {
 }
 
 /// RAII guard that clears the `is_transcribing` flag and notifies waiters on drop.
+/// Critical invariant: if the slot was force-released by a later waiter while this
+/// guard's owner was still running, the stale Drop must be a no-op. It must NOT
+/// overwrite the new owner's timestamp. We detect this by checking whether the
+/// flag is still true before clearing it.
 struct TranscribingGuard {
     flag: Arc<ParkingLotMutex<bool>>,
+    timestamp: Arc<ParkingLotMutex<Option<Instant>>>,
     condvar: Arc<ParkingLotCondvar>,
+    acquired_at: Instant,
 }
 
 impl Drop for TranscribingGuard {
     fn drop(&mut self) {
         let mut flag = self.flag.lock();
-        *flag = false;
-        self.condvar.notify_all();
+        // Only clear the slot if it is still held. If a later acquire force-released
+        // the slot and started a new transcription, this stale Drop must not
+        // clobber the new owner's flag or timestamp.
+        if *flag {
+            *flag = false;
+            *self.timestamp.lock() = None;
+            self.condvar.notify_all();
+            debug!(
+                "[SLOT] released is_transcribing after {:?}",
+                self.acquired_at.elapsed()
+            );
+        } else {
+            debug!(
+                "[SLOT] stale TranscribingGuard drop skipped (slot already released)"
+            );
+        }
     }
 }
 
