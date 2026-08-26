@@ -800,9 +800,9 @@ pub fn change_update_checks_setting(app: AppHandle, enabled: bool) -> Result<(),
 #[tauri::command]
 #[specta::specta]
 pub fn update_custom_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.custom_words = words;
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.custom_words = words;
+    });
     Ok(())
 }
 
@@ -821,18 +821,18 @@ pub fn change_word_correction_threshold_setting(
 #[tauri::command]
 #[specta::specta]
 pub fn update_advanced_custom_words(app: AppHandle, words: Vec<CustomWord>) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.advanced_custom_words = words;
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.advanced_custom_words = words;
+    });
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn update_custom_filler_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.custom_filler_words = if words.is_empty() { None } else { Some(words) };
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.custom_filler_words = if words.is_empty() { None } else { Some(words) };
+    });
     Ok(())
 }
 
@@ -874,9 +874,9 @@ pub fn update_word_replacements(
     app: AppHandle,
     replacements: Vec<settings::WordReplacement>,
 ) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.word_replacements = replacements;
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.word_replacements = replacements;
+    });
     Ok(())
 }
 
@@ -1339,13 +1339,30 @@ pub fn change_lazy_stream_close_setting(app: AppHandle, enabled: bool) -> Result
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_app_language_setting(app: AppHandle, language: String) -> Result<(), String> {
+pub async fn change_app_language_setting(app: AppHandle, language: String) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.app_language = language.clone();
     settings::write_settings_safe(&app, settings);
 
-    // Refresh the tray menu with the new language
-    tray::update_tray_menu(&app, &tray::TrayIconState::Idle, Some(&language));
+    // Refresh the tray menu with the new language, but do it off the
+    // synchronous command path. The tray rebuild touches backend locks
+    // (transcription engine, available models) that can be held by streaming
+    // or model threads; running it inline here blocks the main thread and
+    // freezes the UI. Scheduling it on the async runtime lets the IPC call
+    // return immediately, and the best-effort reads inside the tray code
+    // prevent the actual rebuild from hanging the event loop.
+    let app_for_tray = app.clone();
+    let language_for_tray = language.clone();
+    tauri::async_runtime::spawn(async move {
+        let app_inside = app_for_tray.clone();
+        let _ = app_for_tray.run_on_main_thread(move || {
+            tray::update_tray_menu(
+                &app_inside,
+                &tray::TrayIconState::Idle,
+                Some(&language_for_tray),
+            );
+        });
+    });
 
     Ok(())
 }

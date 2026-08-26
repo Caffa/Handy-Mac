@@ -223,6 +223,40 @@ pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
     });
 }
 
+/// Atomically patch the in-memory settings cache and flush the result to disk.
+///
+/// This helper is intended for small, isolated field updates (e.g. custom
+/// words, selected model). It holds the SettingsCache write lock only while
+/// applying the patch, then performs a synchronous disk flush without the
+/// lock held. This prevents two common loss scenarios:
+///
+/// 1. Read-modify-write races where two writers read the same snapshot,
+///    mutate different fields, and the second write clobbers the first.
+/// 2. Debounced disk writes that are lost because the app quits or crashes
+///    before the flush fires.
+///
+/// Callers pass a closure that receives `&mut AppSettings` and can modify any
+/// field; the patched value is then written to the cache and immediately saved.
+pub fn patch_settings<R: Runtime, F>(app: &AppHandle<R>, f: F)
+where
+    F: FnOnce(&mut AppSettings),
+{
+    let _ = safe_settings_operation("patch_settings", || {
+        let settings = if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            let mut guard = cache.settings.write().unwrap();
+            f(&mut guard);
+            let patched = guard.clone();
+            drop(guard);
+            patched
+        } else {
+            let mut settings = get_settings(app);
+            f(&mut settings);
+            settings
+        };
+        write_settings_immediate(app, settings);
+    });
+}
+
 // ── Core load/save functions ──
 
 /// Rebuilds settings from a store value that failed to deserialize as a whole.
@@ -628,7 +662,9 @@ pub fn write_settings_immediate<R: Runtime>(app: &AppHandle<R>, mut settings: Ap
 pub fn flush_settings<R: Runtime>(app: &AppHandle<R>) {
     let _ = safe_settings_operation("flush_settings", || {
         let Some(cache) = app.try_state::<Arc<SettingsCache>>() else {
-            warn!("[settings] exit flush: SettingsCache not available, cannot flush pending changes");
+            warn!(
+                "[settings] exit flush: SettingsCache not available, cannot flush pending changes"
+            );
             return;
         };
 
@@ -954,7 +990,10 @@ mod tests {
             "word_replacements".into(),
             serde_json::json!([{ "mistranslation": "teh", "correction": "the" }]),
         );
-        map.insert("custom_filler_words".into(), serde_json::json!(["um", "uh"]));
+        map.insert(
+            "custom_filler_words".into(),
+            serde_json::json!(["um", "uh"]),
+        );
         // An unrelated invalid field forces the salvage path.
         map.insert("broken_future_field".into(), serde_json::json!("nope"));
 
@@ -967,7 +1006,10 @@ mod tests {
         assert_eq!(salvaged.advanced_custom_words.len(), 1);
         assert_eq!(salvaged.advanced_custom_words[0].word, "Kubernetes");
         assert_eq!(salvaged.word_replacements.len(), 1);
-        assert_eq!(salvaged.custom_filler_words, Some(vec!["um".to_string(), "uh".to_string()]));
+        assert_eq!(
+            salvaged.custom_filler_words,
+            Some(vec!["um".to_string(), "uh".to_string()])
+        );
     }
 
     /// Verifies that `flush_settings` can write the in-memory cache to disk
@@ -1009,8 +1051,8 @@ mod tests {
         let stored_value = store
             .get("settings")
             .expect("settings should be written to disk");
-        let stored: AppSettings = serde_json::from_value(stored_value)
-            .expect("stored settings should deserialize");
+        let stored: AppSettings =
+            serde_json::from_value(stored_value).expect("stored settings should deserialize");
 
         assert_eq!(
             stored.custom_words,
@@ -1064,8 +1106,8 @@ mod tests {
         let stored_value = store
             .get("settings")
             .expect("settings should be written to disk");
-        let stored: AppSettings = serde_json::from_value(stored_value)
-            .expect("stored settings should deserialize");
+        let stored: AppSettings =
+            serde_json::from_value(stored_value).expect("stored settings should deserialize");
 
         assert_eq!(
             stored.custom_words,
@@ -1132,5 +1174,61 @@ mod tests {
             reloaded_binding.handy_keys_binding,
             "ctrl_right+command_right+y"
         );
+    }
+
+    /// Verifies that `patch_settings` applies concurrent field updates
+    /// atomically and persists the merged result to disk. Without atomic
+    /// patching, two read-modify-write writers that touch different fields can
+    /// clobber each other: whichever writes last keeps only its own field.
+    /// This test reproduces that exact race scenario with two threads.
+    #[test]
+    fn patch_settings_atomic_concurrent_fields() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        app.manage(Arc::new(SettingsCache::new(get_default_settings())));
+
+        let app_words = app.clone();
+        let handle_words = std::thread::spawn(move || {
+            patch_settings(&app_words, |s| {
+                s.custom_words = vec!["Zettelkasten".to_string()];
+            });
+        });
+
+        let app_model = app.clone();
+        let handle_model = std::thread::spawn(move || {
+            patch_settings(&app_model, |s| {
+                s.selected_model = "test-model".to_string();
+            });
+        });
+
+        handle_words
+            .join()
+            .expect("custom_words thread should finish");
+        handle_model
+            .join()
+            .expect("selected_model thread should finish");
+
+        // Both fields must survive in the in-memory cache.
+        let cached = app
+            .try_state::<Arc<SettingsCache>>()
+            .expect("SettingsCache should be managed")
+            .get();
+        assert_eq!(cached.custom_words, vec!["Zettelkasten".to_string()]);
+        assert_eq!(cached.selected_model, "test-model".to_string());
+
+        // And both fields must have been written to disk.
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        let stored_value = store
+            .get("settings")
+            .expect("settings should be written to disk");
+        let stored: AppSettings =
+            serde_json::from_value(stored_value).expect("stored settings should deserialize");
+        assert_eq!(stored.custom_words, vec!["Zettelkasten".to_string()]);
+        assert_eq!(stored.selected_model, "test-model".to_string());
     }
 }

@@ -2,7 +2,7 @@ use super::model_capabilities::{
     CapabilityProbe, CapabilityProber, Compatibility, GgufHeaderProber,
 };
 use crate::errors::AppError;
-use crate::settings::{get_settings, write_settings};
+use crate::settings::{self, get_settings};
 use anyhow::Result;
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
@@ -1173,6 +1173,17 @@ impl ModelManager {
         list
     }
 
+    /// Best-effort variant of [`get_available_models`] that returns `None`
+    /// instead of blocking when the `available_models` mutex is held by
+    /// another thread. Used by the tray menu rebuild to avoid freezing the
+    /// main thread when model scanning/download threads are active.
+    pub fn try_get_available_models(&self) -> Option<Vec<ModelInfo>> {
+        self.available_models
+            .try_lock()
+            .ok()
+            .map(|models| models.values().cloned().collect())
+    }
+
     /// Seed the bundled catalog ([`crate::catalog::CATALOG`]) into the registry,
     /// inserting each model whose id isn't already present (additive).
     ///
@@ -1429,7 +1440,7 @@ impl ModelManager {
     }
 
     fn auto_select_model_if_needed(&self) -> Result<()> {
-        let mut settings = get_settings(&self.app_handle);
+        let settings = get_settings(&self.app_handle);
 
         // Clear stale selection: selected model is set but doesn't exist
         // in available_models (e.g. deleted custom model file)
@@ -1443,8 +1454,9 @@ impl ModelManager {
                     "Selected model '{}' not found in available models, clearing selection",
                     settings.selected_model
                 );
-                settings.selected_model = String::new();
-                write_settings(&self.app_handle, settings.clone());
+                settings::patch_settings(&self.app_handle, |s| {
+                    s.selected_model = String::new();
+                });
             }
         }
 
@@ -1462,9 +1474,9 @@ impl ModelManager {
                 );
 
                 // Update settings with the selected model
-                let mut updated_settings = settings;
-                updated_settings.selected_model = available_model.id.clone();
-                write_settings(&self.app_handle, updated_settings);
+                settings::patch_settings(&self.app_handle, |s| {
+                    s.selected_model = available_model.id.clone();
+                });
 
                 info!("Successfully auto-selected model: {}", available_model.id);
             }

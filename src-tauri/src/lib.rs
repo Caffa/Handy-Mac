@@ -421,10 +421,15 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         tray::set_tray_visibility(app_handle, false);
     }
 
-    // Refresh tray menu when model state changes
+    // Refresh tray menu when model state changes. Use the non-blocking
+    // `try_update_tray_menu` variant because model-state-changed events can
+    // arrive in bursts (download progress, scan completion, load/unload), and
+    // waiting on an in-progress rebuild can deadlock with backend locks held by
+    // streaming or model threads. A skipped refresh is harmless — the next
+    // event or tray interaction will rebuild the menu.
     let app_handle_for_listener = app_handle.clone();
     app_handle.listen("model-state-changed", move |_| {
-        tray::update_tray_menu(&app_handle_for_listener, &tray::TrayIconState::Idle, None);
+        tray::try_update_tray_menu(&app_handle_for_listener, &tray::TrayIconState::Idle, None);
     });
 
     // Get the autostart manager and configure based on user setting
