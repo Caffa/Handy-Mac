@@ -47,7 +47,7 @@ const ENGINE_HEALTH_RELOAD_THRESHOLD: u32 = 2;
 /// Maximum time a caller will wait for an in-progress transcription to finish
 /// before declaring the slot busy. The watchdog below is independent and much
 /// larger to avoid killing legitimate long transcriptions.
-const TRANSCRIBING_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const TRANSCRIBING_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// If the wait timeout above expires and the current owner has held the slot
 /// for at least this long, the waiter force-releases the slot once and retries
@@ -658,7 +658,9 @@ impl TranscriptionManager {
     /// the idle watcher every 10s when not recording. Uses a much longer
     /// threshold than the waiter-side watchdog so it never interrupts a
     /// legitimate long final transcription; it only catches slots left stuck
-    /// during an idle gap.
+    /// during an idle gap. When force-releasing, also clears the cached model
+    /// and resets engine-health counters so the next transcription reloads a
+    /// fresh engine instead of re-entering the wedged one.
     pub fn check_and_force_release_transcribing_slot(&self) {
         let mut is_transcribing = self.is_transcribing.lock();
         if !*is_transcribing {
@@ -672,13 +674,38 @@ impl TranscriptionManager {
                 .map(|s| Instant::now().duration_since(s))
         };
         if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_BG_FORCE_RELEASE_AFTER) {
-            error!(
-                "[SLOT-WATCHDOG-BG] proactive force-release of is_transcribing held for {:?}",
+            warn!(
+                "[SLOT-WATCHDOG-BG] proactive force-release of is_transcribing held for {:?}; clearing cached model and failure counter",
                 held_for
             );
             *is_transcribing = false;
             *self.is_transcribing_since.lock() = None;
             self.transcribing_condvar.notify_all();
+
+            // A slot held this long means the engine call is wedged (e.g.
+            // GPU context loss, never-returning callback). Clear the cached
+            // model so the next transcription actually reloads a fresh engine
+            // instead of reusing the wedged one. Reset the failure counter as
+            // well; the reload itself starts a clean health record.
+            self.consecutive_engine_failures.store(0, Ordering::Release);
+            {
+                let mut current_model = self
+                    .current_model_id
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *current_model = None;
+            }
+            let _ = self.app_handle.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "unloaded".to_string(),
+                    model_id: None,
+                    model_name: None,
+                    error: Some(
+                        "Transcription slot watchdog recovered from wedged engine".to_string(),
+                    ),
+                },
+            );
         }
     }
 
@@ -1622,10 +1649,25 @@ impl TranscriptionManager {
             });
         }
 
-        let guard = self.try_acquire_transcribing_slot(
+        let guard = match self.try_acquire_transcribing_slot(
             TRANSCRIBING_SLOT_WAIT_TIMEOUT,
             || false, // final transcription ignores the streaming cancel flag
-        )?;
+        ) {
+            Ok(guard) => guard,
+            Err(AppError::TranscriptionBusy) => {
+                // The slot is wedged by a prior streaming/batch transcription
+                // that never released it. Force-recover the slot, clear the
+                // cached engine state, and retry once so the user's final
+                // transcription can proceed instead of failing immediately.
+                warn!(
+                    "[SLOT-RECOVER] final transcription busy; force-releasing wedged slot and retrying once"
+                );
+                self.check_and_force_release_transcribing_slot();
+                self.try_acquire_transcribing_slot(Duration::from_secs(5), || false)
+                    .map_err(|_| AppError::TranscriptionBusy)?
+            }
+            Err(e) => return Err(e),
+        };
 
         // NOW it is safe to clear the streaming cancel flag: we own the
         // `is_transcribing` slot, so any queued streaming callback that checks

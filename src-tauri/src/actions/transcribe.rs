@@ -8,7 +8,7 @@ use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
-use crate::managers::transcription::TranscriptionManager;
+use crate::managers::transcription::{TranscriptionManager, TRANSCRIBING_SLOT_WAIT_TIMEOUT};
 use crate::managers::transcription_retry::{TranscriptionFailure, TranscriptionRetryQueue};
 use crate::session::SessionTracker;
 use crate::settings::get_settings;
@@ -427,7 +427,8 @@ impl super::ShortcutAction for TranscribeAction {
                     let transcription_time = Instant::now();
                     // Use a bounded lock timeout to avoid indefinite blocking when a streaming
                     // transcription is in-flight holding the TM lock (1-5s of GPU work).
-                    let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
+                    let transcription_result = match tm.try_lock_for(TRANSCRIBING_SLOT_WAIT_TIMEOUT)
+                    {
                         Some(guard) => {
                             // Capture the shared streaming cancel flag so it can be cleared
                             // only after the final transcription acquires the `is_transcribing`
@@ -441,7 +442,7 @@ impl super::ShortcutAction for TranscribeAction {
                             })
                         }
                         None => {
-                            warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
+                            warn!("Timed out waiting for TranscriptionManager lock after {:?} — aborting transcription", TRANSCRIBING_SLOT_WAIT_TIMEOUT);
                             Err(AppError::TranscriptionBusy)
                         }
                     };

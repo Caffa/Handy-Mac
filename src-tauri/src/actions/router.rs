@@ -8,7 +8,7 @@ use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
-use crate::managers::transcription::TranscriptionManager;
+use crate::managers::transcription::{TranscriptionManager, TRANSCRIBING_SLOT_WAIT_TIMEOUT};
 use crate::managers::transcription_retry::{TranscriptionFailure, TranscriptionRetryQueue};
 use crate::overlay::OverlayMode;
 use crate::session::SessionTracker;
@@ -320,7 +320,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                 // Transcribe using VAD-filtered samples
                 let transcription_time = Instant::now();
-                let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
+                let transcription_result = match tm.try_lock_for(TRANSCRIBING_SLOT_WAIT_TIMEOUT) {
                     Some(guard) => {
                         // Capture the shared streaming cancel flag so it can be cleared
                         // only after the final transcription acquires the `is_transcribing`
@@ -336,7 +336,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         })
                     }
                     None => {
-                        warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
+                        warn!("Timed out waiting for TranscriptionManager lock after {:?} — aborting transcription", TRANSCRIBING_SLOT_WAIT_TIMEOUT);
                         Err(AppError::TranscriptionBusy)
                     }
                 };

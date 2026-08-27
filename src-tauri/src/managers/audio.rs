@@ -1331,11 +1331,27 @@ impl AudioRecordingManager {
     const STREAM_LIVENESS_TIMEOUT_MS: u64 = 3000;
 
     pub fn try_start_recording(&self, binding_id: &str) -> Result<(), String> {
-        // Quick check under lock — just verify we're in Idle state.
+        // Quick check under lock — verify we're in Idle state. If the state is
+        // Recording but the is_recording flag has been cleared (e.g., by
+        // cancel_recording's lock-timeout escape hatch), the state is stale and
+        // we self-recover to Idle before proceeding.
         {
-            let state = self.state.lock();
-            if !matches!(*state, RecordingState::Idle) {
-                return Err("Already recording".to_string());
+            let mut state = self.state.lock();
+            match *state {
+                RecordingState::Idle => {}
+                RecordingState::Recording {
+                    binding_id: ref stale_binding,
+                    ..
+                } => {
+                    if self.is_recording.load(Ordering::Acquire) {
+                        return Err("Already recording".to_string());
+                    }
+                    warn!(
+                        "[RECOVERY] RecordingState is Recording but is_recording=false for binding {} — recovering to Idle",
+                        stale_binding
+                    );
+                    *state = RecordingState::Idle;
+                }
             }
         }
         // State lock is released here. The actual state transition happens
