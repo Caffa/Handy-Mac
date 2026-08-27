@@ -329,7 +329,20 @@ impl HandyKeysState {
     /// Start recording mode for a specific binding
     pub fn start_recording(&self, app: &AppHandle, binding_id: String) -> Result<(), String> {
         if self.is_recording.load(Ordering::SeqCst) {
-            return Err("Already recording".into());
+            // The flag is set, but the recording may be stale if the loop
+            // exited without `stop_recording()` being called (e.g. the state
+            // was dropped, the app restarted, or a panic leaked). Recover if
+            // there is no active listener or the running flag is false.
+            let has_listener = self.recording_listener.lock().is_some();
+            let is_running = self.recording_running.load(Ordering::SeqCst);
+            if has_listener && is_running {
+                return Err("Already recording".into());
+            }
+            warn!(
+                "[RECOVERY] handy-keys is_recording=true but listener={} running={}; resetting stale state",
+                has_listener, is_running
+            );
+            let _ = self.stop_recording();
         }
 
         // Create a new keyboard listener for recording
