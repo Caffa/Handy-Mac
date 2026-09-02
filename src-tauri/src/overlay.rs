@@ -17,6 +17,11 @@ static OVERLAY_SESSION: AtomicU64 = AtomicU64::new(0);
 /// Bump the overlay session counter. Called when a new recording starts.
 /// Any pending hide operation from a previous session will see the session
 /// has changed and will skip hiding the window.
+///
+/// NOTE: This is kept primarily for the existing overlay unit tests; new
+/// callers should use `next_overlay_session()` to obtain the id of the
+/// session that is starting.
+#[allow(dead_code)]
 pub fn bump_overlay_session() -> u64 {
     OVERLAY_SESSION.fetch_add(1, Ordering::SeqCst)
 }

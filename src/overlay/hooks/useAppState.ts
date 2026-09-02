@@ -166,8 +166,12 @@ export function useAppState(): UseAppStateReturn {
         // Stale-event guard: ignore events from an older session so a late
         // "Idle" from a finished transcription doesn't collapse a newer
         // recording's visualizer.
+        //
+        // session_id === 0 is a forced reset (cancel, force-hide, initial
+        // startup). Always accept it so the overlay can return to Idle even
+        // after real sessions have started.
         const incomingId = event.payload.data.session_id;
-        if (incomingId < currentSessionIdRef.current) {
+        if (incomingId !== 0 && incomingId < currentSessionIdRef.current) {
           console.log(
             "[AppState] Stale event ignored:",
             JSON.stringify(event.payload),

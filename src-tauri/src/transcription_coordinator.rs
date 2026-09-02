@@ -2,7 +2,7 @@ use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -699,6 +699,14 @@ impl CoordinatorCore {
     }
 
     /// Sync the internal stage to the shared active_use flag and AppState.
+    ///
+    /// NOTE on session_id: this method is called from the pure state machine
+    /// `CoordinatorCore`, which does not track the monotonic overlay session
+    /// id. The shared `current_state` is therefore written with `session_id: 0`.
+    /// That is fine for its current consumers (they only care about `state`
+    /// and `binding_id`). The authoritative session-aware state is emitted via
+    /// `emit_app_state` from the coordinator thread, which supplies the real
+    /// `current_session` id.
     fn sync_state(&self, active_use: &AtomicBool, current_state: &RwLock<AppState>) {
         active_use.store(self.stage.is_active(), Ordering::SeqCst);
         if let Ok(mut guard) = current_state.write() {
@@ -779,12 +787,6 @@ pub struct TranscriptionCoordinator {
     /// Current application state (shared for reads from any thread).
     /// Updated after every state transition and emitted via `app-state` events.
     current_state: Arc<RwLock<AppState>>,
-    /// Session id of the recording/processing session that is currently active.
-    /// Set by the coordinator thread when it transitions to Recording, and read
-    /// by `set_idle` so a late "transcription finished" signal emits the id of
-    /// the session that is actually ending (not a newer session that may have
-    /// started while the transcription was routing).
-    active_session: Arc<AtomicU64>,
     /// Non-blocking cancel flag. When set, the coordinator thread transitions
     /// to Idle on the next loop iteration, ensuring the UI never blocks.
     /// Stored here for ownership; actual reads happen through the clone passed
@@ -805,8 +807,6 @@ impl TranscriptionCoordinator {
         let current_state = Arc::new(RwLock::new(AppState::Idle { session_id: 0 }));
         let current_state_clone = Arc::clone(&current_state);
         let cancel_flag_clone = Arc::clone(&cancel_flag);
-        let active_session = Arc::new(AtomicU64::new(0));
-        let active_session_clone = Arc::clone(&active_session);
         info!("Starting transcription coordinator thread");
 
         // Emit initial Idle state
@@ -843,9 +843,6 @@ impl TranscriptionCoordinator {
                                 &current_state_clone,
                                 &app,
                             );
-                            // Reset the stored session id so set_idle doesn't
-                            // accidentally emit a stale non-zero id after cancel.
-                            active_session_clone.store(0, Ordering::SeqCst);
                         }
                         let dt = t.elapsed();
                         if dt > Duration::from_millis(100) {
@@ -1133,7 +1130,6 @@ impl TranscriptionCoordinator {
                                 &current_state_clone,
                                 &app,
                             );
-                            active_session_clone.store(0, Ordering::SeqCst);
                         }
                         let dt = t.elapsed();
                         if dt > Duration::from_millis(100) {
@@ -1180,7 +1176,6 @@ impl TranscriptionCoordinator {
                                 &binding_id,
                                 &hotkey_string,
                                 &mut current_session,
-                                &active_session_clone,
                                 &active_use_clone,
                                 &current_state_clone,
                             );
@@ -1252,7 +1247,6 @@ impl TranscriptionCoordinator {
                             session_id: current_session,
                         },
                     );
-                    active_session_clone.store(0, Ordering::SeqCst);
                     core.stage = Stage::Idle;
                     info!("Panic recovery, resetting handy-keys pressed-hotkey state");
                     crate::shortcut::handy_keys::reset_all_pressed_hotkeys(&app);
@@ -1271,7 +1265,6 @@ impl TranscriptionCoordinator {
             tx,
             active_use,
             current_state,
-            active_session,
             cancel_flag,
         }
     }
@@ -1348,23 +1341,6 @@ impl TranscriptionCoordinator {
         emit_app_state(app, &new_state);
     }
 
-    /// Set the application state to Idle and emit an app-state event.
-    /// Can be called to explicitly reset state from any thread.
-    ///
-    /// IMPORTANT: This reads the `active_session` atomic that was set when the
-    /// session started, NOT `current_overlay_session()`. By the time a late
-    /// FinishGuard fires, a newer recording may already have bumped the overlay
-    /// session; using the stored id ensures we emit the id of the session that
-    /// is actually ending.
-    pub fn set_idle(&self, app: &AppHandle) {
-        let session_id = self.active_session.load(Ordering::SeqCst);
-        if let Ok(mut guard) = self.current_state.write() {
-            *guard = AppState::Idle { session_id };
-        }
-        emit_app_state(app, &AppState::Idle { session_id });
-        self.active_session.store(0, Ordering::SeqCst);
-    }
-
     /// Send a request to extend the current recording's deadlines by `seconds`.
     /// Has no effect if the coordinator is not currently Recording.
     pub fn extend_recording(&self, seconds: u64) {
@@ -1434,7 +1410,6 @@ fn start(
     binding_id: &str,
     hotkey_string: &str,
     current_session: &mut u64,
-    active_session: &Arc<AtomicU64>,
     active_use: &AtomicBool,
     current_state: &RwLock<AppState>,
 ) {
@@ -1451,7 +1426,6 @@ fn start(
         // AppState::Recording carries the id of the session that is starting.
         let new_session = crate::overlay::next_overlay_session();
         *current_session = new_session;
-        active_session.store(new_session, Ordering::SeqCst);
         set_stage(
             stage,
             Stage::Recording {
