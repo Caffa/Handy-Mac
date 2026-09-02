@@ -21,6 +21,17 @@ pub fn bump_overlay_session() -> u64 {
     OVERLAY_SESSION.fetch_add(1, Ordering::SeqCst)
 }
 
+/// Return the next session id (post-increment value). Use this when you need
+/// the id of the session that is starting.
+pub fn next_overlay_session() -> u64 {
+    OVERLAY_SESSION.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Return the current overlay session id without incrementing.
+pub fn current_overlay_session() -> u64 {
+    OVERLAY_SESSION.load(Ordering::SeqCst)
+}
+
 /// Global flag controlling whether the overlay can become the key window
 /// (accept keyboard input). Set to true when the user is editing transcription
 /// text in the overlay, and restored to false when editing ends.
@@ -1305,7 +1316,8 @@ pub fn force_hide_recording_overlay(app_handle: &AppHandle) {
 
         // Also emit app-state: Idle for the new frontend state hook.
         // This ensures the frontend resets to Idle even if it misses the hide-overlay event.
-        emit_app_state(app_handle, &AppState::Idle);
+        // Session 0 is accepted by the frontend as a baseline / forced reset.
+        emit_app_state(app_handle, &AppState::Idle { session_id: 0 });
 
         // Hide immediately on main thread - no thread spawn, safer on crash
         let window_clone = overlay_window.clone();
@@ -1611,7 +1623,29 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 7: Concurrent show/hide interleaving
+    // Test 7b: next_overlay_session returns a value greater than current
+    // -----------------------------------------------------------------------
+    #[test]
+    fn next_session_is_greater_than_current() {
+        let _guard = TEST_LOCK.lock();
+        reset_overlay_session();
+
+        let before = OVERLAY_SESSION.load(Ordering::SeqCst);
+        let next = next_overlay_session();
+        let after = OVERLAY_SESSION.load(Ordering::SeqCst);
+
+        assert!(
+            next > before,
+            "next_overlay_session should return the new id"
+        );
+        assert_eq!(
+            after, next,
+            "current session should equal the returned next id"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: Concurrent show/hide interleaving
     // Guards: RECURRING_BUGS_CHECKLIST Bug #1, learning-log 2026-06-17
     //
     // Spawns threads that concurrently bump (show) and check (hide) the

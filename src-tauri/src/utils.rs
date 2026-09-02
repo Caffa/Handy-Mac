@@ -123,9 +123,10 @@ pub fn cancel_current_operation(app: &AppHandle) {
     }
 
     // 5. Emit Idle state (safe — uses let _ = on emits)
+    // Session 0 is accepted by the frontend as a baseline / forced reset.
     {
         let t = std::time::Instant::now();
-        emit_app_state(app, &AppState::Idle);
+        emit_app_state(app, &AppState::Idle { session_id: 0 });
         info!(
             "[CANCEL-TIMING] step 6 (emit_app_state Idle) took {:?}",
             t.elapsed()

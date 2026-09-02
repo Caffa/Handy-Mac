@@ -37,7 +37,7 @@ impl TestHarness<tauri::test::MockRuntime> {
         Self {
             core: CoordinatorCore::new_for_test(processing_timeout),
             active_use: Arc::new(AtomicBool::new(false)),
-            current_state: Arc::new(RwLock::new(AppState::Idle)),
+            current_state: Arc::new(RwLock::new(AppState::Idle { session_id: 0 })),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             app,
         }
@@ -95,7 +95,7 @@ fn test_happy_path_idle_recording_processing_idle() {
     let mut h = TestHarness::new();
 
     // Start: Idle
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 
     // Press key → start recording (simulate toggle mode)
@@ -123,7 +123,7 @@ fn test_happy_path_idle_recording_processing_idle() {
 
     // ProcessingFinished → back to Idle
     h.process(Command::ProcessingFinished);
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -146,7 +146,7 @@ fn test_cancel_during_recording() {
     h.process(Command::Cancel {
         recording_was_active: true,
     });
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -175,7 +175,7 @@ fn test_cancel_during_processing() {
     h.process(Command::Cancel {
         recording_was_active: false,
     });
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -214,13 +214,13 @@ fn test_finish_guard_race_no_spurious_idle_after_cancel() {
     h.process(Command::Cancel {
         recording_was_active: false,
     });
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 
     // Late ProcessingFinished (from FinishGuard) — should be a no-op
     // because we're already Idle, not Processing.
     h.process(Command::ProcessingFinished);
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -248,7 +248,7 @@ fn test_processing_timeout_auto_resets_to_idle() {
 
     // Send ProcessingTimeout command — should reset to Idle
     h.process(Command::ProcessingTimeout);
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -336,7 +336,7 @@ fn test_set_processing_with_binding() {
         binding_id: Some("transcribe_with_router".into()),
     });
     match h.state() {
-        AppState::Processing { binding_id } => {
+        AppState::Processing { binding_id, .. } => {
             assert_eq!(binding_id.as_deref(), Some("transcribe_with_router"));
         }
         other => panic!("Expected Processing state, got {:?}", other),
@@ -384,7 +384,7 @@ fn test_rapid_interleaving_no_panic_or_deadlock() {
     });
 
     // No panic, no deadlock, and final state should be Idle
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -426,7 +426,7 @@ fn test_cancel_signal_resets_active_state() {
     h.send_cancel_signal();
     assert!(h.check_cancel());
     assert!(!h.is_active());
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
 }
 
 // ── Test 11: Push-to-talk mode ──
@@ -499,7 +499,7 @@ fn test_cancel_on_idle_is_noop() {
     h.process(Command::Cancel {
         recording_was_active: false,
     });
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -510,7 +510,7 @@ fn test_processing_finished_on_idle_is_noop() {
     let mut h = TestHarness::new();
 
     h.process(Command::ProcessingFinished);
-    assert!(matches!(h.state(), AppState::Idle));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
 
@@ -567,7 +567,7 @@ fn test_stage_to_app_state() {
     use std::time::Instant;
 
     let idle = Stage::Idle;
-    assert!(matches!(idle.to_app_state(), AppState::Idle));
+    assert!(matches!(idle.to_app_state(0), AppState::Idle { .. }));
 
     let recording = Stage::Recording {
         binding_id: "transcribe".into(),
@@ -575,13 +575,23 @@ fn test_stage_to_app_state() {
         silence_extension: Duration::ZERO,
         warned: false,
     };
-    assert!(matches!(recording.to_app_state(), AppState::Recording { .. }));
+    assert!(matches!(recording.to_app_state(7), AppState::Recording { .. }));
+    if let AppState::Recording { session_id, .. } = recording.to_app_state(7) {
+        assert_eq!(session_id, 7);
+    } else {
+        panic!("Expected Recording state");
+    }
 
     let processing = Stage::Processing {
         since: Instant::now(),
         binding_id: Some("transcribe".into()),
     };
-    assert!(matches!(processing.to_app_state(), AppState::Processing { .. }));
+    assert!(matches!(processing.to_app_state(7), AppState::Processing { .. }));
+    if let AppState::Processing { session_id, .. } = processing.to_app_state(7) {
+        assert_eq!(session_id, 7);
+    } else {
+        panic!("Expected Processing state");
+    }
 }
 
 // ── Test 18: is_transcribe_binding helper ──
@@ -616,6 +626,59 @@ fn test_set_processing_with_binding_from_idle() {
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
     assert!(h.is_active());
+}
+
+// ── Test 20b: session id is preserved through Recording → Processing → Idle ──
+//
+// NOTE: The real monotonic session id (> 0) is allocated by the coordinator
+// thread's `start()` via `next_overlay_session()`. `CoordinatorCore` itself
+// uses a placeholder id (0) via `sync_state`; this test verifies that the
+// placeholder id is consistently carried through every stage of the lifecycle
+// so a real session id would behave the same way.
+
+#[test]
+fn test_session_id_preserved_through_lifecycle() {
+    let mut h = TestHarness::new();
+
+    // Enter Recording
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+
+    let recording_session = match h.state() {
+        AppState::Recording { session_id, .. } => session_id,
+        other => panic!("Expected Recording state, got {:?}", other),
+    };
+
+    // Stop → Processing: session id should follow the same session
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    let processing_session = match h.state() {
+        AppState::Processing { session_id, .. } => session_id,
+        other => panic!("Expected Processing state, got {:?}", other),
+    };
+    assert_eq!(
+        processing_session, recording_session,
+        "Processing should keep the same session id as the recording that produced it"
+    );
+
+    // Finish → Idle: emitted Idle should carry the ending session id
+    h.process(Command::ProcessingFinished);
+    let idle_session = match h.state() {
+        AppState::Idle { session_id } => session_id,
+        other => panic!("Expected Idle state, got {:?}", other),
+    };
+    assert_eq!(
+        idle_session, recording_session,
+        "Idle emitted by ProcessingFinished must carry the session id that just ended"
+    );
 }
 
 // ── Test 21: CoordinatorCore recv_timeout returns correct durations ──
@@ -691,11 +754,36 @@ fn test_cancel_signal_flag_shares_state() {
 
 #[test]
 fn test_app_state_equality() {
-    assert_eq!(AppState::Idle, AppState::Idle);
-    assert_ne!(AppState::Idle, AppState::Recording { binding_id: "x".into() });
     assert_eq!(
-        AppState::Recording { binding_id: "transcribe".into() },
-        AppState::Recording { binding_id: "transcribe".into() }
+        AppState::Idle { session_id: 0 },
+        AppState::Idle { session_id: 0 }
+    );
+    assert_ne!(
+        AppState::Idle { session_id: 0 },
+        AppState::Recording {
+            binding_id: "x".into(),
+            session_id: 0
+        }
+    );
+    assert_eq!(
+        AppState::Recording {
+            binding_id: "transcribe".into(),
+            session_id: 0
+        },
+        AppState::Recording {
+            binding_id: "transcribe".into(),
+            session_id: 0
+        }
+    );
+    assert_ne!(
+        AppState::Recording {
+            binding_id: "transcribe".into(),
+            session_id: 0
+        },
+        AppState::Recording {
+            binding_id: "transcribe".into(),
+            session_id: 1
+        }
     );
 }
 

@@ -2,7 +2,7 @@ use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -94,19 +94,25 @@ const PROCESSING_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "state", content = "data")]
 pub enum AppState {
-    Idle,
+    Idle {
+        session_id: u64,
+    },
     Recording {
         binding_id: String,
+        session_id: u64,
     },
     Processing {
         binding_id: Option<String>,
+        session_id: u64,
     },
     UsbCycling {
         stage: String,
+        session_id: u64,
     },
     Confirming {
         text: String,
         binding_id: Option<String>,
+        session_id: u64,
     },
 }
 
@@ -176,14 +182,16 @@ impl Stage {
     }
 
     /// Convert to the corresponding AppState for sharing with the frontend.
-    fn to_app_state(&self) -> AppState {
+    fn to_app_state(&self, session_id: u64) -> AppState {
         match self {
-            Stage::Idle => AppState::Idle,
+            Stage::Idle => AppState::Idle { session_id },
             Stage::Recording { binding_id, .. } => AppState::Recording {
                 binding_id: binding_id.clone(),
+                session_id,
             },
             Stage::Processing { binding_id, .. } => AppState::Processing {
                 binding_id: binding_id.clone(),
+                session_id,
             },
         }
     }
@@ -694,7 +702,7 @@ impl CoordinatorCore {
     fn sync_state(&self, active_use: &AtomicBool, current_state: &RwLock<AppState>) {
         active_use.store(self.stage.is_active(), Ordering::SeqCst);
         if let Ok(mut guard) = current_state.write() {
-            *guard = self.stage.to_app_state();
+            *guard = self.stage.to_app_state(0);
         }
     }
 }
@@ -704,6 +712,7 @@ impl CoordinatorCore {
 fn set_stage(
     stage: &mut Stage,
     new_stage: Stage,
+    session_id: u64,
     active_use: &AtomicBool,
     current_state: &RwLock<AppState>,
     app: &AppHandle,
@@ -712,7 +721,7 @@ fn set_stage(
     active_use.store(stage.is_active(), Ordering::SeqCst);
 
     // Update the shared AppState to reflect the new stage
-    let new_app_state = stage.to_app_state();
+    let new_app_state = stage.to_app_state(session_id);
 
     if let Ok(mut guard) = current_state.write() {
         *guard = new_app_state.clone();
@@ -770,6 +779,12 @@ pub struct TranscriptionCoordinator {
     /// Current application state (shared for reads from any thread).
     /// Updated after every state transition and emitted via `app-state` events.
     current_state: Arc<RwLock<AppState>>,
+    /// Session id of the recording/processing session that is currently active.
+    /// Set by the coordinator thread when it transitions to Recording, and read
+    /// by `set_idle` so a late "transcription finished" signal emits the id of
+    /// the session that is actually ending (not a newer session that may have
+    /// started while the transcription was routing).
+    active_session: Arc<AtomicU64>,
     /// Non-blocking cancel flag. When set, the coordinator thread transitions
     /// to Idle on the next loop iteration, ensuring the UI never blocks.
     /// Stored here for ownership; actual reads happen through the clone passed
@@ -787,17 +802,23 @@ impl TranscriptionCoordinator {
         let (tx, rx) = mpsc::channel();
         let active_use = Arc::new(AtomicBool::new(false));
         let active_use_clone = Arc::clone(&active_use);
-        let current_state = Arc::new(RwLock::new(AppState::Idle));
+        let current_state = Arc::new(RwLock::new(AppState::Idle { session_id: 0 }));
         let current_state_clone = Arc::clone(&current_state);
         let cancel_flag_clone = Arc::clone(&cancel_flag);
+        let active_session = Arc::new(AtomicU64::new(0));
+        let active_session_clone = Arc::clone(&active_session);
         info!("Starting transcription coordinator thread");
 
         // Emit initial Idle state
-        emit_app_state(&app, &AppState::Idle);
+        emit_app_state(&app, &AppState::Idle { session_id: 0 });
 
         thread::spawn(move || {
             let mut core = CoordinatorCore::new_production();
             let mut should_exit = false;
+            // Monotonic session id for the current recording/processing session.
+            // `start()` pre-allocates the next overlay session id and stores it
+            // here; all subsequent state transitions for this session emit it.
+            let mut current_session: u64 = 0;
             // Total elapsed-time tracking for the hard recording cap. Set when
             // we first observe Recording and cleared when we leave it, so the
             // 1-hour ceiling measures wall-clock recording duration regardless
@@ -817,10 +838,14 @@ impl TranscriptionCoordinator {
                             set_stage(
                                 &mut core.stage,
                                 Stage::Idle,
+                                current_session,
                                 &active_use_clone,
                                 &current_state_clone,
                                 &app,
                             );
+                            // Reset the stored session id so set_idle doesn't
+                            // accidentally emit a stale non-zero id after cancel.
+                            active_session_clone.store(0, Ordering::SeqCst);
                         }
                         let dt = t.elapsed();
                         if dt > Duration::from_millis(100) {
@@ -861,6 +886,7 @@ impl TranscriptionCoordinator {
                                 set_stage(
                                     &mut core.stage,
                                     Stage::Idle,
+                                    current_session,
                                     &active_use_clone,
                                     &current_state_clone,
                                     &app,
@@ -938,6 +964,7 @@ impl TranscriptionCoordinator {
                                 set_stage(
                                     &mut core.stage,
                                     Stage::Idle,
+                                    current_session,
                                     &active_use_clone,
                                     &current_state_clone,
                                     &app,
@@ -1029,6 +1056,7 @@ impl TranscriptionCoordinator {
                                 set_stage(
                                     &mut core.stage,
                                     Stage::Idle,
+                                    current_session,
                                     &active_use_clone,
                                     &current_state_clone,
                                     &app,
@@ -1100,10 +1128,12 @@ impl TranscriptionCoordinator {
                             set_stage(
                                 &mut core.stage,
                                 Stage::Idle,
+                                current_session,
                                 &active_use_clone,
                                 &current_state_clone,
                                 &app,
                             );
+                            active_session_clone.store(0, Ordering::SeqCst);
                         }
                         let dt = t.elapsed();
                         if dt > Duration::from_millis(100) {
@@ -1149,6 +1179,8 @@ impl TranscriptionCoordinator {
                                 &mut core.stage,
                                 &binding_id,
                                 &hotkey_string,
+                                &mut current_session,
+                                &active_session_clone,
                                 &active_use_clone,
                                 &current_state_clone,
                             );
@@ -1162,6 +1194,7 @@ impl TranscriptionCoordinator {
                                 &mut core.stage,
                                 &binding_id,
                                 &hotkey_string,
+                                current_session,
                                 &active_use_clone,
                                 &current_state_clone,
                             );
@@ -1182,7 +1215,7 @@ impl TranscriptionCoordinator {
                     // have already updated the stage via process_command. The
                     // ProcessingTimeoutExpired arm ran its own side effects above
                     // but still benefits from this emit to broadcast AppState::Idle.
-                    let new_app_state = core.stage.to_app_state();
+                    let new_app_state = core.stage.to_app_state(current_session);
                     emit_app_state(&app, &new_app_state);
                 }));
 
@@ -1209,9 +1242,17 @@ impl TranscriptionCoordinator {
 
                     active_use_clone.store(false, Ordering::SeqCst);
                     if let Ok(mut guard) = current_state_clone.write() {
-                        *guard = AppState::Idle;
+                        *guard = AppState::Idle {
+                            session_id: current_session,
+                        };
                     }
-                    emit_app_state(&app, &AppState::Idle);
+                    emit_app_state(
+                        &app,
+                        &AppState::Idle {
+                            session_id: current_session,
+                        },
+                    );
+                    active_session_clone.store(0, Ordering::SeqCst);
                     core.stage = Stage::Idle;
                     info!("Panic recovery, resetting handy-keys pressed-hotkey state");
                     crate::shortcut::handy_keys::reset_all_pressed_hotkeys(&app);
@@ -1230,6 +1271,7 @@ impl TranscriptionCoordinator {
             tx,
             active_use,
             current_state,
+            active_session,
             cancel_flag,
         }
     }
@@ -1251,14 +1293,15 @@ impl TranscriptionCoordinator {
     pub fn get_state(&self) -> AppState {
         match self.current_state.read() {
             Ok(guard) => guard.clone(),
-            Err(_) => AppState::Idle, // fallback if lock is poisoned
+            Err(_) => AppState::Idle { session_id: 0 }, // fallback if lock is poisoned
         }
     }
 
     /// Set the application state to UsbCycling and emit an app-state event.
     /// Called from the USB watchdog when cycling a USB port.
     pub fn set_usb_cycling(&self, app: &AppHandle, stage: String) {
-        let new_state = AppState::UsbCycling { stage };
+        let session_id = crate::overlay::current_overlay_session();
+        let new_state = AppState::UsbCycling { stage, session_id };
         if let Ok(mut guard) = self.current_state.write() {
             *guard = new_state.clone();
         }
@@ -1269,7 +1312,12 @@ impl TranscriptionCoordinator {
     /// Called when the router preview is shown for user confirmation.
     /// The `binding_id` identifies the originating action (e.g. "transcribe_with_router").
     pub fn set_confirming(&self, app: &AppHandle, text: String, binding_id: Option<String>) {
-        let new_state = AppState::Confirming { text, binding_id };
+        let session_id = crate::overlay::current_overlay_session();
+        let new_state = AppState::Confirming {
+            text,
+            binding_id,
+            session_id,
+        };
         if let Ok(mut guard) = self.current_state.write() {
             *guard = new_state.clone();
         }
@@ -1289,7 +1337,11 @@ impl TranscriptionCoordinator {
         // Also update the shared AppState immediately so the frontend
         // transitions to the correct visualizer without waiting for the
         // coordinator thread to process the command.
-        let new_state = AppState::Processing { binding_id };
+        let session_id = crate::overlay::current_overlay_session();
+        let new_state = AppState::Processing {
+            binding_id,
+            session_id,
+        };
         if let Ok(mut guard) = self.current_state.write() {
             *guard = new_state.clone();
         }
@@ -1298,11 +1350,19 @@ impl TranscriptionCoordinator {
 
     /// Set the application state to Idle and emit an app-state event.
     /// Can be called to explicitly reset state from any thread.
+    ///
+    /// IMPORTANT: This reads the `active_session` atomic that was set when the
+    /// session started, NOT `current_overlay_session()`. By the time a late
+    /// FinishGuard fires, a newer recording may already have bumped the overlay
+    /// session; using the stored id ensures we emit the id of the session that
+    /// is actually ending.
     pub fn set_idle(&self, app: &AppHandle) {
+        let session_id = self.active_session.load(Ordering::SeqCst);
         if let Ok(mut guard) = self.current_state.write() {
-            *guard = AppState::Idle;
+            *guard = AppState::Idle { session_id };
         }
-        emit_app_state(app, &AppState::Idle);
+        emit_app_state(app, &AppState::Idle { session_id });
+        self.active_session.store(0, Ordering::SeqCst);
     }
 
     /// Send a request to extend the current recording's deadlines by `seconds`.
@@ -1373,6 +1433,8 @@ fn start(
     stage: &mut Stage,
     binding_id: &str,
     hotkey_string: &str,
+    current_session: &mut u64,
+    active_session: &Arc<AtomicU64>,
     active_use: &AtomicBool,
     current_state: &RwLock<AppState>,
 ) {
@@ -1385,6 +1447,11 @@ fn start(
         .try_state::<Arc<AudioRecordingManager>>()
         .is_some_and(|a| a.is_recording())
     {
+        // Allocate the new session id BEFORE transitioning so the emitted
+        // AppState::Recording carries the id of the session that is starting.
+        let new_session = crate::overlay::next_overlay_session();
+        *current_session = new_session;
+        active_session.store(new_session, Ordering::SeqCst);
         set_stage(
             stage,
             Stage::Recording {
@@ -1393,12 +1460,11 @@ fn start(
                 silence_extension: Duration::ZERO,
                 warned: false,
             },
+            new_session,
             active_use,
             current_state,
             app,
         );
-        // Bump overlay session — any pending hide from previous session is now invalid
-        crate::overlay::bump_overlay_session();
     } else {
         warn!("[START-ROLLBACK] start dispatched for '{}' but is_recording()=false — rolling stage back to Idle (start hotkey may appear dead if this repeats)", binding_id);
         // process_command optimistically transitioned to Recording before
@@ -1407,7 +1473,14 @@ fn start(
         // to record with no active capture. Without this, a failed start leaves
         // active_use=true and AppState=Recording with no way to recover.
         if matches!(*stage, Stage::Recording { .. }) {
-            set_stage(stage, Stage::Idle, active_use, current_state, app);
+            set_stage(
+                stage,
+                Stage::Idle,
+                *current_session,
+                active_use,
+                current_state,
+                app,
+            );
         }
     }
 }
@@ -1417,6 +1490,7 @@ fn stop(
     stage: &mut Stage,
     binding_id: &str,
     hotkey_string: &str,
+    current_session: u64,
     active_use: &AtomicBool,
     current_state: &RwLock<AppState>,
 ) {
@@ -1431,6 +1505,7 @@ fn stop(
             since: Instant::now(),
             binding_id: Some(binding_id.to_string()),
         },
+        current_session,
         active_use,
         current_state,
         app,
