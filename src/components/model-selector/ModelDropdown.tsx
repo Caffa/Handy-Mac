@@ -55,7 +55,6 @@ const ModelDropdown: React.FC<ModelDropdownProps> = ({
                         {t("modelSelector.custom")}
                       </span>
                     )}
-
                   </div>
                   <div className="text-xs text-text/40 italic pe-4">
                     {getTranslatedModelDescription(model, t)}

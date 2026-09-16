@@ -97,8 +97,10 @@ export function RouterResultDisplay({
   // When the mouse enters the interactive preview area, the overlay must accept
   // mouse events so the user can click/scroll/interact. When the mouse leaves,
   // events pass through to apps below.
-  const handleMouseEnter = () => commands.setOverlayMousePassthrough(true).catch(() => {});
-  const handleMouseLeave = () => commands.setOverlayMousePassthrough(false).catch(() => {});
+  const handleMouseEnter = () =>
+    commands.setOverlayMousePassthrough(true).catch(() => {});
+  const handleMouseLeave = () =>
+    commands.setOverlayMousePassthrough(false).catch(() => {});
 
   if (!transcriptionPreview && !routerResult) return null;
 

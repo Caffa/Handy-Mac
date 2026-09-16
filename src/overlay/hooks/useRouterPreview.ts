@@ -213,10 +213,16 @@ export function useRouterPreview(
             current === "processing" ||
             current === "confirming"
           ) {
-            console.log("[Router] Keeping overlay visible: active state =", current);
+            console.log(
+              "[Router] Keeping overlay visible: active state =",
+              current,
+            );
             return current;
           }
-          console.log("[Router] Hiding overlay after result display, state =", current);
+          console.log(
+            "[Router] Hiding overlay after result display, state =",
+            current,
+          );
           setIsVisible(false);
           setTranscriptionPreview("");
           setCountdown(0);
@@ -240,7 +246,12 @@ export function useRouterPreview(
       fadeOutTimerRef.current = null;
     }
 
-    if (state === "processing" && transcriptionPreview && !routerResult && !isRouter) {
+    if (
+      state === "processing" &&
+      transcriptionPreview &&
+      !routerResult &&
+      !isRouter
+    ) {
       fadeOutTimerRef.current = setTimeout(() => {
         setIsFadingOut(true);
         setTimeout(() => {

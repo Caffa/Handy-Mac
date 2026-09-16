@@ -213,7 +213,8 @@ function App() {
 
         if (currentPlatform === "windows") {
           try {
-            const result = await commands.getWindowsMicrophonePermissionStatus();
+            const result =
+              await commands.getWindowsMicrophonePermissionStatus();
             if (
               result.status === "ok" &&
               result.data.supported &&

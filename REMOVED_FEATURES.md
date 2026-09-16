@@ -9,6 +9,7 @@ Upstream Handy replaced the dual `transcribe-rs` (ONNX) + `whisper-rs` (GGUF) pi
 ## Removed Features
 
 ### 1. Adaptive Parakeet Thresholds
+
 - **What it did:** Dynamically adjusted voice-activity thresholds for Parakeet-based models based on observed audio.
 - **Why removed:** The upstream VAD and transcription pipeline use fixed, model-agnostic settings. Maintaining fork-specific per-model threshold logic would conflict with the unified engine.
 - **Files changed:**
@@ -21,6 +22,7 @@ Upstream Handy replaced the dual `transcribe-rs` (ONNX) + `whisper-rs` (GGUF) pi
   - `src/components/settings/index.ts` — removed export.
 
 ### 2. Hybrid Mode
+
 - **What it did:** Allowed configuring one "short" and one "long" audio model, routing recordings to different models based on duration.
 - **Why removed:** Upstream uses a single selected model. The hybrid router was a fork-only feature with no equivalent in the upstream architecture.
 - **Files changed:**
@@ -38,6 +40,7 @@ Upstream Handy replaced the dual `transcribe-rs` (ONNX) + `whisper-rs` (GGUF) pi
   - `src/overlay/RecordingOverlay.tsx` — removed hybrid state consumption.
 
 ### 3. Verification Mode
+
 - **What it did:** Enabled a secondary verification pass over transcriptions.
 - **Why removed:** Upstream does not have a verification pass; the fork implementation was tied to the old pipeline.
 - **Files changed:**
@@ -49,6 +52,7 @@ Upstream Handy replaced the dual `transcribe-rs` (ONNX) + `whisper-rs` (GGUF) pi
   - `src/components/settings/index.ts` — removed export.
 
 ### 4. Custom Whisper-Specific Acceleration Settings
+
 - **What it did:** Settings named `whisper_accelerator` and `whisper_gpu_device` controlled only the whisper.cpp backend.
 - **Why removed:** Upstream's unified engine uses `transcribe_accelerator` and `transcribe_gpu_device` for all GGUF/whisper-family models.
 - **Files changed:**
@@ -60,6 +64,7 @@ Upstream Handy replaced the dual `transcribe-rs` (ONNX) + `whisper-rs` (GGUF) pi
   - `src/stores/settingsStore.ts` — updated command mapping.
 
 ### 5. Segment-Based Live Captions
+
 - **What it did:** The live-caption stream emitted `TranscriptionOutput` with per-segment metadata and applied per-segment post-processing.
 - **Why removed:** Upstream's simplified `TranscriptionOutput` only contains `text` and `model_id`. The frontend now receives the fully post-processed text directly.
 - **Files changed:**
@@ -75,6 +80,7 @@ Upstream Handy replaced the dual `transcribe-rs` (ONNX) + `whisper-rs` (GGUF) pi
 ## Verification
 
 After the removal:
+
 - `cargo check` and `cargo build` pass in `src-tauri`.
 - `tsc --noEmit` passes for the frontend.
 - ESLint reports no new errors in the files touched by this port.

@@ -226,12 +226,14 @@ pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
 /// Atomically patch the in-memory settings cache and flush the result to disk.
 ///
 /// This helper is intended for small, isolated field updates (e.g. custom
-/// words, selected model). It holds the SettingsCache write lock only while
-/// applying the patch, then performs a synchronous disk flush without the
-/// lock held. This prevents two common loss scenarios:
+/// words, selected model). It holds the `SettingsCache` write lock across the
+/// entire patch, sanitization, and synchronous disk flush. This prevents two
+/// common loss scenarios:
 ///
 /// 1. Read-modify-write races where two writers read the same snapshot,
-///    mutate different fields, and the second write clobbers the first.
+///    mutate different fields, and the second disk write clobbers the first.
+///    Because the disk flush happens while the cache lock is held, the value
+///    written to disk is always the latest merged cache value.
 /// 2. Debounced disk writes that are lost because the app quits or crashes
 ///    before the flush fires.
 ///
@@ -242,18 +244,17 @@ where
     F: FnOnce(&mut AppSettings),
 {
     let _ = safe_settings_operation("patch_settings", || {
-        let settings = if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             let mut guard = cache.settings.write().unwrap();
             f(&mut guard);
-            let patched = guard.clone();
-            drop(guard);
-            patched
+            sanitize_floats(&mut guard);
+            write_settings_to_disk(app, &guard);
+            // guard drops here, releasing the write lock after disk flush.
         } else {
             let mut settings = get_settings(app);
             f(&mut settings);
-            settings
-        };
-        write_settings_immediate(app, settings);
+            write_settings_immediate(app, settings);
+        }
     });
 }
 
@@ -602,6 +603,28 @@ pub fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: AppSettings) {
     });
 }
 
+/// Write `settings` to the persistent store without touching the
+/// in-memory `SettingsCache`. This is the low-level disk-only path used by
+/// callers that already hold the cache write lock and have already sanitized
+/// the value.
+fn write_settings_to_disk<R: Runtime>(app: &AppHandle<R>, settings: &AppSettings) {
+    let Some(store) = open_settings_store(app) else {
+        error!("Cannot write settings: store initialization failed, settings not saved");
+        return;
+    };
+
+    let Some(value) = settings_to_value(settings) else {
+        error!("Cannot write settings: serialization failed, settings not saved");
+        return;
+    };
+
+    store.set("settings", value);
+    match store.save() {
+        Ok(()) => info!("[settings] flushed to disk"),
+        Err(e) => error!("[settings] disk write FAILED: {e}"),
+    }
+}
+
 /// Write settings to disk immediately, bypassing the debounce timer.
 /// Also updates the in-memory cache if available, to keep reads consistent.
 pub fn write_settings_immediate<R: Runtime>(app: &AppHandle<R>, mut settings: AppSettings) {
@@ -623,23 +646,8 @@ pub fn write_settings_immediate<R: Runtime>(app: &AppHandle<R>, mut settings: Ap
             cache.update(settings.clone());
         }
 
-        let Some(store) = open_settings_store(app) else {
-            error!("Cannot write settings: store initialization failed, settings not saved");
-            return;
-        };
-
         sanitize_floats(&mut settings);
-
-        let Some(value) = settings_to_value(&settings) else {
-            error!("Cannot write settings: serialization failed, settings not saved");
-            return;
-        };
-
-        store.set("settings", value);
-        match store.save() {
-            Ok(()) => info!("[settings] flushed to disk"),
-            Err(e) => error!("[settings] disk write FAILED: {e}"),
-        }
+        write_settings_to_disk(app, &settings);
     });
 }
 

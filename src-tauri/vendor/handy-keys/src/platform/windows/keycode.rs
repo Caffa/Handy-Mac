@@ -218,7 +218,7 @@ pub fn vk_to_key(vk_code: u16, is_extended: bool) -> Option<Key> {
         vk::OEM_5 => Some(Key::Backslash),
         vk::OEM_6 => Some(Key::RightBracket),
         vk::OEM_7 => Some(Key::Quote),
-        vk::OEM_8 => Some(Key::Grave),    // backtick on UK layout
+        vk::OEM_8 => Some(Key::Grave),     // backtick on UK layout
         vk::OEM_102 => Some(Key::Section), // ISO extra key
 
         // Lock keys

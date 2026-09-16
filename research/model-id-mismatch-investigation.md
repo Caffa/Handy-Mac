@@ -74,7 +74,7 @@ pub fn get_available_models(&self) -> Vec<ModelInfo> {
 ```ts
 const result = await commands.getAvailableModels();
 if (result.status === "ok") {
-    set({ models: result.data, error: null });
+  set({ models: result.data, error: null });
 }
 ```
 
@@ -92,8 +92,8 @@ onClick={() => handleModelClick(model.id)}
 
 ```ts
 const handleModelSelect = async (modelId: string) => {
-    setPendingModelId(modelId);
-    const success = await selectModel(modelId);
+  setPendingModelId(modelId);
+  const success = await selectModel(modelId);
 };
 ```
 
@@ -147,7 +147,7 @@ pub fn get_model_info(&self, model_id: &str) -> Option<ModelInfo> {
 **It does NOT silently fail.** The error propagates back to the frontend:
 
 1. `switch_active_model` returns `Err("Model not found: {id}")` (commands/models.rs, line 117)
-2. The Tauri command returns this as `Err(String)` 
+2. The Tauri command returns this as `Err(String)`
 3. `setActiveModel` returns `{ status: "error", error: "..." }` to frontend
 4. `selectModel` in modelStore.ts catches it (line 164-166):
    ```ts
@@ -180,35 +180,45 @@ pub struct ModelStateEvent {
 
 **Event types emitted:**
 
-| Event Type | When | `model_id` | `model_name` |
-|---|---|---|---|
-| `loading_started` | Model begins loading | `Some(model_id)` | `None` |
-| `loading_completed` | Model loaded successfully | `Some(model_id)` | `Some(name)` |
-| `loading_failed` | Model failed to load | `Some(model_id)` | `Some(name)` |
-| `unloaded` | Model manually unloaded | `None` | `None` |
+| Event Type          | When                                   | `model_id`       | `model_name` |
+| ------------------- | -------------------------------------- | ---------------- | ------------ |
+| `loading_started`   | Model begins loading                   | `Some(model_id)` | `None`       |
+| `loading_completed` | Model loaded successfully              | `Some(model_id)` | `Some(name)` |
+| `loading_failed`    | Model failed to load                   | `Some(model_id)` | `Some(name)` |
+| `unloaded`          | Model manually unloaded                | `None`           | `None`       |
 | `selection_changed` | Model selected (Immediate unload mode) | `Some(model_id)` | `Some(name)` |
 
 ### Frontend listeners:
 
 **`ModelSelector.tsx` (line 73-98)** — Updates local `modelStatus` state:
+
 ```tsx
 listen<ModelStateEvent>("model-state-changed", (event) => {
-    const { event_type, error } = event.payload;
-    switch (event_type) {
-        case "loading_started": setModelStatus("loading"); break;
-        case "loading_completed": setModelStatus("ready"); break;
-        case "loading_failed": setModelStatus("error"); break;
-        case "unloaded": setModelStatus("unloaded"); break;
-        // NOTE: "selection_changed" is NOT handled here
-    }
+  const { event_type, error } = event.payload;
+  switch (event_type) {
+    case "loading_started":
+      setModelStatus("loading");
+      break;
+    case "loading_completed":
+      setModelStatus("ready");
+      break;
+    case "loading_failed":
+      setModelStatus("error");
+      break;
+    case "unloaded":
+      setModelStatus("unloaded");
+      break;
+    // NOTE: "selection_changed" is NOT handled here
+  }
 });
 ```
 
 **`modelStore.ts` (line 460-465)** — Refreshes entire model list:
+
 ```ts
 listen("model-state-changed", () => {
-    get().loadModels();      // re-fetches all ModelInfo from backend
-    get().loadCurrentModel(); // re-fetches selected_model from settings
+  get().loadModels(); // re-fetches all ModelInfo from backend
+  get().loadCurrentModel(); // re-fetches selected_model from settings
 });
 ```
 
@@ -236,17 +246,17 @@ Both are inserted into the same `available_models: HashMap<String, ModelInfo>`. 
 
 ## Key Files Referenced
 
-| File | Lines | Role |
-|---|---|---|
-| `src-tauri/src/catalog/mod.rs` | 62-98 | Constructs descriptor ID as `{repo_id}/{filename}` |
-| `src-tauri/src/catalog/catalog.json` | — | Source of catalog model data |
-| `src-tauri/src/managers/model.rs` | 222-261 | `ModelDescriptor::to_model_info()` copies `id` to `ModelInfo` |
-| `src-tauri/src/managers/model.rs` | 1156-1174 | `get_available_models()` returns all `ModelInfo` from HashMap |
-| `src-tauri/src/managers/model.rs` | 1184-1193 | `seed_catalog_models()` inserts catalog entries into HashMap |
-| `src-tauri/src/managers/model.rs` | 1260-1263 | `get_model_info()` does HashMap lookup by model_id |
-| `src-tauri/src/commands/models.rs` | 96-181 | `switch_active_model()` validates + loads model |
-| `src-tauri/src/commands/models.rs` | 185-192 | `set_active_model` Tauri command entry point |
-| `src-tauri/src/managers/transcription.rs` | 60-66 | `ModelStateEvent` struct definition |
-| `src/stores/modelStore.ts` | 87-92, 153-172 | Frontend model loading and selection |
-| `src/components/model-selector/ModelDropdown.tsx` | 34 | Passes `model.id` to `onModelSelect` |
-| `src/components/model-selector/ModelSelector.tsx` | 50-98, 152-163 | Model status tracking and selection |
+| File                                              | Lines          | Role                                                          |
+| ------------------------------------------------- | -------------- | ------------------------------------------------------------- |
+| `src-tauri/src/catalog/mod.rs`                    | 62-98          | Constructs descriptor ID as `{repo_id}/{filename}`            |
+| `src-tauri/src/catalog/catalog.json`              | —              | Source of catalog model data                                  |
+| `src-tauri/src/managers/model.rs`                 | 222-261        | `ModelDescriptor::to_model_info()` copies `id` to `ModelInfo` |
+| `src-tauri/src/managers/model.rs`                 | 1156-1174      | `get_available_models()` returns all `ModelInfo` from HashMap |
+| `src-tauri/src/managers/model.rs`                 | 1184-1193      | `seed_catalog_models()` inserts catalog entries into HashMap  |
+| `src-tauri/src/managers/model.rs`                 | 1260-1263      | `get_model_info()` does HashMap lookup by model_id            |
+| `src-tauri/src/commands/models.rs`                | 96-181         | `switch_active_model()` validates + loads model               |
+| `src-tauri/src/commands/models.rs`                | 185-192        | `set_active_model` Tauri command entry point                  |
+| `src-tauri/src/managers/transcription.rs`         | 60-66          | `ModelStateEvent` struct definition                           |
+| `src/stores/modelStore.ts`                        | 87-92, 153-172 | Frontend model loading and selection                          |
+| `src/components/model-selector/ModelDropdown.tsx` | 34             | Passes `model.id` to `onModelSelect`                          |
+| `src/components/model-selector/ModelSelector.tsx` | 50-98, 152-163 | Model status tracking and selection                           |

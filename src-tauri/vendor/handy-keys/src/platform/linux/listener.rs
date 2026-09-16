@@ -70,7 +70,8 @@ pub(crate) fn spawn(blocking_hotkeys: Option<BlockingHotkeys>) -> Result<LinuxLi
                                     });
                                 }
                             } else if let Some(key) = rdev_key_to_key(rdev_key) {
-                                should_block = state.should_block(state.current_modifiers, Some(key));
+                                should_block =
+                                    state.should_block(state.current_modifiers, Some(key));
 
                                 let _ = state.event_sender.send(KeyEvent {
                                     modifiers: state.current_modifiers,
@@ -95,7 +96,8 @@ pub(crate) fn spawn(blocking_hotkeys: Option<BlockingHotkeys>) -> Result<LinuxLi
                                     });
                                 }
                             } else if let Some(key) = rdev_key_to_key(rdev_key) {
-                                should_block = state.should_block(state.current_modifiers, Some(key));
+                                should_block =
+                                    state.should_block(state.current_modifiers, Some(key));
 
                                 let _ = state.event_sender.send(KeyEvent {
                                     modifiers: state.current_modifiers,

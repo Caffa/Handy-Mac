@@ -62,10 +62,10 @@ LoadedEngine::Parakeet(parakeet_engine) => {
 
 ### Parakeet Models Defined
 
-| Model ID | Size | Languages | Streaming |
-|----------|------|-----------|-----------|
-| `parakeet-tdt-0.6b-v2` | ~451 MB | English only | No |
-| `parakeet-tdt-0.6b-v3` | ~456 MB | 25 EU languages + RU/UK | No |
+| Model ID               | Size    | Languages               | Streaming |
+| ---------------------- | ------- | ----------------------- | --------- |
+| `parakeet-tdt-0.6b-v2` | ~451 MB | English only            | No        |
+| `parakeet-tdt-0.6b-v3` | ~456 MB | 25 EU languages + RU/UK | No        |
 
 Both use directory-based downloads from `blob.handy.computer` (tar.gz archives).
 
@@ -100,6 +100,7 @@ Both use directory-based downloads from `blob.handy.computer` (tar.gz archives).
 ### Upstream Architecture
 
 The upstream uses `handy-computer/handy-keys` (external crate) for keyboard shortcuts:
+
 - Global keyboard shortcuts are registered via `rdev`-based library
 - Cancel shortcut is **dynamically registered/unregistered** — only active during recording
 - Shortcut handling goes through `shortcut.rs` → `signal_handle.rs` → `TranscriptionCoordinator`
@@ -127,6 +128,7 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
 ```
 
 The cancel shortcut is:
+
 - **Registered** in `actions/transcribe.rs` when recording starts: `shortcut::register_cancel_shortcut(app)`
 - **Unregistered** in `actions/transcribe.rs` when recording stops: `shortcut::unregister_cancel_shortcut(app)`
 - **Handled** in `shortcut/handler.rs`: Only fires when `audio_manager.is_recording() && is_pressed`
@@ -144,6 +146,7 @@ if id == "cancel" {
 ```
 
 **Important:** Cancel binding is saved to settings but **not registered at app startup** — it's only active during recording sessions. This means:
+
 - Changing the cancel shortcut in settings saves correctly
 - The shortcut is re-registered with the new binding on the next recording session
 - There's no "cancel shortcut not saving" bug in our code — the binding is persisted properly
@@ -180,26 +183,26 @@ if id == "cancel" {
 
 ### Parakeet Loading
 
-| Aspect | Upstream | Fork |
-|--------|----------|------|
+| Aspect            | Upstream                | Fork                                |
+| ----------------- | ----------------------- | ----------------------------------- |
 | Loading mechanism | `ParakeetModel::load()` | `ParakeetModel::load()` (identical) |
-| Quantization | `Int8` | `Int8` (identical) |
-| Error handling | Basic `map_err` | Event emission + error propagation |
-| Streaming support | Not supported (correct) | Not supported (correct) |
-| Model paths | Directory-based | Directory-based (identical URLs) |
+| Quantization      | `Int8`                  | `Int8` (identical)                  |
+| Error handling    | Basic `map_err`         | Event emission + error propagation  |
+| Streaming support | Not supported (correct) | Not supported (correct)             |
+| Model paths       | Directory-based         | Directory-based (identical URLs)    |
 
 **Verdict:** Parakeet loading is identical between upstream and fork. No fork-specific bugs introduced.
 
 ### Cancel Shortcut
 
-| Aspect | Upstream | Fork |
-|--------|----------|------|
-| Registration | Dynamic (during recording) | Dynamic (during recording) |
-| Backend | `handy-keys` only | `handy-keys` OR Tauri (configurable) |
-| Settings persistence | Via `settings.json` | Via `settings.json` with TOCTOU protection |
-| Conflict detection | Basic | `conflicts.rs` with platform-specific checks |
-| Implementation switching | Not available | Runtime switch with rollback |
-| Race condition prevention | None | Mutex-serialized binding updates |
+| Aspect                    | Upstream                   | Fork                                         |
+| ------------------------- | -------------------------- | -------------------------------------------- |
+| Registration              | Dynamic (during recording) | Dynamic (during recording)                   |
+| Backend                   | `handy-keys` only          | `handy-keys` OR Tauri (configurable)         |
+| Settings persistence      | Via `settings.json`        | Via `settings.json` with TOCTOU protection   |
+| Conflict detection        | Basic                      | `conflicts.rs` with platform-specific checks |
+| Implementation switching  | Not available              | Runtime switch with rollback                 |
+| Race condition prevention | None                       | Mutex-serialized binding updates             |
 
 **Verdict:** Fork's cancel shortcut system is strictly more robust than upstream's. The fork adds implementation switching, conflict detection, and race condition prevention.
 
@@ -235,6 +238,7 @@ if id == "cancel" {
 ## Files Referenced
 
 ### Fork (our code)
+
 - `src-tauri/src/managers/model.rs` — Model definitions, Parakeet entries (lines 698-773)
 - `src-tauri/src/managers/transcription.rs` — Parakeet loading (lines 716-724), transcription (lines 1447-1455)
 - `src-tauri/src/shortcut/mod.rs` — Cancel shortcut registration/unregistration (lines 66-81), binding change (lines 194-207)
@@ -242,11 +246,13 @@ if id == "cancel" {
 - `src-tauri/src/actions/transcribe.rs` — Cancel shortcut lifecycle (lines 173-174, 221-222)
 
 ### Upstream (cjpais/Handy)
+
 - `src-tauri/src/transcription.rs` — Model loading with Parakeet branch
 - `src-tauri/src/signal_handle.rs` — Signal handling (delegates to TranscriptionCoordinator)
 - `handy-computer/handy-keys/src/lib.rs` — External keyboard shortcut crate
 
 ### GitHub Issues
+
 - #342 — Parakeet V2 crash on load
 - #574 — Non-ASCII path issue (Windows)
 - #63 — Command/Windows key in hotkey

@@ -47,6 +47,7 @@ src-tauri/src/managers/audio.rs:1531-1561 (AudioRecordingManager::cancel_recordi
 ### Critical Path Analysis
 
 **Key observation:** There are TWO different stop paths:
+
 1. **Normal stop** (actions.rs:598) - Goes through coordinator, changes stage to Processing, spawns async task
 2. **Cancel** (utils.rs:21) - Directly calls `cancel_recording()`, skips coordinator stage change
 
@@ -55,24 +56,29 @@ src-tauri/src/managers/audio.rs:1531-1561 (AudioRecordingManager::cancel_recordi
 ## 2. Verification of Prior Suspected Causes
 
 ### Prior Item 1: Frontend hide-overlay handler had NO guard for active transcription
+
 **STATUS: FIXED** ✅
 
-**Evidence:** 
+**Evidence:**
+
 - `src-tauri/src/overlay.rs:851-900` (`hide_recording_overlay`)
 - Lines 889-898: Has dual guards - session ID check AND `is_active_use()` check in the closure
 - Lines 869-887: Captures session at call time and compares inside closure
 - Frontend also has guards in RecordingOverlay.tsx (per learning-log.md entries 2026-06-15, 2026-06-17)
 
 ### Prior Item 2: Router result 5s timeout hid overlay regardless of active state
+
 **STATUS: FIXED** ✅
 
 **Evidence:**
+
 - `src-tauri/src/actions.rs:1621-1633` (Router success case)
 - Lines 1621-1623: Checks `is_active_use()` before hiding
 - Lines 1682-1694: Same check in failure case
 - Learning-log.md (2026-06-15): Frontend now has state check in timeout handler
 
 ### Prior Item 3: Backend error paths lacked is_active_use() guard before hide_recording_overlay
+
 **STATUS: PARTIALLY FIXED** ⚠️
 
 **Evidence:**
@@ -81,7 +87,7 @@ src-tauri/src/managers/audio.rs:1531-1561 (AudioRecordingManager::cancel_recordi
 
 1. **actions.rs:1280** (TranscribeWithRouterAction::stop - empty samples)
    - Line 1286: `return;` without hiding overlay or changing tray icon when samples empty
-   - Missing cleanup: No `hide_recording_overlay` or `change_tray_icon(Idle)` 
+   - Missing cleanup: No `hide_recording_overlay` or `change_tray_icon(Idle)`
    - **Session is marked failed but UI stays in router transcribing state**
 
 2. **actions.rs:1275** - If `stop_recording` returns `None`, there's no handling
@@ -93,9 +99,11 @@ src-tauri/src/managers/audio.rs:1531-1561 (AudioRecordingManager::cancel_recordi
    - **This is correct** ✅
 
 ### Prior Item 4: Streaming transcription race
+
 **STATUS: FIXED** ✅
 
 **Evidence:**
+
 - `src-tauri/src/actions.rs:608-613` (TranscribeAction::stop)
 - Lines 608-610: Uses `Arc<AtomicBool>` for cancellation, avoiding TM lock
 - Comments at lines 603-606 explain the fix
@@ -103,26 +111,32 @@ src-tauri/src/managers/audio.rs:1531-1561 (AudioRecordingManager::cancel_recordi
 - Lines 229-231, 240-242: Checks cancel flag before and after transcription without holding TM lock
 
 ### Prior Item 5: cancel_current_operation() missing cancel_streaming() call
+
 **STATUS: FIXED** ✅
 
 **Evidence:**
+
 - `src-tauri/src/utils.rs:32-41` (cancel_current_operation)
 - Lines 32-41: Explicitly cancels streaming via `Arc<AtomicBool>` at the START of the function
 - Comment at lines 27-30 explains why this is first
 
 ### Prior Item 6: Lock contention - is_streaming_cancelled() required Mutex lock
+
 **STATUS: FIXED** ✅
 
 **Evidence:**
+
 - `src-tauri/src/managers/audio.rs:207-218` (streaming callback setup)
 - Line 210: Gets `streaming_cancel_flag()` which returns `Arc<AtomicBool>`
 - Lines 223-231: Uses atomic `load(Ordering::Acquire)` - no mutex needed
 - `src-tauri/src/managers/transcription.rs` must have `streaming_cancel_flag()` returning `Arc<AtomicBool>`
 
 ### Prior Item 7: State not resetting between recordings
+
 **STATUS: FIXED** ✅
 
 **Evidence:**
+
 - `src-tauri/src/actions.rs:480-486` (TranscribeAction::start)
 - Lines 480-486: Clears streaming cancel flag at start of new recording
 - `src-tauri/src/actions.rs:1106-1112` (TranscribeWithRouterAction::start)
@@ -136,7 +150,7 @@ src-tauri/src/managers/audio.rs:1531-1561 (AudioRecordingManager::cancel_recordi
 
 **Location:** `src-tauri/src/actions.rs:658-1019` (TranscribeAction::stop)
 
-**The Issue:** 
+**The Issue:**
 The entire stop logic is wrapped in `tauri::async_runtime::spawn(async move { ... })` at line 658. If this spawn fails (e.g., runtime shutting down, thread pool exhausted), the code silently does nothing:
 
 ```rust
@@ -156,6 +170,7 @@ debug!("TranscribeAction::stop completed");
 ```
 
 **Why this causes freeze:**
+
 - `show_transcribing_overlay` was called at line 647
 - `change_tray_icon(Transcribing)` was called at line 646
 - If the async task never runs:
@@ -183,6 +198,7 @@ _ => None,  // <-- Silent return if binding_id doesn't match
 ```
 
 In `actions.rs:666`:
+
 ```rust
 let samples = rm.stop_recording(&binding_id);
 if let Some(samples) = samples {  // <-- Only handles Some case
@@ -213,6 +229,7 @@ if let Some(samples) = samples {
 ```
 
 **In TranscribeWithRouterAction::stop (lines 1206-1888):**
+
 - Line 1262: `show_transcribing_overlay_with_mode(app, OverlayMode::Router);`
 - Line 1261: `change_tray_icon(app, TrayIconState::Transcribing);`
 - If `stop_recording` returns `None` or empty samples, the function may not properly clean up
@@ -248,6 +265,7 @@ let samples = if settings.extra_recording_buffer_ms > 0 {
 ```
 
 **Potential deadlock:**
+
 - Line 1393: `self.recorder.lock()` - acquires mutex
 - `smart_stop` may block for up to `extra_recording_buffer_ms` milliseconds
 - If `extra_recording_buffer_ms` is set to a very large value (e.g., 30000 for 30 seconds), this blocks the async task
@@ -278,17 +296,20 @@ Stage::Recording(id) if id == &binding_id => {
 ```
 
 **If the stage is NOT `Stage::Recording(binding_id)`:**
+
 - The stop command is silently ignored
 - `action.stop()` is never called
 - Audio continues recording
 - Visualizer stays frozen
 
 **How can stage mismatch happen?**
+
 1. Panic recovery reset stage to Idle, but AudioRecordingManager is still recording
 2. Previous transcription's `FinishGuard` fired and reset stage to Idle
 3. `notify_processing_finished` was called erroneously
 
 **Evidence of recovery attempt:**
+
 - Lines 420-449: Panic recovery in coordinator DOES try to reset audio recorder
 - Lines 431-435: "Reset audio recorder if it's stuck in Recording state"
 - But if panic recovery itself fails or isn't triggered, stage mismatch persists
@@ -313,12 +334,14 @@ while let Some(event) = manager.try_recv() {
 ```
 
 **Race condition:**
+
 - Lines 451-476: `register_cancel_shortcut` is synchronous
 - But lines 157-179: Shortcut registration is via channel to manager thread
 - If the manager thread is busy (e.g., processing another event), the stop event could be delayed
 - The `try_recv` at line 129 is non-blocking, but events queue up
 
 **More importantly:**
+
 - Lines 462-476: `register_cancel_shortcut` does check if HandyKeysState exists
 - If HandyKeysState was not initialized (fallback to Tauri), but user somehow triggers HandyKeys path, event is lost
 
@@ -347,6 +370,7 @@ let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
 
 **But the bug is BEFORE this:**
 At lines 619-642, the code does:
+
 ```rust
 let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
     warn!("...");
@@ -359,6 +383,7 @@ let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
 This part is correct. But what if the early returns at lines 621-623, 628-630, 634-637 happen AFTER `show_transcribing_overlay` was called at line 647?
 
 Looking more carefully:
+
 ```rust
 // Line 647: Called BEFORE the try_state checks
 show_transcribing_overlay(app);
@@ -372,23 +397,23 @@ show_transcribing_overlay(app);
 // Lines 598-647: TranscribeAction::stop
 fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
     shortcut::unregister_cancel_shortcut(app);  // Line 600
-    
+
     // Lines 608-613: Cancel streaming (OK)
-    
+
     let stop_time = Instant::now();  // Line 615
     debug!(...);  // Line 616
-    
+
     let ah = app.clone();  // Line 618
     let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {  // Lines 619-624
         // Error handling with cleanup
     };
     // ... more try_state checks ...
-    
+
     change_tray_icon(app, TrayIconState::Transcribing);  // Line 646
     show_transcribing_overlay(app);  // Line 647
-    
+
     // Lines 649-653: Unmute and play sound
-    
+
     tauri::async_runtime::spawn(async move {  // Line 658
         // ... actual stop_recording call happens here at line 666 ...
     });
@@ -398,6 +423,7 @@ fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
 **The order is correct** - try_state checks happen BEFORE overlay is shown.
 
 But wait - there's still an issue. Look at lines 619-624:
+
 ```rust
 let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
     warn!("AudioRecordingManager not available, cannot stop recording");
@@ -431,16 +457,18 @@ impl Drop for FinishGuard {
 ```
 
 **Double notification risk:**
+
 - Line 659: `_guard` created at start of async block
 - If the async block completes normally, guard drops and notifies
-- But what if there's a panic? 
+- But what if there's a panic?
 - Lines 420-449 in transcription_coordinator.rs show panic recovery
 - If panic happens AFTER stage is set to Processing but BEFORE transcription finishes, the guard drops (in catch_unwind) and notifies
 - Then on recovery, stage is reset to Idle
 - But what if the async task is restarted somehow?
 
 Actually, looking at the code flow, the real issue is:
-- `FinishGuard` ONLY notifies `notify_processing_finished()` 
+
+- `FinishGuard` ONLY notifies `notify_processing_finished()`
 - It does NOT handle cleanup of overlay or tray icon if the async task panics
 - The panic recovery in coordinator (lines 426-439) handles this, but only for the coordinator thread's panic catching
 - If the async task panics, it's caught by Tauri's async runtime, not by the coordinator's catch_unwind
@@ -456,12 +484,14 @@ Actually, looking at the code flow, the real issue is:
 **Location:** `src-tauri/src/actions.rs:1206-1888`
 
 **Evidence:**
+
 - Lines 1261-1262: Sets tray to Transcribing and shows overlay
 - Lines 1275-1286: If `stop_recording` returns `None` OR empty samples, cleanup is missing
 - Line 1286: `return;` with no `hide_recording_overlay` or `change_tray_icon(Idle)`
 - **The router path leaves the UI stuck in "transcribing" state if recording fails**
 
 **Reproduction scenario:**
+
 1. User starts router transcription
 2. For some reason, recording stops with no samples (mic unplugged, permission denied mid-recording, etc.)
 3. `stop_recording` returns `None` or empty samples
@@ -476,6 +506,7 @@ Add proper cleanup in the `else` branch (None case) and after the empty samples 
 **Location:** `src-tauri/src/actions.rs:658`
 
 **Evidence:**
+
 - Line 658: `tauri::async_runtime::spawn(async move { ... })`
 - Return value is ignored (assigned to `_guard` which is just a drop guard)
 - If spawn fails (runtime shutting down, pool exhausted), no error handling
@@ -483,6 +514,7 @@ Add proper cleanup in the `else` branch (None case) and after the empty samples 
 - If spawn fails, no code runs to stop recording or reset UI
 
 **Reproduction scenario:**
+
 1. System under heavy load or Tauri runtime in bad state
 2. User presses stop
 3. UI changes to transcribing
@@ -491,6 +523,7 @@ Add proper cleanup in the `else` branch (None case) and after the empty samples 
 
 **Fix needed:**
 Check spawn result and handle failure:
+
 ```rust
 match tauri::async_runtime::spawn(async move { ... }) {
     Ok(handle) => { /* guard created, all good */ },
@@ -508,12 +541,14 @@ match tauri::async_runtime::spawn(async move { ... }) {
 **Location:** `src-tauri/src/managers/audio.rs:1388-1404`
 
 **Evidence:**
+
 - `smart_stop` blocks for up to `extra_recording_buffer_ms`
 - If user sets this to a very high value (30 seconds), the UI appears frozen
 - No cancellation mechanism during smart_stop
 - The streaming cancel flag doesn't affect the recording stop
 
 **Reproduction scenario:**
+
 1. User sets "Extra recording buffer" to 30 seconds
 2. User presses stop
 3. smart_stop waits up to 30 seconds for silence
@@ -521,6 +556,7 @@ match tauri::async_runtime::spawn(async move { ... }) {
 5. Eventually completes, but user thinks it's broken
 
 **Fix needed:**
+
 - Add cancellation check to smart_stop
 - Or add warning in UI about high buffer values
 
@@ -529,11 +565,13 @@ match tauri::async_runtime::spawn(async move { ... }) {
 **Location:** `src-tauri/src/transcription_coordinator.rs:273-348`
 
 **Evidence:**
+
 - Lines 301-313: Stop only executes if stage is Recording with matching binding_id
 - If stage is Idle (due to panic recovery or race), stop is silently ignored
 - AudioRecordingManager continues recording independently
 
 **Reproduction scenario:**
+
 1. Previous transcription panicked and was recovered
 2. Coordinator reset to Idle
 3. AudioRecordingManager still thinks it's recording (race)
@@ -543,12 +581,13 @@ match tauri::async_runtime::spawn(async move { ... }) {
 
 **Fix needed:**
 In `transcription_coordinator.rs:589-611` (stop function), add a check:
+
 ```rust
 fn stop(...) {
     // Current: just calls action.stop()
     // Should also verify recording actually stops
     action.stop(app, binding_id, hotkey_string);
-    
+
     // Add: Check if recording is still active after a delay
     // If so, force cancel
 }
@@ -597,6 +636,7 @@ fn stop(...) {
 ### Critical Lines in Current Code
 
 **actions.rs:**
+
 - Line 598: `TranscribeAction::stop` starts
 - Line 647: `show_transcribing_overlay` called
 - Line 658: Async task spawn (potential failure point)
@@ -608,18 +648,21 @@ fn stop(...) {
 - Line 1286: `return` without cleanup in router path
 
 **audio.rs:**
+
 - Line 1365: `stop_recording` starts
 - Line 1368: Matching on RecordingState
 - Line 1508: Returns `None` if not recording or wrong binding_id
 - Line 1531: `cancel_recording` function
 
 **transcription_coordinator.rs:**
+
 - Line 301: Push-to-talk stop condition
 - Line 330: Toggle mode stop condition
 - Line 420: Panic recovery block
 - Line 589: `stop` function (coordinator)
 
 **utils.rs:**
+
 - Line 21: `cancel_current_operation`
 - Line 48-61: Recording cancellation
 
@@ -627,5 +670,5 @@ fn stop(...) {
 
 **End of Report**
 
-*Generated: 2026-07-09*
-*Codebase: Handy-Fork/Handy-Mac, branch main*
+_Generated: 2026-07-09_
+_Codebase: Handy-Fork/Handy-Mac, branch main_

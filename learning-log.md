@@ -529,6 +529,7 @@ Clicking on the router transcription text box doesn't open edit mode, even thoug
 ### Root Cause
 
 The `effectivelyConfirming` flag in `useRouterPreview.ts` was derived from:
+
 ```typescript
 const effectivelyConfirming = isConfirming ?? state === "confirming";
 ```
@@ -538,9 +539,10 @@ The `transcription-preview` event arrives before the `app-state: Confirming` eve
 ### Fix
 
 Also consider `transcriptionPreview` being non-empty as a confirming signal:
+
 ```typescript
 const effectivelyConfirming =
-    isConfirming ?? (state === "confirming" || !!transcriptionPreview);
+  isConfirming ?? (state === "confirming" || !!transcriptionPreview);
 ```
 
 This bridges the timing gap — when the transcription preview text arrives, the user can immediately click to edit, even before the backend state catches up.
@@ -581,7 +583,7 @@ On macOS, Cmd+V has different behaviors depending on the target application. Fin
 - `AudioVisualiser` in `audio_toolkit/audio/visualizer.rs` used **fixed hardcoded scaling**: `DB_MIN = -55.0`, `DB_MAX = -8.0`, applied as `((db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0,1)` for every bucket
 - For a quiet mic, speech lands at ~-58dB to -50dB. The fixed -55dB floor clamps this into the bottom ~10% of the visual range, so bars barely twitch despite clear audio
 - A `noise_floor` per-bucket tracker already existed and was being updated (slow EMA, `NOISE_ALPHA = 0.001`), but it was **never used for output** — only logged. Dead data.
-- No AGC, no normalization, no auto-calibration existed anywhere in the pipeline (backend or frontend). The frontend `useVisualizer.ts` only has a low-audio *warning* (threshold 0.05), not gain.
+- No AGC, no normalization, no auto-calibration existed anywhere in the pipeline (backend or frontend). The frontend `useVisualizer.ts` only has a low-audio _warning_ (threshold 0.05), not gain.
 
 ### Fix
 
@@ -605,14 +607,15 @@ The first attempt wired `noise_floor` into the normalization formula: `db_above_
 - Peak tracker also started too high (`-15dB`) and decayed too slowly (`0.001`) → couldn't come down to meet a `-50dB` signal
 - User reported bars barely moving at the start of transcription plus false low-audio warnings
 
-**Root cause:** putting an *adaptation* variable (noise floor) in the *output path* means cold-start values directly gate the output. Until the adaptation converges, the output is wrong. And at 0.1%/frame, convergence takes ~30 seconds.
+**Root cause:** putting an _adaptation_ variable (noise floor) in the _output path_ means cold-start values directly gate the output. Until the adaptation converges, the output is wrong. And at 0.1%/frame, convergence takes ~30 seconds.
 
 **Fixed by removing `noise_floor` from the output entirely** and using:
+
 1. A **fixed wide window** (`-70` to `-5`, 65dB range) — any mic's speech falls within the visible range from frame 1. A quiet mic at -55dB → normalized = 15/65 = 0.23 (visible, not zero).
 2. A **peak-based gain boost** on the normalized value. Peak **snaps up instantly** (not EMA) when speech exceeds it, so the boost is computed on the very first speech frame. Peak decays slowly (`0.003`, half-life ~4s) so brief pauses don't collapse it.
 3. Peak starts at **0.0** — so the first speech frame immediately sets it and bars fill. No cold-start delay.
 
-**Key insight:** never put a slowly-adapting variable directly in the output path. Use a fixed window for the base (so cold-start is always visible) and apply adaptation as a *boost on top* (so it only improves things, never gates them). Instant snap-up for peaks avoids the EMA convergence delay entirely.
+**Key insight:** never put a slowly-adapting variable directly in the output path. Use a fixed window for the base (so cold-start is always visible) and apply adaptation as a _boost on top_ (so it only improves things, never gates them). Instant snap-up for peaks avoids the EMA convergence delay entirely.
 
 ## Router Post-Filing Bugs — Stuck Coordinator + Instant Hide (2026-07-11)
 
@@ -628,12 +631,14 @@ Two related bugs in the router flow after filing:
 Both bugs share the same root cause: `notify_processing_finished()` was called at the **end** of the router subprocess thread (after all result handling), keeping the coordinator in `Processing` state for the entire subprocess duration.
 
 **Bug 1 (Instant Hide):**
+
 - Router finishes → `is_active_use()` returns `true` (coordinator still Processing) → skip hide
 - `notify_processing_finished()` fires → coordinator transitions to Idle → `app-state: Idle` emitted
 - Frontend receives Idle → `isVisible = false` → overlay hides immediately
 - User sees the result for milliseconds at most
 
 **Bug 2 (Stuck Coordinator):**
+
 - Router subprocess runs for 5-30 seconds (boss_router.py is synchronous)
 - During this entire time, coordinator is in `Processing` → `active_use = true`
 - User tries to start new recording → coordinator rejects with "pipeline busy"
@@ -683,39 +688,46 @@ When a long-running background operation (like a subprocess) needs to both (a) f
 ## Cancel Button Main-Thread Deadlock (2026-07-17)
 
 ### Problem
+
 - User clicks cancel button (or stop hotkey) during recording → app goes "not responding" (beachball), visualizer freezes at that instant, requires force-quit.
 - Forensic evidence from `~/Library/Logs/com.pais.handy/handy-events.jsonl`: a `RecordingStarted` event with **no corresponding `RecordingStopped`**, no `ShortcutTriggered` for cancel, no `AppCrashed` — the structured logger (which needs the main thread) went silent the moment the cancel click arrived.
 - Visualizer (separate audio thread) kept moving right up until the cancel click, then froze — signature of main-thread deadlock, not a crash.
 
 ### Root Cause
+
 - `cancel_operation` was a **synchronous** Tauri command (`pub fn`, not `async`). In Tauri 2.x, sync commands run on the **main thread**.
 - `cancel_current_operation` → `audio_manager.cancel_recording()` did `self.state.lock()` (parking_lot, **no timeout**, blocks forever) on the main thread.
 - Once the main thread wedged: the webview event loop stopped (visualizer froze because `emit_levels` events stopped being delivered), the HandyKeys global shortcut event tap stopped (subsequent stop hotkey presses couldn't be delivered — explaining "stop didn't register"), and the structured logger stopped.
-- This **invalidates** the #1 hypothesis in `research/overlay-freeze-bug-investigation-report-2025-07-09.md` ("Optimistic Cancel Desync"). That report assumed cancel *succeeded* and the frontend hid too eagerly. The logs show cancel **never returned** — it deadlocked the main thread.
+- This **invalidates** the #1 hypothesis in `research/overlay-freeze-bug-investigation-report-2025-07-09.md` ("Optimistic Cancel Desync"). That report assumed cancel _succeeded_ and the frontend hid too eagerly. The logs show cancel **never returned** — it deadlocked the main thread.
 
 ### Fix
+
 1. **`commands/mod.rs`**: Made `cancel_operation` `async` + offloaded to `tauri::async_runtime::spawn_blocking`. The blocking cancel work now runs on a worker thread, never the main thread. Frontend `await commands.cancelOperation()` was already compatible (tauri-specta generates async functions regardless).
 2. **`managers/audio.rs` `cancel_recording()`**: Replaced unbounded `self.state.lock()` with `self.state.try_lock_for(2s)`. On timeout, forces `is_recording=false` and returns (lets the app recover instead of hanging forever).
 3. **Instrumentation**: Added `[CANCEL-TIMING]` logs to `cancel_current_operation` (8 steps timed) and `cancel_recording` (every lock acquisition + wait timed, with thread ids). If the freeze recurs, `grep CANCEL-TIMING handy.log` pinpoints the exact blocking call.
 
 ### Files Changed
+
 - `src-tauri/src/commands/mod.rs` — `cancel_operation` async + `spawn_blocking`
 - `src-tauri/src/utils.rs` — `[CANCEL-TIMING]` instrumentation on all 8 steps
 - `src-tauri/src/managers/audio.rs` — `cancel_recording` bounded `try_lock_for(2s)` + instrumentation
 
 ### Lesson
+
 - **Synchronous Tauri commands run on the main thread.** Any sync command that takes a `parking_lot::Mutex::lock()` with no timeout is a deadlock risk. The stop handler (`actions/transcribe.rs`) already does this correctly via `tauri::async_runtime::spawn` + `tm.try_lock_for(10s)` — the cancel handler was the inconsistency.
-- `parking_lot::Mutex` only removes *poisoning*; it does **not** add timeouts. An unbounded `lock()` on the main thread is still a deadlock hazard. Always use `try_lock_for` on code paths reachable from the main thread.
+- `parking_lot::Mutex` only removes _poisoning_; it does **not** add timeouts. An unbounded `lock()` on the main thread is still a deadlock hazard. Always use `try_lock_for` on code paths reachable from the main thread.
 - "Not responding" + visualizer freeze + zero log output = main-thread deadlock, not a crash. A crash terminates the process; a deadlock leaves it alive but frozen (requiring force-quit, which is why the next log entry is a fresh `AppStarted`).
 
 ## Lock Hazard Audit + 4 Fixes (2026-07-17)
 
 ### Problem
+
 After fixing the cancel-button deadlock, a comprehensive audit of all unbounded `parking_lot::Mutex::lock()` calls in the Rust backend revealed 4 additional lock hazards — including a latent AB-BA deadlock that could still freeze the app in always-on mode even after the cancel fix.
 
 ### Root Causes + Fixes
 
 **1. AB-BA lock-ordering inversion (CRITICAL):**
+
 - `try_start_recording` takes locks **state → recorder** (nested, `audio.rs:1345-1347`).
 - `stop_microphone_stream` took locks **recorder → state** (nested, opposite order) — it held `recorder.lock()` across `state.lock()`.
 - The **liveness monitor** (`audio.rs:474`) wakes every 3s in always-on mode and calls `stop_microphone_stream`. If a recording start and a liveness check run concurrently → classic AB-BA deadlock.
@@ -723,18 +735,22 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - **Fix:** Restructured `stop_microphone_stream` to drop the recorder lock before taking the state lock — no nested locks, no inversion possible.
 
 **2. `update_microphone_mode` on main thread (CRITICAL):**
+
 - Sync Tauri command (`commands/audio.rs:191`) ran on the main thread, called `rm.update_mode()` which can trigger `start_microphone_stream()` → USB power cycle (10+ seconds blocking).
 - **Fix:** Made it `async` + `spawn_blocking`, mirroring the `cancel_operation` fix pattern.
 
 **3. `paste` Enigo lock held across sleep (MEDIUM):**
+
 - `paste` (`clipboard.rs:858`) acquired `enigo_state.0.lock()` then held it across `std::thread::sleep(paste_delay_ms)` inside `paste_via_clipboard`. Starves other Enigo users on the main thread.
 - **Fix:** Split into `prepare_clipboard_for_paste` (clipboard write + sleep, no lock) and `send_paste_keys_and_verify` (key-sending, needs lock). Lock acquired only for the brief key-send phase.
 
 **4. Unbounded transcription manager locks (MEDIUM):**
+
 - `get_model_load_status` and `unload_model_manually` (`commands/transcription.rs`) used unbounded `.lock()` while `load_model` on another thread holds the same lock for seconds.
 - **Fix:** Replaced with `try_lock_for(2s)` (status) and `try_lock_for(5s)` (unload), returning an error on timeout.
 
 ### Files Changed
+
 - `src-tauri/src/managers/audio.rs` — Fix 1 (AB-BA inversion)
 - `src-tauri/src/commands/audio.rs` — Fix 2 (async update_microphone_mode)
 - `src-tauri/src/clipboard.rs` — Fix 3 (paste lock scope)
@@ -742,15 +758,18 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - 5 additional files touched by `cargo fmt` (formatting-only, zero functional changes)
 
 ### Lesson
+
 - **Lock-ordering inversions are silent killers.** Two functions each taking two locks in opposite order won't deadlock until they run concurrently — which may only happen under specific conditions (always-on mode enabling the liveness monitor). Always audit for consistent lock ordering when two functions take the same pair of locks.
 - **The liveness monitor is the always-on-specific risk multiplier.** It's a background thread that takes manager locks every 3s, creating concurrent lock contention that on-demand mode never sees. Any new always-on-related lock analysis must account for the liveness thread.
 
 ## Settings "Forgetting Changes" — Cache-Bypass Clobber (2026-07-17)
 
 ### Problem
+
 - User reports settings frequently "forget" changes after being saved. Changes vanish on app restart.
 
 ### Root Cause
+
 - **Three sources of truth** for settings: `SettingsCache` (RwLock, in-memory), `SettingsWriter.pending` (500ms debounced disk-write queue), and `tauri-plugin-store` (disk JSON).
 - The frontend uses `get_settings_safe` / `write_settings_safe` which correctly update the cache. But ~45 internal backend call sites (`managers/model.rs`, `managers/audio.rs`, `managers/transcription.rs`, `shortcut/mod.rs`, `actions/transcribe.rs`, `actions/router.rs`, `clipboard.rs`) used the non-safe `get_settings()` / `write_settings()` variants which **bypassed the cache**:
   - `get_settings()` read straight from `tauri-plugin-store`'s in-memory cache (STALE — didn't see unflushed cache changes)
@@ -760,6 +779,7 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - Contributing: `flush_settings` on `ExitRequested` used `block_in_place` + `block_on` which can deadlock during runtime teardown → trailing 500ms write dropped on quit. And `let _ = store.save()` silently discarded disk-write errors.
 
 ### Fix (in `src-tauri/src/settings/store.rs` only)
+
 1. `get_settings()` now reads from `SettingsCache` first (via `try_state`), falls back to plugin-store ONLY when cache isn't managed yet (early startup) — emits a `warn!` so we'd see it at runtime.
 2. `write_settings()` now updates `SettingsCache` before scheduling the debounced disk write — mirrors `write_settings_safe` exactly.
 3. `write_settings_safe` / `write_settings_immediate_safe` simplified to thin wrappers delegating to the non-safe variants (cache logic now lives in one place).
@@ -767,6 +787,7 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 5. Diagnostic logging with `[settings]` prefix: `debug!` write trace (5 representative fields, no secrets), `info!` flush events, `warn!` fallback paths, `error!` disk-write failures (replaced all `let _ = store.save()`), `trace!` chatty cache hits.
 
 ### Lesson
+
 - **A "safe" wrapper that callers can bypass is a footgun.** When two API variants exist (`foo` and `foo_safe`), every internal caller will eventually use the wrong one. The fix here was to make the non-safe variant behave like the safe one, so callers can't get it wrong — rather than auditing 45 call sites.
 - **Debounced writes + multiple sources of truth = stale-struct clobber.** The debounce itself wasn't the bug (each write is a full-struct snapshot, so coalescing is fine); the bug was that a stale snapshot could be queued AFTER a fresh one because the non-safe path didn't read the fresh cache.
 - **`let _ = result;` is a silent-failure antipattern** for persistence operations. Always log disk-write errors.
@@ -775,10 +796,12 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 ## Lock-Ordering Invariant Test + CI (2026-07-17)
 
 ### Problem
+
 - The 2026-07-17 Lock Hazard Audit found an AB-BA deadlock in `stop_microphone_stream` (recorder → state) vs `try_start_recording` (state → recorder). The fix restructured `stop_microphone_stream` to drop the recorder lock before taking the state lock.
 - No automated test existed to catch regressions of this class.
 
 ### Fix
+
 - Created `src-tauri/tests/lock_ordering.rs` with 5 tests:
   1. `test_lock_ordering_consistent_no_deadlock` — 16 threads × 500 iterations, all 4 lock paths (start, stop, cancel, lazy_close). Verifies no deadlock with the CURRENT (fixed) order.
   2. `test_concurrent_start_stop_stress` — 8 threads × 1000 iterations, alternating start/stop paths.
@@ -788,6 +811,7 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - Created `.github/workflows/ci.yml` with 3 jobs: `rust-check`, `rust-test`, `frontend-build`.
 
 ### Key Insight
+
 - Lock-ordering tests should replicate the lock STRUCTURE (which `parking_lot::Mutex<()>` pair), not the full production types. This makes tests independent of AppHandle, audio devices, or other heavy infrastructure.
 - `std::thread::JoinHandle` has no `join_timeout()`. Use a helper that spawns a watcher thread + `mpsc::channel` with `recv_timeout` to detect hung threads.
 - AB-BA deadlock tests must be `#[ignore]`d — they genuinely hang forever when the bug exists.

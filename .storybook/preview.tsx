@@ -64,8 +64,7 @@ const preview: Preview = {
     // resolve correctly for the chosen background.
     (Story, context) => {
       const bgName = context.globals?.backgrounds?.value;
-      const isDark =
-        bgName === "#2c2b29" || bgName === "#000000cc";
+      const isDark = bgName === "#2c2b29" || bgName === "#000000cc";
       const colorScheme = isDark ? "dark" : "light";
 
       return (

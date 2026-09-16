@@ -167,8 +167,8 @@ pub(crate) static ACCENT_TO_ASCII: Lazy<HashMap<char, &'static str>> = Lazy::new
     m.insert('ž', "z");
 
     // ── Latin Extended-B (U+0180–U+024F) — selected ligatures ───────────────
-        m.insert('œ', "oe");
-        m.insert('Œ', "OE");
+    m.insert('œ', "oe");
+    m.insert('Œ', "OE");
     m.insert('ſ', "s"); // long s
 
     // ── German sharp s ───────────────────────────────────────────────────────
@@ -196,35 +196,34 @@ pub(crate) static ACCENT_TO_ASCII: Lazy<HashMap<char, &'static str>> = Lazy::new
 /// "jalapeo" → "jalapeno"   (from jalapeño)
 /// "uvre"    → "oeuvre"     (from œuvre)
 /// ```
-pub(crate) static TRUNCATED_WORDS: Lazy<HashMap<&'static str, &'static str>> =
-    Lazy::new(|| {
-        let mut m = HashMap::with_capacity(20);
+pub(crate) static TRUNCATED_WORDS: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
+    let mut m = HashMap::with_capacity(20);
 
-        // ── Accented chars at word END → truncation ──────────────────────────
-        // These are the most impactful fixes: words where the final accented
-        // char gets <unk>-stripped, chopping off the ending.
-        m.insert("fianc", "fiance"); // fiancé → fianc + <unk>
-        m.insert("caf", "cafe"); // café → caf + <unk>
-        m.insert("resum", "resume"); // résumé → resum + <unk><unk>
-        m.insert("proteg", "protege"); // protégé → proteg + <unk><unk>
-        m.insert("crpe", "crepe"); // crêpe → crpe + <unk>
-        m.insert("ftus", "fetus"); // fœtus → ftus + <unk>
+    // ── Accented chars at word END → truncation ──────────────────────────
+    // These are the most impactful fixes: words where the final accented
+    // char gets <unk>-stripped, chopping off the ending.
+    m.insert("fianc", "fiance"); // fiancé → fianc + <unk>
+    m.insert("caf", "cafe"); // café → caf + <unk>
+    m.insert("resum", "resume"); // résumé → resum + <unk><unk>
+    m.insert("proteg", "protege"); // protégé → proteg + <unk><unk>
+    m.insert("crpe", "crepe"); // crêpe → crpe + <unk>
+    m.insert("ftus", "fetus"); // fœtus → ftus + <unk>
 
-        // ── Accented ligatures / middle chars → corruption ───────────────────
-        // These are words where an accented character in the MIDDLE of the word
-        // gets stripped, producing a corrupted (but recognizable) form.
-        m.insert("jalapeo", "jalapeno"); // jalapeño → jalapeo + <unk>
-        m.insert("uvre", "oeuvre"); // œuvre → uvre + <unk>
-        m.insert("subpna", "subpoena"); // subpœna → subpna + <unk>
+    // ── Accented ligatures / middle chars → corruption ───────────────────
+    // These are words where an accented character in the MIDDLE of the word
+    // gets stripped, producing a corrupted (but recognizable) form.
+    m.insert("jalapeo", "jalapeno"); // jalapeño → jalapeo + <unk>
+    m.insert("uvre", "oeuvre"); // œuvre → uvre + <unk>
+    m.insert("subpna", "subpoena"); // subpœna → subpna + <unk>
 
-        // ── Less common but notable ──────────────────────────────────────────
-        // Ligature Œ at the start of words (œ → oe, but stripping loses the 'o')
-        m.insert("dipe", "oedipe"); // Œdipe → dip + e  (archaic, French)
-        // Æ words where stripping creates a different word
-        m.insert("csar", "caesar"); // Cæsar → csar + <unk> (archaic spelling)
+    // ── Less common but notable ──────────────────────────────────────────
+    // Ligature Œ at the start of words (œ → oe, but stripping loses the 'o')
+    m.insert("dipe", "oedipe"); // Œdipe → dip + e  (archaic, French)
+                                // Æ words where stripping creates a different word
+    m.insert("csar", "caesar"); // Cæsar → csar + <unk> (archaic spelling)
 
-        m
-    });
+    m
+});
 
 /// Normalizes accented characters in text to their ASCII equivalents.
 ///
@@ -252,15 +251,12 @@ pub(crate) static TRUNCATED_WORDS: Lazy<HashMap<&'static str, &'static str>> =
 pub(crate) fn normalize_accents(text: &str) -> String {
     text.chars()
         .map(|c| {
-            ACCENT_TO_ASCII
-                .get(&c)
-                .copied()
-                .unwrap_or_else(|| {
-                    // For chars not in the map, return the char as a static str
-                    // by leaking a small allocation. This is fine for a HashMap lookup
-                    // that's rarely called for unmapped chars.
-                    Box::leak(c.encode_utf8(&mut [0; 4]).to_string().into_boxed_str())
-                })
+            ACCENT_TO_ASCII.get(&c).copied().unwrap_or_else(|| {
+                // For chars not in the map, return the char as a static str
+                // by leaking a small allocation. This is fine for a HashMap lookup
+                // that's rarely called for unmapped chars.
+                Box::leak(c.encode_utf8(&mut [0; 4]).to_string().into_boxed_str())
+            })
         })
         .collect()
 }

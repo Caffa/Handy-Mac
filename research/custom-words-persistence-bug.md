@@ -14,7 +14,7 @@ The custom-words write path (frontend → backend → disk) is functionally corr
 **The bug is a timing/reliability flaw in the debounced write + exit-flush mechanism, combined with a store-path discrepancy.** Three concrete weaknesses were identified:
 
 1. **`write_settings` uses `tokio::spawn` from a synchronous Tauri command.** The 500 ms debounce timer is held on a Tokio worker task. If the app quits before the 500 ms window elapses (or if the spawned task hasn't been polled yet), the write may never reach disk unless `flush_settings` runs.
-2. **`flush_settings` calls `tokio::runtime::Handle::current()` + `block_in_place`/`block_on`**, which **panics** with *"there is no reactor running"* when invoked from the main event-loop thread that dispatches `RunEvent::ExitRequested`. Tauri's event loop runs the callback directly on the main thread with **no active Tokio runtime context** (verified in the tauri fork source). The panic is swallowed by `safe_settings_operation`, so the pending write is **silently dropped**.
+2. **`flush_settings` calls `tokio::runtime::Handle::current()` + `block_in_place`/`block_on`**, which **panics** with _"there is no reactor running"_ when invoked from the main event-loop thread that dispatches `RunEvent::ExitRequested`. Tauri's event loop runs the callback directly on the main thread with **no active Tokio runtime context** (verified in the tauri fork source). The panic is swallowed by `safe_settings_operation`, so the pending write is **silently dropped**.
 3. **A separate stale store file** exists at `~/Library/Application Support/settings_store.json` (mtime 15:24) that contains **empty** `custom_words` and the branch's new defaults (`vad_sensitivity: very_relaxed`, `live_captions_enabled: false`), while the active store at `~/Library/Application Support/com.pais.handy/settings_store.json` (mtime 06:05) contains the custom word. If the app ever loads/writes the root store instead of the bundled path, custom words appear "reset."
 
 **Recommended fix location (see §7):** harden `flush_settings` in `src-tauri/src/settings/store.rs` (lines ~626–671) to not depend on a Tokio runtime context, and consider making the debounced write path fail-safe so a late quit always lands the in-memory cache to disk.
@@ -25,12 +25,12 @@ The custom-words write path (frontend → backend → disk) is functionally corr
 
 There are **two** custom-words UIs and one related group of controls:
 
-| UI component | File | Backend command |
-|---|---|---|
-| Simple custom words | `src/components/settings/CustomWords.tsx` | `update_custom_words` |
+| UI component                                | File                                              | Backend command                |
+| ------------------------------------------- | ------------------------------------------------- | ------------------------------ |
+| Simple custom words                         | `src/components/settings/CustomWords.tsx`         | `update_custom_words`          |
 | Advanced custom words (with pronunciations) | `src/components/settings/AdvancedCustomWords.tsx` | `update_advanced_custom_words` |
-| Custom filler words | `src/components/settings/CustomFillerWords.tsx` | `update_custom_filler_words` |
-| Word replacements | `src/components/settings/WordReplacements.tsx` | `update_word_replacements` |
+| Custom filler words                         | `src/components/settings/CustomFillerWords.tsx`   | `update_custom_filler_words`   |
+| Word replacements                           | `src/components/settings/WordReplacements.tsx`    | `update_word_replacements`     |
 
 ### Frontend → backend trace (simple custom words)
 
@@ -67,6 +67,7 @@ There are **two** custom-words UIs and one related group of controls:
 All four are registered as Tauri commands in `lib.rs` (lines 614–617).
 
 `write_settings_safe` (store.rs line 210) wraps `write_settings` (line 530), which:
+
 1. updates `SettingsCache` (in-memory source of truth) synchronously;
 2. calls `writer.write(app, settings)` inside `tokio::spawn` (line 562).
 
@@ -81,12 +82,15 @@ All four are registered as Tauri commands in `lib.rs` (lines 614–617).
 ### The debounce mechanism
 
 `SettingsWriter` (`store.rs` lines 726–814):
+
 - `pending: Mutex<Option<AppSettings>>` and `timer: Mutex<Option<JoinHandle>>`.
 - `write()` (761–789): sets pending, aborts any prior timer, then `tokio::spawn` a task that sleeps `debounce_ms` (500) and calls `flush_inner`.
 - `flush_inner()` (802–812): takes the pending settings and calls `write_settings_immediate` → `store.save()`.
 
 ### How the write is initiated
+
 `write_settings` (line 562):
+
 ```rust
 tokio::spawn(async move {
     writer.write(app_clone, settings).await;
@@ -96,7 +100,9 @@ tokio::spawn(async move {
 This is called from a synchronous Tauri command (e.g. `update_custom_words`). The `tokio::spawn` schedules the write on the Tokio runtime. **The disk write only happens if/when the spawned task is polled** by a Tokio worker thread and the 500 ms sleep elapses.
 
 ### `flush_settings` on `RunEvent::ExitRequested`
+
 Wired in `src-tauri/src/lib.rs` lines 1106–1110:
+
 ```rust
 if let tauri::RunEvent::ExitRequested { .. } = &event {
     crate::settings::flush_settings(app);
@@ -104,6 +110,7 @@ if let tauri::RunEvent::ExitRequested { .. } = &event {
 ```
 
 `flush_settings` (store.rs lines 626–670) does:
+
 ```rust
 let has_pending = tokio::task::block_in_place(|| {
     tokio::runtime::Handle::current().block_on(async { writer.has_pending().await })
@@ -117,16 +124,19 @@ let result = tokio::task::block_in_place(|| {
 ```
 
 ### The critical reliability problem
+
 Tauri dispatches `RunEvent::ExitRequested` on the **main event-loop thread** (tao event loop, see `tauri-runtime-wry-2.11.4/src/lib.rs` `make_event_handler` → `handle_event_loop`). That callback runs **without any active Tokio runtime context** — Tauri does **not** call `.enter()` around the event loop (verified in the project's tauri fork at `~/.cargo/git/checkouts/tauri-87d5f779a89e41b2/ad9ba94/crates/tauri/src/`).
 
 `tokio::runtime::Handle::current()` calls `scheduler::Handle::current()` which does:
+
 ```rust
 match context::with_current(Clone::clone) {
     Ok(handle) => handle,
     Err(e) => panic!("{}", e),   // CONTEXT_MISSING_ERROR
 }
 ```
-On a non-Tokio thread this **panics**: *"there is no reactor running, must be called from the context of a Tokio 1.x runtime."* This panic is swallowed by `safe_settings_operation` (line 627), so `flush_settings` returns normally but **the pending write is never flushed**.
+
+On a non-Tokio thread this **panics**: _"there is no reactor running, must be called from the context of a Tokio 1.x runtime."_ This panic is swallowed by `safe_settings_operation` (line 627), so `flush_settings` returns normally but **the pending write is never flushed**.
 
 **A reproduction test was added** — `flush_handle_current_panics_outside_tokio_context` (`store.rs` tests) — which asserts `Handle::current()` panics on a fresh non-Tokio thread. It passes, confirming the mechanism.
 
@@ -164,12 +174,14 @@ Because `custom_words`, `advanced_custom_words`, `word_replacements`, and `custo
 ## 5. Reproduction: backend API → store file → reload
 
 ### Disk evidence
+
 - Active app-data store: `~/Library/Application Support/com.pais.handy/settings_store.json` — **contains** `"custom_words": ["Zettelkasten"]` (persisted successfully, mtime 2026-08-20 06:05).
 - Stale root store: `~/Library/Application Support/settings_store.json` (mtime 2026-08-20 15:30) — **empty** `custom_words: []`, and holds the branch's new defaults (`vad_sensitivity: very_relaxed`, `live_captions_enabled: false`).
 
 The two stores have diverged. The active, correctly-persisted file has the word; the other is either an older path used by a different build/launch, or a "reset to defaults" write from a process that loaded an empty store. If the app ever loads the root store, all custom words read as `[]`.
 
 ### New tests added (all pass)
+
 1. `salvage_settings_preserves_custom_words_across_broken_field` — proves salvage keeps word fields.
 2. `flush_handle_current_panics_outside_tokio_context` — proves the exit-flush `Handle::current()` panics off-runtime, which silently drops the pending write.
 
@@ -180,6 +192,7 @@ The two stores have diverged. The active, correctly-persisted file has the word;
 ## 6. Do related fields (`word_replacements`, `custom_filler_words`) suffer the same bug?
 
 **Yes — they share the identical exit-flush/drop mechanism.** All of:
+
 - `custom_words`
 - `advanced_custom_words`
 - `word_replacements`
@@ -196,6 +209,7 @@ go through the same `get_settings_safe` → mutate → `write_settings_safe` →
 Diff `main..HEAD` and the on-disk state show several things changed **near** the persistence path on this branch:
 
 1. **`VadSensitivity` enum was reworked** (`types.rs`): variants renamed and re-ordered, `#[default]` moved to `VeryRelaxed`, thresholds changed, and a new `per_model_vad_sensitivity: HashMap` field added. Combined with a stored value of `"balanced"`/old variants, this could make an **old** settings file fail full deserialization → forcing the `salvage_settings` path more often than before. But as shown in §4, salvage preserves word fields, so this alone does not erase them.
+
 - **New fields added** (`per_model_vad_sensitivity`, `live_captions_model`, `tauri_binding`, `handy_keys_binding`), all `#[serde(default)]`, so they don't break old files.
 - **`migrate_bindings` + binding rework** (`ba75bb61`, `abf6116e`) only touches `bindings`, not word fields.
 - **No change to `write_settings`, `SettingsWriter`, or `flush_settings`** on this branch — those are the same as `main` (the `flush_settings` code is inherited, not branch-new). The dangerous `Handle::current()` off-runtime issue predates this branch.
@@ -212,15 +226,18 @@ The **primary fix** should be in `src-tauri/src/settings/store.rs`, in `flush_se
    - Capture the `SettingsWriter` pending state and the `SettingsCache` directly (both are sync state that can be read without a runtime),
    - call `write_settings_immediate` synchronously on the cached settings (it does `store.save()` synchronously, no Tokio needed). `write_settings_immediate` (lines 571–609) is already runtime-free.
 2. The fallback branch that uses the cache (lines 658–667) is exactly the right approach — **make it the primary path** rather than the timeout-fallback. `flush_settings` can be implemented as: read `SettingsCache::get()`, call `write_settings_immediate`. No `Handle::current()`, no `block_in_place`, no `block_on` → no panic, no deadlock, no dropped writes.
-3. **Optionally add a guard**: only call `flush_settings` in `lib.rs` on `ExitRequested` *and* `Exit` (mirroring the abandoned `4204cc2f` approach), so a race between the two events is covered.
+3. **Optionally add a guard**: only call `flush_settings` in `lib.rs` on `ExitRequested` _and_ `Exit` (mirroring the abandoned `4204cc2f` approach), so a race between the two events is covered.
 
 Secondary hardening (also in `store.rs`):
+
 - In `write_settings` (line 562), consider calling `write_settings_immediate` directly when the cache-backed writer would be dropped — or ensure the `tokio::spawn` task's abort-on-drop isn't the only path.
 
 Tertiary (diagnostic, optional):
+
 - The two conflicting store files suggest the app may sometimes resolve `app_data_dir` to different paths across runs. Log the resolved store path at startup (this was added in commit `4204cc2f` but is absent in HEAD) to catch "which store am I reading/writing?" regressions.
 
 **Summary of exact files/lines to touch:**
+
 - Primary: `src-tauri/src/settings/store.rs` — `flush_settings` (lines 626–670): replace the `Handle::current()` + `block_on` logic with a runtime-free synchronous flush of `SettingsCache` via `write_settings_immediate`.
 - Supporting: `src-tauri/src/lib.rs` lines 1106–1110 — optionally also flush on `RunEvent::Exit`, not just `ExitRequested`.
 - Diagnostic: add the store-path log line in `open_settings_store` (store.rs lines 91–101).
@@ -229,30 +246,31 @@ Tertiary (diagnostic, optional):
 
 ## Appendix: Key files and line numbers
 
-| Concern | File | Lines |
-|---|---|---|
-| `update_custom_words` | `src-tauri/src/shortcut/mod.rs` | 800–807 |
-| `update_advanced_custom_words` | `src-tauri/src/shortcut/mod.rs` | 821–828 |
-| `update_custom_filler_words` | `src-tauri/src/shortcut/mod.rs` | 830–837 |
-| `update_word_replacements` | `src-tauri/src/shortcut/mod.rs` | 871–879 |
-| Command registration | `src-tauri/src/lib.rs` | 614–617 |
-| `write_settings_safe` | `src-tauri/src/settings/store.rs` | 210–214 |
-| `write_settings` | `src-tauri/src/settings/store.rs` | 530–569 |
-| `write_settings_immediate` | `src-tauri/src/settings/store.rs` | 571–628 |
-| `flush_settings` | `src-tauri/src/settings/store.rs` | 626–670 |
-| `SettingsWriter` | `src-tauri/src/settings/store.rs` | 726–813 |
-| `salvage_settings` | `src-tauri/src/settings/store.rs` | 233–315 |
-| `SettingsCache` | `src-tauri/src/settings/store.rs` | 23–42 |
-| Exit flush wiring | `src-tauri/src/lib.rs` | 1106–1110 |
-| `settingUpdaters` custom_words | `src/stores/settingsStore.ts` | 140–146 |
-| CustomWords component | `src/components/settings/CustomWords.tsx` | whole |
-| AdvancedCustomWords component | `src/components/settings/AdvancedCustomWords.tsx` | whole |
-| `custom_words` field | `src-tauri/src/settings/types.rs` | 586 |
-| `advanced_custom_words` | `src-tauri/src/settings/types.rs` | 588 |
-| `word_replacements` | `src-tauri/src/settings/types.rs` | 590 |
-| `custom_filler_words` | `src-tauri/src/settings/types.rs` | 651 |
-| Store path const | `src-tauri/src/settings/types.rs` | 15 |
+| Concern                        | File                                              | Lines     |
+| ------------------------------ | ------------------------------------------------- | --------- |
+| `update_custom_words`          | `src-tauri/src/shortcut/mod.rs`                   | 800–807   |
+| `update_advanced_custom_words` | `src-tauri/src/shortcut/mod.rs`                   | 821–828   |
+| `update_custom_filler_words`   | `src-tauri/src/shortcut/mod.rs`                   | 830–837   |
+| `update_word_replacements`     | `src-tauri/src/shortcut/mod.rs`                   | 871–879   |
+| Command registration           | `src-tauri/src/lib.rs`                            | 614–617   |
+| `write_settings_safe`          | `src-tauri/src/settings/store.rs`                 | 210–214   |
+| `write_settings`               | `src-tauri/src/settings/store.rs`                 | 530–569   |
+| `write_settings_immediate`     | `src-tauri/src/settings/store.rs`                 | 571–628   |
+| `flush_settings`               | `src-tauri/src/settings/store.rs`                 | 626–670   |
+| `SettingsWriter`               | `src-tauri/src/settings/store.rs`                 | 726–813   |
+| `salvage_settings`             | `src-tauri/src/settings/store.rs`                 | 233–315   |
+| `SettingsCache`                | `src-tauri/src/settings/store.rs`                 | 23–42     |
+| Exit flush wiring              | `src-tauri/src/lib.rs`                            | 1106–1110 |
+| `settingUpdaters` custom_words | `src/stores/settingsStore.ts`                     | 140–146   |
+| CustomWords component          | `src/components/settings/CustomWords.tsx`         | whole     |
+| AdvancedCustomWords component  | `src/components/settings/AdvancedCustomWords.tsx` | whole     |
+| `custom_words` field           | `src-tauri/src/settings/types.rs`                 | 586       |
+| `advanced_custom_words`        | `src-tauri/src/settings/types.rs`                 | 588       |
+| `word_replacements`            | `src-tauri/src/settings/types.rs`                 | 590       |
+| `custom_filler_words`          | `src-tauri/src/settings/types.rs`                 | 651       |
+| Store path const               | `src-tauri/src/settings/types.rs`                 | 15        |
 
 ## Tests added
+
 - `settings::store::tests::salvage_settings_preserves_custom_words_across_broken_field` (PASS)
 - `settings::store::tests::flush_handle_current_panics_outside_tokio_context` (PASS)

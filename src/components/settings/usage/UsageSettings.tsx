@@ -58,8 +58,7 @@ const MiniBarChart: React.FC<{
     <div className="flex items-end gap-[2px] h-24 px-1">
       {data.map(([date, count, words], i) => {
         const height = Math.max((words / maxWords) * 100, count > 0 ? 4 : 0);
-        const isToday =
-          date === new Date().toISOString().slice(0, 10);
+        const isToday = date === new Date().toISOString().slice(0, 10);
         return (
           <div
             key={date}
@@ -69,7 +68,10 @@ const MiniBarChart: React.FC<{
               className={`w-full rounded-t-sm transition-all ${
                 isToday ? "bg-logo-primary" : "bg-logo-primary/50"
               } hover:bg-logo-primary/80`}
-              style={{ height: `${height}%`, minHeight: count > 0 ? "2px" : "0" }}
+              style={{
+                height: `${height}%`,
+                minHeight: count > 0 ? "2px" : "0",
+              }}
             />
             <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-background border border-mid-gray/20 rounded px-1.5 py-0.5 text-[10px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-sm">
               <span className="font-medium">{date.slice(5)}</span>
@@ -195,7 +197,9 @@ export const UsageSettings: React.FC = () => {
             <span className="text-muted-foreground">
               {t("settings.usage.words")}
             </span>
-            <span className="font-medium">{formatWords(stats.today_words)}</span>
+            <span className="font-medium">
+              {formatWords(stats.today_words)}
+            </span>
           </div>
         </div>
       </SettingsGroup>
