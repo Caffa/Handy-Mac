@@ -1620,6 +1620,39 @@
       "recommended_rank": null
     },
     {
+      "id": "handy-computer/parakeet-primeline-gguf",
+      "revision": "90880dc372f8cc0025ae7a08d2c887278124a538",
+      "slug": "parakeet-primeline",
+      "name": "Parakeet TDT 0.6B primeLine (German-tuned)",
+      "architecture": "parakeet",
+      "family": "parakeet",
+      "parameters": "0.6B",
+      "description": "25-language speech-to-text with auto language detection, token-level timestamps.",
+      "base_model": "primeline/parakeet-primeline",
+      "license": "cc-by-4.0",
+      "language_count": 25,
+      "languages": ["de", "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk"],
+      "capabilities": {
+        "streaming": false,
+        "translate": false,
+        "lang_detect": true,
+        "timestamps": "token"
+      },
+      "speed_score": 79,
+      "accuracy_score": 67,
+      "files": [
+        {"filename": "parakeet-primeline-Q4_K_M.gguf", "quant": "Q4_K_M", "size_bytes": 485425568, "sha256": "8b01f1893fa1db166d8b08375f8300c140fc7f110af7e9b68480a27b145dad7d"},
+        {"filename": "parakeet-primeline-Q5_K_M.gguf", "quant": "Q5_K_M", "size_bytes": 548946336, "sha256": "a1dd12b7f374c33d5e33a61c8a852035d27064cefe53f8cdfc3410cddf3b31c8"},
+        {"filename": "parakeet-primeline-Q6_K.gguf", "quant": "Q6_K", "size_bytes": 610342304, "sha256": "62301f4a2c393421a4162864718e85edac7eb85ce8ed82c343a4b994b6d85594"},
+        {"filename": "parakeet-primeline-Q8_0.gguf", "quant": "Q8_0", "size_bytes": 739508640, "sha256": "dbd1ec2985aea64d16550a0068ea9153c0bc01955bf2a5c18b74ca213546d3cd"},
+        {"filename": "parakeet-primeline-F16.gguf", "quant": "F16", "size_bytes": 1255869920, "sha256": "a6f626fa7263cf55a27eda312d1f91dfe6edfeb8de85a5536fbb3cb93af064e1"},
+        {"filename": "parakeet-primeline-F32.gguf", "quant": "F32", "size_bytes": 2508435680, "sha256": "6075ededee05ad520b3402bf089d00cd87819025b8509f746587c822d99a9a2d"}
+      ],
+      "default_quant": "Q8_0",
+      "recommended": false,
+      "recommended_rank": null
+    },
+    {
       "id": "handy-computer/medasr-gguf",
       "slug": "medasr",
       "name": "MedASR",
