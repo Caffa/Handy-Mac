@@ -87,6 +87,26 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+/// Optional text cleanup must never discard a successful model result. The
+/// transform is pure and owns its input, so recovering the untouched text is
+/// safe even if a bug in custom-word or filler filtering unwinds.
+fn fail_open_text_transform<F>(raw: String, transform: F) -> String
+where
+    F: FnOnce(String) -> String,
+{
+    let fallback = raw.clone();
+    match catch_unwind(AssertUnwindSafe(|| transform(raw))) {
+        Ok(processed) => processed,
+        Err(payload) => {
+            error!(
+                "Optional transcription text post-processing panicked: {}; using the raw transcription",
+                panic_payload_message(payload.as_ref())
+            );
+            fallback
+        }
+    }
+}
+
 /// Result of a transcription call, including metadata about which model was used.
 #[derive(Clone, Debug, Serialize)]
 pub struct TranscriptionOutput {
@@ -1466,20 +1486,23 @@ impl TranscriptionManager {
         let settings = get_settings(&self.app_handle);
         // Streaming models do not receive a decode prompt, so custom words
         // always go through the shared post-correction path.
-        let filtered = process_transcription_text(
-            &raw,
-            settings.word_correction_mode,
-            &settings.custom_words,
-            &settings.advanced_custom_words,
-            &settings.word_replacements,
-            settings.word_correction_threshold,
-            false,
-            &settings.app_language,
-            &settings.custom_filler_words,
-            settings.convert_us_to_british,
-            settings.spelling_dictionary,
-            settings.repetition_suppression_level,
-        );
+        // Wrap the optional cleanup so a panic cannot discard the raw result.
+        let filtered = fail_open_text_transform(raw, |raw| {
+            process_transcription_text(
+                &raw,
+                settings.word_correction_mode,
+                &settings.custom_words,
+                &settings.advanced_custom_words,
+                &settings.word_replacements,
+                settings.word_correction_threshold,
+                false,
+                &settings.app_language,
+                &settings.custom_filler_words,
+                settings.convert_us_to_british,
+                settings.spelling_dictionary,
+                settings.repetition_suppression_level,
+            )
+        });
 
         self.maybe_unload_immediately("streaming transcription");
         Ok(Some(filtered))
@@ -2083,20 +2106,23 @@ impl TranscriptionManager {
 
         let raw_text = result.clone();
 
-        let final_result = process_transcription_text(
-            &result,
-            settings.word_correction_mode,
-            &settings.custom_words,
-            &settings.advanced_custom_words,
-            &settings.word_replacements,
-            settings.word_correction_threshold,
-            is_whisper,
-            &settings.app_language,
-            &settings.custom_filler_words,
-            settings.convert_us_to_british,
-            settings.spelling_dictionary,
-            settings.repetition_suppression_level,
-        );
+        // Optional text cleanup must never discard the successful model result.
+        let final_result = fail_open_text_transform(result, |result| {
+            process_transcription_text(
+                &result,
+                settings.word_correction_mode,
+                &settings.custom_words,
+                &settings.advanced_custom_words,
+                &settings.word_replacements,
+                settings.word_correction_threshold,
+                is_whisper,
+                &settings.app_language,
+                &settings.custom_filler_words,
+                settings.convert_us_to_british,
+                settings.spelling_dictionary,
+                settings.repetition_suppression_level,
+            )
+        });
 
         if final_result != raw_text {
             info!(
@@ -2719,6 +2745,16 @@ mod tests {
         for kind in ["metal", "cuda", "vulkan", "gpu", "unknown"] {
             assert!(!transcribe_device_allowed(kind, true));
         }
+    }
+
+    #[test]
+    fn optional_text_transform_falls_back_to_raw_text_after_panic() {
+        let raw = "原始轉錄。".to_string();
+        let result = fail_open_text_transform(raw.clone(), |_| {
+            panic!("simulated optional cleanup failure")
+        });
+
+        assert_eq!(result, raw);
     }
 
     #[test]

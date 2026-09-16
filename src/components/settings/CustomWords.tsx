@@ -12,10 +12,7 @@ interface CustomWordsProps {
 }
 
 const normalizeCustomWord = (word: string) =>
-  word
-    .replace(/[<>']/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  word.replace(/[<>']/g, "").replace(/\s+/g, " ").trim();
 
 export const CustomWords: React.FC<CustomWordsProps> = React.memo(
   ({ descriptionMode = "tooltip", grouped = false }) => {
