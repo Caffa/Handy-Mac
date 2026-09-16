@@ -1361,8 +1361,8 @@ impl TranscriptionManager {
                     StreamCmd::Finalize(reply) => {
                         let finalize_start = Instant::now();
                         let result = match stream.finalize() {
-                            // After finalize the committed prefix holds the full
-                            // text; display() = committed + tentative is the safe read.
+                            // Moonshine streaming needs the full-field result
+                            // (committed + tentative collapsed), not display().
                             Ok(update) => {
                                 perf.record_compute(finalize_start.elapsed());
                                 perf.record_update(
@@ -1371,7 +1371,7 @@ impl TranscriptionManager {
                                     update.audio_committed_ms,
                                     update.buffered_ms,
                                 );
-                                Some(stream.text().display())
+                                Some(stream.text().full)
                             }
                             Err(e) => {
                                 perf.record_compute(finalize_start.elapsed());
