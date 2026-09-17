@@ -114,6 +114,14 @@ const settingUpdaters: {
         ? "default"
         : (value as string),
     ),
+  selected_channel: async (value) => {
+    const result = await commands.setSelectedChannel(
+      (value as number | null | undefined) ?? null,
+    );
+    if (result.status === "error") {
+      throw new Error(result.error);
+    }
+  },
   clamshell_microphone: (value) =>
     commands.setClamshellMicrophone(
       (value as string) === "Default" ? "default" : (value as string),
@@ -838,6 +846,16 @@ export const useSettingsStore = create<SettingsStore>()(
         }
       });
       set({ _unlistenShortcutConflictEvent: unlistenConflict });
+
+      const unlistenSettingsChanged = await listen<{
+        setting?: string;
+      }>("settings-changed", (event) => {
+        get().refreshSettings();
+        if (event.payload.setting === "selected_microphone") {
+          get().refreshAudioDevices();
+        }
+      });
+      set({ _unlistenSettingsEvent: unlistenSettingsChanged });
     },
   })),
 );

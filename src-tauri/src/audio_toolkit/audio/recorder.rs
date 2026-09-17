@@ -145,6 +145,8 @@ pub struct AudioRecorder {
     /// Stored as AtomicU32 to avoid float atomics. Multiply by 1_000_000
     /// to preserve precision when storing, divide when retrieving.
     max_level: Arc<AtomicU32>,
+    /// Set by cpal when the active input stream can no longer capture.
+    stream_error: Arc<AtomicBool>,
     /// Pre-recording buffer in milliseconds. When >0, stores the last N ms
     /// of audio continuously and prepends it to recordings when they start.
     /// Only effective in always-on microphone mode.
@@ -159,6 +161,8 @@ pub struct AudioRecorder {
     /// callbacks so they can bail out if the recorder/stream they were
     /// created for has been torn down.
     pub(crate) close_generation: Arc<AtomicU64>,
+    /// Which input channel to use. None = average all (original behavior).
+    selected_channel: Option<usize>,
 }
 
 impl AudioRecorder {
@@ -180,6 +184,8 @@ impl AudioRecorder {
             pre_buffer_ms: Arc::new(AtomicU32::new(0)),
             last_voice_activity_ms: Arc::new(AtomicU64::new(0)),
             close_generation: Arc::new(AtomicU64::new(0)),
+            stream_error: Arc::new(AtomicBool::new(false)),
+            selected_channel: None,
         })
     }
 
@@ -262,6 +268,15 @@ impl AudioRecorder {
         self
     }
 
+    pub fn with_selected_channel(mut self, channel: Option<u16>) -> Self {
+        self.set_selected_channel(channel);
+        self
+    }
+
+    pub fn set_selected_channel(&mut self, channel: Option<u16>) {
+        self.selected_channel = channel.map(usize::from);
+    }
+
     /// Runtime toggle for streaming transcription. When disabled, the
     /// streaming callback is still attached but not invoked, allowing
     /// instant toggling without recreating the recorder.
@@ -294,8 +309,18 @@ impl AudioRecorder {
 
     pub fn open(&mut self, device: Option<Device>) -> Result<(), Box<dyn std::error::Error>> {
         if self.worker_handle.is_some() {
-            return Ok(()); // already open
+            if !self.needs_reopen() {
+                return Ok(()); // already open
+            }
+            // The worker exited on its own (see `needs_reopen`). Reap it so we
+            // rebuild the stream below instead of handing the caller back a
+            // recorder whose channels are already closed.
+            log::warn!("Capture stream failed; rebuilding microphone stream");
+            let _ = self.close();
         }
+
+        // Reset stream error flag at the start of every open attempt.
+        self.stream_error.store(false, Ordering::Relaxed);
 
         // Reset stream liveness timestamp
         self.last_chunk_ms.store(0, Ordering::Relaxed);
@@ -333,6 +358,8 @@ impl AudioRecorder {
         let stream_router = self.stream_router.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
+        let stream_error = Arc::clone(&self.stream_error);
+        let selected_channel = self.selected_channel;
         let pre_buffer_ms = self.pre_buffer_ms.load(Ordering::Relaxed);
         let last_voice_activity_ms = self.last_voice_activity_ms.clone();
 
@@ -345,6 +372,20 @@ impl AudioRecorder {
 
                 let sample_rate = config.sample_rate().0;
                 let channels = config.channels() as usize;
+
+                if let Some(channel) = selected_channel {
+                    if channel < channels {
+                        log::info!("Using selected input channel: {}", channel + 1);
+                    } else {
+                        log::warn!(
+                            "Selected input channel {} is out of range for a {}-channel device; averaging all channels instead",
+                            channel + 1,
+                            channels
+                        );
+                    }
+                } else {
+                    log::info!("Averaging all {} input channels", channels);
+                }
 
                 log::info!(
                     "Using device: {:?}\nSample rate: {}\nChannels: {}\nFormat: {:?}",
@@ -374,6 +415,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I8 => AudioRecorder::build_stream::<i8>(
@@ -382,6 +425,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I16 => AudioRecorder::build_stream::<i16>(
@@ -390,6 +435,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I32 => AudioRecorder::build_stream::<i32>(
@@ -398,6 +445,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::F32 => AudioRecorder::build_stream::<f32>(
@@ -406,6 +455,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     sample_format => {
@@ -441,6 +492,12 @@ impl AudioRecorder {
                         pre_buffer_ms,
                         last_voice_activity_ms,
                     );
+
+                    // A failed open may mean the cached config went stale
+                    // (device re-plugged, rate/format changed in the OS).
+                    // Drop it so the next attempt re-queries the device.
+                    // (No config cache in the diverged recorder, but keep hook
+                    //  here for symmetry with upstream.)
 
                     // Deterministic teardown barrier: wait for the cpal callback
                     // to actually stop producing data. The callback sets stop_flag
@@ -709,6 +766,18 @@ impl AudioRecorder {
         self.max_level.store(0, Ordering::Relaxed);
     }
 
+    /// True when the active capture stream must be rebuilt.
+    ///
+    /// cpal may report a device disconnect asynchronously without closing its
+    /// callback channel, so also honor the error callback's explicit flag.
+    pub fn needs_reopen(&self) -> bool {
+        self.stream_error.load(Ordering::Relaxed)
+            || self
+                .worker_handle
+                .as_ref()
+                .is_some_and(|handle| handle.is_finished())
+    }
+
     /// Returns true if the microphone stream has received audio data within
     /// the last `timeout_ms` milliseconds. Returns false if the stream has
     /// never received data or if data stopped flowing.
@@ -752,12 +821,20 @@ impl AudioRecorder {
         self.device.as_ref().and_then(|d| d.name().ok())
     }
 
+    pub fn preferred_input_channel_count(
+        device: &cpal::Device,
+    ) -> Result<u16, Box<dyn std::error::Error>> {
+        Ok(Self::get_preferred_config(device)?.channels())
+    }
+
     fn build_stream<T>(
         device: &cpal::Device,
         config: &cpal::SupportedStreamConfig,
         sample_tx: mpsc::Sender<AudioChunk>,
         channels: usize,
         stop_flag: Arc<AtomicBool>,
+        stream_error: Arc<AtomicBool>,
+        selected_channel: Option<usize>,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
         T: Sample + SizedSample + Send + 'static,
@@ -765,45 +842,75 @@ impl AudioRecorder {
     {
         let mut output_buffer = Vec::new();
         let mut eos_sent = false;
+        // Resolve the effective channel to use. If the selected channel is
+        // out of range for this device, fall back to averaging all channels.
+        let use_channel: Option<usize> = match selected_channel {
+            Some(ch) if ch < channels => Some(ch),
+            Some(_) => None, // out of range, fall back to average
+            None => None,    // user chose "average all"
+        };
 
         let stream_cb = move |data: &[T], _: &cpal::InputCallbackInfo| {
-            if stop_flag.load(Ordering::Relaxed) {
-                if !eos_sent {
-                    // Process the final buffer BEFORE sending EndOfStream.
-                    // This ensures the last ~10-50ms of audio isn't lost when stopping.
-                    // We do NOT reset eos_sent here because we want to send the final
-                    // samples only once, then the sentinel.
-                    output_buffer.clear();
-                    if channels == 1 {
-                        output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
-                    } else {
-                        let frame_count = data.len() / channels;
-                        output_buffer.reserve(frame_count);
-                        for frame in data.chunks_exact(channels) {
-                            let mono_sample = frame
-                                .iter()
-                                .map(|&sample| sample.to_sample::<f32>())
-                                .sum::<f32>()
-                                / channels as f32;
-                            output_buffer.push(mono_sample);
-                        }
-                    }
-                    let _ = sample_tx.send(AudioChunk::Samples(output_buffer.clone()));
-                    let _ = sample_tx.send(AudioChunk::EndOfStream);
-                    eos_sent = true;
+            AudioRecorder::handle_input_block(
+                data,
+                channels,
+                use_channel,
+                &stop_flag,
+                &mut eos_sent,
+                &mut output_buffer,
+                &sample_tx,
+            );
+        };
+
+        device.build_input_stream(
+            &config.clone().into(),
+            stream_cb,
+            move |err| {
+                log::error!("Stream error: {}", err);
+                stream_error.store(true, Ordering::Relaxed);
+            },
+            None,
+        )
+    }
+
+    /// Body of the cpal input callback, extracted so the diverged streaming
+    /// recorder can share the tail-audio logic without duplicating it.
+    ///
+    /// The block that first observes the stop flag was captured before the stop,
+    /// so it is still forwarded — dropping it loses up to a callback period of
+    /// tail audio (worst on Bluetooth) — followed by the end-of-stream sentinel.
+    /// Later blocks are dropped until the flag clears.
+    fn handle_input_block<T>(
+        data: &[T],
+        channels: usize,
+        use_channel: Option<usize>,
+        stop_flag: &AtomicBool,
+        eos_sent: &mut bool,
+        output_buffer: &mut Vec<f32>,
+        sample_tx: &mpsc::Sender<AudioChunk>,
+    ) where
+        T: Sample,
+        f32: cpal::FromSample<T>,
+    {
+        let stopping = stop_flag.load(Ordering::Relaxed);
+        if stopping && *eos_sent {
+            return;
+        }
+
+        output_buffer.clear();
+
+        if channels == 1 {
+            output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
+        } else {
+            let frame_count = data.len() / channels;
+            output_buffer.reserve(frame_count);
+
+            if let Some(ch) = use_channel {
+                for frame in data.chunks_exact(channels) {
+                    let mono_sample = frame[ch].to_sample::<f32>();
+                    output_buffer.push(mono_sample);
                 }
-                return;
-            }
-            eos_sent = false;
-
-            output_buffer.clear();
-
-            if channels == 1 {
-                output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
             } else {
-                let frame_count = data.len() / channels;
-                output_buffer.reserve(frame_count);
-
                 for frame in data.chunks_exact(channels) {
                     let mono_sample = frame
                         .iter()
@@ -813,21 +920,25 @@ impl AudioRecorder {
                     output_buffer.push(mono_sample);
                 }
             }
+        }
 
-            if sample_tx
-                .send(AudioChunk::Samples(output_buffer.clone()))
-                .is_err()
-            {
-                log::error!("Failed to send samples");
-            }
-        };
+        // A failed send means the consumer thread is gone. During shutdown that is
+        // expected (the consumer exits before the stream is dropped), so only
+        // report it when capture was supposed to be live.
+        if sample_tx
+            .send(AudioChunk::Samples(output_buffer.clone()))
+            .is_err()
+            && !stopping
+        {
+            log::error!("Failed to send samples");
+        }
 
-        device.build_input_stream(
-            &config.clone().into(),
-            stream_cb,
-            |err| log::error!("Stream error: {}", err),
-            None,
-        )
+        if stopping {
+            let _ = sample_tx.send(AudioChunk::EndOfStream);
+            *eos_sent = true;
+        } else {
+            *eos_sent = false;
+        }
     }
 
     fn get_preferred_config(

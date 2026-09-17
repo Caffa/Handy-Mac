@@ -690,6 +690,8 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::set_clamshell_microphone,
             commands::audio::get_clamshell_microphone,
             commands::audio::is_recording,
+            commands::audio::get_microphone_channels,
+            commands::audio::set_selected_channel,
             commands::audio::is_usb_watchdog_available,
             commands::audio::list_usb_devices,
             commands::audio::change_usb_watchdog_enabled_setting,
