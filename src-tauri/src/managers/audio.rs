@@ -165,6 +165,7 @@ fn create_audio_recorder(
     vad_hangover_frames: usize,
     last_voice_activity_ms: Arc<AtomicU64>,
     close_generation: Arc<AtomicU64>,
+    selected_channel: Option<u16>,
 ) -> Result<AudioRecorder, anyhow::Error> {
     let silero = SileroVad::new(vad_path, vad_threshold)
         .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
@@ -207,6 +208,7 @@ fn create_audio_recorder(
         .with_vad(Box::new(smoothed_vad))
         .with_voice_activity_stamp(last_voice_activity_ms)
         .with_close_generation(close_generation)
+        .with_selected_channel(selected_channel)
         .with_level_callback({
             let app_handle = app_handle.clone();
             move |levels| {
@@ -941,10 +943,7 @@ impl AudioRecordingManager {
         *self.cached_device.lock() = None;
     }
 
-    fn resolve_microphone_device(
-        &self,
-        settings: &AppSettings,
-    ) -> MicrophoneResolution {
+    fn resolve_microphone_device(&self, settings: &AppSettings) -> MicrophoneResolution {
         let desired = self.desired_microphone(settings);
         let (device_name, selected_microphone) = match desired {
             DesiredMicrophone::Default => {
@@ -1028,10 +1027,7 @@ impl AudioRecordingManager {
         );
     }
 
-    fn get_effective_microphone_device(
-        &self,
-        settings: &AppSettings,
-    ) -> Option<cpal::Device> {
+    fn get_effective_microphone_device(&self, settings: &AppSettings) -> Option<cpal::Device> {
         self.resolve_microphone_device(settings).device
     }
 
@@ -1116,6 +1112,7 @@ impl AudioRecordingManager {
                     tauri::path::BaseDirectory::Resource,
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
+            let selected_channel = get_settings(&self.app_handle).selected_channel;
             *recorder_opt = Some(create_audio_recorder(
                 vad_path.to_str().expect("VAD path should be valid UTF-8"),
                 &self.app_handle,
@@ -1123,6 +1120,7 @@ impl AudioRecordingManager {
                 vad_hangover_frames,
                 Arc::clone(&self.last_voice_activity_ms),
                 Arc::clone(&self.close_generation),
+                selected_channel,
             )?);
         }
         Ok(())
@@ -1261,6 +1259,7 @@ impl AudioRecordingManager {
             )
             .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
 
+        let selected_channel = get_settings(&self.app_handle).selected_channel;
         let new_recorder = create_audio_recorder(
             vad_path
                 .to_str()
@@ -1270,6 +1269,7 @@ impl AudioRecordingManager {
             vad_hangover_frames,
             Arc::clone(&self.last_voice_activity_ms),
             Arc::clone(&self.close_generation),
+            selected_channel,
         )?;
 
         *recorder_opt = Some(new_recorder);
@@ -1628,12 +1628,10 @@ impl AudioRecordingManager {
     }
 
     pub fn update_selected_device(&self) -> Result<(), anyhow::Error> {
-        // Device settings changed; drop the cached resolution so the next
-        // open re-enumerates. (The name-keyed cache would miss anyway; this
-        // just avoids holding a stale cpal::Device alive.)
+        // Device settings changed; re-enumerate the device and restart capture.
         self.invalidate_device_cache();
-        // If currently open, restart the microphone stream to use the new device
-        if self.is_open.load(Ordering::Acquire) {
+        let was_open = self.is_open.load(Ordering::Acquire);
+        if was_open {
             self.close_generation.fetch_add(1, Ordering::SeqCst);
             self.stop_microphone_stream();
             // Re-evaluate BT keep-alive after device change
@@ -1644,6 +1642,41 @@ impl AudioRecordingManager {
                 self.start_microphone_stream()?;
             }
         }
+        Ok(())
+    }
+
+    pub fn update_selected_channel(
+        &self,
+        selected_channel: Option<u16>,
+    ) -> Result<(), anyhow::Error> {
+        // Serialize against recording start/stop. Restarting an active capture
+        // would discard its samples and leave the manager's recording state out
+        // of sync with the new recorder.
+        let state = self.state.lock();
+        if !matches!(*state, RecordingState::Idle) {
+            return Err(anyhow::anyhow!(
+                "Cannot change the input channel while recording"
+            ));
+        }
+
+        let previous_channel = get_settings(&self.app_handle).selected_channel;
+        let was_open = self.is_open.load(Ordering::Acquire);
+        if was_open {
+            self.close_generation.fetch_add(1, Ordering::SeqCst);
+            self.stop_microphone_stream();
+        }
+        if let Some(recorder) = self.recorder.lock().as_mut() {
+            recorder.set_selected_channel(selected_channel);
+        }
+        if was_open {
+            if let Err(error) = self.start_microphone_stream() {
+                if let Some(recorder) = self.recorder.lock().as_mut() {
+                    recorder.set_selected_channel(previous_channel);
+                }
+                return Err(error);
+            }
+        }
+        drop(state);
         Ok(())
     }
 

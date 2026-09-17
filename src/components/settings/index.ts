@@ -11,6 +11,7 @@ export { UsageSettings } from "./usage/UsageSettings";
 
 // Individual setting components
 export { MicrophoneSelector } from "./MicrophoneSelector";
+export { ChannelSelector } from "./ChannelSelector";
 export { ClamshellMicrophoneSelector } from "./ClamshellMicrophoneSelector";
 export { OutputDeviceSelector } from "./OutputDeviceSelector";
 export { AlwaysOnMicrophone } from "./AlwaysOnMicrophone";

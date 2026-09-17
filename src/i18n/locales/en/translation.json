@@ -272,6 +272,12 @@
         "placeholder": "Select microphone...",
         "loading": "Loading..."
       },
+      "channel": {
+        "title": "Input Channel",
+        "description": "For multi-channel microphones, select a single channel or average all channels",
+        "average": "Average all channels",
+        "channel": "Channel {{n}}"
+      },
       "audioFeedback": {
         "label": "Audio Feedback",
         "description": "Play sound when recording starts and stops"

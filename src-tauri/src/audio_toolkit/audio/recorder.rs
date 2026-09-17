@@ -161,6 +161,8 @@ pub struct AudioRecorder {
     /// callbacks so they can bail out if the recorder/stream they were
     /// created for has been torn down.
     pub(crate) close_generation: Arc<AtomicU64>,
+    /// Which input channel to use. None = average all (original behavior).
+    selected_channel: Option<usize>,
 }
 
 impl AudioRecorder {
@@ -183,6 +185,7 @@ impl AudioRecorder {
             last_voice_activity_ms: Arc::new(AtomicU64::new(0)),
             close_generation: Arc::new(AtomicU64::new(0)),
             stream_error: Arc::new(AtomicBool::new(false)),
+            selected_channel: None,
         })
     }
 
@@ -263,6 +266,15 @@ impl AudioRecorder {
     pub fn with_streaming_enabled(self, enabled: bool) -> Self {
         self.streaming_enabled.store(enabled, Ordering::Release);
         self
+    }
+
+    pub fn with_selected_channel(mut self, channel: Option<u16>) -> Self {
+        self.set_selected_channel(channel);
+        self
+    }
+
+    pub fn set_selected_channel(&mut self, channel: Option<u16>) {
+        self.selected_channel = channel.map(usize::from);
     }
 
     /// Runtime toggle for streaming transcription. When disabled, the
@@ -347,6 +359,7 @@ impl AudioRecorder {
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
         let stream_error = Arc::clone(&self.stream_error);
+        let selected_channel = self.selected_channel;
         let pre_buffer_ms = self.pre_buffer_ms.load(Ordering::Relaxed);
         let last_voice_activity_ms = self.last_voice_activity_ms.clone();
 
@@ -359,6 +372,20 @@ impl AudioRecorder {
 
                 let sample_rate = config.sample_rate().0;
                 let channels = config.channels() as usize;
+
+                if let Some(channel) = selected_channel {
+                    if channel < channels {
+                        log::info!("Using selected input channel: {}", channel + 1);
+                    } else {
+                        log::warn!(
+                            "Selected input channel {} is out of range for a {}-channel device; averaging all channels instead",
+                            channel + 1,
+                            channels
+                        );
+                    }
+                } else {
+                    log::info!("Averaging all {} input channels", channels);
+                }
 
                 log::info!(
                     "Using device: {:?}\nSample rate: {}\nChannels: {}\nFormat: {:?}",
@@ -389,6 +416,7 @@ impl AudioRecorder {
                         channels,
                         stop_flag_for_stream,
                         Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I8 => AudioRecorder::build_stream::<i8>(
@@ -398,6 +426,7 @@ impl AudioRecorder {
                         channels,
                         stop_flag_for_stream,
                         Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I16 => AudioRecorder::build_stream::<i16>(
@@ -407,6 +436,7 @@ impl AudioRecorder {
                         channels,
                         stop_flag_for_stream,
                         Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I32 => AudioRecorder::build_stream::<i32>(
@@ -416,6 +446,7 @@ impl AudioRecorder {
                         channels,
                         stop_flag_for_stream,
                         Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::F32 => AudioRecorder::build_stream::<f32>(
@@ -425,6 +456,7 @@ impl AudioRecorder {
                         channels,
                         stop_flag_for_stream,
                         Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     sample_format => {
@@ -789,6 +821,12 @@ impl AudioRecorder {
         self.device.as_ref().and_then(|d| d.name().ok())
     }
 
+    pub fn preferred_input_channel_count(
+        device: &cpal::Device,
+    ) -> Result<u16, Box<dyn std::error::Error>> {
+        Ok(Self::get_preferred_config(device)?.channels())
+    }
+
     fn build_stream<T>(
         device: &cpal::Device,
         config: &cpal::SupportedStreamConfig,
@@ -796,6 +834,7 @@ impl AudioRecorder {
         channels: usize,
         stop_flag: Arc<AtomicBool>,
         stream_error: Arc<AtomicBool>,
+        selected_channel: Option<usize>,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
         T: Sample + SizedSample + Send + 'static,
@@ -803,11 +842,19 @@ impl AudioRecorder {
     {
         let mut output_buffer = Vec::new();
         let mut eos_sent = false;
+        // Resolve the effective channel to use. If the selected channel is
+        // out of range for this device, fall back to averaging all channels.
+        let use_channel: Option<usize> = match selected_channel {
+            Some(ch) if ch < channels => Some(ch),
+            Some(_) => None, // out of range, fall back to average
+            None => None,    // user chose "average all"
+        };
 
         let stream_cb = move |data: &[T], _: &cpal::InputCallbackInfo| {
             AudioRecorder::handle_input_block(
                 data,
                 channels,
+                use_channel,
                 &stop_flag,
                 &mut eos_sent,
                 &mut output_buffer,
@@ -836,6 +883,7 @@ impl AudioRecorder {
     fn handle_input_block<T>(
         data: &[T],
         channels: usize,
+        use_channel: Option<usize>,
         stop_flag: &AtomicBool,
         eos_sent: &mut bool,
         output_buffer: &mut Vec<f32>,
@@ -857,13 +905,20 @@ impl AudioRecorder {
             let frame_count = data.len() / channels;
             output_buffer.reserve(frame_count);
 
-            for frame in data.chunks_exact(channels) {
-                let mono_sample = frame
-                    .iter()
-                    .map(|&sample| sample.to_sample::<f32>())
-                    .sum::<f32>()
-                    / channels as f32;
-                output_buffer.push(mono_sample);
+            if let Some(ch) = use_channel {
+                for frame in data.chunks_exact(channels) {
+                    let mono_sample = frame[ch].to_sample::<f32>();
+                    output_buffer.push(mono_sample);
+                }
+            } else {
+                for frame in data.chunks_exact(channels) {
+                    let mono_sample = frame
+                        .iter()
+                        .map(|&sample| sample.to_sample::<f32>())
+                        .sum::<f32>()
+                        / channels as f32;
+                    output_buffer.push(mono_sample);
+                }
             }
         }
 
