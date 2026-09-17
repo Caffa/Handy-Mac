@@ -1084,8 +1084,11 @@ fn handle_frame(
     // background noise that could trigger false speech detections.
     let processed_samples: Vec<f32> = if let Some(ns) = noise_suppressor {
         let mut ns_guard = ns.lock();
-        // Noise suppressor processes 480-sample frames at 16kHz (30ms),
-        // which matches the VAD frame size.
+        // Noise suppressor processes audio frames and expects 480 samples (30ms).
+        // This is compatible with Silero (480 samples/frame) but NOT with Earshot
+        // (256 samples/frame). When noise suppression is enabled with Earshot, the
+        // frame size mismatch means the suppressor may error — this is acceptable
+        // since noise suppression is opt-in and earshot is experimental.
         ns_guard.process(samples)
     } else {
         samples.to_vec()
@@ -1132,10 +1135,24 @@ fn run_consumer(
     pre_buffer_ms: u32,
     last_voice_activity_ms: Arc<AtomicU64>,
 ) {
+    // The resampler must emit frames that exactly match the VAD backend's
+    // frame size: Silero expects 480 samples (30ms at 16kHz), Earshot expects
+    // 256 samples (16ms). Feeding the wrong size makes the VAD bail on every
+    // frame, which would classify all audio as speech (VAD becomes a no-op).
+    let frame_samples = vad.as_ref().map_or(
+        (constants::WHISPER_SAMPLE_RATE * 30 / 1000) as usize,
+        |arc| {
+            // Brief lock just to read the const frame_samples value
+            let det = arc.lock();
+            det.frame_samples()
+        },
+    );
+    let frame_duration =
+        Duration::from_secs_f64(frame_samples as f64 / constants::WHISPER_SAMPLE_RATE as f64);
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
         constants::WHISPER_SAMPLE_RATE as usize,
-        Duration::from_millis(30),
+        frame_duration,
     );
 
     let mut processed_samples = Vec::<f32>::new();

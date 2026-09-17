@@ -1,8 +1,7 @@
 use crate::audio_toolkit::{
     is_bluetooth_audio_active, list_input_devices, list_output_devices,
     vad::{
-        frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_OFFLINE_HANGOVER_MS, VAD_ONSET_MS,
-        VAD_PREFILL_MS,
+        frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_ONSET_MS, VAD_PREFILL_MS,
     },
     AudioRecorder, SileroVad, VoiceActivityDetector,
 };
@@ -202,7 +201,12 @@ fn create_audio_recorder(
     // backend does not shorten pre-roll, onset, or post-speech audio.
     let frame_samples = detector.frame_samples();
     let prefill_frames = frames_for_duration_ms(VAD_PREFILL_MS, frame_samples);
-    let offline_hangover_frames = frames_for_duration_ms(VAD_OFFLINE_HANGOVER_MS, frame_samples);
+    // Preserve the fork's user-facing VAD sensitivity setting, which is
+    // expressed in Silero 30ms frame units (15-35). Convert to milliseconds
+    // first so the hangover scales correctly for either backend (e.g. 35 frames
+    // -> 1050ms -> 35 Silero frames or 66 Earshot frames).
+    let hangover_ms = vad_hangover_frames as u64 * 30;
+    let offline_hangover_frames = frames_for_duration_ms(hangover_ms, frame_samples);
     let onset_frames = frames_for_duration_ms(VAD_ONSET_MS, frame_samples);
     let smoothed_vad = SmoothedVad::new(
         detector,
