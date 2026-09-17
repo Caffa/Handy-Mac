@@ -12,7 +12,7 @@ use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
 use crate::utils;
 use crate::LiveCaptionsTranscriptionManager;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -1018,6 +1018,37 @@ impl AudioRecordingManager {
     }
 
     pub fn start_microphone_stream(&self) -> Result<(), anyhow::Error> {
+        // `is_open` only records that we opened a stream at some point, not
+        // that one is still running. If capture has since failed (mic unplugged
+        // mid-session, USB dropout), rebuild it before the next recording
+        // instead of handing the caller a stalled recorder.
+        if self.is_open.load(Ordering::Acquire) {
+            let needs_reopen = self
+                .recorder
+                .lock()
+                .as_ref()
+                .is_some_and(|rec| rec.needs_reopen());
+
+            if !needs_reopen {
+                trace!("Microphone stream already active");
+                return Ok(());
+            }
+
+            warn!("Microphone stream is no longer running (device disconnected?); reopening");
+
+            // Torn down inline rather than via stop_microphone_stream(), which
+            // takes the recorder + state locks we don't need here.
+            if self.did_mute.swap(false, Ordering::AcqRel) {
+                set_mute(false);
+            }
+            if let Some(rec) = self.recorder.lock().as_mut() {
+                let _ = rec.close();
+            }
+            self.is_recording.store(false, Ordering::Release);
+            self.is_open.store(false, Ordering::Release);
+            // Fall through and open a fresh stream.
+        }
+
         // Try the normal open first. If it fails and USB watchdog is enabled,
         // attempt a power cycle + retry.
         //
@@ -1360,6 +1391,12 @@ impl AudioRecordingManager {
         let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
         let is_always_on = matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn);
 
+        // Opens the stream in on-demand mode. In always-on mode the stream
+        // is normally already open and this is a cheap aliveness check —
+        // but if the capture worker died (device disconnect), it rebuilds
+        // the stream instead of leaving every subsequent start wedged on
+        // "Recorder not available".
+        //
         // In on-demand mode (or when BT keep-alive is active), ensure the stream is open.
         // In always-on mode, check if the stream is alive and restart if needed.
         // KEY FIX: Also handle the case where the stream is NOT open at all
@@ -1373,6 +1410,14 @@ impl AudioRecordingManager {
             if !is_open {
                 // Stream is not open at all — need to restart it
                 warn!("Always-on microphone stream is not open — restarting");
+                true
+            } else if self
+                .recorder
+                .lock()
+                .as_ref()
+                .is_some_and(|rec| rec.needs_reopen())
+            {
+                warn!("Always-on microphone stream capture worker died — rebuilding");
                 true
             } else {
                 // Check if device has changed (USB cycling may have caused fallback)

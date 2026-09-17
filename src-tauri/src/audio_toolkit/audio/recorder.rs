@@ -145,6 +145,8 @@ pub struct AudioRecorder {
     /// Stored as AtomicU32 to avoid float atomics. Multiply by 1_000_000
     /// to preserve precision when storing, divide when retrieving.
     max_level: Arc<AtomicU32>,
+    /// Set by cpal when the active input stream can no longer capture.
+    stream_error: Arc<AtomicBool>,
     /// Pre-recording buffer in milliseconds. When >0, stores the last N ms
     /// of audio continuously and prepends it to recordings when they start.
     /// Only effective in always-on microphone mode.
@@ -180,6 +182,7 @@ impl AudioRecorder {
             pre_buffer_ms: Arc::new(AtomicU32::new(0)),
             last_voice_activity_ms: Arc::new(AtomicU64::new(0)),
             close_generation: Arc::new(AtomicU64::new(0)),
+            stream_error: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -294,8 +297,18 @@ impl AudioRecorder {
 
     pub fn open(&mut self, device: Option<Device>) -> Result<(), Box<dyn std::error::Error>> {
         if self.worker_handle.is_some() {
-            return Ok(()); // already open
+            if !self.needs_reopen() {
+                return Ok(()); // already open
+            }
+            // The worker exited on its own (see `needs_reopen`). Reap it so we
+            // rebuild the stream below instead of handing the caller back a
+            // recorder whose channels are already closed.
+            log::warn!("Capture stream failed; rebuilding microphone stream");
+            let _ = self.close();
         }
+
+        // Reset stream error flag at the start of every open attempt.
+        self.stream_error.store(false, Ordering::Relaxed);
 
         // Reset stream liveness timestamp
         self.last_chunk_ms.store(0, Ordering::Relaxed);
@@ -333,6 +346,7 @@ impl AudioRecorder {
         let stream_router = self.stream_router.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
+        let stream_error = Arc::clone(&self.stream_error);
         let pre_buffer_ms = self.pre_buffer_ms.load(Ordering::Relaxed);
         let last_voice_activity_ms = self.last_voice_activity_ms.clone();
 
@@ -374,6 +388,7 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I8 => AudioRecorder::build_stream::<i8>(
@@ -382,6 +397,7 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I16 => AudioRecorder::build_stream::<i16>(
@@ -390,6 +406,7 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I32 => AudioRecorder::build_stream::<i32>(
@@ -398,6 +415,7 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::F32 => AudioRecorder::build_stream::<f32>(
@@ -406,6 +424,7 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     sample_format => {
@@ -441,6 +460,12 @@ impl AudioRecorder {
                         pre_buffer_ms,
                         last_voice_activity_ms,
                     );
+
+                    // A failed open may mean the cached config went stale
+                    // (device re-plugged, rate/format changed in the OS).
+                    // Drop it so the next attempt re-queries the device.
+                    // (No config cache in the diverged recorder, but keep hook
+                    //  here for symmetry with upstream.)
 
                     // Deterministic teardown barrier: wait for the cpal callback
                     // to actually stop producing data. The callback sets stop_flag
@@ -709,6 +734,18 @@ impl AudioRecorder {
         self.max_level.store(0, Ordering::Relaxed);
     }
 
+    /// True when the active capture stream must be rebuilt.
+    ///
+    /// cpal may report a device disconnect asynchronously without closing its
+    /// callback channel, so also honor the error callback's explicit flag.
+    pub fn needs_reopen(&self) -> bool {
+        self.stream_error.load(Ordering::Relaxed)
+            || self
+                .worker_handle
+                .as_ref()
+                .is_some_and(|handle| handle.is_finished())
+    }
+
     /// Returns true if the microphone stream has received audio data within
     /// the last `timeout_ms` milliseconds. Returns false if the stream has
     /// never received data or if data stopped flowing.
@@ -758,6 +795,7 @@ impl AudioRecorder {
         sample_tx: mpsc::Sender<AudioChunk>,
         channels: usize,
         stop_flag: Arc<AtomicBool>,
+        stream_error: Arc<AtomicBool>,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
         T: Sample + SizedSample + Send + 'static,
@@ -780,7 +818,10 @@ impl AudioRecorder {
         device.build_input_stream(
             &config.clone().into(),
             stream_cb,
-            |err| log::error!("Stream error: {}", err),
+            move |err| {
+                log::error!("Stream error: {}", err);
+                stream_error.store(true, Ordering::Relaxed);
+            },
             None,
         )
     }
