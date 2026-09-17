@@ -10,6 +10,12 @@ pub struct FrameResampler {
     in_buf: Vec<f32>,
     frame_samples: usize,
     pending: Vec<f32>,
+    in_hz: usize,
+    out_hz: usize,
+    /// Samples in/out of the inner resampler; `finish()` uses the pair to
+    /// know how much real audio (~10-30ms) its delay line still holds.
+    in_count: usize,
+    out_count: usize,
 }
 
 impl FrameResampler {
@@ -31,6 +37,10 @@ impl FrameResampler {
             in_buf: Vec::with_capacity(chunk_in),
             frame_samples,
             pending: Vec::with_capacity(frame_samples),
+            in_hz,
+            out_hz,
+            in_count: 0,
+            out_count: 0,
         }
     }
 
@@ -39,6 +49,7 @@ impl FrameResampler {
             self.emit_frames(src, &mut emit);
             return;
         }
+        self.in_count += src.len();
 
         while !src.is_empty() {
             let space = self.chunk_in - self.in_buf.len();
@@ -56,6 +67,7 @@ impl FrameResampler {
                 {
                     // let duration = start.elapsed();
                     // log::debug!("Resampler took: {:?}", duration);
+                    self.out_count += out[0].len();
                     self.emit_frames(&out[0], &mut emit);
                 }
                 self.in_buf.clear();
@@ -64,13 +76,46 @@ impl FrameResampler {
     }
 
     pub fn finish(&mut self, mut emit: impl FnMut(&[f32])) {
-        // Process any remaining input samples
-        if let Some(ref mut resampler) = self.resampler {
+        if self.resampler.is_some() {
+            // Process any remaining input samples (padded internally).
             if !self.in_buf.is_empty() {
-                // Pad with zeros to reach chunk size
-                self.in_buf.resize(self.chunk_in, 0.0);
-                if let Ok(out) = resampler.process(&[&self.in_buf[..]], None) {
+                let result = self
+                    .resampler
+                    .as_mut()
+                    .unwrap()
+                    .process_partial(Some(&[&self.in_buf[..]]), None);
+                if let Ok(out) = result {
+                    self.out_count += out[0].len();
                     self.emit_frames(&out[0], &mut emit);
+                }
+                // Drop the consumed input: a full in_buf would satisfy the
+                // next push()'s chunk check immediately, re-processing this
+                // padded tail into the following recording.
+                self.in_buf.clear();
+            }
+
+            // Output lags input by output_delay() samples, so all real audio
+            // has emerged only once in*ratio + delay samples are out. Feed
+            // zero chunks until then, trimming the synthetic remainder.
+            if self.in_count > 0 {
+                let delay = self.resampler.as_ref().unwrap().output_delay();
+                let expected = self.in_count * self.out_hz / self.in_hz + delay;
+                let mut rounds = 0;
+                while self.out_count < expected && rounds < 8 {
+                    rounds += 1;
+                    let result = self
+                        .resampler
+                        .as_mut()
+                        .unwrap()
+                        .process_partial::<&[f32]>(None, None);
+                    match result {
+                        Ok(out) => {
+                            let take = (expected - self.out_count).min(out[0].len());
+                            self.out_count += take;
+                            self.emit_frames(&out[0][..take], &mut emit);
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
         }
@@ -90,6 +135,8 @@ impl FrameResampler {
     pub fn reset(&mut self) {
         self.in_buf.clear();
         self.pending.clear();
+        self.in_count = 0;
+        self.out_count = 0;
         if let Some(ref mut resampler) = self.resampler {
             resampler.reset();
         }

@@ -767,59 +767,14 @@ impl AudioRecorder {
         let mut eos_sent = false;
 
         let stream_cb = move |data: &[T], _: &cpal::InputCallbackInfo| {
-            if stop_flag.load(Ordering::Relaxed) {
-                if !eos_sent {
-                    // Process the final buffer BEFORE sending EndOfStream.
-                    // This ensures the last ~10-50ms of audio isn't lost when stopping.
-                    // We do NOT reset eos_sent here because we want to send the final
-                    // samples only once, then the sentinel.
-                    output_buffer.clear();
-                    if channels == 1 {
-                        output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
-                    } else {
-                        let frame_count = data.len() / channels;
-                        output_buffer.reserve(frame_count);
-                        for frame in data.chunks_exact(channels) {
-                            let mono_sample = frame
-                                .iter()
-                                .map(|&sample| sample.to_sample::<f32>())
-                                .sum::<f32>()
-                                / channels as f32;
-                            output_buffer.push(mono_sample);
-                        }
-                    }
-                    let _ = sample_tx.send(AudioChunk::Samples(output_buffer.clone()));
-                    let _ = sample_tx.send(AudioChunk::EndOfStream);
-                    eos_sent = true;
-                }
-                return;
-            }
-            eos_sent = false;
-
-            output_buffer.clear();
-
-            if channels == 1 {
-                output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
-            } else {
-                let frame_count = data.len() / channels;
-                output_buffer.reserve(frame_count);
-
-                for frame in data.chunks_exact(channels) {
-                    let mono_sample = frame
-                        .iter()
-                        .map(|&sample| sample.to_sample::<f32>())
-                        .sum::<f32>()
-                        / channels as f32;
-                    output_buffer.push(mono_sample);
-                }
-            }
-
-            if sample_tx
-                .send(AudioChunk::Samples(output_buffer.clone()))
-                .is_err()
-            {
-                log::error!("Failed to send samples");
-            }
+            AudioRecorder::handle_input_block(
+                data,
+                channels,
+                &stop_flag,
+                &mut eos_sent,
+                &mut output_buffer,
+                &sample_tx,
+            );
         };
 
         device.build_input_stream(
@@ -828,6 +783,66 @@ impl AudioRecorder {
             |err| log::error!("Stream error: {}", err),
             None,
         )
+    }
+
+    /// Body of the cpal input callback, extracted so the diverged streaming
+    /// recorder can share the tail-audio logic without duplicating it.
+    ///
+    /// The block that first observes the stop flag was captured before the stop,
+    /// so it is still forwarded — dropping it loses up to a callback period of
+    /// tail audio (worst on Bluetooth) — followed by the end-of-stream sentinel.
+    /// Later blocks are dropped until the flag clears.
+    fn handle_input_block<T>(
+        data: &[T],
+        channels: usize,
+        stop_flag: &AtomicBool,
+        eos_sent: &mut bool,
+        output_buffer: &mut Vec<f32>,
+        sample_tx: &mpsc::Sender<AudioChunk>,
+    ) where
+        T: Sample,
+        f32: cpal::FromSample<T>,
+    {
+        let stopping = stop_flag.load(Ordering::Relaxed);
+        if stopping && *eos_sent {
+            return;
+        }
+
+        output_buffer.clear();
+
+        if channels == 1 {
+            output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
+        } else {
+            let frame_count = data.len() / channels;
+            output_buffer.reserve(frame_count);
+
+            for frame in data.chunks_exact(channels) {
+                let mono_sample = frame
+                    .iter()
+                    .map(|&sample| sample.to_sample::<f32>())
+                    .sum::<f32>()
+                    / channels as f32;
+                output_buffer.push(mono_sample);
+            }
+        }
+
+        // A failed send means the consumer thread is gone. During shutdown that is
+        // expected (the consumer exits before the stream is dropped), so only
+        // report it when capture was supposed to be live.
+        if sample_tx
+            .send(AudioChunk::Samples(output_buffer.clone()))
+            .is_err()
+            && !stopping
+        {
+            log::error!("Failed to send samples");
+        }
+
+        if stopping {
+            let _ = sample_tx.send(AudioChunk::EndOfStream);
+            *eos_sent = true;
+        } else {
+            *eos_sent = false;
+        }
     }
 
     fn get_preferred_config(
