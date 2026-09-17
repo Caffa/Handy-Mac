@@ -471,6 +471,16 @@ impl Default for OrtAcceleratorSetting {
     }
 }
 
+// ── VadBackend ──
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VadBackend {
+    #[default]
+    Silero,
+    Earshot,
+}
+
 // ── CustomWord ──
 
 /// A custom word with optional pronunciation variants for advanced fuzzy matching.
@@ -695,6 +705,9 @@ pub struct AppSettings {
     pub noise_suppression_enabled: bool,
     #[serde(default)]
     pub noise_suppression_level: NoiseSuppressionLevel,
+    /// Experimental detector implementation. Silero remains the stable default.
+    #[serde(default)]
+    pub vad_backend: VadBackend,
 }
 
 impl Default for AppSettings {

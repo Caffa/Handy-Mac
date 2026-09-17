@@ -161,5 +161,6 @@ pub fn get_default_settings() -> AppSettings {
         repetition_suppression_level: 0,
         noise_suppression_enabled: false,
         noise_suppression_level: NoiseSuppressionLevel::default(),
+        vad_backend: VadBackend::default(),
     }
 }
