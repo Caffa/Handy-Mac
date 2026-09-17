@@ -1,12 +1,16 @@
 use crate::audio_toolkit::{
-    is_bluetooth_audio_active, list_input_devices, list_output_devices, vad::SmoothedVad,
-    AudioRecorder, SileroVad,
+    is_bluetooth_audio_active, list_input_devices, list_output_devices,
+    vad::{
+        frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_OFFLINE_HANGOVER_MS, VAD_ONSET_MS,
+        VAD_PREFILL_MS,
+    },
+    AudioRecorder, SileroVad, VoiceActivityDetector,
 };
 use crate::errors::AppError;
 use crate::helpers::clamshell;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::portable;
-use crate::settings::{get_settings, write_settings, AppSettings};
+use crate::settings::{get_settings, write_settings, AppSettings, VadBackend};
 use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
@@ -24,6 +28,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const EARSHOT_VAD_THRESHOLD: f32 = 0.5;
 
 fn set_mute(mute: bool) {
     // Expected behavior:
@@ -159,7 +164,7 @@ pub struct DeviceListChanged {
 /* ──────────────────────────────────────────────────────────────── */
 
 fn create_audio_recorder(
-    vad_path: &str,
+    backend: VadBackend,
     app_handle: &tauri::AppHandle,
     vad_threshold: f32,
     vad_hangover_frames: usize,
@@ -167,9 +172,49 @@ fn create_audio_recorder(
     close_generation: Arc<AtomicU64>,
     selected_channel: Option<u16>,
 ) -> Result<AudioRecorder, anyhow::Error> {
-    let silero = SileroVad::new(vad_path, vad_threshold)
-        .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
-    let smoothed_vad = SmoothedVad::new(Box::new(silero), 15, vad_hangover_frames, 2);
+    let detector: Box<dyn VoiceActivityDetector> = match backend {
+        VadBackend::Silero => {
+            let vad_path = app_handle
+                .path()
+                .resolve(
+                    "resources/models/silero_vad_v4.onnx",
+                    tauri::path::BaseDirectory::Resource,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {e}"))?;
+            Box::new(
+                SileroVad::new(
+                    vad_path
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("VAD path is not valid UTF-8: {vad_path:?}"))?,
+                    vad_threshold,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {e}"))?,
+            )
+        }
+        VadBackend::Earshot => Box::new(
+            EarshotVad::new(EARSHOT_VAD_THRESHOLD)
+                .map_err(|e| anyhow::anyhow!("Failed to create EarshotVad: {e}"))?,
+        ),
+    };
+
+    // Earshot uses 16 ms frames while Silero uses 30 ms. Convert the existing
+    // time-based capture profile to each detector's frame size so selecting a
+    // backend does not shorten pre-roll, onset, or post-speech audio.
+    let frame_samples = detector.frame_samples();
+    let prefill_frames = frames_for_duration_ms(VAD_PREFILL_MS, frame_samples);
+    let offline_hangover_frames = frames_for_duration_ms(VAD_OFFLINE_HANGOVER_MS, frame_samples);
+    let onset_frames = frames_for_duration_ms(VAD_ONSET_MS, frame_samples);
+    let smoothed_vad = SmoothedVad::new(
+        detector,
+        prefill_frames,
+        offline_hangover_frames,
+        onset_frames,
+    );
+
+    info!(
+        "Initialized {:?} VAD backend ({} samples/frame)",
+        backend, frame_samples
+    );
 
     // Check if live captions is enabled
     let settings = get_settings(app_handle);
@@ -1104,17 +1149,9 @@ impl AudioRecordingManager {
             let vad_threshold = settings.vad_sensitivity.threshold();
             let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
 
-            let vad_path = self
-                .app_handle
-                .path()
-                .resolve(
-                    "resources/models/silero_vad_v4.onnx",
-                    tauri::path::BaseDirectory::Resource,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
-            let selected_channel = get_settings(&self.app_handle).selected_channel;
+            let selected_channel = settings.selected_channel;
             *recorder_opt = Some(create_audio_recorder(
-                vad_path.to_str().expect("VAD path should be valid UTF-8"),
+                settings.vad_backend,
                 &self.app_handle,
                 vad_threshold,
                 vad_hangover_frames,
@@ -1249,21 +1286,9 @@ impl AudioRecordingManager {
         let vad_threshold = settings.vad_sensitivity.threshold();
         let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
 
-        // Create a fresh recorder with VAD and level callback
-        let vad_path = self
-            .app_handle
-            .path()
-            .resolve(
-                "resources/models/silero_vad_v4.onnx",
-                tauri::path::BaseDirectory::Resource,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
-
-        let selected_channel = get_settings(&self.app_handle).selected_channel;
+        let selected_channel = settings.selected_channel;
         let new_recorder = create_audio_recorder(
-            vad_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("VAD path is not valid UTF-8: {:?}", vad_path))?,
+            settings.vad_backend,
             &self.app_handle,
             vad_threshold,
             vad_hangover_frames,
@@ -1676,6 +1701,57 @@ impl AudioRecordingManager {
                 return Err(error);
             }
         }
+        drop(state);
+        Ok(())
+    }
+
+    pub fn update_vad_backend(&self, backend: VadBackend) -> Result<(), anyhow::Error> {
+        let state = self.state.lock();
+        if !matches!(*state, RecordingState::Idle) {
+            return Err(anyhow::anyhow!(
+                "Cannot change the VAD backend while recording"
+            ));
+        }
+
+        let settings = get_settings(&self.app_handle);
+        let vad_threshold = settings.vad_sensitivity.threshold();
+        let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
+        let selected_channel = settings.selected_channel;
+
+        let replacement = create_audio_recorder(
+            backend,
+            &self.app_handle,
+            vad_threshold,
+            vad_hangover_frames,
+            Arc::clone(&self.last_voice_activity_ms),
+            Arc::clone(&self.close_generation),
+            selected_channel,
+        )?;
+
+        let was_open = self.is_open.load(Ordering::Acquire);
+        self.close_generation.fetch_add(1, Ordering::SeqCst);
+        if was_open {
+            self.stop_microphone_stream();
+        }
+
+        let previous_recorder = self.recorder.lock().replace(replacement);
+        if was_open {
+            if let Err(change_error) = self.start_microphone_stream() {
+                if let Some(recorder) = self.recorder.lock().as_mut() {
+                    let _ = recorder.close();
+                }
+                *self.recorder.lock() = previous_recorder;
+                if let Err(rollback_error) = self.start_microphone_stream() {
+                    error!("Failed to restore mic stream after VAD backend change: {rollback_error}");
+                }
+                return Err(anyhow::anyhow!(
+                    "Failed to reopen mic with {:?} VAD: {change_error}",
+                    backend
+                ));
+            }
+        }
+
+        info!("VAD backend changed to {:?}", backend);
         drop(state);
         Ok(())
     }
