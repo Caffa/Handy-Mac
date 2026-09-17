@@ -167,6 +167,10 @@ pub struct QuantFile {
     pub filename: String,
     pub quant: String,
     pub size_bytes: u64,
+    /// Content sha256 — the trust anchor for downloads from any source (HF or
+    /// mirror). `None` only for catalogs predating the field.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// Pick the default quant among `files`: the one whose `quant` matches
