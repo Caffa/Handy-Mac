@@ -838,6 +838,16 @@ export const useSettingsStore = create<SettingsStore>()(
         }
       });
       set({ _unlistenShortcutConflictEvent: unlistenConflict });
+
+      const unlistenSettingsChanged = await listen<{
+        setting?: string;
+      }>("settings-changed", (event) => {
+        get().refreshSettings();
+        if (event.payload.setting === "selected_microphone") {
+          get().refreshAudioDevices();
+        }
+      });
+      set({ _unlistenSettingsEvent: unlistenSettingsChanged });
     },
   })),
 );
