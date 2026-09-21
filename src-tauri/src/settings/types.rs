@@ -698,6 +698,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub convert_us_to_british: bool,
     #[serde(default)]
+    pub convert_number_words_to_digits: bool,
+    #[serde(default)]
     pub spelling_dictionary: SpellingDictionary,
     #[serde(default)]
     pub repetition_suppression_level: u8,

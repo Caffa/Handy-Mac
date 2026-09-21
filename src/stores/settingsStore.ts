@@ -211,8 +211,7 @@ const settingUpdaters: {
     commands.changeUsbWatchdogCycleOnWakeSetting(value as boolean),
   vad_sensitivity: (value) =>
     commands.changeVadSensitivitySetting(value as string),
-  vad_backend: (value) =>
-    commands.changeVadBackendSetting(value as VadBackend),
+  vad_backend: (value) => commands.changeVadBackendSetting(value as VadBackend),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
   overlay_scale: (value) => commands.changeOverlayScaleSetting(value as number),

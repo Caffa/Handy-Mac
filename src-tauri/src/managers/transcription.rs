@@ -1515,6 +1515,7 @@ impl TranscriptionManager {
                 &settings.app_language,
                 &settings.custom_filler_words,
                 settings.convert_us_to_british,
+                settings.convert_number_words_to_digits,
                 settings.spelling_dictionary,
                 settings.repetition_suppression_level,
             )
@@ -2135,6 +2136,7 @@ impl TranscriptionManager {
                 &settings.app_language,
                 &settings.custom_filler_words,
                 settings.convert_us_to_british,
+                settings.convert_number_words_to_digits,
                 settings.spelling_dictionary,
                 settings.repetition_suppression_level,
             )

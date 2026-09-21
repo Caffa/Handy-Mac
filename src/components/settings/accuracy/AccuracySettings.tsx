@@ -11,6 +11,7 @@ import { WordReplacements } from "../WordReplacements";
 import { VadSensitivity } from "../VadSensitivity";
 import { LiveCaptions } from "../LiveCaptions";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
+import { ConvertNumberWordsToDigits } from "../ConvertNumberWordsToDigits";
 import { TranslateToEnglish } from "../TranslateToEnglish";
 import { NoiseSuppression } from "../NoiseSuppression";
 
@@ -45,6 +46,7 @@ export const AccuracySettings: React.FC = () => {
       <SettingsGroup title={t("settings.accuracy.groups.language")}>
         <TranslateToEnglish descriptionMode="tooltip" grouped />
         <ConvertUsToBritish descriptionMode="tooltip" grouped />
+        <ConvertNumberWordsToDigits descriptionMode="tooltip" grouped />
       </SettingsGroup>
     </div>
   );

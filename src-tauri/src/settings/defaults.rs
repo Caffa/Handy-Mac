@@ -157,6 +157,7 @@ pub fn get_default_settings() -> AppSettings {
         live_captions_model: String::new(),
         overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
+        convert_number_words_to_digits: false,
         spelling_dictionary: SpellingDictionary::default(),
         repetition_suppression_level: 0,
         noise_suppression_enabled: false,

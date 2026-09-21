@@ -40,3 +40,4 @@ export { RecordingRetentionPeriodSelector } from "./RecordingRetentionPeriod";
 export { AutostartToggle } from "./AutostartToggle";
 export { UpdateChecksToggle } from "./UpdateChecksToggle";
 export { ConvertUsToBritish } from "./ConvertUsToBritish";
+export { ConvertNumberWordsToDigits } from "./ConvertNumberWordsToDigits";

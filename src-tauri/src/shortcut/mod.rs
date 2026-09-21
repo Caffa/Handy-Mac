@@ -649,6 +649,18 @@ pub fn change_convert_us_to_british_setting(app: AppHandle, enabled: bool) -> Re
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_convert_number_words_to_digits_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.convert_number_words_to_digits = enabled;
+    settings::write_settings_safe(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_selected_language_setting(app: AppHandle, language: String) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.selected_language = language;
@@ -1503,10 +1515,7 @@ pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Re
 
 #[tauri::command]
 #[specta::specta]
-pub async fn change_vad_backend_setting(
-    app: AppHandle,
-    backend: VadBackend,
-) -> Result<(), String> {
+pub async fn change_vad_backend_setting(app: AppHandle, backend: VadBackend) -> Result<(), String> {
     if settings::get_settings(&app).vad_backend == backend {
         return Ok(());
     }

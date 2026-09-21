@@ -590,6 +590,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_autostart_setting,
             shortcut::change_translate_to_english_setting,
             shortcut::change_convert_us_to_british_setting,
+            shortcut::change_convert_number_words_to_digits_setting,
             shortcut::change_selected_language_setting,
             shortcut::change_overlay_position_setting,
             shortcut::change_overlay_screen_target_setting,

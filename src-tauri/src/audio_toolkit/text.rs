@@ -1061,6 +1061,347 @@ pub fn convert_us_to_british(text: &str) -> String {
     convert_us_to_british_with_dict(text, SpellingDictionary::Dwyl)
 }
 
+/// Converts spoken English number-word sequences into digit characters.
+///
+/// This is a deterministic, LLM-free transform. It only runs when the
+/// application language starts with "en". Lone number words (e.g. "one" in
+/// "I saw one bird") are intentionally left as words.
+///
+/// Supported forms include:
+/// * Single-digit sequences: "zero zero four" → "004"
+/// * Hyphenated compounds: "twenty-five" → "25"
+/// * Scales: "one hundred", "two thousand and twenty six" → "100", "2026"
+/// * Decimals: "three point five" → "3.5"
+///
+/// Punctuation attached to tokens is preserved on the converted result.
+///
+/// # Arguments
+/// * `text` - The input text to process
+/// * `app_language` - The application language code; only English variants convert
+///
+/// # Returns
+/// Text with number-word runs replaced by digit strings
+pub fn convert_number_words_to_digits(text: &str, app_language: &str) -> String {
+    convert_number_words_to_digits_impl(text, app_language)
+}
+
+fn convert_number_words_to_digits_impl(text: &str, app_language: &str) -> String {
+    // Gate on English language variants only.
+    let base_lang = app_language
+        .split(&['-', '_'][..])
+        .next()
+        .unwrap_or(app_language);
+    if base_lang != "en" {
+        return text.to_string();
+    }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return text.to_string();
+    }
+
+    // Tokenize each whitespace token into (prefix, core, suffix) and split
+    // hyphenated compounds into their constituent core words.
+    let mut tokens: Vec<Token> = Vec::with_capacity(words.len());
+    for word in &words {
+        let (prefix, suffix) = extract_punctuation(word);
+        let core_start = prefix.len();
+        let core_end = word.len() - suffix.len();
+        if core_start >= core_end {
+            // No alphanumeric core; treat as a non-number word.
+            tokens.push(Token {
+                original: word,
+                prefix,
+                suffix,
+                cores: vec![],
+            });
+            continue;
+        }
+        let core = &word[core_start..core_end];
+        // Hyphenated compounds split into independent lowercase cores for matching.
+        let cores: Vec<String> = core.to_lowercase().split('-').map(String::from).collect();
+        tokens.push(Token {
+            original: word,
+            prefix,
+            suffix,
+            cores,
+        });
+    }
+
+    // Identify maximal runs of number-word tokens. A token is part of a run if
+    // every core inside it is a number word (or "and"), and the run as a whole
+    // is not a single isolated digit word by itself.
+    let mut result: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        // Determine if this token is a candidate for a number run.
+        let token_is_all_number_or_and = token
+            .cores
+            .iter()
+            .all(|c| number_word_set_contains(c.as_str()));
+
+        if !token_is_all_number_or_and {
+            result.push(token.original.to_string());
+            i += 1;
+            continue;
+        }
+
+        // Try to extend a maximal run forward. All tokens in the run must be
+        // fully composed of number words (or "and"). Hyphenated compounds are
+        // allowed because all of their split cores are number words.
+        let mut run_end = i + 1;
+        while run_end < tokens.len() {
+            let next = &tokens[run_end];
+            let all_number_or_and = next
+                .cores
+                .iter()
+                .all(|c| number_word_set_contains(c.as_str()));
+            if all_number_or_and {
+                run_end += 1;
+            } else {
+                break;
+            }
+        }
+        let run = &tokens[i..run_end];
+
+        // Decide whether the run qualifies for conversion.
+        // A run converts when it is either:
+        //   - a single hyphenated compound token (e.g. "twenty-five"), or
+        //   - spans 2+ tokens (e.g. "zero zero four"), or
+        //   - contains a scale word or "point" (e.g. "one hundred", "three point five").
+        let should_convert = if run.len() == 1 {
+            let single = &run[0];
+            single.cores.len() > 1
+                || single
+                    .cores
+                    .iter()
+                    .any(|c| scale_or_point_word_set_contains(c.as_str()))
+        } else {
+            true
+        };
+
+        if should_convert {
+            // Flatten the run into a single word sequence (hyphenated cores are
+            // already split). We only keep real number-word cores, ignoring "and".
+            let flat_cores: Vec<&str> = run
+                .iter()
+                .flat_map(|t| t.cores.iter().map(String::as_str))
+                .filter(|c| *c != "and")
+                .collect();
+
+            // Preserve leading punctuation from the first token and trailing
+            // punctuation from the last token. Intermediate spaces collapse to a
+            // single space between tokens, as the original whitespace was already
+            // normalized by split_whitespace.
+            let converted = convert_flat_number_words(&flat_cores);
+            let first = &run[0];
+            let last = &run[run.len() - 1];
+            let replacement = format!("{}{}{}", first.prefix, converted, last.suffix);
+            result.push(replacement);
+            i = run_end;
+        } else {
+            // Single lone digit word stays as a word.
+            result.push(token.original.to_string());
+            i += 1;
+        }
+    }
+
+    result.join(" ")
+}
+
+/// Internal representation of a whitespace token split for number-word conversion.
+struct Token<'a> {
+    original: &'a str,
+    prefix: &'a str,
+    suffix: &'a str,
+    cores: Vec<String>,
+}
+
+/// The set of English words treated as number tokens for this conversion.
+const NUMBER_WORDS: &[&str] = &[
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+    "hundred",
+    "thousand",
+    "million",
+    "billion",
+    "and",
+    "point",
+];
+
+/// Subset of number words that force conversion even in a single-token run.
+const SCALE_OR_POINT_WORDS: &[&str] = &["hundred", "thousand", "million", "billion", "point"];
+
+fn number_word_set_contains(word: &str) -> bool {
+    NUMBER_WORDS.contains(&word)
+}
+
+fn scale_or_point_word_set_contains(word: &str) -> bool {
+    SCALE_OR_POINT_WORDS.contains(&word)
+}
+
+/// Converts a flat sequence of number-word cores into a digit string.
+///
+/// This handles two main forms:
+/// 1. Pure single-digit sequences (only zero-nine) → emit one digit per token,
+///    preserving leading zeros.
+/// 2. All other valid number-word sequences → parse into an integer/decimal string.
+fn convert_flat_number_words(cores: &[&str]) -> String {
+    if cores.is_empty() {
+        return String::new();
+    }
+
+    let all_single_digits = cores.iter().all(|c| SINGLE_DIGIT_WORDS.contains(c));
+    if all_single_digits {
+        return cores.iter().map(|c| word_to_digit(c)).collect::<String>();
+    }
+
+    // Check for a decimal point; if present, split and emit "int.frac".
+    if let Some(pos) = cores.iter().position(|c| *c == "point") {
+        let int_cores = &cores[..pos];
+        let frac_cores = &cores[pos + 1..];
+        let int_part = parse_number_word_sequence(int_cores);
+        let frac_part: String = frac_cores
+            .iter()
+            .map(|c| word_to_digit(c))
+            .collect::<String>();
+        // If the fractional part is empty, just emit the integer with a trailing dot.
+        if frac_part.is_empty() {
+            return format!("{}.", int_part);
+        }
+        return format!("{}.{}", int_part, frac_part);
+    }
+
+    parse_number_word_sequence(cores)
+}
+
+/// Single digit words that map 1-to-1 to digit characters.
+const SINGLE_DIGIT_WORDS: &[&str] = &[
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+];
+
+/// Maps a single digit word to its digit character.
+fn word_to_digit(word: &str) -> char {
+    match word {
+        "zero" => '0',
+        "one" => '1',
+        "two" => '2',
+        "three" => '3',
+        "four" => '4',
+        "five" => '5',
+        "six" => '6',
+        "seven" => '7',
+        "eight" => '8',
+        "nine" => '9',
+        _ => '0',
+    }
+}
+
+/// Parses a sequence of number-word cores into a conventional integer string.
+///
+/// The algorithm accumulates units into `current`, and when a scale word is
+/// encountered multiplies `current` by the scale and adds it to `total`. This
+/// correctly handles forms like "two thousand and twenty six" and "one hundred
+/// twenty three million".
+fn parse_number_word_sequence(cores: &[&str]) -> String {
+    let mut total: u64 = 0;
+    let mut current: u64 = 0;
+
+    for word in cores {
+        match *word {
+            "zero" => current += 0,
+            "one" => current += 1,
+            "two" => current += 2,
+            "three" => current += 3,
+            "four" => current += 4,
+            "five" => current += 5,
+            "six" => current += 6,
+            "seven" => current += 7,
+            "eight" => current += 8,
+            "nine" => current += 9,
+            "ten" => current += 10,
+            "eleven" => current += 11,
+            "twelve" => current += 12,
+            "thirteen" => current += 13,
+            "fourteen" => current += 14,
+            "fifteen" => current += 15,
+            "sixteen" => current += 16,
+            "seventeen" => current += 17,
+            "eighteen" => current += 18,
+            "nineteen" => current += 19,
+            "twenty" => current += 20,
+            "thirty" => current += 30,
+            "forty" => current += 40,
+            "fifty" => current += 50,
+            "sixty" => current += 60,
+            "seventy" => current += 70,
+            "eighty" => current += 80,
+            "ninety" => current += 90,
+            "hundred" => {
+                if current == 0 {
+                    current = 1;
+                }
+                current *= 100;
+            }
+            "thousand" => {
+                if current == 0 {
+                    current = 1;
+                }
+                current *= 1000;
+                total += current;
+                current = 0;
+            }
+            "million" => {
+                if current == 0 {
+                    current = 1;
+                }
+                current *= 1_000_000;
+                total += current;
+                current = 0;
+            }
+            "billion" => {
+                if current == 0 {
+                    current = 1;
+                }
+                current *= 1_000_000_000;
+                total += current;
+                current = 0;
+            }
+            _ => {}
+        }
+    }
+
+    total += current;
+    total.to_string()
+}
+
 /// Extracts leading punctuation, core word, and trailing punctuation from a word.
 #[allow(dead_code)]
 fn extract_word_parts(word: &str) -> (String, &str, String) {
@@ -1166,6 +1507,7 @@ fn replace_unk_with_accent_recovery(text: &str) -> String {
 /// * `app_language` - Language code for filler word selection (e.g., "en", "pt-BR")
 /// * `custom_filler_words` - Optional user-provided filler word list overriding language defaults
 /// * `convert_us_to_british` - Whether to apply US→British spelling conversion
+/// * `convert_number_words_to_digits` - Whether to convert spoken English number words to digits
 /// * `spelling_dictionary` - Which spelling dictionary to use for conversion
 /// * `repetition_suppression_level` - Repetition suppression level (0=off, 1=light, 2+=moderate)
 ///
@@ -1182,6 +1524,7 @@ pub fn process_transcription_text(
     app_language: &str,
     custom_filler_words: &Option<Vec<String>>,
     convert_us_to_british: bool,
+    convert_number_words_to_digits: bool,
     spelling_dictionary: SpellingDictionary,
     repetition_suppression_level: u8,
 ) -> String {
@@ -1228,6 +1571,13 @@ pub fn process_transcription_text(
     // Step 4: Repetition suppression.
     if repetition_suppression_level > 0 {
         result = suppress_repeated_words(&result, repetition_suppression_level);
+    }
+
+    // Step 5: Convert number words to digits (after repetition suppression so
+    // repeated digit words like "zero zero zero" are not collapsed before they
+    // can be converted).
+    if convert_number_words_to_digits {
+        result = convert_number_words_to_digits_impl(&result, app_language);
     }
 
     result
@@ -2704,6 +3054,145 @@ mod tests {
         }];
         let result = apply_advanced_custom_words(text, &words, 0.5);
         assert!(result.contains("ChatGPT"), "got: {}", result);
+    }
+
+    // === NUMBER WORDS TO DIGITS CONVERSION TESTS ===
+
+    #[test]
+    fn test_convert_number_words_zero_zero_four() {
+        assert_eq!(
+            convert_number_words_to_digits("zero zero four", "en"),
+            "004"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_zero_zero_four_capitalized() {
+        assert_eq!(
+            convert_number_words_to_digits("Zero Zero Four", "en"),
+            "004"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_twenty_five() {
+        assert_eq!(convert_number_words_to_digits("twenty-five", "en"), "25");
+    }
+
+    #[test]
+    fn test_convert_number_words_one_hundred() {
+        assert_eq!(convert_number_words_to_digits("one hundred", "en"), "100");
+    }
+
+    #[test]
+    fn test_convert_number_words_two_thousand_and_twenty_six() {
+        assert_eq!(
+            convert_number_words_to_digits("two thousand and twenty six", "en"),
+            "2026"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_three_point_five() {
+        assert_eq!(
+            convert_number_words_to_digits("three point five", "en"),
+            "3.5"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_lone_word_unchanged() {
+        assert_eq!(
+            convert_number_words_to_digits("I saw one bird", "en"),
+            "I saw one bird"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two apples", "en"),
+            "two apples"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_non_english_unchanged() {
+        // Spanish text with a number word should remain unchanged.
+        assert_eq!(
+            convert_number_words_to_digits("tengo cinco manzanas", "es"),
+            "tengo cinco manzanas"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_case_insensitive() {
+        assert_eq!(convert_number_words_to_digits("Twenty-Five", "en"), "25");
+        assert_eq!(convert_number_words_to_digits("ONE HUNDRED", "en"), "100");
+    }
+
+    #[test]
+    fn test_convert_number_words_punctuation() {
+        assert_eq!(
+            convert_number_words_to_digits("zero, zero, four", "en"),
+            "004"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("(zero zero four)", "en"),
+            "(004)"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_mixed_sentence() {
+        assert_eq!(
+            convert_number_words_to_digits(
+                "call zero zero four then twenty-five for room one hundred",
+                "en"
+            ),
+            "call 004 then 25 for room 100"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_large_numbers() {
+        assert_eq!(
+            convert_number_words_to_digits(
+                "one million two hundred thirty four thousand five hundred sixty seven",
+                "en"
+            ),
+            "1234567"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_decimal_sequence() {
+        assert_eq!(
+            convert_number_words_to_digits("one hundred twenty three point four five six", "en"),
+            "123.456"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_empty_input() {
+        assert_eq!(convert_number_words_to_digits("", "en"), "");
+    }
+
+    #[test]
+    fn test_convert_number_words_only_lone_digits_unchanged() {
+        // Each isolated single digit word stays as a word because we only
+        // convert runs that span multiple tokens, hyphenated compounds, or
+        // contain a scale/point word.
+        assert_eq!(
+            convert_number_words_to_digits("one plus one equals two", "en"),
+            "one plus one equals two"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_app_language_en_us() {
+        assert_eq!(convert_number_words_to_digits("twenty-five", "en-US"), "25");
+    }
+
+    #[test]
+    fn test_convert_number_words_zero_alone_unchanged() {
+        assert_eq!(convert_number_words_to_digits("zero", "en"), "zero");
     }
 
     // === US TO BRITISH ENGLISH CONVERSION TESTS ===
