@@ -400,13 +400,6 @@ impl ParakeetModel {
         // but prevents unbounded hallucination.
         const OUTPUT_LENGTH_MULTIPLIER: usize = 10;
         let output_length_limit = encodings_len.saturating_mul(OUTPUT_LENGTH_MULTIPLIER);
-        // Bigram repetition penalty: track consecutive bigram counts.
-        // If the same pair of tokens repeats ≥3 times, the decoder is likely
-        // stuck in a loop (e.g. "thank you thank you thank you"). Force blank
-        // for subsequent emissions until the loop breaks.
-        const BIGRAM_REPEAT_LIMIT: usize = 3;
-        let mut bigram_counts: std::collections::HashMap<(i32, i32), usize> = std::collections::HashMap::new();
-
         let mut prev_state = self.create_decoder_state()?;
         let mut tokens = Vec::new();
         let mut timestamps = Vec::new();
@@ -457,27 +450,6 @@ impl ParakeetModel {
             } else {
                 best_idx
             };
-
-            // Bigram repetition penalty: if the same bigram (pair of
-            // consecutive tokens) has already been seen ≥BIGRAM_REPEAT_LIMIT
-            // times, force the emitted token to blank. This breaks
-            // hallucination loops like "thank you thank you thank you".
-            if token != self.blank_idx && tokens.len() >= 2 {
-                let prev_token = tokens[tokens.len() - 1];
-                let bigram = (prev_token, token);
-                let count = bigram_counts.entry(bigram).or_insert(0);
-                *count += 1;
-                if *count >= BIGRAM_REPEAT_LIMIT {
-                    log::debug!(
-                        "Bigram repetition limit reached for ({}, {}): {} occurrences, forcing blank",
-                        prev_token, token, count
-                    );
-                    suppressed_token_count += 1;
-                    token = self.blank_idx;
-                    // Reset counts so the decoder can re-emit after a blank gap
-                    bigram_counts.clear();
-                }
-            }
 
             if token != self.blank_idx {
                 prev_state = new_state;

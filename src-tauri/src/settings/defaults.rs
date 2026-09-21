@@ -97,6 +97,7 @@ pub fn get_default_settings() -> AppSettings {
         selected_model: "".to_string(),
         always_on_microphone: false,
         selected_microphone: None,
+        selected_channel: None,
         clamshell_microphone: None,
         selected_output_device: None,
         translate_to_english: false,
@@ -156,9 +157,11 @@ pub fn get_default_settings() -> AppSettings {
         live_captions_model: String::new(),
         overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
+        convert_number_words_to_digits: false,
         spelling_dictionary: SpellingDictionary::default(),
         repetition_suppression_level: 0,
         noise_suppression_enabled: false,
         noise_suppression_level: NoiseSuppressionLevel::default(),
+        vad_backend: VadBackend::default(),
     }
 }

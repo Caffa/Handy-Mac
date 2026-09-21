@@ -662,6 +662,13 @@ impl CoordinatorCore {
                 StageAction::None
             }
             Command::SetProcessingWithBinding { binding_id } => {
+                if matches!(self.stage, Stage::Idle) {
+                    warn!(
+                        "CoordinatorCore: ignoring SetProcessingWithBinding {:?} — stage is Idle (stale router handoff)",
+                        binding_id
+                    );
+                    return StageAction::None;
+                }
                 info!(
                     "CoordinatorCore: set processing with binding_id={:?}, resetting timer",
                     binding_id
@@ -869,28 +876,13 @@ impl TranscriptionCoordinator {
                         Stage::Processing { since, .. } => {
                             let elapsed = since.elapsed();
                             if elapsed >= core.processing_timeout {
-                                // Already past the deadline — reset immediately.
-                                // Hide the overlay so the user doesn't see a stuck "Transcribing..." state.
-                                warn!(
-                                    "Processing stage exceeded {:?} timeout, auto-resetting to Idle",
-                                    core.processing_timeout
-                                );
-                                crate::utils::hide_recording_overlay(&app);
-                                crate::utils::change_tray_icon(
-                                    &app,
-                                    crate::utils::TrayIconState::Idle,
-                                );
-                                set_stage(
-                                    &mut core.stage,
-                                    Stage::Idle,
-                                    current_session,
-                                    &active_use_clone,
-                                    &current_state_clone,
-                                    &app,
-                                );
-                                return; // exit this iteration cleanly, outer loop will re-enter
+                                // Delegate to the single Command::ProcessingTimeout path so all
+                                // timeout cleanup (emit Idle, hide overlay, reset tray icon) runs
+                                // in one place and no queued commands are skipped.
+                                Some(Duration::ZERO)
+                            } else {
+                                Some(core.processing_timeout - elapsed)
                             }
-                            Some(core.processing_timeout - elapsed)
                         }
                         Stage::Recording {
                             since,

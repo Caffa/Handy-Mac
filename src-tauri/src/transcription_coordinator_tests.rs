@@ -613,19 +613,19 @@ fn test_cancel_signal_default() {
     assert!(!signal.consume_cancel());
 }
 
-// ── Test 20: SetProcessingWithBinding from Idle ──
-// SetProcessingWithBinding can be called from any state; it always
-// transitions to Processing (the router uses this after confirmation).
+// ── Test 20: SetProcessingWithBinding from Idle is a no-op ──
+// A stale router handoff that arrives after the coordinator has already
+// reset to Idle must NOT re-enter Processing and re-arm the 30s timer.
 
 #[test]
-fn test_set_processing_with_binding_from_idle() {
+fn test_set_processing_with_binding_from_idle_is_noop() {
     let mut h = TestHarness::new();
 
     h.process(Command::SetProcessingWithBinding {
         binding_id: Some("transcribe_with_router".into()),
     });
-    assert!(matches!(h.state(), AppState::Processing { .. }));
-    assert!(h.is_active());
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
 }
 
 // ── Test 20b: session id is preserved through Recording → Processing → Idle ──
@@ -1006,6 +1006,180 @@ fn test_extend_recording_ignored_when_not_recording() {
 
     h.process(Command::ExtendRecording { seconds: 300 });
     assert_eq!(h.core.hard_cap_extension(), Duration::ZERO);
+}
+
+// ── Test 31a: SetProcessingWithBinding from Processing still works ──
+// The legitimate router flow transitions from Recording → Processing, then
+// re-enters Processing with the router binding_id and a fresh timer.
+
+#[test]
+fn test_set_processing_with_binding_from_processing_resets_timer() {
+    let mut h = TestHarness::with_timeout(Duration::from_millis(100));
+
+    // Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Wait most of the original timeout
+    std::thread::sleep(Duration::from_millis(70));
+    assert!(h.core.recv_timeout().unwrap() <= Duration::from_millis(35));
+
+    // Router handoff: should re-enter Processing with a fresh timer
+    h.process(Command::SetProcessingWithBinding {
+        binding_id: Some("transcribe_with_router".into()),
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+    assert!(h.is_active());
+    let binding_id = match h.state() {
+        AppState::Processing { binding_id, .. } => binding_id,
+        other => panic!("Expected Processing state, got {:?}", other),
+    };
+    assert_eq!(binding_id.as_deref(), Some("transcribe_with_router"));
+
+    // Timer was reset: remaining timeout should be close to full 100ms again
+    let remaining = h.core.recv_timeout().unwrap();
+    assert!(
+        remaining > Duration::from_millis(70),
+        "SetProcessingWithBinding should reset the timer, got remaining {:?}",
+        remaining
+    );
+}
+
+// ── Test 31b: SetProcessingWithBinding after Processing timeout is no-op ──
+// If the 30s Processing timeout fires and resets to Idle before a stale
+// SetProcessingWithBinding command is processed, the stale command must not
+// revive Processing.
+
+#[test]
+fn test_set_processing_with_binding_after_processing_timeout_is_noop() {
+    let mut h = TestHarness::with_timeout(Duration::from_millis(100));
+
+    // Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Simulate the timeout firing through the single Path B
+    h.process(Command::ProcessingTimeout);
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+
+    // Stale router handoff arrives late
+    h.process(Command::SetProcessingWithBinding {
+        binding_id: Some("transcribe_with_router".into()),
+    });
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+// ── Test 31c: Processing timeout Path A delegates to Path B ──
+// When the pre-recv timeout calculation sees an expired Processing stage, it
+// must return Some(Duration::ZERO) so recv_timeout yields Command::ProcessingTimeout
+// and the single Path B path performs the reset.
+
+#[test]
+fn test_processing_timeout_path_a_delegates_to_path_b() {
+    let mut h = TestHarness::with_timeout(Duration::from_millis(1));
+
+    // Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Wait long enough for the timeout to be expired
+    std::thread::sleep(Duration::from_millis(5));
+
+    // Path A should report zero remaining time (delegates to Path B)
+    assert_eq!(
+        h.core.recv_timeout(),
+        Some(Duration::ZERO),
+        "Expired Processing stage must report Duration::ZERO so Path B handles it"
+    );
+
+    // Path B resets to Idle and returns the side-effect action
+    let action = h.core.process_command(
+        Command::ProcessingTimeout,
+        &h.active_use,
+        &h.current_state,
+        false,
+        &h.app,
+    );
+    assert!(
+        matches!(action, StageAction::ProcessingTimeoutExpired),
+        "ProcessingTimeout must return ProcessingTimeoutExpired; got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+// ── Test 31d: Processing timeout drains queued stale SetProcessingWithBinding ──
+// After the Processing timeout resets to Idle, a queued SetProcessingWithBinding
+// is processed as a no-op and the stage stays Idle.
+
+#[test]
+fn test_processing_timeout_drains_queued_set_processing_with_binding() {
+    let mut h = TestHarness::with_timeout(Duration::from_millis(1));
+
+    // Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Wait for timeout to expire
+    std::thread::sleep(Duration::from_millis(5));
+
+    // Timeout fires → Idle
+    h.process(Command::ProcessingTimeout);
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+
+    // A stale SetProcessingWithBinding that was queued behind the timeout is now a no-op
+    h.process(Command::SetProcessingWithBinding {
+        binding_id: Some("transcribe_with_router".into()),
+    });
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
 }
 
 // ── Test 31: ExtendRecording re-arms the warning flag ──

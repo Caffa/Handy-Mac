@@ -163,6 +163,26 @@ export function useAppState(): UseAppStateReturn {
       const unlisten = await listen<AppState>("app-state", (event) => {
         console.log("[AppState] Received:", JSON.stringify(event.payload));
 
+        const incomingId = event.payload.data.session_id;
+        const incomingState = event.payload.state;
+        const currentState = appStateRef.current.state;
+
+        // If the backend is telling us to go Idle while the overlay is pinned
+        // in a non-Recording active state (Processing/Confirming), always accept
+        // it. The monotonic session guard below can otherwise drop a legitimate
+        // Idle and leave the UI stuck.
+        if (
+          incomingState === "Idle" &&
+          (currentState === "Processing" || currentState === "Confirming")
+        ) {
+          currentSessionIdRef.current = Math.max(
+            currentSessionIdRef.current,
+            incomingId,
+          );
+          setAppState(event.payload);
+          return;
+        }
+
         // Stale-event guard: ignore events from an older session so a late
         // "Idle" from a finished transcription doesn't collapse a newer
         // recording's visualizer.
@@ -170,7 +190,6 @@ export function useAppState(): UseAppStateReturn {
         // session_id === 0 is a forced reset (cancel, force-hide, initial
         // startup). Always accept it so the overlay can return to Idle even
         // after real sessions have started.
-        const incomingId = event.payload.data.session_id;
         if (incomingId !== 0 && incomingId < currentSessionIdRef.current) {
           console.log(
             "[AppState] Stale event ignored:",

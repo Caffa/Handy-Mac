@@ -29,7 +29,7 @@ use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
     self, get_settings, AutoSubmitKey, ClipboardHandling, CustomWord, KeyboardImplementation,
     LLMPrompt, OverlayPosition, OverlayScreenTarget, PasteMethod, ShortcutBinding, SoundTheme,
-    TypingTool, APPLE_INTELLIGENCE_PROVIDER_ID,
+    TypingTool, VadBackend, APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
 use crate::LiveCaptionsTranscriptionManager;
@@ -643,6 +643,18 @@ pub fn change_translate_to_english_setting(app: AppHandle, enabled: bool) -> Res
 pub fn change_convert_us_to_british_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.convert_us_to_british = enabled;
+    settings::write_settings_safe(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_convert_number_words_to_digits_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.convert_number_words_to_digits = enabled;
     settings::write_settings_safe(&app, settings);
     Ok(())
 }
@@ -1423,7 +1435,7 @@ pub fn change_ort_accelerator_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_transcribe_gpu_device(app: AppHandle, device: i32) -> Result<(), String> {
+pub fn change_transcribe_gpu_device(app: AppHandle, device: Option<String>) -> Result<(), String> {
     let mut s = settings::get_settings_safe(&app);
     s.transcribe_gpu_device = device;
     apply_and_reload_accelerator(&app, s);
@@ -1498,6 +1510,31 @@ pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Re
         }
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn change_vad_backend_setting(app: AppHandle, backend: VadBackend) -> Result<(), String> {
+    if settings::get_settings(&app).vad_backend == backend {
+        return Ok(());
+    }
+
+    // Construct/swap the detector and, when necessary, reopen cpal away from
+    // the webview thread. Persist only after the runtime change succeeds so a
+    // rejected in-progress switch or failed microphone reopen rolls back cleanly.
+    let manager = app
+        .state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+        .inner()
+        .clone();
+    tokio::task::spawn_blocking(move || manager.update_vad_backend(backend))
+        .await
+        .map_err(|e| format!("audio task join failed: {e}"))?
+        .map_err(|e| format!("Failed to update VAD backend: {e}"))?;
+
+    let mut current_settings = settings::get_settings(&app);
+    current_settings.vad_backend = backend;
+    settings::write_settings(&app, current_settings);
     Ok(())
 }
 

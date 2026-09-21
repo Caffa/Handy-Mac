@@ -94,6 +94,14 @@ async changeConvertUsToBritishSetting(enabled: boolean) : Promise<Result<null, s
     else return { status: "error", error: e  as any };
 }
 },
+async changeConvertNumberWordsToDigitsSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_convert_number_words_to_digits_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeSelectedLanguageSetting(language: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_selected_language_setting", { language }) };
@@ -452,7 +460,7 @@ async changeOrtAcceleratorSetting(accelerator: OrtAcceleratorSetting) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
-async changeTranscribeGpuDevice(device: number) : Promise<Result<null, string>> {
+async changeTranscribeGpuDevice(device: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_transcribe_gpu_device", { device }) };
 } catch (e) {
@@ -479,6 +487,14 @@ async getAvailableAccelerators() : Promise<Result<AvailableAccelerators, string>
 async changeVadSensitivitySetting(sensitivity: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_vad_sensitivity_setting", { sensitivity }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeVadBackendSetting(backend: VadBackend) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_vad_backend_setting", { backend }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -933,6 +949,22 @@ async getClamshellMicrophone() : Promise<Result<string, string>> {
 async isRecording() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("is_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getMicrophoneChannels(deviceName: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_microphone_channels", { deviceName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setSelectedChannel(channel: number | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_selected_channel", { channel }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1466,7 +1498,12 @@ historyUpdate: "history-update"
 
 /** user-defined types **/
 
-export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; overlay_screen_target?: OverlayScreenTarget; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
+export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; 
+/**
+ * Which input channel to use on the selected microphone device.
+ * None means "average all channels" (original behavior).
+ */
+selected_channel?: number | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; overlay_screen_target?: OverlayScreenTarget; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
 /**
  * Deprecated: Use `word_correction_mode` instead.
  */
@@ -1474,7 +1511,17 @@ use_advanced_custom_words?: boolean;
 /**
  * Word correction mode. Defaults to WordBias for backward compatibility.
  */
-word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; per_model_vad_sensitivity?: Partial<{ [key in string]: VadSensitivity }>; live_captions_enabled?: boolean; live_captions_model?: string; overlay_scale?: number; convert_us_to_british?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel }
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; 
+/**
+ * Stable transcribe.cpp device selector. This is derived from the backend's
+ * `device_id` when available (or its name for backends such as Metal),
+ * never from the process-local device registry index.
+ */
+transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; per_model_vad_sensitivity?: Partial<{ [key in string]: VadSensitivity }>; live_captions_enabled?: boolean; live_captions_model?: string; overlay_scale?: number; convert_us_to_british?: boolean; convert_number_words_to_digits?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel; 
+/**
+ * Experimental detector implementation. Silero remains the stable default.
+ */
+vad_backend?: VadBackend }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1610,7 +1657,7 @@ export type ExperimentGroup = { id: number; recording_id: number; original_trans
  * Result of generating variants for an experiment
  */
 export type GeneratedVariant = { model_id: string; parameters: string; transcription_text: string }
-export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
+export type GpuDeviceOption = { id: string; name: string; total_vram_mb: number }
 export type HealthReport = { app_version: string; platform: string; uptime_secs: number; total_sessions: number; successful_sessions: number; failed_sessions: number; avg_transcription_ms: number; p95_transcription_ms: number; model_load_times: ModelLoadStat[]; recent_errors: ErrorRecord[]; usb_watchdog_cycles: number; device_changes: number; current_mic: string; current_model: string; log_level: string }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; model_id: string | null; routed: boolean; 
 /**
@@ -1918,6 +1965,7 @@ hub: string;
  * Port number on the hub (e.g. "1")
  */
 port: string }
+export type VadBackend = "silero" | "earshot"
 export type VadSensitivity = 
 /**
  * Minimal VAD filtering: keeps almost everything, including quiet speech.

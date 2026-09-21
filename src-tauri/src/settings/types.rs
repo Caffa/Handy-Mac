@@ -471,6 +471,16 @@ impl Default for OrtAcceleratorSetting {
     }
 }
 
+// ── VadBackend ──
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VadBackend {
+    #[default]
+    Silero,
+    Earshot,
+}
+
 // ── CustomWord ──
 
 /// A custom word with optional pronunciation variants for advanced fuzzy matching.
@@ -566,6 +576,10 @@ pub struct AppSettings {
     pub always_on_microphone: bool,
     #[serde(default)]
     pub selected_microphone: Option<String>,
+    /// Which input channel to use on the selected microphone device.
+    /// None means "average all channels" (original behavior).
+    #[serde(default)]
+    pub selected_channel: Option<u16>,
     #[serde(default)]
     pub clamshell_microphone: Option<String>,
     #[serde(default)]
@@ -653,8 +667,14 @@ pub struct AppSettings {
     pub transcribe_accelerator: TranscribeAcceleratorSetting,
     #[serde(default)]
     pub ort_accelerator: OrtAcceleratorSetting,
-    #[serde(default = "default_transcribe_gpu_device")]
-    pub transcribe_gpu_device: i32,
+    /// Stable transcribe.cpp device selector. This is derived from the backend's
+    /// `device_id` when available (or its name for backends such as Metal),
+    /// never from the process-local device registry index.
+    #[serde(
+        default = "default_transcribe_gpu_device",
+        deserialize_with = "deserialize_transcribe_gpu_device"
+    )]
+    pub transcribe_gpu_device: Option<String>,
     #[serde(default)]
     pub extra_recording_buffer_ms: u64,
     #[serde(default)]
@@ -678,6 +698,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub convert_us_to_british: bool,
     #[serde(default)]
+    pub convert_number_words_to_digits: bool,
+    #[serde(default)]
     pub spelling_dictionary: SpellingDictionary,
     #[serde(default)]
     pub repetition_suppression_level: u8,
@@ -685,6 +707,9 @@ pub struct AppSettings {
     pub noise_suppression_enabled: bool,
     #[serde(default)]
     pub noise_suppression_level: NoiseSuppressionLevel,
+    /// Experimental detector implementation. Silero remains the stable default.
+    #[serde(default)]
+    pub vad_backend: VadBackend,
 }
 
 impl Default for AppSettings {
@@ -936,8 +961,25 @@ pub(crate) fn default_post_process_prompts() -> Vec<LLMPrompt> {
     }]
 }
 
-pub(crate) fn default_transcribe_gpu_device() -> i32 {
-    -1 // auto
+pub(crate) fn default_transcribe_gpu_device() -> Option<String> {
+    None // automatic device selection
+}
+
+/// Accept the 0.1-era integer registry index long enough for the schema
+/// migration to clear it. Device indices are process-local in transcribe.cpp
+/// 0.2 and must never be carried across launches.
+fn deserialize_transcribe_gpu_device<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value)),
+        Some(serde_json::Value::Number(_)) => Ok(None),
+        Some(_) => Err(de::Error::custom(
+            "transcribe GPU device must be a string, integer, or null",
+        )),
+    }
 }
 
 pub(crate) fn default_typing_tool() -> TypingTool {

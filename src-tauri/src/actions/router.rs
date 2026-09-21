@@ -23,10 +23,13 @@ use crate::utils::{
 use crate::TranscriptionCoordinator;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
+use std::io::Read;
+use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use wait_timeout::ChildExt;
 
 /// Structured result from one boss_router.py handler.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -918,6 +921,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
     }
 }
 
+const ROUTER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Run boss_router.py as a subprocess and return the parsed output.
 /// Returns (summary_string, handler_data_vec) on success, or an error String.
 fn run_router_subprocess(
@@ -926,8 +931,6 @@ fn run_router_subprocess(
     datetime_str: &str,
     env_file: Option<&str>,
 ) -> Result<(Option<String>, Vec<RouterHandlerData>), String> {
-    use std::process::Command;
-
     let python_bin = "/Users/caffae/miniforge3/bin/python3";
     let mut cmd = Command::new(python_bin);
     cmd.arg(router_script)
@@ -979,20 +982,59 @@ fn run_router_subprocess(
 
     debug!("Running router command: {:?}", cmd);
 
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Failed to execute router: {}", e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // Drain stdout/stderr concurrently while waiting. This avoids a pipe-buffer
+    // deadlock if the router writes more than the OS pipe buffer before exiting.
+    let stdout_handle = child.stdout.take().map(|mut stdout| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        })
+    });
+
+    let status = match child.wait_timeout(ROUTER_SUBPROCESS_TIMEOUT) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            warn!(
+                "Router subprocess timed out after {:?}, killing it",
+                ROUTER_SUBPROCESS_TIMEOUT
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Router subprocess timed out after {:?}",
+                ROUTER_SUBPROCESS_TIMEOUT
+            ));
+        }
+        Err(e) => return Err(format!("Failed to wait on router: {}", e)),
+    };
+
+    let stdout_buf = stdout_handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default());
+    let stderr_buf = stderr_handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default());
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_buf);
         return Err(format!(
             "Router exited with code {}: {}",
-            output.status.code().unwrap_or(-1),
+            status.code().unwrap_or(-1),
             stderr.trim()
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&stdout_buf);
     let (handler_summary, handler_data) = match parse_router_json_output(&stdout) {
         Some(output) => (Some(output.summary), output.handler_data),
         None => (None, Vec::new()),

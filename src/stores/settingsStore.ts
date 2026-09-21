@@ -10,6 +10,7 @@ import type {
   OrtAcceleratorSetting,
   ShortcutBinding,
   WordReplacement,
+  VadBackend,
 } from "@/bindings";
 import { commands } from "@/bindings";
 
@@ -114,6 +115,14 @@ const settingUpdaters: {
         ? "default"
         : (value as string),
     ),
+  selected_channel: async (value) => {
+    const result = await commands.setSelectedChannel(
+      (value as number | null | undefined) ?? null,
+    );
+    if (result.status === "error") {
+      throw new Error(result.error);
+    }
+  },
   clamshell_microphone: (value) =>
     commands.setClamshellMicrophone(
       (value as string) === "Default" ? "default" : (value as string),
@@ -130,6 +139,8 @@ const settingUpdaters: {
     commands.changeTranslateToEnglishSetting(value as boolean),
   convert_us_to_british: (value) =>
     commands.changeConvertUsToBritishSetting(value as boolean),
+  convert_number_words_to_digits: (value) =>
+    commands.changeConvertNumberWordsToDigitsSetting(value as boolean),
   selected_language: (value) =>
     commands.changeSelectedLanguageSetting(value as string),
   overlay_position: (value) =>
@@ -187,7 +198,7 @@ const settingUpdaters: {
   ort_accelerator: (value) =>
     commands.changeOrtAcceleratorSetting(value as OrtAcceleratorSetting),
   transcribe_gpu_device: (value) =>
-    commands.changeTranscribeGpuDevice(value as number),
+    commands.changeTranscribeGpuDevice(value as string | null),
   extra_recording_buffer_ms: (value) =>
     commands.changeExtraRecordingBufferSetting(value as number),
   pre_recording_buffer_ms: (value) =>
@@ -200,6 +211,7 @@ const settingUpdaters: {
     commands.changeUsbWatchdogCycleOnWakeSetting(value as boolean),
   vad_sensitivity: (value) =>
     commands.changeVadSensitivitySetting(value as string),
+  vad_backend: (value) => commands.changeVadBackendSetting(value as VadBackend),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
   overlay_scale: (value) => commands.changeOverlayScaleSetting(value as number),
@@ -838,6 +850,16 @@ export const useSettingsStore = create<SettingsStore>()(
         }
       });
       set({ _unlistenShortcutConflictEvent: unlistenConflict });
+
+      const unlistenSettingsChanged = await listen<{
+        setting?: string;
+      }>("settings-changed", (event) => {
+        get().refreshSettings();
+        if (event.payload.setting === "selected_microphone") {
+          get().refreshAudioDevices();
+        }
+      });
+      set({ _unlistenSettingsEvent: unlistenSettingsChanged });
     },
   })),
 );
