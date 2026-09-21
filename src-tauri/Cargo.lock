@@ -2585,6 +2585,7 @@ dependencies = [
  "transcribe-rs",
  "uuid",
  "vad-rs",
+ "wait-timeout",
  "windows 0.61.3",
  "winreg 0.55.0",
 ]
