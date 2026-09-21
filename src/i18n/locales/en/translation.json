@@ -318,6 +318,14 @@
         "label": "Keep Mic Open Between Transcriptions",
         "description": "Keeps the microphone stream open for 30 seconds after recording stops, reducing latency for back-to-back transcriptions. May degrade Bluetooth audio quality while active."
       },
+      "vadBackend": {
+        "title": "Voice Activity Backend",
+        "description": "Choose the detector used to filter silence. Earshot is experimental; switch back to Silero if speech is clipped or noise is retained.",
+        "options": {
+          "silero": "Silero",
+          "earshot": "Earshot"
+        }
+      },
       "verificationMode": {
         "label": "Verification Mode",
         "description": "Enable two-pass transcription. After the first transcription, a second model verifies and corrects uncertain segments for improved accuracy."
@@ -452,6 +460,10 @@
       "convertUsToBritish": {
         "label": "Convert to British English",
         "description": "Convert US English spelling to British English (e.g., color → colour, analyze → analyse, center → centre)."
+      },
+      "convertNumberWordsToDigits": {
+        "label": "Convert number words to digits",
+        "description": "Convert spoken number sequences like \"zero zero four\" into digits \"004\". Applies to English transcriptions; lone number words are left as words."
       },
       "modelUnload": {
         "title": "Unload Model",

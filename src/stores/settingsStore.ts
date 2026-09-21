@@ -10,6 +10,7 @@ import type {
   OrtAcceleratorSetting,
   ShortcutBinding,
   WordReplacement,
+  VadBackend,
 } from "@/bindings";
 import { commands } from "@/bindings";
 
@@ -138,6 +139,8 @@ const settingUpdaters: {
     commands.changeTranslateToEnglishSetting(value as boolean),
   convert_us_to_british: (value) =>
     commands.changeConvertUsToBritishSetting(value as boolean),
+  convert_number_words_to_digits: (value) =>
+    commands.changeConvertNumberWordsToDigitsSetting(value as boolean),
   selected_language: (value) =>
     commands.changeSelectedLanguageSetting(value as string),
   overlay_position: (value) =>
@@ -208,6 +211,8 @@ const settingUpdaters: {
     commands.changeUsbWatchdogCycleOnWakeSetting(value as boolean),
   vad_sensitivity: (value) =>
     commands.changeVadSensitivitySetting(value as string),
+  vad_backend: (value) =>
+    commands.changeVadBackendSetting(value as VadBackend),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
   overlay_scale: (value) => commands.changeOverlayScaleSetting(value as number),
