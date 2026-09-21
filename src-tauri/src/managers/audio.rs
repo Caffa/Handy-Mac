@@ -1,8 +1,6 @@
 use crate::audio_toolkit::{
     is_bluetooth_audio_active, list_input_devices, list_output_devices,
-    vad::{
-        frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_ONSET_MS, VAD_PREFILL_MS,
-    },
+    vad::{frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_ONSET_MS, VAD_PREFILL_MS},
     AudioRecorder, SileroVad, VoiceActivityDetector,
 };
 use crate::errors::AppError;
@@ -182,9 +180,9 @@ fn create_audio_recorder(
                 .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {e}"))?;
             Box::new(
                 SileroVad::new(
-                    vad_path
-                        .to_str()
-                        .ok_or_else(|| anyhow::anyhow!("VAD path is not valid UTF-8: {vad_path:?}"))?,
+                    vad_path.to_str().ok_or_else(|| {
+                        anyhow::anyhow!("VAD path is not valid UTF-8: {vad_path:?}")
+                    })?,
                     vad_threshold,
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {e}"))?,
@@ -1681,11 +1679,13 @@ impl AudioRecordingManager {
         // Serialize against recording start/stop. Restarting an active capture
         // would discard its samples and leave the manager's recording state out
         // of sync with the new recorder.
-        let state = self.state.lock();
-        if !matches!(*state, RecordingState::Idle) {
-            return Err(anyhow::anyhow!(
-                "Cannot change the input channel while recording"
-            ));
+        {
+            let state = self.state.lock();
+            if !matches!(*state, RecordingState::Idle) {
+                return Err(anyhow::anyhow!(
+                    "Cannot change the input channel while recording"
+                ));
+            }
         }
 
         let previous_channel = get_settings(&self.app_handle).selected_channel;
@@ -1705,16 +1705,17 @@ impl AudioRecordingManager {
                 return Err(error);
             }
         }
-        drop(state);
         Ok(())
     }
 
     pub fn update_vad_backend(&self, backend: VadBackend) -> Result<(), anyhow::Error> {
-        let state = self.state.lock();
-        if !matches!(*state, RecordingState::Idle) {
-            return Err(anyhow::anyhow!(
-                "Cannot change the VAD backend while recording"
-            ));
+        {
+            let state = self.state.lock();
+            if !matches!(*state, RecordingState::Idle) {
+                return Err(anyhow::anyhow!(
+                    "Cannot change the VAD backend while recording"
+                ));
+            }
         }
 
         let settings = get_settings(&self.app_handle);
@@ -1746,7 +1747,9 @@ impl AudioRecordingManager {
                 }
                 *self.recorder.lock() = previous_recorder;
                 if let Err(rollback_error) = self.start_microphone_stream() {
-                    error!("Failed to restore mic stream after VAD backend change: {rollback_error}");
+                    error!(
+                        "Failed to restore mic stream after VAD backend change: {rollback_error}"
+                    );
                 }
                 return Err(anyhow::anyhow!(
                     "Failed to reopen mic with {:?} VAD: {change_error}",
@@ -1756,7 +1759,6 @@ impl AudioRecordingManager {
         }
 
         info!("VAD backend changed to {:?}", backend);
-        drop(state);
         Ok(())
     }
 
