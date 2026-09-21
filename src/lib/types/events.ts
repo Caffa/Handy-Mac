@@ -32,6 +32,12 @@ export interface PartialTranscriptionEvent {
   segments: TranscriptionSegment[] | null;
 }
 
+/** Live streaming snapshot from the backend's streaming pipeline. */
+export interface StreamTextEvent {
+  committed: string;
+  tentative: string;
+}
+
 /** Categories of recoverable errors that can show a retry dialog. */
 export type RecoverableErrorType =
   | "model_download"

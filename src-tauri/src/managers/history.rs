@@ -3,7 +3,7 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use csv::Writer;
 use log::{debug, error, info, warn};
 use rusqlite::{params, Connection, OptionalExtension};
-use rusqlite_migration::{Migrations, M};
+use rusqlite_migration::{Error as MigrationError, MigrationDefinitionError, Migrations, M};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::fs;
@@ -70,6 +70,9 @@ static MIGRATIONS: &[M] = &[
             FOREIGN KEY (experiment_group_id) REFERENCES experiment_groups(id)
         );",
     ),
+    // Migration 12: Add file_name_vad column for VAD-filtered recording reference.
+    // The main file_name now stores the raw (unfiltered) recording.
+    M::up("ALTER TABLE transcription_history ADD COLUMN file_name_vad TEXT;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -147,6 +150,9 @@ pub struct HistoryEntry {
     /// Speech speed: "fast", "normal", "slow".
     /// User's assessment of speech speed.
     pub speech_speed: Option<String>,
+    /// File name of the VAD-filtered WAV recording (for debugging VAD quality).
+    /// The main `file_name` field now stores the raw (unfiltered) recording.
+    pub file_name_vad: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -204,8 +210,34 @@ impl HistoryManager {
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         debug!("Database version before migration: {}", version_before);
 
-        // Apply any pending migrations
-        migrations.to_latest(&mut conn)?;
+        // Apply any pending migrations. If the database was previously migrated by a build
+        // that defined more migrations than the current binary (e.g., an experimental branch was
+        // rolled back), rusqlite_migration returns DatabaseTooFarAhead. As long as the actual
+        // schema already contains all expected columns, we can safely clamp user_version back to
+        // the latest migration defined by the current code instead of crashing on startup.
+        if let Err(e) = migrations.to_latest(&mut conn) {
+            if let MigrationError::MigrationDefinition(
+                MigrationDefinitionError::DatabaseTooFarAhead,
+            ) = e
+            {
+                warn!(
+                    "Database user_version ({}) is ahead of the current migrations ({}). \
+                     This can happen after running an experimental build with extra migrations. \
+                     Verifying schema and clamping user_version if safe.",
+                    version_before,
+                    MIGRATIONS.len()
+                );
+                self.verify_and_fix_schema(&conn)?;
+                conn.pragma_update(None, "user_version", MIGRATIONS.len() as i32)?;
+                info!(
+                    "Database user_version clamped from {} to {}. Startup continuing.",
+                    version_before,
+                    MIGRATIONS.len()
+                );
+            } else {
+                return Err(e.into());
+            }
+        }
 
         // Get version after migration
         let version_after: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -348,6 +380,7 @@ impl HistoryManager {
             "ground_truth",
             "quality",
             "speech_speed",
+            "file_name_vad",
         ];
 
         // Get actual columns from the database
@@ -391,6 +424,7 @@ impl HistoryManager {
                 "routed" => "routed BOOLEAN NOT NULL DEFAULT 0",
                 "routing_result" => "routing_result TEXT",
                 "tags" => "tags TEXT",
+                "file_name_vad" => "file_name_vad TEXT",
                 // Base columns should never be missing (table creation), but handle gracefully
                 _ => {
                     warn!("Unexpected missing column '{}', skipping", column);
@@ -438,6 +472,7 @@ impl HistoryManager {
             ground_truth: row.get("ground_truth").unwrap_or(None),
             quality: row.get("quality").unwrap_or(None),
             speech_speed: row.get("speech_speed").unwrap_or(None),
+            file_name_vad: row.get("file_name_vad").unwrap_or(None),
         })
     }
 
@@ -457,6 +492,30 @@ impl HistoryManager {
         model_id: Option<String>,
         routed: bool,
     ) -> Result<HistoryEntry> {
+        self.save_entry_with_vad(
+            file_name,
+            transcription_text,
+            post_process_requested,
+            post_processed_text,
+            post_process_prompt,
+            model_id,
+            routed,
+            None,
+        )
+    }
+
+    /// Save a new history entry with an optional VAD-filtered WAV file reference.
+    pub fn save_entry_with_vad(
+        &self,
+        file_name: String,
+        transcription_text: String,
+        post_process_requested: bool,
+        post_processed_text: Option<String>,
+        post_process_prompt: Option<String>,
+        model_id: Option<String>,
+        routed: bool,
+        file_name_vad: Option<String>,
+    ) -> Result<HistoryEntry> {
         let timestamp = Utc::now().timestamp();
         let title = self.format_timestamp_title(timestamp);
 
@@ -472,8 +531,9 @@ impl HistoryManager {
                 post_process_prompt,
                 post_process_requested,
                 model_id,
-                routed
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                routed,
+                file_name_vad
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 &file_name,
                 timestamp,
@@ -485,6 +545,7 @@ impl HistoryManager {
                 post_process_requested,
                 &model_id,
                 routed,
+                &file_name_vad,
             ],
         )?;
 
@@ -505,6 +566,7 @@ impl HistoryManager {
             ground_truth: None,
             quality: None,
             speech_speed: None,
+            file_name_vad,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -555,7 +617,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, file_name_vad
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -594,7 +656,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -745,7 +807,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -759,7 +821,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -771,7 +833,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, model_id, routed, routing_result, tags, ground_truth, quality, speech_speed, file_name_vad
                      FROM transcription_history
                      ORDER BY id DESC ",
                 )?;
@@ -809,7 +871,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -843,7 +906,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              WHERE LENGTH(transcription_text) > 0
              ORDER BY timestamp DESC
@@ -986,7 +1050,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT ?1",
@@ -1019,7 +1084,8 @@ impl HistoryManager {
                 tags,
                 ground_truth,
                 quality,
-                speech_speed
+                speech_speed,
+                file_name_vad
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -1067,7 +1133,8 @@ impl HistoryManager {
         let mut stmt = conn.prepare(
             "SELECT id, file_name, timestamp, saved, title, transcription_text,
                     post_processed_text, post_process_prompt, post_process_requested,
-                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed,
+                    file_name_vad
              FROM transcription_history
              ORDER BY id DESC",
         )?;
@@ -1087,7 +1154,8 @@ impl HistoryManager {
         let mut stmt = conn.prepare(
             "SELECT id, file_name, timestamp, saved, title, transcription_text,
                     post_processed_text, post_process_prompt, post_process_requested,
-                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed
+                    model_id, routed, routing_result, tags, ground_truth, quality, speech_speed,
+                    file_name_vad
              FROM transcription_history
              ORDER BY id DESC",
         )?;
@@ -1114,6 +1182,7 @@ impl HistoryManager {
             "ground_truth",
             "quality",
             "speech_speed",
+            "file_name_vad",
         ])?;
 
         for entry in &entries {
@@ -1134,6 +1203,7 @@ impl HistoryManager {
                 entry.ground_truth.clone().unwrap_or_default(),
                 entry.quality.clone().unwrap_or_default(),
                 entry.speech_speed.clone().unwrap_or_default(),
+                entry.file_name_vad.clone().unwrap_or_default(),
             ])?;
         }
 

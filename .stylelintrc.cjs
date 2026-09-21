@@ -9,10 +9,7 @@ module.exports = {
     "rule-empty-line-before": null,
 
     // Allow Tailwind CSS 4 at-rules (@theme, @layer, @apply, etc.)
-    "annotation-no-unknown": [
-      true,
-      { ignoreAnnotations: ["container"] },
-    ],
+    "annotation-no-unknown": [true, { ignoreAnnotations: ["container"] }],
     "at-rule-no-unknown": [
       true,
       {
@@ -55,47 +52,42 @@ module.exports = {
     },
 
     // Enforce 6-digit hex colors for consistency (warn only)
-    "color-hex-length": [
-      "long",
-      { severity: "warning" },
-    ],
+    "color-hex-length": ["long", { severity: "warning" }],
 
     // Modern color notation — warn only (rgba → rgb modern syntax, percentage alpha)
-    "color-function-notation": [
-      "modern",
-      { severity: "warning" },
-    ],
+    "color-function-notation": ["modern", { severity: "warning" }],
     // Disable alias notation rule — color-function-notation already covers
     // modernizing rgba() → rgb(). The alias rule doesn't accept severity overrides.
     "color-function-alias-notation": null,
-    "alpha-value-notation": [
-      "percentage",
-      { severity: "warning" },
-    ],
+    "alpha-value-notation": ["percentage", { severity: "warning" }],
 
     // value-keyword-case: warn only (lowercase preferred but not enforced)
-    "value-keyword-case": [
-      "lower",
-      { severity: "warning" },
-    ],
+    "value-keyword-case": ["lower", { severity: "warning" }],
 
     // Allow only standard units (warn for unusual units like cm, mm, in, pt, pc)
     "unit-allowed-list": [
-      ["px", "rem", "em", "%", "vh", "vw", "deg", "s", "ms", "fr", "dvh", "svh"],
+      [
+        "px",
+        "rem",
+        "em",
+        "%",
+        "vh",
+        "vw",
+        "deg",
+        "s",
+        "ms",
+        "fr",
+        "dvh",
+        "svh",
+      ],
       { severity: "warning" },
     ],
 
     // Zero values should not have units (e.g. 0px → 0), warn only
-    "length-zero-no-unit": [
-      true,
-      { severity: "warning" },
-    ],
+    "length-zero-no-unit": [true, { severity: "warning" }],
 
     // Deprecated CSS properties: warn only (e.g. word-wrap → overflow-wrap)
-    "property-no-deprecated": [
-      true,
-      { severity: "warning" },
-    ],
+    "property-no-deprecated": [true, { severity: "warning" }],
     "declaration-property-value-keyword-no-deprecated": [
       true,
       { severity: "warning" },
@@ -149,7 +141,11 @@ module.exports = {
       true,
       {
         severity: "warning",
-        ignoreProperties: ["backdrop-filter", "text-size-adjust", "font-smoothing"],
+        ignoreProperties: [
+          "backdrop-filter",
+          "text-size-adjust",
+          "font-smoothing",
+        ],
       },
     ],
     "value-no-vendor-prefix": [true, { severity: "warning" }],

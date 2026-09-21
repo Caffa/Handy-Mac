@@ -143,6 +143,9 @@
   text-align: center;
   line-height: 1.4;
   display: block;
+  /* Captions are visual-only; the overlay window already passes clicks
+     through, and this box should never intercept mouse events. */
+  pointer-events: none;
 }
 
 .live-captions-box.fade-in {
@@ -154,6 +157,44 @@
   color: white;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   border-color: rgba(59, 130, 246, 0.3);
+}
+
+/* "Live" indicator shown while stream-text events are active. */
+.live-captions-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4px * var(--overlay-scale));
+  margin-inline-end: calc(6px * var(--overlay-scale));
+  font-size: calc(10px * var(--overlay-scale));
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #ef4444;
+  vertical-align: middle;
+}
+
+.live-captions-box.routing-mode .live-captions-indicator {
+  color: #fca5a5;
+}
+
+.live-captions-dot {
+  width: calc(6px * var(--overlay-scale));
+  height: calc(6px * var(--overlay-scale));
+  border-radius: 50%;
+  background: currentColor;
+  animation: live-captions-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes live-captions-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.35);
+  }
 }
 
 .recording-overlay.fade-in {
@@ -312,6 +353,53 @@
 }
 
 .cancel-button:active {
+  transform: scale(0.95);
+}
+
+/* ── Recording timeout warning banner ── */
+.recording-timeout-warning {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(4px * var(--overlay-scale));
+  padding: calc(4px * var(--overlay-scale)) calc(8px * var(--overlay-scale));
+  color: #fff;
+  font-size: calc(11px * var(--overlay-scale));
+  font-weight: 600;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+  /* Re-enable pointer events for the interactive Extend button */
+  pointer-events: auto;
+}
+
+.recording-timeout-text {
+  white-space: nowrap;
+  animation: transcribing-pulse 1.5s infinite ease-in-out;
+}
+
+.recording-timeout-extend-button {
+  padding: calc(3px * var(--overlay-scale)) calc(8px * var(--overlay-scale));
+  font-size: calc(10px * var(--overlay-scale));
+  font-weight: 700;
+  color: #1a1a1a;
+  background: #ffd966;
+  border: none;
+  border-radius: calc(10px * var(--overlay-scale));
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    transform 100ms ease;
+  pointer-events: auto;
+}
+
+.recording-timeout-extend-button:hover {
+  background: #ffdf80;
+  transform: scale(1.05);
+}
+
+.recording-timeout-extend-button:active {
   transform: scale(0.95);
 }
 
@@ -506,7 +594,8 @@
   align-items: center;
   justify-content: center;
   gap: calc(4px * var(--overlay-scale, 1));
-  padding: calc(10px * var(--overlay-scale, 1)) calc(12px * var(--overlay-scale, 1));
+  padding: calc(10px * var(--overlay-scale, 1))
+    calc(12px * var(--overlay-scale, 1));
   background: rgba(59, 130, 246, 0.08);
   border: 1px solid rgba(59, 130, 246, 0.18);
   border-radius: calc(10px * var(--overlay-scale, 1));

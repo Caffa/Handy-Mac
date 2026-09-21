@@ -8,7 +8,9 @@ import type {
   AudioDevice,
   TranscribeAcceleratorSetting,
   OrtAcceleratorSetting,
+  ShortcutBinding,
   WordReplacement,
+  VadBackend,
 } from "@/bindings";
 import { commands } from "@/bindings";
 
@@ -25,6 +27,10 @@ interface SettingsStore {
 
   // Actions
   initialize: () => Promise<void>;
+  setModelVadSensitivity: (
+    modelId: string,
+    sensitivity: string | null,
+  ) => Promise<void>;
   loadDefaultSettings: () => Promise<void>;
   updateSetting: <K extends keyof Settings>(
     key: K,
@@ -109,6 +115,14 @@ const settingUpdaters: {
         ? "default"
         : (value as string),
     ),
+  selected_channel: async (value) => {
+    const result = await commands.setSelectedChannel(
+      (value as number | null | undefined) ?? null,
+    );
+    if (result.status === "error") {
+      throw new Error(result.error);
+    }
+  },
   clamshell_microphone: (value) =>
     commands.setClamshellMicrophone(
       (value as string) === "Default" ? "default" : (value as string),
@@ -125,6 +139,8 @@ const settingUpdaters: {
     commands.changeTranslateToEnglishSetting(value as boolean),
   convert_us_to_british: (value) =>
     commands.changeConvertUsToBritishSetting(value as boolean),
+  convert_number_words_to_digits: (value) =>
+    commands.changeConvertNumberWordsToDigitsSetting(value as boolean),
   selected_language: (value) =>
     commands.changeSelectedLanguageSetting(value as string),
   overlay_position: (value) =>
@@ -182,7 +198,7 @@ const settingUpdaters: {
   ort_accelerator: (value) =>
     commands.changeOrtAcceleratorSetting(value as OrtAcceleratorSetting),
   transcribe_gpu_device: (value) =>
-    commands.changeTranscribeGpuDevice(value as number),
+    commands.changeTranscribeGpuDevice(value as string | null),
   extra_recording_buffer_ms: (value) =>
     commands.changeExtraRecordingBufferSetting(value as number),
   pre_recording_buffer_ms: (value) =>
@@ -195,6 +211,7 @@ const settingUpdaters: {
     commands.changeUsbWatchdogCycleOnWakeSetting(value as boolean),
   vad_sensitivity: (value) =>
     commands.changeVadSensitivitySetting(value as string),
+  vad_backend: (value) => commands.changeVadBackendSetting(value as VadBackend),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
   overlay_scale: (value) => commands.changeOverlayScaleSetting(value as number),
@@ -401,8 +418,16 @@ export const useSettingsStore = create<SettingsStore>()(
         if (updater) {
           const result = await updater(value);
           // Check if the backend command returned an error result
-          if (result && typeof result === "object" && "status" in result && result.status === "error") {
-            console.error(`Backend rejected setting ${String(key)}:`, (result as unknown as { error: unknown }).error);
+          if (
+            result &&
+            typeof result === "object" &&
+            "status" in result &&
+            result.status === "error"
+          ) {
+            console.error(
+              `Backend rejected setting ${String(key)}:`,
+              (result as unknown as { error: unknown }).error,
+            );
             // Rollback optimistic update on backend error
             if (settings) {
               set({ settings: { ...settings, [key]: originalValue } });
@@ -432,16 +457,25 @@ export const useSettingsStore = create<SettingsStore>()(
       }
     },
 
-    // Update a specific binding
+    // Update a specific binding for the active keyboard implementation.
+    // We mirror the new value to both the per-implementation field and
+    // `current_binding` so the UI shows the active binding immediately while
+    // the backend persists the dual-storage fields.
     updateBinding: async (id, binding) => {
       const { settings, setUpdating } = get();
       const updateKey = `binding_${id}`;
-      const originalBinding = settings?.bindings?.[id]?.current_binding;
+      const originalBinding = settings?.bindings?.[id];
+      const originalCurrentBinding = originalBinding?.current_binding ?? "";
+      const implField: keyof ShortcutBinding =
+        settings?.keyboard_implementation === "handy_keys"
+          ? "handy_keys_binding"
+          : "tauri_binding";
+      const originalImplBinding = originalBinding?.[implField] ?? "";
 
       setUpdating(updateKey, true);
 
       try {
-        // Optimistic update
+        // Optimistic update: set both per-implementation and mirrored fields.
         set((state) => ({
           settings: state.settings
             ? {
@@ -450,6 +484,7 @@ export const useSettingsStore = create<SettingsStore>()(
                   ...state.settings.bindings,
                   [id]: {
                     ...state.settings.bindings[id]!,
+                    [implField]: binding,
                     current_binding: binding,
                   },
                 },
@@ -481,7 +516,8 @@ export const useSettingsStore = create<SettingsStore>()(
                     ...state.settings.bindings,
                     [id]: {
                       ...state.settings.bindings[id]!,
-                      current_binding: originalBinding,
+                      [implField]: originalImplBinding,
+                      current_binding: originalCurrentBinding,
                     },
                   },
                 }
@@ -678,6 +714,45 @@ export const useSettingsStore = create<SettingsStore>()(
         },
       })),
 
+    setModelVadSensitivity: async (modelId, sensitivity) => {
+      const { setUpdating, refreshSettings } = get();
+      const updateKey = `model_vad_sensitivity:${modelId}`;
+
+      setUpdating(updateKey, true);
+
+      try {
+        const result = await commands.setModelVadSensitivity(
+          modelId,
+          sensitivity as import("@/bindings").VadSensitivity | null,
+        );
+        if (
+          result &&
+          typeof result === "object" &&
+          "status" in result &&
+          result.status === "error"
+        ) {
+          console.error(
+            `Failed to set VAD sensitivity for ${modelId}:`,
+            (result as unknown as { error: unknown }).error,
+          );
+          throw new Error(
+            String(
+              (result as unknown as { error: unknown }).error ??
+                "Unknown error",
+            ),
+          );
+        }
+        await refreshSettings();
+      } catch (error) {
+        console.error(`Failed to set VAD sensitivity for ${modelId}:`, error);
+        toast.error(i18n.t("errors.settingsLoadFailed"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setUpdating(updateKey, false);
+      }
+    },
+
     // Load default settings from Rust
     loadDefaultSettings: async () => {
       try {
@@ -775,6 +850,16 @@ export const useSettingsStore = create<SettingsStore>()(
         }
       });
       set({ _unlistenShortcutConflictEvent: unlistenConflict });
+
+      const unlistenSettingsChanged = await listen<{
+        setting?: string;
+      }>("settings-changed", (event) => {
+        get().refreshSettings();
+        if (event.payload.setting === "selected_microphone") {
+          get().refreshAudioDevices();
+        }
+      });
+      set({ _unlistenSettingsEvent: unlistenSettingsChanged });
     },
   })),
 );

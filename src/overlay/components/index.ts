@@ -6,3 +6,4 @@ export { LiveCaptionsBox } from "./LiveCaptionsBox";
 export { MicDeadWarning } from "./MicDeadWarning";
 export { USBCyclingProgress } from "./USBCyclingProgress";
 export { RouterResultDisplay } from "./RouterResultDisplay";
+export { RecordingTimeoutWarning } from "./RecordingTimeoutWarning";

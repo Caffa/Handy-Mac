@@ -7,13 +7,14 @@
  * propagate correctly.
  *
  * Scope: Live caption display during recording.
- * Dependencies: React hooks, PartialTranscriptionEvent type.
- * Side effects: partial-transcription event listener, debug logging.
+ * Dependencies: React hooks, PartialTranscriptionEvent and StreamTextEvent types.
+ * Side effects: partial-transcription and stream-text event listeners, debug logging.
  */
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PartialTranscriptionEvent,
+  StreamTextEvent,
   TranscriptionSegment,
 } from "@/lib/types/events";
 import type { OverlayState } from "./useOverlayState";
@@ -64,7 +65,7 @@ function filterStreamingText(text: string): string {
 
     const filteredText = (() => {
       if (isContinuation && words.length === 2) return "";
-      if (isContinuation) return words.slice(1).join(" ");
+      if (isContinuation) return words.slice(2).join(" ");
       return words.slice(1).join(" ");
     })();
 
@@ -105,6 +106,7 @@ interface UseLiveCaptionsOptions {
 interface UseLiveCaptionsReturn {
   streamingText: string;
   liveCaptionsEnabled: boolean;
+  streaming: boolean;
 }
 
 export function useLiveCaptions(
@@ -129,23 +131,36 @@ export function useLiveCaptions(
   // Use ref for segments since we need the accumulated value in the event handler
   const segmentsRef = useRef<TranscriptionSegment[]>([]);
 
+  // True while we are receiving stream-text events from the backend. Resets
+  // when recording stops or the overlay is hidden so the next recording
+  // starts with the "Live" indicator off.
+  const [streaming, setStreaming] = useState(false);
+
   // ─── Stale-closure refs ──────────────────────────────────────────────
-  // The partial-transcription listener effect has [] deps (registers once),
-  // so any closure variables it reads are frozen at mount time. Use refs to
-  // hold the latest values so the listener always reads current state.
+  // The event listener effects have [] deps (register once), so any closure
+  // variables they read are frozen at mount time. Use refs to hold the latest
+  // values so listeners always read current state.
   const liveCaptionsEnabledRef = useRef(liveCaptionsEnabled);
   const stateRef = useRef(state);
   const isVisibleRef = useRef(isVisible);
 
-  useEffect(() => { liveCaptionsEnabledRef.current = liveCaptionsEnabled; }, [liveCaptionsEnabled]);
-  useEffect(() => { stateRef.current = state; }, [state]);
-  useEffect(() => { isVisibleRef.current = isVisible; }, [isVisible]);
+  useEffect(() => {
+    liveCaptionsEnabledRef.current = liveCaptionsEnabled;
+  }, [liveCaptionsEnabled]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
 
-  // Clear accumulated segments when recording stops or overlay hides
-  // to prevent segments from a previous recording bleeding into the next.
+  // Clear accumulated segments and the streaming indicator when recording
+  // stops or overlay hides to prevent state from a previous recording bleeding
+  // into the next.
   useEffect(() => {
     if (!effectivelyRecording || !isVisible) {
       segmentsRef.current = [];
+      setStreaming(false);
     }
   }, [effectivelyRecording, isVisible]);
 
@@ -219,6 +234,15 @@ export function useLiveCaptions(
             isVisible: currentIsVisible,
           });
 
+          // Ignore late events that arrive after captions are disabled or the
+          // overlay is hidden. The refs are kept in sync by parent effects.
+          if (!currentLiveCaptionsEnabled || !currentIsVisible) {
+            console.log(
+              `[Live Captions] Ignoring stale event — captions disabled or hidden (currentLiveCaptionsEnabled=${currentLiveCaptionsEnabled}, currentIsVisible=${currentIsVisible})`,
+            );
+            return;
+          }
+
           if (segments && segments.length > 0) {
             // Merge segments
             const merged = [...segmentsRef.current];
@@ -234,20 +258,15 @@ export function useLiveCaptions(
             const displayText = merged.map((s) => s.text).join(" ");
             const filtered = filterStreamingText(displayText);
 
-            if (!filtered) {
-              console.log(
-                "[Live Captions] Filler filter removed ALL text — raw:",
-                JSON.stringify(displayText),
-                "| keeping previous",
-              );
-              // Don't update streamingText if filter removed all text
-            } else {
-              console.log(
-                "[Live Captions] streamingText set to:",
-                JSON.stringify(filtered),
-              );
-              setStreamingText(filtered);
-            }
+            // Always update streamingText with the filtered display text.
+            // The filter no longer drops single filler words, and multi-word
+            // filler continuations now keep the remainder, so the box should
+            // not blank mid-stream unless the backend genuinely returns empty.
+            console.log(
+              "[Live Captions] streamingText set to:",
+              JSON.stringify(filtered),
+            );
+            setStreamingText(filtered);
 
             segmentsRef.current = merged;
             setStreamingSegments([...merged]);
@@ -262,21 +281,11 @@ export function useLiveCaptions(
                   return prev;
                 }
                 const filtered = filterStreamingText(text);
-                if (!filtered) {
-                  console.log(
-                    "[Live Captions] Filler filter removed ALL text (fallback) — raw:",
-                    JSON.stringify(text),
-                    "| keeping previous:",
-                    JSON.stringify(prev),
-                  );
-                  return prev;
-                } else {
-                  console.log(
-                    "[Live Captions] streamingText set to (fallback):",
-                    JSON.stringify(filtered),
-                  );
-                  return filtered;
-                }
+                console.log(
+                  "[Live Captions] streamingText set to (fallback):",
+                  JSON.stringify(filtered),
+                );
+                return filtered;
               });
             }
           }
@@ -291,8 +300,62 @@ export function useLiveCaptions(
     };
   }, []);
 
+  // Listen for stream-text events from the backend's streaming pipeline.
+  // These provide low-latency live captions with an append-only committed
+  // prefix plus a volatile tentative suffix. The partial-transcription
+  // listener above continues to serve as the 2.5s batch fallback.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    console.log("[Live Captions] Registering stream-text event listener");
+
+    const setup = async () => {
+      unlisten = await listen<StreamTextEvent>("stream-text", (event) => {
+        const { committed, tentative } = event.payload;
+
+        // Read current values from refs to avoid stale closure
+        const currentLiveCaptionsEnabled = liveCaptionsEnabledRef.current;
+        const currentIsVisible = isVisibleRef.current;
+
+        console.log("[Live Captions] stream-text event received:", {
+          committedLength: committed.length,
+          tentativeLength: tentative.length,
+          liveCaptionsEnabled: currentLiveCaptionsEnabled,
+          isVisible: currentIsVisible,
+        });
+
+        if (!currentLiveCaptionsEnabled || !currentIsVisible) {
+          console.log(
+            "[Live Captions] Ignoring stream-text event — captions disabled or hidden",
+          );
+          return;
+        }
+
+        // Combine committed and tentative with a single space. Both fields
+        // may be empty, so trim the result before filtering.
+        const combined = `${committed.trim()} ${tentative.trim()}`.trim();
+        const filtered = filterStreamingText(combined);
+
+        console.log(
+          "[Live Captions] streamingText set from stream-text:",
+          JSON.stringify(filtered),
+        );
+
+        setStreamingText(filtered);
+        setStreaming(true);
+      });
+    };
+
+    setup();
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   return {
     streamingText,
     liveCaptionsEnabled,
+    streaming,
   };
 }

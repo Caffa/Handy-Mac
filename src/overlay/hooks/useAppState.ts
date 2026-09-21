@@ -20,30 +20,30 @@ import type { OverlayState } from "./useOverlayState";
 // ─── Mirror the Rust AppState enum ────────────────────────────────────
 
 /** Idle — no active operation */
-export type AppStateIdle = { state: "Idle" };
+export type AppStateIdle = { state: "Idle"; data: { session_id: number } };
 
 /** Recording — actively capturing audio */
 export type AppStateRecording = {
   state: "Recording";
-  data: { binding_id: string };
+  data: { binding_id: string; session_id: number };
 };
 
 /** Processing — transcribing or routing (binding_id identifies the originating action) */
 export type AppStateProcessing = {
   state: "Processing";
-  data: { binding_id: string | null };
+  data: { binding_id: string | null; session_id: number };
 };
 
 /** UsbCycling — USB device power cycling */
 export type AppStateUsbCycling = {
   state: "UsbCycling";
-  data: { stage: string };
+  data: { stage: string; session_id: number };
 };
 
 /** Confirming — awaiting user confirmation (router), binding_id identifies the originating action */
 export type AppStateConfirming = {
   state: "Confirming";
-  data: { text: string; binding_id: string | null };
+  data: { text: string; binding_id: string | null; session_id: number };
 };
 
 /** Union type mirroring the Rust AppState enum */
@@ -136,13 +136,19 @@ export interface UseAppStateReturn {
   routerText: string | null;
   /** The USB cycling stage when UsbCycling, or null */
   usbStage: string | null;
+  /** Monotonic session id of the current AppState (for debugging) */
+  currentSessionId: number;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────
 
 export function useAppState(): UseAppStateReturn {
-  const [appState, setAppState] = useState<AppState>({ state: "Idle" });
+  const [appState, setAppState] = useState<AppState>({
+    state: "Idle",
+    data: { session_id: 0 },
+  });
   const appStateRef = useRef<AppState>(appState);
+  const currentSessionIdRef = useRef<number>(0);
 
   // Keep ref in sync for callback access
   useEffect(() => {
@@ -156,6 +162,42 @@ export function useAppState(): UseAppStateReturn {
     const setup = async () => {
       const unlisten = await listen<AppState>("app-state", (event) => {
         console.log("[AppState] Received:", JSON.stringify(event.payload));
+
+        const incomingId = event.payload.data.session_id;
+        const incomingState = event.payload.state;
+        const currentState = appStateRef.current.state;
+
+        // If the backend is telling us to go Idle while the overlay is pinned
+        // in a non-Recording active state (Processing/Confirming), always accept
+        // it. The monotonic session guard below can otherwise drop a legitimate
+        // Idle and leave the UI stuck.
+        if (
+          incomingState === "Idle" &&
+          (currentState === "Processing" || currentState === "Confirming")
+        ) {
+          currentSessionIdRef.current = Math.max(
+            currentSessionIdRef.current,
+            incomingId,
+          );
+          setAppState(event.payload);
+          return;
+        }
+
+        // Stale-event guard: ignore events from an older session so a late
+        // "Idle" from a finished transcription doesn't collapse a newer
+        // recording's visualizer.
+        //
+        // session_id === 0 is a forced reset (cancel, force-hide, initial
+        // startup). Always accept it so the overlay can return to Idle even
+        // after real sessions have started.
+        if (incomingId !== 0 && incomingId < currentSessionIdRef.current) {
+          console.log(
+            "[AppState] Stale event ignored:",
+            JSON.stringify(event.payload),
+          );
+          return;
+        }
+        currentSessionIdRef.current = incomingId;
         setAppState(event.payload);
       });
       unlistenFn = unlisten;
@@ -212,5 +254,6 @@ export function useAppState(): UseAppStateReturn {
     isRouter,
     routerText,
     usbStage,
+    currentSessionId: currentSessionIdRef.current,
   };
 }

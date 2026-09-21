@@ -21,17 +21,21 @@ use crate::audio_toolkit::{
     vad::{self, VadFrame},
     VoiceActivityDetector,
 };
+use crate::emergency_save;
 use crate::settings::NoiseSuppressionLevel;
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 
 enum Cmd {
-    Start,
-    Stop(mpsc::Sender<Vec<f32>>),
+    Start {
+        binding_id: String,
+    },
+    Stop(mpsc::Sender<(Vec<f32>, Vec<f32>)>),
     /// Continue recording for up to `max_buffer_ms` after the hotkey is
     /// released, but stop early when sustained silence is detected (based
     /// on the microphone volume relative to the noise floor).
     SmartStop {
         max_buffer_ms: u64,
-        reply_tx: mpsc::Sender<Vec<f32>>,
+        reply_tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     },
     Shutdown,
 }
@@ -55,7 +59,8 @@ struct SmartStopState {
     /// Maximum duration of the smart buffer.
     max_duration: Duration,
     /// Channel to send the final audio samples on completion.
-    reply_tx: mpsc::Sender<Vec<f32>>,
+    /// The tuple is (processed_samples, raw_samples).
+    reply_tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     /// Estimated noise floor (RMS) built from VAD-noise frames during
     /// the preceding recording.
     noise_floor: f32,
@@ -119,6 +124,16 @@ pub struct AudioRecorder {
     /// This implements the Strategy pattern: the callback is a runtime-swappable
     /// dependency rather than a construction-time decision.
     streaming_enabled: Arc<AtomicBool>,
+    /// Shared cancellation flag for streaming transcription. The recorder
+    /// clears this unconditionally on `Cmd::Start` as a belt-and-suspenders
+    /// defense against stale cancellation state from a previous session.
+    streaming_cancel_flag: Option<StreamingCancelFlag>,
+    /// Optional real-time audio frame router. When present and open, each
+    /// resampled 16 kHz frame produced by the frame resampler is forwarded to
+    /// the streaming transcription worker. This bypasses the slower 2.5 s
+    /// batch streaming callback path. When absent or closed, the recorder
+    /// falls back to the legacy batch callback.
+    stream_router: Option<Arc<crate::managers::transcription::StreamRouter>>,
     /// Timestamp (ms since epoch) of the last audio chunk received by
     /// the consumer thread. Used to detect dead microphone streams.
     last_chunk_ms: Arc<AtomicU64>,
@@ -130,10 +145,24 @@ pub struct AudioRecorder {
     /// Stored as AtomicU32 to avoid float atomics. Multiply by 1_000_000
     /// to preserve precision when storing, divide when retrieving.
     max_level: Arc<AtomicU32>,
+    /// Set by cpal when the active input stream can no longer capture.
+    stream_error: Arc<AtomicBool>,
     /// Pre-recording buffer in milliseconds. When >0, stores the last N ms
     /// of audio continuously and prepends it to recordings when they start.
     /// Only effective in always-on microphone mode.
     pre_buffer_ms: Arc<AtomicU32>,
+    /// Shared timestamp (ms since recording start) of the most recent VAD
+    /// speech frame. The coordinator reads this to implement a sliding
+    /// timeout: as long as the user keeps talking, the 5-minute deadline is
+    /// reset. Stored as elapsed ms so a single u64 can be read without locks.
+    last_voice_activity_ms: Arc<AtomicU64>,
+    /// Generation counter for stream close/recreation. Incremented by
+    /// `AudioRecorder::close()` and observed by long-lived streaming
+    /// callbacks so they can bail out if the recorder/stream they were
+    /// created for has been torn down.
+    pub(crate) close_generation: Arc<AtomicU64>,
+    /// Which input channel to use. None = average all (original behavior).
+    selected_channel: Option<usize>,
 }
 
 impl AudioRecorder {
@@ -147,11 +176,32 @@ impl AudioRecorder {
             level_cb: None,
             streaming_cb: None,
             streaming_enabled: Arc::new(AtomicBool::new(false)),
+            streaming_cancel_flag: None,
+            stream_router: None,
             last_chunk_ms: Arc::new(AtomicU64::new(0)),
             opened_at_ms: Arc::new(AtomicU64::new(0)),
             max_level: Arc::new(AtomicU32::new(0)),
             pre_buffer_ms: Arc::new(AtomicU32::new(0)),
+            last_voice_activity_ms: Arc::new(AtomicU64::new(0)),
+            close_generation: Arc::new(AtomicU64::new(0)),
+            stream_error: Arc::new(AtomicBool::new(false)),
+            selected_channel: None,
         })
+    }
+
+    /// Attach a shared voice-activity timestamp. The recorder will stamp it
+    /// whenever VAD classifies a frame as Speech while recording.
+    pub fn with_voice_activity_stamp(mut self, stamp: Arc<AtomicU64>) -> Self {
+        self.last_voice_activity_ms = stamp;
+        self
+    }
+
+    /// Attach a shared stream close-generation counter. Long-lived streaming
+    /// callbacks can observe this to return early when the recorder has been
+    /// closed/recreated after they were spawned.
+    pub fn with_close_generation(mut self, gen: Arc<AtomicU64>) -> Self {
+        self.close_generation = gen;
+        self
     }
 
     pub fn with_vad(mut self, vad: Box<dyn VoiceActivityDetector>) -> Self {
@@ -186,6 +236,27 @@ impl AudioRecorder {
         self
     }
 
+    /// Attach a shared streaming cancellation flag. The recorder will clear
+    /// this flag unconditionally on every `Cmd::Start` so that a new
+    /// recording session does not inherit stale cancellation state from a
+    /// previous session.
+    pub fn with_streaming_cancel_flag(mut self, flag: StreamingCancelFlag) -> Self {
+        self.streaming_cancel_flag = Some(flag);
+        self
+    }
+
+    /// Attach a real-time stream router for per-frame streaming
+    /// transcription. When the router is open, the recorder feeds each
+    /// resampled 16 kHz frame directly to the router instead of waiting for
+    /// the 2.5 s batch streaming callback.
+    pub fn with_stream_router(
+        mut self,
+        router: Option<Arc<crate::managers::transcription::StreamRouter>>,
+    ) -> Self {
+        self.stream_router = router;
+        self
+    }
+
     /// Set whether streaming transcription is enabled.
     /// When enabled and a streaming callback is attached, the callback
     /// will be invoked periodically during recording.
@@ -195,6 +266,15 @@ impl AudioRecorder {
     pub fn with_streaming_enabled(self, enabled: bool) -> Self {
         self.streaming_enabled.store(enabled, Ordering::Release);
         self
+    }
+
+    pub fn with_selected_channel(mut self, channel: Option<u16>) -> Self {
+        self.set_selected_channel(channel);
+        self
+    }
+
+    pub fn set_selected_channel(&mut self, channel: Option<u16>) {
+        self.selected_channel = channel.map(usize::from);
     }
 
     /// Runtime toggle for streaming transcription. When disabled, the
@@ -229,8 +309,18 @@ impl AudioRecorder {
 
     pub fn open(&mut self, device: Option<Device>) -> Result<(), Box<dyn std::error::Error>> {
         if self.worker_handle.is_some() {
-            return Ok(()); // already open
+            if !self.needs_reopen() {
+                return Ok(()); // already open
+            }
+            // The worker exited on its own (see `needs_reopen`). Reap it so we
+            // rebuild the stream below instead of handing the caller back a
+            // recorder whose channels are already closed.
+            log::warn!("Capture stream failed; rebuilding microphone stream");
+            let _ = self.close();
         }
+
+        // Reset stream error flag at the start of every open attempt.
+        self.stream_error.store(false, Ordering::Relaxed);
 
         // Reset stream liveness timestamp
         self.last_chunk_ms.store(0, Ordering::Relaxed);
@@ -263,9 +353,15 @@ impl AudioRecorder {
         // Pass the streaming_enabled flag so the consumer can gate the callback
         // at runtime without recreating the recorder (Strategy pattern).
         let streaming_enabled = self.streaming_enabled.clone();
+        let streaming_cancel_flag = self.streaming_cancel_flag.clone();
+        // Move the optional real-time stream router into the worker thread
+        let stream_router = self.stream_router.clone();
         let last_chunk_ms = self.last_chunk_ms.clone();
         let max_level = self.max_level.clone();
+        let stream_error = Arc::clone(&self.stream_error);
+        let selected_channel = self.selected_channel;
         let pre_buffer_ms = self.pre_buffer_ms.load(Ordering::Relaxed);
+        let last_voice_activity_ms = self.last_voice_activity_ms.clone();
 
         let worker = std::thread::spawn(move || {
             let stop_flag = Arc::new(AtomicBool::new(false));
@@ -276,6 +372,20 @@ impl AudioRecorder {
 
                 let sample_rate = config.sample_rate().0;
                 let channels = config.channels() as usize;
+
+                if let Some(channel) = selected_channel {
+                    if channel < channels {
+                        log::info!("Using selected input channel: {}", channel + 1);
+                    } else {
+                        log::warn!(
+                            "Selected input channel {} is out of range for a {}-channel device; averaging all channels instead",
+                            channel + 1,
+                            channels
+                        );
+                    }
+                } else {
+                    log::info!("Averaging all {} input channels", channels);
+                }
 
                 log::info!(
                     "Using device: {:?}\nSample rate: {}\nChannels: {}\nFormat: {:?}",
@@ -305,6 +415,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I8 => AudioRecorder::build_stream::<i8>(
@@ -313,6 +425,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I16 => AudioRecorder::build_stream::<i16>(
@@ -321,6 +435,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::I32 => AudioRecorder::build_stream::<i32>(
@@ -329,6 +445,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     cpal::SampleFormat::F32 => AudioRecorder::build_stream::<f32>(
@@ -337,6 +455,8 @@ impl AudioRecorder {
                         sample_tx,
                         channels,
                         stop_flag_for_stream,
+                        Arc::clone(&stream_error),
+                        selected_channel,
                     )
                     .map_err(|e| format!("Failed to build input stream: {e}"))?,
                     sample_format => {
@@ -359,26 +479,60 @@ impl AudioRecorder {
                         sample_rate,
                         vad,
                         noise_suppressor,
-                        sample_rx,
-                        cmd_rx,
+                        &sample_rx,
+                        &cmd_rx,
                         level_cb,
                         streaming_cb,
                         streaming_enabled,
+                        streaming_cancel_flag,
+                        stream_router,
                         stop_flag,
                         last_chunk_ms,
                         max_level,
                         pre_buffer_ms,
+                        last_voice_activity_ms,
                     );
 
-                    // Pause the stream before dropping to prevent heap corruption.
-                    // On macOS, cpal::Stream::pause() is asynchronous — CoreAudio's IO
-                    // thread may still be executing the last callback invocation when
-                    // pause() returns. If we drop immediately, internal buffers are
-                    // deallocated while the callback is still in-flight, causing
-                    // nanov2 malloc heap corruption → SIGABRT.
-                    // 100ms is a generous safety margin (typical buffer period is 5–23ms).
+                    // A failed open may mean the cached config went stale
+                    // (device re-plugged, rate/format changed in the OS).
+                    // Drop it so the next attempt re-queries the device.
+                    // (No config cache in the diverged recorder, but keep hook
+                    //  here for symmetry with upstream.)
+
+                    // Deterministic teardown barrier: wait for the cpal callback
+                    // to actually stop producing data. The callback sets stop_flag
+                    // when it sees Cmd::Shutdown, sends any final samples, and then
+                    // sends EndOfStream. We drain the channel until EndOfStream or a
+                    // timeout so we know the callback thread is quiescent before we
+                    // pause and drop the stream. This avoids the heap corruption that
+                    // occurs when internal CoreAudio buffers are freed while the
+                    // callback is still in-flight.
+                    let t_drain = std::time::Instant::now();
+                    loop {
+                        match sample_rx.recv_timeout(Duration::from_millis(500)) {
+                            Ok(AudioChunk::EndOfStream) => {
+                                log::info!(
+                                    "[TEARDOWN-BARRIER] EndOfStream received after {:?}",
+                                    t_drain.elapsed()
+                                );
+                                break;
+                            }
+                            Ok(_) => continue,
+                            Err(_) => {
+                                log::warn!(
+                                    "[TEARDOWN-BARRIER] Timed out waiting for EndOfStream after {:?}",
+                                    t_drain.elapsed()
+                                );
+                                break;
+                            }
+                        }
+                    }
+
+                    // Pause the stream before dropping. The barrier above ensures
+                    // the callback is quiescent; the short sleep is an extra safety
+                    // margin for any backend-specific async completion.
                     let _ = stream.pause();
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                     drop(stream);
                 }
                 Err(error_message) => {
@@ -414,9 +568,11 @@ impl AudioRecorder {
         }
     }
 
-    pub fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn start(&self, binding_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(tx) = &self.cmd_tx {
-            tx.send(Cmd::Start)?;
+            tx.send(Cmd::Start {
+                binding_id: binding_id.to_string(),
+            })?;
         }
         Ok(())
     }
@@ -430,7 +586,9 @@ impl AudioRecorder {
     /// like cancel, level callbacks, and streaming callbacks. By splitting into
     /// send + wait phases, the caller can release the lock between sending the
     /// command and waiting for the response.
-    pub fn stop_send(&self) -> Result<mpsc::Receiver<Vec<f32>>, Box<dyn std::error::Error>> {
+    pub fn stop_send(
+        &self,
+    ) -> Result<mpsc::Receiver<(Vec<f32>, Vec<f32>)>, Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
@@ -441,15 +599,15 @@ impl AudioRecorder {
     /// Wait for the result of a Stop command sent via `stop_send()`.
     /// Returns the audio samples on success, or an empty vector on timeout.
     pub fn wait_for_stop_result(
-        resp_rx: mpsc::Receiver<Vec<f32>>,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        resp_rx: mpsc::Receiver<(Vec<f32>, Vec<f32>)>,
+    ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         match resp_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for audio samples after 5 seconds - stream may be frozen"
                 );
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -465,7 +623,7 @@ impl AudioRecorder {
     /// FIXED: Added a 5-second timeout to prevent infinite blocking if the
     /// audio stream is frozen (e.g., zombie device, CoreAudio hang). If the
     /// timeout expires, returns an empty sample vector instead of blocking forever.
-    pub fn stop(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn stop(&self) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
@@ -476,13 +634,13 @@ impl AudioRecorder {
         // from becoming completely unresponsive. 5 seconds is generous enough for
         // even the largest audio buffers to be processed.
         match resp_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for audio samples after 5 seconds - stream may be frozen"
                 );
                 // Return empty samples instead of blocking forever
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -501,7 +659,7 @@ impl AudioRecorder {
     pub fn smart_stop_send(
         &self,
         max_buffer_ms: u64,
-    ) -> Result<mpsc::Receiver<Vec<f32>>, Box<dyn std::error::Error>> {
+    ) -> Result<mpsc::Receiver<(Vec<f32>, Vec<f32>)>, Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::SmartStop {
@@ -515,18 +673,18 @@ impl AudioRecorder {
     /// Wait for the result of a SmartStop command sent via `smart_stop_send()`.
     /// Returns the audio samples on success, or an empty vector on timeout.
     pub fn wait_for_smart_stop_result(
-        resp_rx: mpsc::Receiver<Vec<f32>>,
+        resp_rx: mpsc::Receiver<(Vec<f32>, Vec<f32>)>,
         max_buffer_ms: u64,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let timeout = Duration::from_millis(max_buffer_ms) + Duration::from_secs(2);
         match resp_rx.recv_timeout(timeout) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for smart_stop samples after {}ms - stream may be frozen",
                     timeout.as_millis()
                 );
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -549,7 +707,10 @@ impl AudioRecorder {
     ///
     /// FIXED: Added timeout protection (max_buffer_ms + 2 seconds) to prevent
     /// infinite blocking if the audio stream is frozen.
-    pub fn smart_stop(&self, max_buffer_ms: u64) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn smart_stop(
+        &self,
+        max_buffer_ms: u64,
+    ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let (resp_tx, resp_rx) = mpsc::channel();
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::SmartStop {
@@ -562,13 +723,13 @@ impl AudioRecorder {
         // The smart-stop can take up to max_buffer_ms, so we add a 2-second safety margin.
         let timeout = Duration::from_millis(max_buffer_ms) + Duration::from_secs(2);
         match resp_rx.recv_timeout(timeout) {
-            Ok(samples) => Ok(samples),
+            Ok(result) => Ok(result),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
                     "Timeout waiting for smart_stop samples after {}ms - stream may be frozen",
                     timeout.as_millis()
                 );
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Audio consumer thread disconnected".into())
@@ -577,6 +738,10 @@ impl AudioRecorder {
     }
 
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Increment the close generation so that any streaming callbacks
+        // already in flight know this recorder/stream is no longer valid and
+        // can bail out early instead of locking the TM or emitting stale events.
+        self.close_generation.fetch_add(1, Ordering::SeqCst);
         if let Some(tx) = self.cmd_tx.take() {
             let _ = tx.send(Cmd::Shutdown);
         }
@@ -599,6 +764,18 @@ impl AudioRecorder {
     /// Resets the max level counter. Should be called before starting a new recording.
     pub fn reset_max_level(&self) {
         self.max_level.store(0, Ordering::Relaxed);
+    }
+
+    /// True when the active capture stream must be rebuilt.
+    ///
+    /// cpal may report a device disconnect asynchronously without closing its
+    /// callback channel, so also honor the error callback's explicit flag.
+    pub fn needs_reopen(&self) -> bool {
+        self.stream_error.load(Ordering::Relaxed)
+            || self
+                .worker_handle
+                .as_ref()
+                .is_some_and(|handle| handle.is_finished())
     }
 
     /// Returns true if the microphone stream has received audio data within
@@ -644,12 +821,20 @@ impl AudioRecorder {
         self.device.as_ref().and_then(|d| d.name().ok())
     }
 
+    pub fn preferred_input_channel_count(
+        device: &cpal::Device,
+    ) -> Result<u16, Box<dyn std::error::Error>> {
+        Ok(Self::get_preferred_config(device)?.channels())
+    }
+
     fn build_stream<T>(
         device: &cpal::Device,
         config: &cpal::SupportedStreamConfig,
         sample_tx: mpsc::Sender<AudioChunk>,
         channels: usize,
         stop_flag: Arc<AtomicBool>,
+        stream_error: Arc<AtomicBool>,
+        selected_channel: Option<usize>,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
         T: Sample + SizedSample + Send + 'static,
@@ -657,45 +842,75 @@ impl AudioRecorder {
     {
         let mut output_buffer = Vec::new();
         let mut eos_sent = false;
+        // Resolve the effective channel to use. If the selected channel is
+        // out of range for this device, fall back to averaging all channels.
+        let use_channel: Option<usize> = match selected_channel {
+            Some(ch) if ch < channels => Some(ch),
+            Some(_) => None, // out of range, fall back to average
+            None => None,    // user chose "average all"
+        };
 
         let stream_cb = move |data: &[T], _: &cpal::InputCallbackInfo| {
-            if stop_flag.load(Ordering::Relaxed) {
-                if !eos_sent {
-                    // Process the final buffer BEFORE sending EndOfStream.
-                    // This ensures the last ~10-50ms of audio isn't lost when stopping.
-                    // We do NOT reset eos_sent here because we want to send the final
-                    // samples only once, then the sentinel.
-                    output_buffer.clear();
-                    if channels == 1 {
-                        output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
-                    } else {
-                        let frame_count = data.len() / channels;
-                        output_buffer.reserve(frame_count);
-                        for frame in data.chunks_exact(channels) {
-                            let mono_sample = frame
-                                .iter()
-                                .map(|&sample| sample.to_sample::<f32>())
-                                .sum::<f32>()
-                                / channels as f32;
-                            output_buffer.push(mono_sample);
-                        }
-                    }
-                    let _ = sample_tx.send(AudioChunk::Samples(output_buffer.clone()));
-                    let _ = sample_tx.send(AudioChunk::EndOfStream);
-                    eos_sent = true;
+            AudioRecorder::handle_input_block(
+                data,
+                channels,
+                use_channel,
+                &stop_flag,
+                &mut eos_sent,
+                &mut output_buffer,
+                &sample_tx,
+            );
+        };
+
+        device.build_input_stream(
+            &config.clone().into(),
+            stream_cb,
+            move |err| {
+                log::error!("Stream error: {}", err);
+                stream_error.store(true, Ordering::Relaxed);
+            },
+            None,
+        )
+    }
+
+    /// Body of the cpal input callback, extracted so the diverged streaming
+    /// recorder can share the tail-audio logic without duplicating it.
+    ///
+    /// The block that first observes the stop flag was captured before the stop,
+    /// so it is still forwarded — dropping it loses up to a callback period of
+    /// tail audio (worst on Bluetooth) — followed by the end-of-stream sentinel.
+    /// Later blocks are dropped until the flag clears.
+    fn handle_input_block<T>(
+        data: &[T],
+        channels: usize,
+        use_channel: Option<usize>,
+        stop_flag: &AtomicBool,
+        eos_sent: &mut bool,
+        output_buffer: &mut Vec<f32>,
+        sample_tx: &mpsc::Sender<AudioChunk>,
+    ) where
+        T: Sample,
+        f32: cpal::FromSample<T>,
+    {
+        let stopping = stop_flag.load(Ordering::Relaxed);
+        if stopping && *eos_sent {
+            return;
+        }
+
+        output_buffer.clear();
+
+        if channels == 1 {
+            output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
+        } else {
+            let frame_count = data.len() / channels;
+            output_buffer.reserve(frame_count);
+
+            if let Some(ch) = use_channel {
+                for frame in data.chunks_exact(channels) {
+                    let mono_sample = frame[ch].to_sample::<f32>();
+                    output_buffer.push(mono_sample);
                 }
-                return;
-            }
-            eos_sent = false;
-
-            output_buffer.clear();
-
-            if channels == 1 {
-                output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
             } else {
-                let frame_count = data.len() / channels;
-                output_buffer.reserve(frame_count);
-
                 for frame in data.chunks_exact(channels) {
                     let mono_sample = frame
                         .iter()
@@ -705,21 +920,25 @@ impl AudioRecorder {
                     output_buffer.push(mono_sample);
                 }
             }
+        }
 
-            if sample_tx
-                .send(AudioChunk::Samples(output_buffer.clone()))
-                .is_err()
-            {
-                log::error!("Failed to send samples");
-            }
-        };
+        // A failed send means the consumer thread is gone. During shutdown that is
+        // expected (the consumer exits before the stream is dropped), so only
+        // report it when capture was supposed to be live.
+        if sample_tx
+            .send(AudioChunk::Samples(output_buffer.clone()))
+            .is_err()
+            && !stopping
+        {
+            log::error!("Failed to send samples");
+        }
 
-        device.build_input_stream(
-            &config.clone().into(),
-            stream_cb,
-            |err| log::error!("Stream error: {}", err),
-            None,
-        )
+        if stopping {
+            let _ = sample_tx.send(AudioChunk::EndOfStream);
+            *eos_sent = true;
+        } else {
+            *eos_sent = false;
+        }
     }
 
     fn get_preferred_config(
@@ -865,8 +1084,11 @@ fn handle_frame(
     // background noise that could trigger false speech detections.
     let processed_samples: Vec<f32> = if let Some(ns) = noise_suppressor {
         let mut ns_guard = ns.lock();
-        // Noise suppressor processes 480-sample frames at 16kHz (30ms),
-        // which matches the VAD frame size.
+        // Noise suppressor processes audio frames and expects 480 samples (30ms).
+        // This is compatible with Silero (480 samples/frame) but NOT with Earshot
+        // (256 samples/frame). When noise suppression is enabled with Earshot, the
+        // frame size mismatch means the suppressor may error — this is acceptable
+        // since noise suppression is opt-in and earshot is experimental.
         ns_guard.process(samples)
     } else {
         samples.to_vec()
@@ -900,23 +1122,41 @@ fn run_consumer(
     in_sample_rate: u32,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
     noise_suppressor: Option<Arc<Mutex<NoiseSuppressor>>>,
-    sample_rx: mpsc::Receiver<AudioChunk>,
-    cmd_rx: mpsc::Receiver<Cmd>,
+    sample_rx: &mpsc::Receiver<AudioChunk>,
+    cmd_rx: &mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     streaming_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     streaming_enabled: Arc<AtomicBool>,
+    streaming_cancel_flag: Option<StreamingCancelFlag>,
+    stream_router: Option<Arc<crate::managers::transcription::StreamRouter>>,
     stop_flag: Arc<AtomicBool>,
     last_chunk_ms: Arc<AtomicU64>,
     max_level: Arc<AtomicU32>,
     pre_buffer_ms: u32,
+    last_voice_activity_ms: Arc<AtomicU64>,
 ) {
+    // The resampler must emit frames that exactly match the VAD backend's
+    // frame size: Silero expects 480 samples (30ms at 16kHz), Earshot expects
+    // 256 samples (16ms). Feeding the wrong size makes the VAD bail on every
+    // frame, which would classify all audio as speech (VAD becomes a no-op).
+    let frame_samples = vad.as_ref().map_or(
+        (constants::WHISPER_SAMPLE_RATE * 30 / 1000) as usize,
+        |arc| {
+            // Brief lock just to read the const frame_samples value
+            let det = arc.lock();
+            det.frame_samples()
+        },
+    );
+    let frame_duration =
+        Duration::from_secs_f64(frame_samples as f64 / constants::WHISPER_SAMPLE_RATE as f64);
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
         constants::WHISPER_SAMPLE_RATE as usize,
-        Duration::from_millis(30),
+        frame_duration,
     );
 
     let mut processed_samples = Vec::<f32>::new();
+    let mut raw_samples = Vec::<f32>::new();
     let mut recording = false;
 
     // Streaming transcription: invoke callback every ~2.5 seconds
@@ -927,6 +1167,10 @@ fn run_consumer(
     // This prevents false starts where VAD briefly flags noise as speech
     const MIN_SPEECH_FRAMES_BEFORE_STREAMING: usize = 3; // ~90ms at 30ms per frame
     let mut consecutive_speech_frames: usize = 0;
+
+    // Throttle debug logs for the streaming-callback gate so a blocked gate
+    // condition does not flood the log on every audio frame.
+    let mut last_gate_log: Option<Instant> = None;
 
     // Running estimate of background noise level, built from the RMS of
     // frames that VAD classifies as Noise during an active recording.
@@ -950,6 +1194,21 @@ fn run_consumer(
         0
     };
     let mut pre_buffer: VecDeque<f32> = VecDeque::with_capacity(pre_buffer_max_samples);
+
+    // Emergency backup state for this recording. We hold an Option so we can
+    // take() it on stop/complete/cancel, ensuring the in-progress file is only
+    // touched while a recording is active.
+    let mut emergency_backup: Option<Arc<emergency_save::EmergencyBackup>> = None;
+    // Throttle emergency-backup disk writes to every 5 seconds. Writing the WAV
+    // on every frame would serialize file I/O onto the audio path and starve
+    // the callback; batching to 5 s keeps the backup reasonably fresh without
+    // blocking per-frame processing.
+    const BACKUP_INTERVAL: Duration = Duration::from_secs(5);
+    let mut last_backup_update: Option<Instant> = None;
+    // Instant when the current recording began. Used to convert voice-activity
+    // timestamps into elapsed milliseconds that the coordinator can compare
+    // against its own Instant-based timeout without cross-thread Instant math.
+    let mut recording_start_instant: Option<Instant> = None;
 
     // ---------- spectrum visualisation setup ---------------------------- //
     const BUCKETS: usize = 16;
@@ -999,14 +1258,27 @@ fn run_consumer(
                                     &noise_suppressor,
                                     &mut processed_samples,
                                 );
+                                raw_samples.extend_from_slice(frame);
                             });
                             if let Some(ss) = smart_stop.take() {
                                 log::debug!(
                                     "Smart-stop: max duration reached (no audio) after {}ms",
                                     elapsed.as_millis(),
                                 );
-                                let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                                let _ = ss.reply_tx.send((
+                                    std::mem::take(&mut processed_samples),
+                                    std::mem::take(&mut raw_samples),
+                                ));
                             }
+                            // Finalise the emergency backup after a successful
+                            // smart-stop (max duration) completion.
+                            if let Some(backup) = emergency_backup.take() {
+                                backup.complete_recording();
+                                log::info!(
+                                    "[EMERGENCY-BACKUP] completed (smart-stop max duration)"
+                                );
+                            }
+                            last_voice_activity_ms.store(0, Ordering::Relaxed);
                         }
                     }
                     continue;
@@ -1058,6 +1330,24 @@ fn run_consumer(
             }
         }
 
+        // ---------- emergency backup update ------------------------------- //
+        // Periodically flush the current processed samples to disk. We do this
+        // in the outer worker loop (not inside the per-frame closure) because
+        // write_wav_backup takes a mutex and performs file I/O. Throttling to
+        // 5 s limits mutex contention and keeps the backup reasonably fresh.
+        if recording {
+            if let Some(backup) = emergency_backup.as_ref() {
+                let should_update = match last_backup_update {
+                    None => true,
+                    Some(last) => last.elapsed() >= BACKUP_INTERVAL,
+                };
+                if should_update {
+                    backup.update_samples(&processed_samples, constants::WHISPER_SAMPLE_RATE);
+                    last_backup_update = Some(Instant::now());
+                }
+            }
+        }
+
         // ---------- streaming transcription callback ----------------------- //
         // Invoke the streaming callback periodically during active recording
         // to enable real-time partial transcription display.
@@ -1065,11 +1355,38 @@ fn run_consumer(
         // avoid false starts where VAD briefly flags noise as speech.
         // The streaming_enabled flag allows runtime toggling (Strategy pattern)
         // without recreating the recorder.
-        if recording
+        // Gate diagnostics: if the outer gate fails, emit one debug log per
+        // second naming the first clause that prevented invocation. This avoids
+        // flooding the log while still making it obvious why streaming is not
+        // running when expected.
+        let stream_router_active = stream_router.as_ref().is_some_and(|r| r.is_open());
+        let gate_ok = recording
             && streaming_enabled.load(Ordering::Acquire)
             && streaming_cb.is_some()
             && consecutive_speech_frames >= MIN_SPEECH_FRAMES_BEFORE_STREAMING
-        {
+            && !stream_router_active;
+        if !gate_ok {
+            let now = Instant::now();
+            let should_log = match last_gate_log {
+                None => true,
+                Some(last) => last.elapsed() >= Duration::from_secs(1),
+            };
+            if should_log {
+                let reason = if !recording {
+                    "not recording"
+                } else if !streaming_enabled.load(Ordering::Acquire) {
+                    "streaming disabled"
+                } else if streaming_cb.is_none() {
+                    "no streaming callback"
+                } else if stream_router_active {
+                    "stream router active"
+                } else {
+                    "<3 speech frames"
+                };
+                log::debug!("[STREAM-CB-GATE] blocked: {}", reason);
+                last_gate_log = Some(now);
+            }
+        } else {
             let should_invoke = match streaming_last_invoked {
                 None => true, // First time: invoke after collecting some audio
                 Some(last) => last.elapsed().as_millis() as u64 >= STREAMING_INTERVAL_MS,
@@ -1081,6 +1398,18 @@ fn run_consumer(
                     let samples_clone = processed_samples.clone();
                     cb(samples_clone);
                     streaming_last_invoked = Some(std::time::Instant::now());
+                }
+            } else {
+                // Interval has not elapsed; this is the normal steady state
+                // during active streaming, so throttle to one log per second.
+                let now = Instant::now();
+                let should_log = match last_gate_log {
+                    None => true,
+                    Some(last) => last.elapsed() >= Duration::from_secs(1),
+                };
+                if should_log {
+                    log::debug!("[STREAM-CB-GATE] not invoking: interval not elapsed");
+                    last_gate_log = Some(now);
                 }
             }
         }
@@ -1097,6 +1426,13 @@ fn run_consumer(
         let mut smart_stop_triggered = false;
 
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
+            // Forward each resampled 16 kHz frame to the real-time stream router
+            // before the batch callback runs. This provides per-frame streaming
+            // transcription; when no router is open the feed is a cheap no-op.
+            if let Some(router) = &stream_router {
+                router.feed(frame);
+            }
+
             let rms = compute_rms(frame);
 
             // Track max audio level during recording for noise detection
@@ -1129,6 +1465,13 @@ fn run_consumer(
                 }
             }
 
+            // Accumulate raw (unfiltered) audio for WAV recording.
+            // This preserves the full audio including "noise" frames that VAD drops,
+            // so the saved recording sounds natural instead of stilted.
+            if recording {
+                raw_samples.extend_from_slice(frame);
+            }
+
             let class = handle_frame(
                 frame,
                 recording,
@@ -1137,12 +1480,21 @@ fn run_consumer(
                 &mut processed_samples,
             );
 
-            // Track consecutive speech frames for streaming transcription
-            // Reset on noise, increment on speech to avoid false starts
+            // Track consecutive speech frames for streaming transcription and
+            // update the shared voice-activity timestamp used by the coordinator
+            // for the sliding recording timeout. We stamp elapsed ms since the
+            // recording started so a single u64 can be read without needing a
+            // shared Instant (which isn't Send in all contexts and would require
+            // a lock). This avoids wall-clock skew and keeps the coordinator's
+            // silence calculation simple.
             if recording {
                 match class {
                     FrameClass::Speech => {
                         consecutive_speech_frames = consecutive_speech_frames.saturating_add(1);
+                        if let Some(start) = recording_start_instant {
+                            let elapsed = (Instant::now() - start).as_millis() as u64;
+                            last_voice_activity_ms.store(elapsed, Ordering::Relaxed);
+                        }
                     }
                     FrameClass::Noise => {
                         consecutive_speech_frames = 0;
@@ -1200,19 +1552,44 @@ fn run_consumer(
 
             frame_resampler.finish(&mut |frame: &[f32]| {
                 let _ = handle_frame(frame, true, &vad, &noise_suppressor, &mut processed_samples);
+                raw_samples.extend_from_slice(frame);
             });
 
             if let Some(ss) = smart_stop.take() {
-                let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                let _ = ss.reply_tx.send((
+                    std::mem::take(&mut processed_samples),
+                    std::mem::take(&mut raw_samples),
+                ));
             }
+            // Finalise the emergency backup after a successful smart-stop
+            // (trailing buffer exhausted) completion.
+            if let Some(backup) = emergency_backup.take() {
+                backup.complete_recording();
+                log::info!("[EMERGENCY-BACKUP] completed (smart-stop trailing buffer)");
+            }
+            last_voice_activity_ms.store(0, Ordering::Relaxed);
         }
 
         // non-blocking check for a command
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                Cmd::Start => {
+                Cmd::Start { binding_id } => {
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
+                    raw_samples.clear();
+
+                    // Start or re-attach the global emergency backup. We use
+                    // the OnceLock-based global so the recorder doesn't need
+                    // an extra constructor parameter, matching how lib.rs
+                    // initializes the backup before any recording can begin.
+                    emergency_backup = emergency_save::get_emergency_backup().map(Arc::clone);
+                    if let Some(backup) = emergency_backup.as_ref() {
+                        backup.start_recording(&binding_id);
+                        log::info!("[EMERGENCY-BACKUP] started for binding '{}'", binding_id);
+                    }
+                    last_backup_update = None;
+                    recording_start_instant = Some(Instant::now());
+                    last_voice_activity_ms.store(0, Ordering::Relaxed);
 
                     // Prepend pre-buffer if configured (always-on mode)
                     // This captures speech that started BEFORE the hotkey was pressed
@@ -1220,6 +1597,9 @@ fn run_consumer(
                         let pre_buffer_len = pre_buffer.len();
                         processed_samples.reserve(pre_buffer_len);
                         processed_samples.extend(pre_buffer.iter().copied());
+                        // Also prepend pre-buffer to raw_samples
+                        raw_samples.reserve(pre_buffer_len);
+                        raw_samples.extend(pre_buffer.iter().copied());
                         log::debug!(
                             "Pre-buffer: prepended {} samples ({}ms) to recording",
                             pre_buffer_len,
@@ -1230,6 +1610,9 @@ fn run_consumer(
                     }
 
                     recording = true;
+                    if let Some(ref flag) = streaming_cancel_flag {
+                        flag.set(false, "Cmd::Start");
+                    }
                     noise_floor = DEFAULT_NOISE_FLOOR;
                     noise_floor_initialised = false;
                     smart_stop = None;
@@ -1247,9 +1630,21 @@ fn run_consumer(
                     }
                 }
                 Cmd::Stop(reply_tx) => {
+                    log::info!("[STOP-DIAGNOSTIC] Consumer thread received Cmd::Stop");
+                    // Finalise the emergency backup as a successful recording
+                    // (delete the in-progress file). Do this before draining
+                    // audio so a crash during drain still leaves a recoverable
+                    // backup from the last periodic update.
+                    if let Some(backup) = emergency_backup.take() {
+                        backup.complete_recording();
+                        log::info!("[EMERGENCY-BACKUP] completed successfully");
+                    }
+                    recording_start_instant = None;
+                    last_voice_activity_ms.store(0, Ordering::Relaxed);
+                    log::info!("[STOP-DIAGNOSTIC] Consumer thread received Cmd::Stop");
                     // If a smart-stop is in progress, resolve it with
                     // whatever samples we have so far so the caller
-                    // doesn’t hang forever on resp_rx.recv().
+                    // doesn't hang forever on resp_rx.recv().
                     if let Some(ss) = smart_stop.take() {
                         frame_resampler.finish(&mut |frame: &[f32]| {
                             let _ = handle_frame(
@@ -1259,8 +1654,12 @@ fn run_consumer(
                                 &noise_suppressor,
                                 &mut processed_samples,
                             );
+                            raw_samples.extend_from_slice(frame);
                         });
-                        let _ = ss.reply_tx.send(std::mem::take(&mut processed_samples));
+                        let _ = ss.reply_tx.send((
+                            std::mem::take(&mut processed_samples),
+                            std::mem::take(&mut raw_samples),
+                        ));
                         log::debug!("Smart-stop: resolved by Cmd::Stop (cancel)");
                     }
 
@@ -1271,6 +1670,7 @@ fn run_consumer(
                     // The cpal callback sees the stop flag, sends EndOfStream, and goes
                     // silent — guaranteeing every captured sample is in the channel
                     // ahead of the sentinel.
+                    let t_drain = std::time::Instant::now();
                     loop {
                         match sample_rx.recv_timeout(Duration::from_secs(2)) {
                             Ok(AudioChunk::Samples(remaining)) => {
@@ -1282,16 +1682,24 @@ fn run_consumer(
                                         &noise_suppressor,
                                         &mut processed_samples,
                                     );
+                                    raw_samples.extend_from_slice(frame);
                                 });
                             }
-                            Ok(AudioChunk::EndOfStream) => break,
+                            Ok(AudioChunk::EndOfStream) => {
+                                log::info!(
+                                    "[STOP-DIAGNOSTIC] EndOfStream received after {:?}",
+                                    t_drain.elapsed()
+                                );
+                                break;
+                            }
                             Err(_) => {
-                                log::warn!("Timed out waiting for EndOfStream from audio callback");
+                                log::warn!("[STOP-DIAGNOSTIC] Timed out waiting for EndOfStream from audio callback after {:?}", t_drain.elapsed());
                                 break;
                             }
                         }
                     }
 
+                    let t_finish = std::time::Instant::now();
                     frame_resampler.finish(&mut |frame: &[f32]| {
                         let _ = handle_frame(
                             frame,
@@ -1300,9 +1708,22 @@ fn run_consumer(
                             &noise_suppressor,
                             &mut processed_samples,
                         );
+                        raw_samples.extend_from_slice(frame);
                     });
+                    log::info!(
+                        "[STOP-DIAGNOSTIC] frame_resampler.finish completed in {:?}",
+                        t_finish.elapsed()
+                    );
 
-                    let _ = reply_tx.send(std::mem::take(&mut processed_samples));
+                    let t_send = std::time::Instant::now();
+                    let _ = reply_tx.send((
+                        std::mem::take(&mut processed_samples),
+                        std::mem::take(&mut raw_samples),
+                    ));
+                    log::info!(
+                        "[STOP-DIAGNOSTIC] Consumer thread sent stop reply in {:?}",
+                        t_send.elapsed()
+                    );
 
                     // Resume the audio callback so the consumer loop can continue
                     // receiving chunks (important for always-on microphone mode).
@@ -1331,6 +1752,13 @@ fn run_consumer(
                 }
                 Cmd::Shutdown => {
                     stop_flag.store(true, Ordering::Relaxed);
+                    // Leave the emergency backup in its in-progress state if a
+                    // recording was active. The next app launch will run
+                    // recover_orphaned_recordings() and surface the file. The
+                    // recording_start_instant drop is implicit; clearing the
+                    // voice-activity stamp prevents a stale value from being
+                    // read by the coordinator after the worker exits.
+                    last_voice_activity_ms.store(0, Ordering::Relaxed);
                     return;
                 }
             }

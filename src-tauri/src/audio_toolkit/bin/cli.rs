@@ -110,7 +110,7 @@ impl RecorderState {
                     self.current_device_index = device_index;
                     println!("Opened recorder in Always-On mode");
                 }
-                self.recorder.start()?;
+                self.recorder.start("cli")?;
             }
             RecorderMode::OnDemand => {
                 // In on-demand mode, open for each recording
@@ -120,7 +120,7 @@ impl RecorderState {
                 self.recorder.open(device)?;
                 self.is_open = true;
                 self.current_device_index = device_index;
-                self.recorder.start()?;
+                self.recorder.start("cli")?;
                 println!("Opened and started recorder in On-Demand mode");
             }
         }
@@ -133,12 +133,12 @@ impl RecorderState {
         Ok(())
     }
 
-    fn stop_recording(&mut self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    fn stop_recording(&mut self) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         if !self.is_recording {
             return Err("No recording in progress.".into());
         }
 
-        let samples = self.recorder.stop()?;
+        let (processed_samples, raw_samples) = self.recorder.stop()?;
         self.is_recording = false;
 
         match self.mode {
@@ -155,7 +155,7 @@ impl RecorderState {
             }
         }
 
-        Ok(samples)
+        Ok((processed_samples, raw_samples))
     }
 
     fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -217,10 +217,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "stop" => match state.stop_recording() {
-                Ok(samples) => {
-                    if !samples.is_empty() {
+                Ok((_processed_samples, raw_samples)) => {
+                    if !raw_samples.is_empty() {
                         let filename = format!("recording_{}.wav", state.recording_index);
-                        match save_audio(&samples, &filename) {
+                        match save_audio(&raw_samples, &filename) {
                             Ok(_) => {
                                 println!("Recording saved as: {}", filename);
                                 state.recording_index += 1;

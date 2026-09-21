@@ -1,7 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { SettingsGroup } from "../../ui/SettingsGroup";
-import { LanguageSelector } from "../LanguageSelector";
 import { TranslateToEnglish } from "../TranslateToEnglish";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
 import { useModelStore } from "../../../stores/modelStore";
@@ -29,13 +28,6 @@ export const ModelSettingsCard: React.FC = () => {
         model: currentModelInfo.name,
       })}
     >
-      {supportsLanguageSelection && (
-        <LanguageSelector
-          descriptionMode="tooltip"
-          grouped={true}
-          supportedLanguages={currentModelInfo.supported_languages}
-        />
-      )}
       {supportsTranslation && (
         <TranslateToEnglish descriptionMode="tooltip" grouped={true} />
       )}

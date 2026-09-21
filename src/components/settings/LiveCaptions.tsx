@@ -12,7 +12,7 @@ export const LiveCaptions: React.FC<LiveCaptionsProps> = React.memo(
   ({ descriptionMode = "tooltip", grouped = false }) => {
     const { t } = useTranslation();
     const { getSetting, updateSetting, isUpdating } = useSettings();
-    const enabled = getSetting("live_captions_enabled") ?? true;
+    const enabled = getSetting("live_captions_enabled") ?? false;
 
     const handleChange = (checked: boolean) => {
       console.log(

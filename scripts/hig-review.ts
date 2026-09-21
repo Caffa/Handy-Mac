@@ -113,7 +113,9 @@ function parseArgs(): { limit: number; model: string } {
 
 async function checkOllamaRunning(): Promise<boolean> {
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, {
+      signal: AbortSignal.timeout(5000),
+    });
     return res.ok;
   } catch {
     return false;
@@ -130,9 +132,14 @@ async function getInstalledModels(): Promise<string[]> {
   }
 }
 
-async function isVisionModel(modelName: string, installed: string[]): Promise<boolean> {
+async function isVisionModel(
+  modelName: string,
+  installed: string[],
+): Promise<boolean> {
   // Check if model is installed
-  const isInstalled = installed.some((m) => m === modelName || m.startsWith(modelName + ":"));
+  const isInstalled = installed.some(
+    (m) => m === modelName || m.startsWith(modelName + ":"),
+  );
   if (!isInstalled) return false;
 
   // Check if it has vision capability via the API
@@ -143,7 +150,10 @@ async function isVisionModel(modelName: string, installed: string[]): Promise<bo
       body: JSON.stringify({ name: modelName }),
     });
     if (res.ok) {
-      const data = (await res.json()) as { capabilities?: string[]; details?: { capabilities?: string[] } };
+      const data = (await res.json()) as {
+        capabilities?: string[];
+        details?: { capabilities?: string[] };
+      };
       const caps = data.capabilities || data.details?.capabilities || [];
       if (caps.includes("vision")) return true;
     }
@@ -185,7 +195,9 @@ async function findVisionModel(
   // Try fallback models
   for (const fallback of FALLBACK_MODELS) {
     if (await isVisionModel(fallback, installed)) {
-      console.log(`Preferred model "${preferredModel}" not available, using "${fallback}".`);
+      console.log(
+        `Preferred model "${preferredModel}" not available, using "${fallback}".`,
+      );
       return fallback;
     }
   }
@@ -206,7 +218,9 @@ async function findVisionModel(
 function getScreenshots(): string[] {
   if (!existsSync(SCREENSHOTS_DIR)) {
     console.error(`Screenshots directory not found: ${SCREENSHOTS_DIR}`);
-    console.error("Run `bun run test:visual` to generate Loki reference screenshots first.");
+    console.error(
+      "Run `bun run test:visual` to generate Loki reference screenshots first.",
+    );
     process.exit(1);
   }
 
@@ -399,7 +413,13 @@ function buildSummary(results: ComponentReview[]): ReviewReport["summary"] {
     }
   }
 
-  return { totalViolations, highSeverity, mediumSeverity, lowSeverity, perComponent };
+  return {
+    totalViolations,
+    highSeverity,
+    mediumSeverity,
+    lowSeverity,
+    perComponent,
+  };
 }
 
 function printSummary(report: ReviewReport): void {
@@ -408,7 +428,9 @@ function printSummary(report: ReviewReport): void {
   console.log("═".repeat(60));
   console.log(`  Model:              ${report.model}`);
   console.log(`  Timestamp:           ${report.timestamp}`);
-  console.log(`  Screenshots:         ${report.processedScreenshots}/${report.totalScreenshots}`);
+  console.log(
+    `  Screenshots:         ${report.processedScreenshots}/${report.totalScreenshots}`,
+  );
   console.log(`  Total violations:    ${report.summary.totalViolations}`);
   console.log(`  High severity:       ${report.summary.highSeverity}`);
   console.log(`  Medium severity:     ${report.summary.mediumSeverity}`);
@@ -416,8 +438,9 @@ function printSummary(report: ReviewReport): void {
   console.log("─".repeat(60));
 
   // Per-component breakdown (sorted by violation count, descending)
-  const sorted = Object.entries(report.summary.perComponent)
-    .sort(([, a], [, b]) => b - a);
+  const sorted = Object.entries(report.summary.perComponent).sort(
+    ([, a], [, b]) => b - a,
+  );
 
   if (sorted.length > 0) {
     console.log("  Per-component breakdown:");
@@ -477,7 +500,9 @@ async function main(): Promise<void> {
   let visionModel = await findVisionModel(requestedModel, installedModels);
 
   if (!visionModel) {
-    console.log(`No vision model found. Attempting to pull "${DEFAULT_MODEL}"...`);
+    console.log(
+      `No vision model found. Attempting to pull "${DEFAULT_MODEL}"...`,
+    );
     const pulled = await pullModel(DEFAULT_MODEL);
     if (pulled) {
       visionModel = DEFAULT_MODEL;
@@ -496,7 +521,10 @@ async function main(): Promise<void> {
 
   // 3. Get screenshots
   const screenshots = getScreenshots();
-  const limitedScreenshots = screenshots.slice(0, limit === Infinity ? screenshots.length : limit);
+  const limitedScreenshots = screenshots.slice(
+    0,
+    limit === Infinity ? screenshots.length : limit,
+  );
   console.log(
     `Found ${screenshots.length} screenshots, processing ${limitedScreenshots.length}...`,
   );

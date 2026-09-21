@@ -4,7 +4,7 @@
 
 **Date:** 2026-07-06  
 **Status:** Planning  
-**Scope:** Backend state machine unification, frontend state migration, cancel race fix  
+**Scope:** Backend state machine unification, frontend state migration, cancel race fix
 
 ---
 
@@ -37,13 +37,13 @@ Handy has 3 independent state machines that can desync, causing visual bugs:
 
 ### Race Conditions
 
-| # | Race | Impact |
-|---|------|--------|
-| 1 | Cancel hotkey pressed while GPU transcription holds TM mutex | UI freezes; cancel feels unresponsive |
-| 2 | Frontend thinks "recording" but backend is already "processing" | Wrong overlay state shown |
-| 3 | USB cycling timeout fires but backend already finished | Overlay stuck in usb-cycling |
-| 4 | `hide-overlay` event arrives after new `show-overlay` event | Overlay closes during active recording |
-| 5 | `FinishGuard` drops after cancel resets coordinator to Idle | Coordinator ignores it (current fix), but frontend still gets stale `show-overlay` timing |
+| #   | Race                                                            | Impact                                                                                    |
+| --- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 1   | Cancel hotkey pressed while GPU transcription holds TM mutex    | UI freezes; cancel feels unresponsive                                                     |
+| 2   | Frontend thinks "recording" but backend is already "processing" | Wrong overlay state shown                                                                 |
+| 3   | USB cycling timeout fires but backend already finished          | Overlay stuck in usb-cycling                                                              |
+| 4   | `hide-overlay` event arrives after new `show-overlay` event     | Overlay closes during active recording                                                    |
+| 5   | `FinishGuard` drops after cancel resets coordinator to Idle     | Coordinator ignores it (current fix), but frontend still gets stale `show-overlay` timing |
 
 ---
 
@@ -209,7 +209,9 @@ useEffect(() => {
   const unlisten = listen<AppState>("app-state", (event) => {
     setAppState(event.payload);
   });
-  return () => { unlisten.then(f => f()); };
+  return () => {
+    unlisten.then((f) => f());
+  };
 }, []);
 ```
 
@@ -296,7 +298,7 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
 
     // NEW: Also emit app-state for the new frontend hook
     let app_state = match state {
-        "recording" => AppState::Recording { 
+        "recording" => AppState::Recording {
             binding_id: String::new() // will be updated by coordinator
         },
         "transcribing" | "processing" => AppState::Processing,
@@ -328,16 +330,16 @@ pub fn cancel_current_operation(app: &AppHandle) {
 
 ### 4.2 State Mapping: Old → New
 
-| Old Event | Old Payload | New `app-state` Payload |
-|-----------|-------------|------------------------|
-| `show-overlay` | `"recording:transcribe"` | `{ state: "Recording", data: { binding_id: "transcribe" } }` |
-| `show-overlay` | `"transcribing:transcribe"` | `{ state: "Processing" }` |
-| `show-overlay` | `"processing:router"` | `{ state: "Processing" }` |
-| `show-overlay` | `"usb-cycling:transcribe"` | `{ state: "UsbCycling", data: { stage: "" } }` |
-| `hide-overlay` | `{ force: true }` | `{ state: "Idle" }` |
-| `hide-overlay` | `{ force: false }` | `{ state: "Idle" }` (conditional) |
-| coordinator cancel | (implicit) | `{ state: "Idle" }` |
-| `transcription-preview` | (string) | `{ state: "Confirming", data: { text: "..." } }` |
+| Old Event               | Old Payload                 | New `app-state` Payload                                      |
+| ----------------------- | --------------------------- | ------------------------------------------------------------ |
+| `show-overlay`          | `"recording:transcribe"`    | `{ state: "Recording", data: { binding_id: "transcribe" } }` |
+| `show-overlay`          | `"transcribing:transcribe"` | `{ state: "Processing" }`                                    |
+| `show-overlay`          | `"processing:router"`       | `{ state: "Processing" }`                                    |
+| `show-overlay`          | `"usb-cycling:transcribe"`  | `{ state: "UsbCycling", data: { stage: "" } }`               |
+| `hide-overlay`          | `{ force: true }`           | `{ state: "Idle" }`                                          |
+| `hide-overlay`          | `{ force: false }`          | `{ state: "Idle" }` (conditional)                            |
+| coordinator cancel      | (implicit)                  | `{ state: "Idle" }`                                          |
+| `transcription-preview` | (string)                    | `{ state: "Confirming", data: { text: "..." } }`             |
 
 ### 4.3 Testing (Phase 1)
 
@@ -388,16 +390,22 @@ export type AppState =
 export function isIdle(s: AppState): s is { state: "Idle" } {
   return s.state === "Idle";
 }
-export function isRecording(s: AppState): s is { state: "Recording"; data: { binding_id: string } } {
+export function isRecording(
+  s: AppState,
+): s is { state: "Recording"; data: { binding_id: string } } {
   return s.state === "Recording";
 }
 export function isProcessing(s: AppState): s is { state: "Processing" } {
   return s.state === "Processing";
 }
-export function isUsbCycling(s: AppState): s is { state: "UsbCycling"; data: { stage: string } } {
+export function isUsbCycling(
+  s: AppState,
+): s is { state: "UsbCycling"; data: { stage: string } } {
   return s.state === "UsbCycling";
 }
-export function isConfirming(s: AppState): s is { state: "Confirming"; data: { text: string } } {
+export function isConfirming(
+  s: AppState,
+): s is { state: "Confirming"; data: { text: string } } {
   return s.state === "Confirming";
 }
 
@@ -421,7 +429,7 @@ export function appStateToOverlayState(appState: AppState): OverlayState {
 export function useAppState() {
   const [appState, setAppState] = useState<AppState>({ state: "Idle" });
   const appStateRef = useRef<AppState>(appState);
-  
+
   useEffect(() => {
     appStateRef.current = appState;
   }, [appState]);
@@ -433,12 +441,12 @@ export function useAppState() {
       });
       return unlisten;
     };
-    
+
     let unlistenFn: (() => void) | null = null;
     setup().then((unlisten) => {
       unlistenFn = unlisten;
     });
-    
+
     return () => {
       unlistenFn?.();
     };
@@ -447,9 +455,10 @@ export function useAppState() {
   // Derive legacy-compatible values
   const overlayState = appStateToOverlayState(appState);
   const isVisible = appState.state !== "Idle";
-  const isRouter = appState.state === "Recording" 
-    ? appState.data.binding_id === "transcribe_with_router"
-    : false;
+  const isRouter =
+    appState.state === "Recording"
+      ? appState.data.binding_id === "transcribe_with_router"
+      : false;
 
   return {
     appState,
@@ -475,29 +484,30 @@ import { useAppState } from "./hooks/useAppState";
 const RecordingOverlay: React.FC = () => {
   // Existing state (kept for migration)
   const overlayState = useOverlayState();
-  
+
   // New backend-driven state (gradually takes over)
   const backendState = useAppState();
-  
+
   // During migration: use backendState when available, fall back to overlayState
   // This ensures no regressions during the transition period
-  const state = backendState.appState.state !== "Idle" 
-    ? backendState.overlayState 
-    : overlayState.state;
-    
+  const state =
+    backendState.appState.state !== "Idle"
+      ? backendState.overlayState
+      : overlayState.state;
+
   // ... rest of component unchanged ...
 };
 ```
 
 ### 5.2 Migration Strategy for Each Sub-hook
 
-| Hook | Current State Source | Migration Target | Phase |
-|------|---------------------|-----------------|-------|
-| `useOverlayState` | `show-overlay`/`hide-overlay` events | `useAppState` | Phase 2 (gradual) |
-| `useVisualizer` | `state` from `useOverlayState` | `useAppState.isRecording` | Phase 2 |
-| `useLiveCaptions` | `state` from `useOverlayState` | `useAppState.isRecording` | Phase 2 |
-| `useRouterPreview` | `state` + `transcription-preview` event | `useAppState.isConfirming` | Phase 2 |
-| `useUSBRecovery` | `state` + `usb-power-cycle-*` events | `useAppState.isUsbCycling` | Phase 2 |
+| Hook               | Current State Source                    | Migration Target           | Phase             |
+| ------------------ | --------------------------------------- | -------------------------- | ----------------- |
+| `useOverlayState`  | `show-overlay`/`hide-overlay` events    | `useAppState`              | Phase 2 (gradual) |
+| `useVisualizer`    | `state` from `useOverlayState`          | `useAppState.isRecording`  | Phase 2           |
+| `useLiveCaptions`  | `state` from `useOverlayState`          | `useAppState.isRecording`  | Phase 2           |
+| `useRouterPreview` | `state` + `transcription-preview` event | `useAppState.isConfirming` | Phase 2           |
+| `useUSBRecovery`   | `state` + `usb-power-cycle-*` events    | `useAppState.isUsbCycling` | Phase 2           |
 
 ### 5.3 Dual-Listening Period
 
@@ -618,7 +628,7 @@ pub fn cancel_current_operation(app: &AppHandle) {
         warn!("AudioRecordingManager not available for cancellation");
         return;
     };
-    
+
     let recording_was_active = audio_manager.is_recording();
     if recording_was_active {
         audio_manager.cancel_recording();
@@ -701,6 +711,7 @@ The core issue is that `force_hide_recording_overlay` fires `hide-overlay { forc
 **Risk:** Medium — removing working code, but thoroughly tested in Phase 2-3
 
 **Progress (2026-07-09):** The overlay state machine unification (commit `2255ae8`) has completed the core of Phase 4:
+
 - `useAppState` is now the sole visibility authority — no more dual-listening
 - `useOverlayState` renamed to `useOverlaySharedState` — visibility logic stripped, only shared mutable state remains
 - `show-overlay`/`hide-overlay` frontend listeners removed (backend still emits for backward compat)
@@ -743,22 +754,22 @@ The core issue is that `force_hide_recording_overlay` fires `hide-overlay { forc
 #### `src-tauri/src/utils.rs`
 
 - Remove `force_hide_recording_overlay()` call from cancel path
-- Replace with `emit_app_state(app, &AppState::Idle)` 
+- Replace with `emit_app_state(app, &AppState::Idle)`
 - The frontend will handle hiding the overlay based on `app-state: Idle`
 
 ### 7.2 Event Migration Map
 
-| Old Event | New Event | Migration |
-|-----------|-----------|-----------|
-| `show-overlay` with `"recording:transcribe"` | `app-state` with `{ state: "Recording", data: { binding_id: "transcribe" } }` | Phase 2 |
-| `show-overlay` with `"transcribing:transcribe"` | `app-state` with `{ state: "Processing" }` | Phase 2 |
-| `show-overlay` with `"processing:router"` | `app-state` with `{ state: "Processing" }` + mode info | Phase 2 |
-| `show-overlay` with `"usb-cycling:transcribe"` | `app-state` with `{ state: "UsbCycling", data: { stage: "" } }` | Phase 2 |
-| `hide-overlay` with `{ force: true }` | `app-state` with `{ state: "Idle" }` | Phase 3 |
-| `hide-overlay` with `{ force: false }` | `app-state` with `{ state: "Idle" }` (conditional) | Phase 3 |
-| `transcription-preview` | `app-state` with `{ state: "Confirming", data: { text: "..." } }` | Phase 4 |
-| `routing-state` with `"processing"` | `app-state` with `{ state: "Processing" }` | Phase 4 |
-| `mic-level` | Keep as-is (data event, not state) | No change |
+| Old Event                                       | New Event                                                                     | Migration |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- | --------- |
+| `show-overlay` with `"recording:transcribe"`    | `app-state` with `{ state: "Recording", data: { binding_id: "transcribe" } }` | Phase 2   |
+| `show-overlay` with `"transcribing:transcribe"` | `app-state` with `{ state: "Processing" }`                                    | Phase 2   |
+| `show-overlay` with `"processing:router"`       | `app-state` with `{ state: "Processing" }` + mode info                        | Phase 2   |
+| `show-overlay` with `"usb-cycling:transcribe"`  | `app-state` with `{ state: "UsbCycling", data: { stage: "" } }`               | Phase 2   |
+| `hide-overlay` with `{ force: true }`           | `app-state` with `{ state: "Idle" }`                                          | Phase 3   |
+| `hide-overlay` with `{ force: false }`          | `app-state` with `{ state: "Idle" }` (conditional)                            | Phase 3   |
+| `transcription-preview`                         | `app-state` with `{ state: "Confirming", data: { text: "..." } }`             | Phase 4   |
+| `routing-state` with `"processing"`             | `app-state` with `{ state: "Processing" }`                                    | Phase 4   |
+| `mic-level`                                     | Keep as-is (data event, not state)                                            | No change |
 
 ### 7.3 Testing (Phase 4)
 
@@ -781,7 +792,7 @@ Each phase is independently deployable. If a phase causes regressions, it can be
 ```
 Phase 1 (Backend)     ──→  Deploy  ──→  Test 1 week
 Phase 2 (Frontend)    ──→  Deploy  ──→  Test 1 week
-Phase 3 (Cancel Fix)  ──→  Deploy  ──→  Test 1 week  
+Phase 3 (Cancel Fix)  ──→  Deploy  ──→  Test 1 week
 Phase 4 (Cleanup)     ──→  Deploy  ──→  Test 1 week
 ```
 
@@ -792,10 +803,10 @@ Phase 4 (Cleanup)     ──→  Deploy  ──→  Test 1 week
 export const FEATURE_FLAGS = {
   // Enable app-state event handling (Phase 2+)
   USE_APP_STATE: true,
-  
+
   // Use app-state as primary state source instead of show-overlay (Phase 2+)
   APP_STATE_PRIMARY: false, // flip to true in Phase 3
-  
+
   // Remove legacy show-overlay/hide-overlay listeners (Phase 4)
   REMOVE_LEGACY_EVENTS: false,
 };
@@ -805,7 +816,7 @@ export const FEATURE_FLAGS = {
 // src-tauri/src/settings.rs
 pub struct AppSettings {
     // ... existing settings ...
-    
+
     /// Feature flag: emit app-state events alongside show-overlay
     /// Default: true (Phase 1+). Can be disabled for rollback.
     pub emit_app_state_events: bool,
@@ -849,7 +860,8 @@ Each branch merges to `main` only after passing all tests for that phase.
 
 ### Phase 1 Rollback
 
-**If `app-state` events cause issues:**  
+**If `app-state` events cause issues:**
+
 - Remove `emit_app_state()` calls from `overlay.rs` and `utils.rs`
 - Remove `AppState` enum (or mark `#[allow(dead_code)]`)
 - No frontend changes were made, so no rollback needed there
@@ -858,7 +870,8 @@ Each branch merges to `main` only after passing all tests for that phase.
 
 ### Phase 2 Rollback
 
-**If `useAppState` causes desync:**  
+**If `useAppState` causes desync:**
+
 - Set `APP_STATE_PRIMARY = false` in feature flags
 - Frontend falls back to `useOverlayState` for all state decisions
 - `useAppState` continues listening but is not used for rendering
@@ -867,7 +880,8 @@ Each branch merges to `main` only after passing all tests for that phase.
 
 ### Phase 3 Rollback
 
-**If cancel channel causes missed cancels:**  
+**If cancel channel causes missed cancels:**
+
 - Revert to direct `cancel_current_operation()` path
 - Remove `CancelSignal` from app state
 - Keep Phase 1 and 2 changes (they're independent)
@@ -876,7 +890,8 @@ Each branch merges to `main` only after passing all tests for that phase.
 
 ### Phase 4 Rollback
 
-**If removing legacy events breaks overlay:**  
+**If removing legacy events breaks overlay:**
+
 - Re-add `show-overlay` and `hide-overlay` event emissions
 - Re-add `useOverlayState` event listeners
 - Feature flag `REMOVE_LEGACY_EVENTS = false` restores old behavior
@@ -969,20 +984,20 @@ Each branch merges to `main` only after passing all tests for that phase.
 
 ## Appendix A: Key Files Reference
 
-| File | Current Role | Phase 1 Changes | Phase 2 Changes | Phase 3 Changes | Phase 4 Changes |
-|------|-------------|-----------------|-----------------|-----------------|-----------------|
-| `src-tauri/src/transcription_coordinator.rs` | Stage state machine | Add `AppState`, `get_state()`, emit | No change | Add `CancelSignal` listener | Remove `Stage` enum |
-| `src-tauri/src/managers/audio.rs` | Audio recording state | No change | No change | No change | Minor: use `AppState` instead of `RecordingState` |
-| `src-tauri/src/utils.rs` | Cancel logic | Add `emit_app_state` call | No change | Add cancel channel, async cancel | Remove `force_hide_recording_overlay` call |
-| `src-tauri/src/overlay.rs` | Overlay show/hide | Add `app-state` emit alongside `show-overlay` | No change | No change | Remove `show-overlay` emit, keep `app-state` only |
-| `src-tauri/src/lib.rs` | App setup | Register `AppState` managed state | No change | Register `CancelSignal` | No change |
-| `src/overlay/hooks/useOverlayState.ts` | Frontend state machine | No change | Add `useAppState` import, dual-listen | Add cancel handling | Remove legacy event listeners |
-| `src/overlay/hooks/useAppState.ts` | (NEW) | Create file | Implement hook | Add cancel state reset | Primary state source |
-| `src/overlay/hooks/useVisualizer.ts` | Audio bars | No change | Use `useAppState.isRecording` | Add clear-on-cancel | Remove `OverlayState` dependency |
-| `src/overlay/hooks/useUSBRecovery.ts` | USB cycling | No change | Use `useAppState.isUsbCycling` | No change | Remove `OverlayState` dependency |
-| `src/overlay/hooks/useRouterPreview.ts` | Router confirm | No change | Use `useAppState.isConfirming` | No change | Remove `OverlayState` dependency |
-| `src/overlay/hooks/useLiveCaptions.ts` | Live captions | No change | Use `useAppState.isRecording` | No change | Remove `OverlayState` dependency |
-| `src/overlay/RecordingOverlay.tsx` | Main component | No change | Import `useAppState` | Use backend state for cancel | Remove `useOverlayState` dependency |
+| File                                         | Current Role           | Phase 1 Changes                               | Phase 2 Changes                       | Phase 3 Changes                  | Phase 4 Changes                                   |
+| -------------------------------------------- | ---------------------- | --------------------------------------------- | ------------------------------------- | -------------------------------- | ------------------------------------------------- |
+| `src-tauri/src/transcription_coordinator.rs` | Stage state machine    | Add `AppState`, `get_state()`, emit           | No change                             | Add `CancelSignal` listener      | Remove `Stage` enum                               |
+| `src-tauri/src/managers/audio.rs`            | Audio recording state  | No change                                     | No change                             | No change                        | Minor: use `AppState` instead of `RecordingState` |
+| `src-tauri/src/utils.rs`                     | Cancel logic           | Add `emit_app_state` call                     | No change                             | Add cancel channel, async cancel | Remove `force_hide_recording_overlay` call        |
+| `src-tauri/src/overlay.rs`                   | Overlay show/hide      | Add `app-state` emit alongside `show-overlay` | No change                             | No change                        | Remove `show-overlay` emit, keep `app-state` only |
+| `src-tauri/src/lib.rs`                       | App setup              | Register `AppState` managed state             | No change                             | Register `CancelSignal`          | No change                                         |
+| `src/overlay/hooks/useOverlayState.ts`       | Frontend state machine | No change                                     | Add `useAppState` import, dual-listen | Add cancel handling              | Remove legacy event listeners                     |
+| `src/overlay/hooks/useAppState.ts`           | (NEW)                  | Create file                                   | Implement hook                        | Add cancel state reset           | Primary state source                              |
+| `src/overlay/hooks/useVisualizer.ts`         | Audio bars             | No change                                     | Use `useAppState.isRecording`         | Add clear-on-cancel              | Remove `OverlayState` dependency                  |
+| `src/overlay/hooks/useUSBRecovery.ts`        | USB cycling            | No change                                     | Use `useAppState.isUsbCycling`        | No change                        | Remove `OverlayState` dependency                  |
+| `src/overlay/hooks/useRouterPreview.ts`      | Router confirm         | No change                                     | Use `useAppState.isConfirming`        | No change                        | Remove `OverlayState` dependency                  |
+| `src/overlay/hooks/useLiveCaptions.ts`       | Live captions          | No change                                     | Use `useAppState.isRecording`         | No change                        | Remove `OverlayState` dependency                  |
+| `src/overlay/RecordingOverlay.tsx`           | Main component         | No change                                     | Import `useAppState`                  | Use backend state for cancel     | Remove `useOverlayState` dependency               |
 
 ## Appendix B: State Transition Diagram
 

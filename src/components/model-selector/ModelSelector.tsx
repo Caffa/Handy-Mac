@@ -7,6 +7,7 @@ import { useModelStore } from "../../stores/modelStore";
 import ModelStatusButton from "./ModelStatusButton";
 import ModelDropdown from "./ModelDropdown";
 import DownloadProgressDisplay from "./DownloadProgressDisplay";
+import { ModelVadSelector } from "./ModelVadSelector";
 
 import { ModelStateEvent } from "@/lib/types/events";
 
@@ -291,24 +292,36 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onError }) => {
     return modelStatus;
   };
 
+  const currentModelInfo = models.find((m) => m.id === displayModelId);
+  const showVadSelector =
+    currentModelInfo?.is_downloaded === true &&
+    currentModelInfo.is_downloading === false;
+
   return (
     <>
-      {/* Model Status and Switcher */}
-      <div className="relative" ref={dropdownRef}>
-        <ModelStatusButton
-          status={getDisplayStatus()}
-          displayText={getModelDisplayText()}
-          isDropdownOpen={showModelDropdown}
-          onClick={() => setShowModelDropdown(!showModelDropdown)}
-        />
-
-        {/* Model Dropdown */}
-        {showModelDropdown && (
-          <ModelDropdown
-            models={models}
-            currentModelId={displayModelId}
-            onModelSelect={handleModelSelect}
+      <div className="flex items-center gap-3">
+        {/* Model Status and Switcher */}
+        <div className="relative" ref={dropdownRef}>
+          <ModelStatusButton
+            status={getDisplayStatus()}
+            displayText={getModelDisplayText()}
+            isDropdownOpen={showModelDropdown}
+            onClick={() => setShowModelDropdown(!showModelDropdown)}
           />
+
+          {/* Model Dropdown */}
+          {showModelDropdown && (
+            <ModelDropdown
+              models={models}
+              currentModelId={displayModelId}
+              onModelSelect={handleModelSelect}
+            />
+          )}
+        </div>
+
+        {/* Per-model VAD sensitivity */}
+        {showVadSelector && currentModelInfo && (
+          <ModelVadSelector model={currentModelInfo} compact />
         )}
       </div>
 

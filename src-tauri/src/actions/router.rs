@@ -8,12 +8,13 @@ use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
-use crate::managers::transcription::TranscriptionManager;
+use crate::managers::transcription::{TranscriptionManager, TRANSCRIBING_SLOT_WAIT_TIMEOUT};
 use crate::managers::transcription_retry::{TranscriptionFailure, TranscriptionRetryQueue};
 use crate::overlay::OverlayMode;
 use crate::session::SessionTracker;
 use crate::settings::get_settings;
 use crate::shortcut;
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
     self, show_processing_overlay_with_mode, show_recording_overlay_with_mode,
@@ -22,10 +23,13 @@ use crate::utils::{
 use crate::TranscriptionCoordinator;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use wait_timeout::ChildExt;
 
 /// Structured result from one boss_router.py handler.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -99,15 +103,37 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         };
 
         // Clear any previous streaming cancellation flag when starting a new recording.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(false, Ordering::Release);
-            debug!("Cleared streaming cancel flag for new router recording");
-        } else {
-            // Fallback to TM lock if Arc<AtomicBool> not available (shouldn't happen)
-            tm.lock().clear_streaming_cancel();
+        // The cancel flag fast path is intentionally kept lock-free so it can never
+        // block the coordinator thread even when the TM mutex is held by a GPU callback.
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(false, "router_start");
         }
 
-        tm.lock().initiate_model_load();
+        // Safely kick model load without blocking the coordinator thread on a contended
+        // TranscriptionManager mutex. If the lock is unavailable for 2s, skip the kick
+        // rather than stalling the start path — the next audio chunk will retry loading.
+        if let Some(tm_guard) = tm.try_lock_for(Duration::from_secs(2)) {
+            let lock_dt = start_time.elapsed();
+            tm_guard.clear_streaming_cancel();
+            let before_init = Instant::now();
+            tm_guard.initiate_model_load();
+            let init_dt = before_init.elapsed();
+            debug!(
+                "[START-LOCK] TM lock acquired for '{}' (router) (lock wait+init took {:?}, clear+initiate took {:?})",
+                binding_id, lock_dt, init_dt
+            );
+            if init_dt > Duration::from_millis(100) {
+                warn!(
+                    "[START-LOCK] clear_streaming_cancel + initiate_model_load took {:?} for '{}' (router)",
+                    init_dt, binding_id
+                );
+            }
+        } else {
+            warn!(
+                "[START-LOCK] TM lock NOT acquired within 2s on start for '{}' — skipping model-load kick (router)",
+                binding_id
+            );
+        }
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -203,9 +229,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         shortcut::unregister_cancel_shortcut(app);
 
         // Cancel any in-progress streaming transcription to prevent wasted work.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(true, Ordering::Release);
-            debug!("Cancelled streaming transcription via Arc<AtomicBool>");
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(true, "router_stop");
         } else {
             warn!("Streaming cancel flag not available in app state");
         }
@@ -224,6 +249,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             return;
         };
         let rm = Arc::clone(&rm);
+        // Keep a second Arc handle for the fire-and-forget mute thread used after spawning.
+        let rm_mute = Arc::clone(&rm);
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop router transcription");
             utils::hide_recording_overlay(app);
@@ -243,27 +270,28 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             .try_state::<Arc<SessionTracker>>()
             .and_then(|t| t.current_session_id());
 
-        // ── KEY DIFFERENCE from TranscribeAction ──
-        // Show routing-specific overlay during transcription + routing
-        change_tray_icon(app, TrayIconState::Transcribing);
-        show_transcribing_overlay_with_mode(app, OverlayMode::Router);
+        let binding_id_spawn = binding_id.to_string(); // Clone for async task
 
-        // Unmute before playing audio feedback
-        rm.remove_mute();
-        play_feedback_sound(app, SoundType::Stop);
-
-        let binding_id = binding_id.to_string(); // Clone for async task
-
+        // CRITICAL: Spawn the recording-stop work IMMEDIATELY, before any UI/feedback
+        // call that might synchronously block (e.g. AppleScript mute, overlay JS).
+        // See the matching comment in TranscribeAction::stop for full rationale.
         tauri::async_runtime::spawn(async move {
             let mut finish_guard = Some(super::transcribe::FinishGuard(ah.clone()));
-            debug!("Starting async router task for binding: {}", binding_id);
+            debug!(
+                "Starting async router task for binding: {}",
+                binding_id_spawn
+            );
 
             let stop_recording_time = Instant::now();
-            let samples = rm.stop_recording(&binding_id);
-            if let Some(samples) = samples {
-                debug!("Recording stopped, sample count: {}", samples.len());
+            let recording_result = rm.stop_recording(&binding_id_spawn);
+            if let Some((processed_samples, raw_samples)) = recording_result {
+                debug!(
+                    "Recording stopped, processed: {}, raw: {}",
+                    processed_samples.len(),
+                    raw_samples.len()
+                );
 
-                if samples.is_empty() {
+                if processed_samples.is_empty() {
                     debug!("Recording produced no audio samples; skipping");
                     if let (Some(ref s), Some(tracker)) =
                         (&sid, ah.try_state::<Arc<SessionTracker>>())
@@ -275,25 +303,43 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                     return;
                 }
 
-                // Save WAV concurrently with transcription
-                let sample_count = samples.len();
+                // Save RAW WAV (what the mic actually captured — unfiltered)
+                let raw_sample_count = raw_samples.len();
                 let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
                 let wav_path = hm.recordings_dir().join(&file_name);
                 let wav_path_for_verify = wav_path.clone();
-                let samples_for_wav = samples.clone();
+                let samples_for_wav = raw_samples;
                 let wav_handle = tauri::async_runtime::spawn_blocking(move || {
                     crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
                 });
 
-                // Transcribe
+                // Save VAD-filtered WAV (for debugging VAD quality)
+                let vad_file_name = format!("handy-{}-vad.wav", chrono::Utc::now().timestamp());
+                let vad_wav_path = hm.recordings_dir().join(&vad_file_name);
+                let vad_samples = processed_samples.clone();
+                let vad_wav_handle = tauri::async_runtime::spawn_blocking(move || {
+                    crate::audio_toolkit::save_wav_file(&vad_wav_path, &vad_samples)
+                });
+
+                // Transcribe using VAD-filtered samples
                 let transcription_time = Instant::now();
-                let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
+                let transcription_result = match tm.try_lock_for(TRANSCRIBING_SLOT_WAIT_TIMEOUT) {
                     Some(guard) => {
-                        guard.clear_streaming_cancel();
-                        guard.transcribe(samples)
+                        // Capture the shared streaming cancel flag so it can be cleared
+                        // only after the final transcription acquires the `is_transcribing`
+                        // slot. Clearing it before the slot is owned lets queued streaming
+                        // callbacks race ahead and steal the slot, causing
+                        // `AppError::TranscriptionBusy`.
+                        let cancel_flag = guard.streaming_cancel_flag();
+                        guard.transcribe_with_hook(processed_samples, move || {
+                            cancel_flag.store(false, Ordering::Release);
+                            debug!(
+                                "Cleared streaming cancel flag after acquiring transcription slot"
+                            );
+                        })
                     }
                     None => {
-                        warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
+                        warn!("Timed out waiting for TranscriptionManager lock after {:?} — aborting transcription", TRANSCRIBING_SLOT_WAIT_TIMEOUT);
                         Err(AppError::TranscriptionBusy)
                     }
                 };
@@ -312,32 +358,45 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                     tracker.advance_to_transcribing(
                         s,
                         &model_id,
-                        sample_count,
+                        raw_sample_count,
                         stop_recording_time.elapsed().as_millis() as u64,
                     );
                 }
 
-                // Await WAV save
+                // Await RAW WAV save and verify
                 let wav_saved = match wav_handle.await {
                     Ok(Ok(())) => {
                         match crate::audio_toolkit::verify_wav_file(
                             &wav_path_for_verify,
-                            sample_count,
+                            raw_sample_count,
                         ) {
                             Ok(()) => true,
                             Err(e) => {
-                                error!("WAV verification failed: {}", e);
+                                error!("RAW WAV verification failed: {}", e);
                                 false
                             }
                         }
                     }
                     Ok(Err(e)) => {
-                        error!("Failed to save WAV file: {}", e);
+                        error!("Failed to save RAW WAV file: {}", e);
                         false
                     }
                     Err(e) => {
-                        error!("WAV save task panicked: {}", e);
+                        error!("RAW WAV save task panicked: {}", e);
                         false
+                    }
+                };
+
+                // Await VAD WAV save (best-effort, non-critical)
+                match vad_wav_handle.await {
+                    Ok(Ok(())) => {
+                        debug!("VAD-filtered WAV saved: {}", vad_file_name);
+                    }
+                    Ok(Err(e)) => {
+                        error!("Failed to save VAD WAV file: {}", e);
+                    }
+                    Err(e) => {
+                        error!("VAD WAV save task panicked: {}", e);
                     }
                 };
 
@@ -356,7 +415,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         if transcription_text.is_empty() {
                             warn!("Router transcription returned empty text - skipping routing");
 
-                            let duration_secs = sample_count as f32 / 16000.0;
+                            let duration_secs = raw_sample_count as f32 / 16000.0;
                             if rm.usb_watchdog.on_silent_transcription(duration_secs) {
                                 if let Err(e) = rm.restart_microphone_if_needed() {
                                     error!(
@@ -395,7 +454,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                         // Save to history with routed=true and capture entry ID
                         let history_entry_id: Option<i64> = if wav_saved {
-                            match hm.save_entry(
+                            match hm.save_entry_with_vad(
                                 file_name,
                                 transcription_text.clone(),
                                 false, // post_process_requested
@@ -403,6 +462,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 None,  // post_process_prompt
                                 Some(model_id_for_history),
                                 true, // routed
+                                Some(vad_file_name),
                             ) {
                                 Ok(entry) => Some(entry.id),
                                 Err(err) => {
@@ -654,8 +714,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 // and we skip showing — the new recording's overlay takes
                                 // priority, and the macOS notification provides feedback.
                                 let should_show_result = {
-                                    let coord = ah_for_router
-                                        .try_state::<TranscriptionCoordinator>();
+                                    let coord =
+                                        ah_for_router.try_state::<TranscriptionCoordinator>();
                                     !coord.map_or(false, |c| c.is_active_use())
                                 };
 
@@ -837,12 +897,31 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             }
         });
 
+        // UI/feedback updates are intentionally dispatched AFTER spawning the stop work.
+        // They are best-effort: if any of them hangs (e.g. AppleScript mute after
+        // sleep/wake, or overlay JS evaluation), it must not prevent the recording
+        // from stopping and the visualizer from eventually hiding.
+        // ── KEY DIFFERENCE from TranscribeAction ──
+        // Show routing-specific overlay during transcription + routing
+        change_tray_icon(app, TrayIconState::Transcribing);
+        show_transcribing_overlay_with_mode(app, OverlayMode::Router);
+
+        // Unmute in a detached thread so a stuck osascript/System Events cannot block
+        // the stop path.
+        std::thread::spawn(move || {
+            rm_mute.remove_mute();
+        });
+
+        play_feedback_sound(app, SoundType::Stop);
+
         debug!(
-            "TranscribeWithRouterAction::stop completed in {:?}",
+            "TranscribeWithRouterAction::stop UI/feedback dispatched in {:?}",
             stop_time.elapsed()
         );
     }
 }
+
+const ROUTER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Run boss_router.py as a subprocess and return the parsed output.
 /// Returns (summary_string, handler_data_vec) on success, or an error String.
@@ -852,8 +931,6 @@ fn run_router_subprocess(
     datetime_str: &str,
     env_file: Option<&str>,
 ) -> Result<(Option<String>, Vec<RouterHandlerData>), String> {
-    use std::process::Command;
-
     let python_bin = "/Users/caffae/miniforge3/bin/python3";
     let mut cmd = Command::new(python_bin);
     cmd.arg(router_script)
@@ -905,20 +982,59 @@ fn run_router_subprocess(
 
     debug!("Running router command: {:?}", cmd);
 
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Failed to execute router: {}", e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // Drain stdout/stderr concurrently while waiting. This avoids a pipe-buffer
+    // deadlock if the router writes more than the OS pipe buffer before exiting.
+    let stdout_handle = child.stdout.take().map(|mut stdout| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        })
+    });
+
+    let status = match child.wait_timeout(ROUTER_SUBPROCESS_TIMEOUT) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            warn!(
+                "Router subprocess timed out after {:?}, killing it",
+                ROUTER_SUBPROCESS_TIMEOUT
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Router subprocess timed out after {:?}",
+                ROUTER_SUBPROCESS_TIMEOUT
+            ));
+        }
+        Err(e) => return Err(format!("Failed to wait on router: {}", e)),
+    };
+
+    let stdout_buf = stdout_handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default());
+    let stderr_buf = stderr_handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default());
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_buf);
         return Err(format!(
             "Router exited with code {}: {}",
-            output.status.code().unwrap_or(-1),
+            status.code().unwrap_or(-1),
             stderr.trim()
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&stdout_buf);
     let (handler_summary, handler_data) = match parse_router_json_output(&stdout) {
         Some(output) => (Some(output.summary), output.handler_data),
         None => (None, Vec::new()),

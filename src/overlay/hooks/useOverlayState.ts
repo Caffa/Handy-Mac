@@ -86,6 +86,10 @@ interface UseOverlaySharedStateReturn {
   micDeadWarning: boolean;
   lowAudioWarning: boolean;
   usbCycleStage: { stage: string; message: string } | null;
+  // Recording timeout warning state
+  timeoutWarningActive: boolean;
+  timeoutWarningSeconds: number;
+  timeoutWarningKind: "silence" | "hard_cap" | null;
   // State setters needed by other hooks
   setTranscriptionPreview: React.Dispatch<React.SetStateAction<string>>;
   setStreamingText: React.Dispatch<React.SetStateAction<string>>;
@@ -104,6 +108,11 @@ interface UseOverlaySharedStateReturn {
     React.SetStateAction<{ stage: string; message: string } | null>
   >;
   setIsFadingOut: React.Dispatch<React.SetStateAction<boolean>>;
+  setTimeoutWarningActive: React.Dispatch<React.SetStateAction<boolean>>;
+  setTimeoutWarningSeconds: React.Dispatch<React.SetStateAction<number>>;
+  setTimeoutWarningKind: React.Dispatch<
+    React.SetStateAction<"silence" | "hard_cap" | null>
+  >;
   // Refs shared across hooks
   lastLevelTimeRef: React.MutableRefObject<number>;
   recordingStartTimeRef: React.MutableRefObject<number>;
@@ -128,7 +137,10 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
   const [isVisible, setIsVisible] = useState(false);
   const [state, setState] = useState<OverlayState>("recording");
 
-  // Live captions setting — initialize from module cache if available
+  // Live captions setting — initialize from module cache if available.
+  // Default to false to match the Rust backend default; otherwise a new
+  // install shows the toggle as enabled while the recorder has streaming
+  // disabled, and captions never appear.
   const [liveCaptionsEnabled, setLiveCaptionsEnabled] = useState(
     cachedLiveCaptionsEnabled ?? false,
   );
@@ -169,6 +181,13 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
     message: string;
   } | null>(null);
 
+  // Recording timeout warning state (driven by backend event)
+  const [timeoutWarningActive, setTimeoutWarningActive] = useState(false);
+  const [timeoutWarningSeconds, setTimeoutWarningSeconds] = useState(0);
+  const [timeoutWarningKind, setTimeoutWarningKind] = useState<
+    "silence" | "hard_cap" | null
+  >(null);
+
   // Fade-out state for transcription preview dismissal
   const [isFadingOut, setIsFadingOut] = useState(false);
 
@@ -201,6 +220,9 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
     setLowAudioWarning(false);
     lowAudioHistoryRef.current = [];
     hadGoodAudioRef.current = false;
+    setTimeoutWarningActive(false);
+    setTimeoutWarningSeconds(0);
+    setTimeoutWarningKind(null);
   };
 
   // Proactively fetch live captions setting on mount so the cache is warm
@@ -241,7 +263,11 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
           });
         }
       } catch (e) {
-        console.warn("[Live Captions] Settings fetch failed, using cached:", cachedLiveCaptionsEnabled, e);
+        console.warn(
+          "[Live Captions] Settings fetch failed, using cached:",
+          cachedLiveCaptionsEnabled,
+          e,
+        );
         // Use cached value as fallback
         setLiveCaptionsEnabled(cachedLiveCaptionsEnabled ?? false);
       }
@@ -316,6 +342,10 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
     micDeadWarning,
     lowAudioWarning,
     usbCycleStage,
+    // Recording timeout warning state
+    timeoutWarningActive,
+    timeoutWarningSeconds,
+    timeoutWarningKind,
     // State setters needed by other hooks
     setTranscriptionPreview,
     setStreamingText,
@@ -328,6 +358,9 @@ export function useOverlaySharedState(): UseOverlaySharedStateReturn {
     setLowAudioWarning,
     setUsbCycleStage,
     setIsFadingOut,
+    setTimeoutWarningActive,
+    setTimeoutWarningSeconds,
+    setTimeoutWarningKind,
     // Refs shared across hooks
     lastLevelTimeRef,
     recordingStartTimeRef,

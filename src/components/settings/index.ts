@@ -11,9 +11,11 @@ export { UsageSettings } from "./usage/UsageSettings";
 
 // Individual setting components
 export { MicrophoneSelector } from "./MicrophoneSelector";
+export { ChannelSelector } from "./ChannelSelector";
 export { ClamshellMicrophoneSelector } from "./ClamshellMicrophoneSelector";
 export { OutputDeviceSelector } from "./OutputDeviceSelector";
 export { AlwaysOnMicrophone } from "./AlwaysOnMicrophone";
+export { LazyStreamClose } from "./LazyStreamClose";
 export { PushToTalk } from "./PushToTalk";
 export { AudioFeedback } from "./AudioFeedback";
 export { ShowOverlay } from "./ShowOverlay";
@@ -38,3 +40,4 @@ export { RecordingRetentionPeriodSelector } from "./RecordingRetentionPeriod";
 export { AutostartToggle } from "./AutostartToggle";
 export { UpdateChecksToggle } from "./UpdateChecksToggle";
 export { ConvertUsToBritish } from "./ConvertUsToBritish";
+export { ConvertNumberWordsToDigits } from "./ConvertNumberWordsToDigits";

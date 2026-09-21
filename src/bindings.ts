@@ -94,6 +94,14 @@ async changeConvertUsToBritishSetting(enabled: boolean) : Promise<Result<null, s
     else return { status: "error", error: e  as any };
 }
 },
+async changeConvertNumberWordsToDigitsSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_convert_number_words_to_digits_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeSelectedLanguageSetting(language: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_selected_language_setting", { language }) };
@@ -452,7 +460,7 @@ async changeOrtAcceleratorSetting(accelerator: OrtAcceleratorSetting) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
-async changeTranscribeGpuDevice(device: number) : Promise<Result<null, string>> {
+async changeTranscribeGpuDevice(device: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_transcribe_gpu_device", { device }) };
 } catch (e) {
@@ -484,9 +492,33 @@ async changeVadSensitivitySetting(sensitivity: string) : Promise<Result<null, st
     else return { status: "error", error: e  as any };
 }
 },
+async changeVadBackendSetting(backend: VadBackend) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_vad_backend_setting", { backend }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setModelVadSensitivity(modelId: string, sensitivity: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_model_vad_sensitivity", { modelId, sensitivity }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeLiveCaptionsEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_live_captions_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeLiveCaptionsModelSetting(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_live_captions_model_setting", { modelId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -557,6 +589,22 @@ async showMainWindowCommand() : Promise<Result<null, string>> {
 async cancelOperation() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_operation") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Extend the current recording's deadlines by `seconds`.
+ * 
+ * Sent by the overlay's timeout warning "Extend" button. The coordinator
+ * validates that it is currently Recording before applying the extension;
+ * otherwise the command is ignored and an error is returned so the frontend
+ * can disable/hide the button when not applicable.
+ */
+async extendRecording(seconds: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("extend_recording", { seconds }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -901,6 +949,22 @@ async getClamshellMicrophone() : Promise<Result<string, string>> {
 async isRecording() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("is_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getMicrophoneChannels(deviceName: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_microphone_channels", { deviceName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setSelectedChannel(channel: number | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_selected_channel", { channel }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1434,7 +1498,12 @@ historyUpdate: "history-update"
 
 /** user-defined types **/
 
-export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; overlay_screen_target?: OverlayScreenTarget; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
+export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk: boolean; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; 
+/**
+ * Which input channel to use on the selected microphone device.
+ * None means "average all channels" (original behavior).
+ */
+selected_channel?: number | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; overlay_screen_target?: OverlayScreenTarget; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; advanced_custom_words?: CustomWord[]; word_replacements?: WordReplacement[]; 
 /**
  * Deprecated: Use `word_correction_mode` instead.
  */
@@ -1442,7 +1511,17 @@ use_advanced_custom_words?: boolean;
 /**
  * Word correction mode. Defaults to WordBias for backward compatibility.
  */
-word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; transcribe_gpu_device?: number; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; live_captions_enabled?: boolean; overlay_scale?: number; convert_us_to_british?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel }
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; 
+/**
+ * Stable transcribe.cpp device selector. This is derived from the backend's
+ * `device_id` when available (or its name for backends such as Metal),
+ * never from the process-local device registry index.
+ */
+transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; pre_recording_buffer_ms?: number; usb_watchdog_enabled?: boolean; usb_watchdog_device_name?: string; usb_watchdog_cycle_on_wake?: boolean; vad_sensitivity?: VadSensitivity; per_model_vad_sensitivity?: Partial<{ [key in string]: VadSensitivity }>; live_captions_enabled?: boolean; live_captions_model?: string; overlay_scale?: number; convert_us_to_british?: boolean; convert_number_words_to_digits?: boolean; spelling_dictionary?: SpellingDictionary; repetition_suppression_level?: number; noise_suppression_enabled?: boolean; noise_suppression_level?: NoiseSuppressionLevel; 
+/**
+ * Experimental detector implementation. Silero remains the stable default.
+ */
+vad_backend?: VadBackend }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1578,7 +1657,7 @@ export type ExperimentGroup = { id: number; recording_id: number; original_trans
  * Result of generating variants for an experiment
  */
 export type GeneratedVariant = { model_id: string; parameters: string; transcription_text: string }
-export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
+export type GpuDeviceOption = { id: string; name: string; total_vram_mb: number }
 export type HealthReport = { app_version: string; platform: string; uptime_secs: number; total_sessions: number; successful_sessions: number; failed_sessions: number; avg_transcription_ms: number; p95_transcription_ms: number; model_load_times: ModelLoadStat[]; recent_errors: ErrorRecord[]; usb_watchdog_cycles: number; device_changes: number; current_mic: string; current_model: string; log_level: string }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; model_id: string | null; routed: boolean; 
 /**
@@ -1606,7 +1685,12 @@ quality: string | null;
  * Speech speed: "fast", "normal", "slow".
  * User's assessment of speech speed.
  */
-speech_speed: string | null }
+speech_speed: string | null; 
+/**
+ * File name of the VAD-filtered WAV recording (for debugging VAD quality).
+ * The main `file_name` field now stores the raw (unfiltered) recording.
+ */
+file_name_vad: string | null }
 export type HistoryUpdate = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
@@ -1763,7 +1847,17 @@ phases_json: string | null;
  * Errors encountered during the session.
  */
 errors: string[] }
-export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
+export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string; 
+/**
+ * Tauri global-shortcut backend binding, stored independently so switching
+ * implementations never requires re-recording.
+ */
+tauri_binding?: string; 
+/**
+ * Handy-keys backend binding, stored independently so switching
+ * implementations never requires re-recording.
+ */
+handy_keys_binding?: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
 /**
  * Dictionary source for US-to-British spelling conversion.
@@ -1871,7 +1965,28 @@ hub: string;
  * Port number on the hub (e.g. "1")
  */
 port: string }
-export type VadSensitivity = "very_quick" | "quick" | "balanced" | "relaxed" | "very_relaxed"
+export type VadBackend = "silero" | "earshot"
+export type VadSensitivity = 
+/**
+ * Minimal VAD filtering: keeps almost everything, including quiet speech.
+ */
+"very_relaxed" | 
+/**
+ * Light filtering: removes obvious silence while keeping softer words.
+ */
+"relaxed" | 
+/**
+ * Moderate filtering: balanced between noise removal and speech capture.
+ */
+"balanced" | 
+/**
+ * Faster filtering: removes more background sound, may clip softer words.
+ */
+"quick" | 
+/**
+ * Strongest filtering in the reduced range: cuts quickly on silence.
+ */
+"very_quick"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 export type WordCorrectionMode = "word_bias" | "pronunciation" | "replacement"
 /**

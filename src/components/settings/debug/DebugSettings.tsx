@@ -2,11 +2,8 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 import { LogLevelSelector } from "./LogLevelSelector";
 import { PasteDelay } from "./PasteDelay";
-import { RecordingBuffer } from "./RecordingBuffer";
-import { PreRecordingBuffer } from "./PreRecordingBuffer";
 import { LogDirectory } from "./LogDirectory";
 import { SettingsGroup } from "../../ui/SettingsGroup";
-import { AlwaysOnMicrophone } from "../AlwaysOnMicrophone";
 import { SoundPicker } from "../SoundPicker";
 import { ClamshellMicrophoneSelector } from "../ClamshellMicrophoneSelector";
 import { UpdateChecksToggle } from "../UpdateChecksToggle";
@@ -27,9 +24,6 @@ export const DebugSettings: React.FC = () => {
           description={t("settings.debug.soundTheme.description")}
         />
         <PasteDelay descriptionMode="tooltip" grouped={true} />
-        <PreRecordingBuffer descriptionMode="tooltip" grouped={true} />
-        <RecordingBuffer descriptionMode="tooltip" grouped={true} />
-        <AlwaysOnMicrophone descriptionMode="tooltip" grouped={true} />
         <ClamshellMicrophoneSelector descriptionMode="tooltip" grouped={true} />
         <UsbWatchdog descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>

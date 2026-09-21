@@ -1,5 +1,5 @@
 use crate::audio_feedback;
-use crate::audio_toolkit::audio::{list_input_devices, list_output_devices};
+use crate::audio_toolkit::audio::{list_input_devices, list_output_devices, AudioRecorder};
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
@@ -364,6 +364,52 @@ pub fn is_recording(app: AppHandle) -> Result<bool, String> {
     Ok(result)
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn get_microphone_channels(device_name: String) -> Result<u16, String> {
+    // cpal device enumeration and config queries can stall, so keep them off
+    // the webview/main run loop.
+    tauri::async_runtime::spawn_blocking(move || {
+        use cpal::traits::HostTrait;
+
+        let device = if device_name.eq_ignore_ascii_case("default") {
+            crate::audio_toolkit::get_cpal_host().default_input_device()
+        } else {
+            list_input_devices()
+                .map_err(|e| format!("Failed to list audio devices: {e}"))?
+                .into_iter()
+                .find(|device| device.name == device_name)
+                .map(|device| device.device)
+        };
+
+        match device {
+            Some(device) => AudioRecorder::preferred_input_channel_count(&device)
+                .map_err(|e| format!("Failed to get microphone config: {e}")),
+            None => Ok(1),
+        }
+    })
+    .await
+    .map_err(|e| format!("audio task join failed: {e}"))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_selected_channel(app: AppHandle, channel: Option<u16>) -> Result<(), String> {
+    // Restarting cpal can block, so keep it off the webview/main run loop. Apply
+    // the runtime change before persisting it so a rejected active-recording
+    // change does not become effective on the next launch.
+    let manager = app.state::<Arc<AudioRecordingManager>>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.update_selected_channel(channel))
+        .await
+        .map_err(|e| format!("audio task join failed: {e}"))?
+        .map_err(|e| format!("Failed to update channel selection: {e}"))?;
+
+    let mut settings = get_settings_safe(&app);
+    settings.selected_channel = channel;
+    write_settings_safe(&app, settings);
+    Ok(())
+}
+
 // ============================================================================
 // USB Watchdog Commands
 // ============================================================================
@@ -540,8 +586,8 @@ pub async fn stop_and_schedule_pronunciation(
         return Err("AudioRecordingManager not available".to_string());
     };
 
-    // Stop recording and get audio samples
-    let samples = rm
+    // Stop recording and get audio samples (processed = VAD-filtered, used for Whisper)
+    let (samples, _raw) = rm
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 
@@ -861,8 +907,8 @@ pub async fn stop_and_transcribe_pronunciation_all_models(
         return Err("AudioRecordingManager not available".to_string());
     };
 
-    // Stop recording and get audio samples
-    let samples = rm
+    // Stop recording and get audio samples (processed = VAD-filtered, used for Whisper)
+    let (samples, _raw) = rm
         .stop_recording(PRONUNCIATION_BINDING_ID)
         .ok_or_else(|| "No pronunciation recording in progress".to_string())?;
 

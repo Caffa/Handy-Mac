@@ -24,6 +24,8 @@ pub fn get_default_settings() -> AppSettings {
             description: "Converts your speech into text.".to_string(),
             default_binding: default_shortcut.to_string(),
             current_binding: default_shortcut.to_string(),
+            tauri_binding: default_shortcut.to_string(),
+            handy_keys_binding: default_shortcut.to_string(),
         },
     );
     #[cfg(target_os = "windows")]
@@ -44,6 +46,8 @@ pub fn get_default_settings() -> AppSettings {
                 .to_string(),
             default_binding: default_post_process_shortcut.to_string(),
             current_binding: default_post_process_shortcut.to_string(),
+            tauri_binding: default_post_process_shortcut.to_string(),
+            handy_keys_binding: default_post_process_shortcut.to_string(),
         },
     );
     #[cfg(target_os = "macos")]
@@ -63,30 +67,11 @@ pub fn get_default_settings() -> AppSettings {
             description: "Records speech, transcribes, and sends text to your router system for classification and filing.".to_string(),
             default_binding: default_router_shortcut.to_string(),
             current_binding: default_router_shortcut.to_string(),
+            tauri_binding: default_router_shortcut.to_string(),
+            handy_keys_binding: default_router_shortcut.to_string(),
         },
     );
 
-    // Duplicate router binding entry (preserved from original)
-    #[cfg(target_os = "macos")]
-    let default_router_shortcut = "option+ctrl+space";
-    #[cfg(target_os = "windows")]
-    let default_router_shortcut = "ctrl+alt+space";
-    #[cfg(target_os = "linux")]
-    let default_router_shortcut = "ctrl+alt+space";
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    let default_router_shortcut = "alt+ctrl+space";
-
-    bindings.insert(
-        "transcribe_with_router".to_string(),
-        ShortcutBinding {
-            id: "transcribe_with_router".to_string(),
-            name: "Transcribe with Router".to_string(),
-            description: "Records speech, transcribes, and routes to your notes via boss_router."
-                .to_string(),
-            default_binding: default_router_shortcut.to_string(),
-            current_binding: default_router_shortcut.to_string(),
-        },
-    );
     bindings.insert(
         "cancel".to_string(),
         ShortcutBinding {
@@ -95,12 +80,14 @@ pub fn get_default_settings() -> AppSettings {
             description: "Cancels the current recording.".to_string(),
             default_binding: "escape".to_string(),
             current_binding: "escape".to_string(),
+            tauri_binding: "escape".to_string(),
+            handy_keys_binding: "escape".to_string(),
         },
     );
 
     AppSettings {
         bindings,
-        push_to_talk: true,
+        push_to_talk: false,
         audio_feedback: false,
         audio_feedback_volume: default_audio_feedback_volume(),
         sound_theme: default_sound_theme(),
@@ -110,6 +97,7 @@ pub fn get_default_settings() -> AppSettings {
         selected_model: "".to_string(),
         always_on_microphone: false,
         selected_microphone: None,
+        selected_channel: None,
         clamshell_microphone: None,
         selected_output_device: None,
         translate_to_english: false,
@@ -163,13 +151,17 @@ pub fn get_default_settings() -> AppSettings {
         usb_watchdog_enabled: false,
         usb_watchdog_device_name: String::new(),
         usb_watchdog_cycle_on_wake: true,
-        vad_sensitivity: VadSensitivity::Balanced,
+        vad_sensitivity: VadSensitivity::VeryRelaxed,
+        per_model_vad_sensitivity: HashMap::new(),
         live_captions_enabled: false,
+        live_captions_model: String::new(),
         overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
+        convert_number_words_to_digits: false,
         spelling_dictionary: SpellingDictionary::default(),
         repetition_suppression_level: 0,
         noise_suppression_enabled: false,
         noise_suppression_level: NoiseSuppressionLevel::default(),
+        vad_backend: VadBackend::default(),
     }
 }

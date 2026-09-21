@@ -8,19 +8,21 @@ use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
-use crate::managers::transcription::TranscriptionManager;
+use crate::managers::transcription::{TranscriptionManager, TRANSCRIBING_SLOT_WAIT_TIMEOUT};
 use crate::managers::transcription_retry::{TranscriptionFailure, TranscriptionRetryQueue};
 use crate::session::SessionTracker;
 use crate::settings::get_settings;
 use crate::shortcut;
+use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
     self, show_processing_overlay, show_recording_overlay, show_transcribing_overlay,
 };
+use crate::LiveCaptionsTranscriptionManager;
 use crate::TranscriptionCoordinator;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -51,6 +53,11 @@ pub(super) struct RecordingErrorEvent {
 pub(crate) struct FinishGuard(pub AppHandle);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
+        let has_coordinator = self.0.try_state::<TranscriptionCoordinator>().is_some();
+        info!(
+            "[FINISH-GUARD] drop firing — requesting Processing→Idle reset (coordinator handle: {})",
+            if has_coordinator { "present" } else { "absent" }
+        );
         // The coordinator will only transition from Processing to Idle,
         // so if we're already Idle (due to cancel), this is a no-op.
         // This prevents race conditions between cancel and finish.
@@ -102,16 +109,60 @@ impl super::ShortcutAction for TranscribeAction {
         };
 
         // Clear any previous streaming cancellation flag when starting a new recording.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(false, Ordering::Release);
-            debug!("Cleared streaming cancel flag for new recording");
-        } else {
-            // Fallback to TM lock if Arc<AtomicBool> not available (shouldn't happen)
-            tm.lock().clear_streaming_cancel();
+        // The cancel flag fast path is intentionally kept lock-free so it can never
+        // block the coordinator thread even when the TM mutex is held by a GPU callback.
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(false, "transcribe_start");
         }
 
-        // Load ASR model and VAD model in parallel
-        tm.lock().initiate_model_load();
+        let settings = get_settings(app);
+        let live_captions_model = settings.live_captions_model.clone();
+
+        // Safely kick model load without blocking the coordinator thread on a contended
+        // TranscriptionManager mutex. If the lock is unavailable for 2s, skip the kick
+        // rather than stalling the start path — the next audio chunk will retry loading.
+        if let Some(tm_guard) = tm.try_lock_for(Duration::from_secs(2)) {
+            let lock_dt = start_time.elapsed();
+            tm_guard.clear_streaming_cancel();
+            let before_init = Instant::now();
+            tm_guard.initiate_model_load();
+            let init_dt = before_init.elapsed();
+            debug!(
+                "[START-LOCK] TM lock acquired for '{}' (lock wait+init took {:?}, clear+initiate took {:?})",
+                binding_id, lock_dt, init_dt
+            );
+            if init_dt > Duration::from_millis(100) {
+                warn!(
+                    "[START-LOCK] clear_streaming_cancel + initiate_model_load took {:?} for '{}'",
+                    init_dt, binding_id
+                );
+            }
+
+            // If the user configured a separate live captions model, kick its load
+            // in the dedicated live captions TM and then open its streaming router.
+            // We do both in the same spawned thread so that initiate_model_load_for()
+            // is guaranteed to run before start_stream(). The stream worker itself
+            // waits for the load to finish, but starting the load first avoids any
+            // race where the worker sees is_loading=false before the load begins.
+            if !live_captions_model.is_empty() {
+                if let Some(live_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+                    let live_model_id = live_captions_model.clone();
+                    let live_tm = Arc::clone(&live_tm.0);
+                    std::thread::spawn(move || {
+                        let guard = live_tm.lock();
+                        guard.clear_streaming_cancel();
+                        guard.initiate_model_load_for(&live_model_id);
+                        guard.start_stream();
+                    });
+                }
+            }
+        } else {
+            warn!(
+                "[START-LOCK] TM lock NOT acquired within 2s on start for '{}' — skipping model-load kick",
+                binding_id
+            );
+        }
+
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -224,9 +275,8 @@ impl super::ShortcutAction for TranscribeAction {
         // Cancel any in-progress streaming transcription to prevent wasted work.
         // IMPORTANT: Use the streaming_cancel_flag managed separately in app state
         // instead of tm.lock().cancel_streaming() to avoid blocking.
-        if let Some(cancel_flag) = app.try_state::<Arc<AtomicBool>>() {
-            cancel_flag.store(true, Ordering::Release);
-            debug!("Cancelled streaming transcription via Arc<AtomicBool>");
+        if let Some(cancel_flag) = app.try_state::<StreamingCancelFlag>() {
+            cancel_flag.set(true, "transcribe_stop");
         } else {
             warn!("Streaming cancel flag not available in app state");
         }
@@ -235,6 +285,10 @@ impl super::ShortcutAction for TranscribeAction {
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
 
         let ah = app.clone();
+        let settings = get_settings(app);
+        let live_captions_model = settings.live_captions_model.clone();
+        let live_captions_enabled = !live_captions_model.is_empty();
+
         let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
             warn!("AudioRecordingManager not available, cannot stop recording");
             utils::hide_recording_overlay(app);
@@ -242,6 +296,8 @@ impl super::ShortcutAction for TranscribeAction {
             return;
         };
         let rm = Arc::clone(&rm);
+        // Keep a second Arc handle for the fire-and-forget mute thread used after spawning.
+        let rm_mute = Arc::clone(&rm);
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop transcription");
             utils::hide_recording_overlay(app);
@@ -249,6 +305,9 @@ impl super::ShortcutAction for TranscribeAction {
             return;
         };
         let tm = Arc::clone(&tm);
+        let live_captions_tm: Option<Arc<Mutex<TranscriptionManager>>> = app
+            .try_state::<LiveCaptionsTranscriptionManager>()
+            .map(|s| Arc::clone(&s.0));
         let Some(hm) = app.try_state::<Arc<HistoryManager>>() else {
             warn!("HistoryManager not available, cannot save recording");
             utils::hide_recording_overlay(app);
@@ -262,64 +321,137 @@ impl super::ShortcutAction for TranscribeAction {
             .try_state::<Arc<SessionTracker>>()
             .and_then(|t| t.current_session_id());
 
-        change_tray_icon(app, TrayIconState::Transcribing);
-        show_transcribing_overlay(app);
-
-        // Unmute before playing audio feedback so the stop sound is audible
-        rm.remove_mute();
-
-        // Play audio feedback for recording stop
-        play_feedback_sound(app, SoundType::Stop);
-
-        let binding_id = binding_id.to_string(); // Clone binding_id for the async task
+        let binding_id_spawn = binding_id.to_string(); // Clone binding_id for the async task
         let post_process = self.post_process;
 
+        // CRITICAL: Spawn the recording-stop work IMMEDIATELY, before any UI/feedback
+        // call that might synchronously block (e.g. AppleScript mute, overlay JS).
+        // Previously, change_tray_icon / show_transcribing_overlay / remove_mute /
+        // play_feedback_sound ran before the spawn, and when any of them hung after
+        // sleep/wake, the stop recording task never started and the visualizer stayed
+        // open forever. The UI/feedback updates below are fire-and-forget and must not
+        // delay the actual stop_recording() call.
+        info!(
+            "[STOP-DIAGNOSTIC] Spawning async stop task for binding: {}",
+            binding_id_spawn
+        );
         tauri::async_runtime::spawn(async move {
             let _guard = FinishGuard(ah.clone());
-            debug!(
-                "Starting async transcription task for binding: {}",
-                binding_id
+
+            // Hide the visualizer immediately so the app feels responsive,
+            // before transcription runs and regardless of success or failure.
+            utils::hide_recording_overlay(&ah);
+
+            let async_start = Instant::now();
+            info!(
+                "[STOP-DIAGNOSTIC] Async transcription task started for binding: {}",
+                binding_id_spawn
             );
 
             let stop_recording_time = Instant::now();
-            let samples = rm.stop_recording(&binding_id);
-            if let Some(samples) = samples {
+            let recording_result = rm.stop_recording(&binding_id_spawn);
+            info!(
+                "[STOP-DIAGNOSTIC] rm.stop_recording returned in {:?} for binding: {} (result_is_some={})",
+                stop_recording_time.elapsed(),
+                binding_id_spawn,
+                recording_result.is_some()
+            );
+
+            // Finalize any live captions stream before running the main model's
+            // batch transcription. The live captions text is only for display:
+            // the authoritative final transcription always comes from the main
+            // selected_model below. We ignore the result here, but finalize
+            // flushes remaining buffered audio through the live captions model.
+            if live_captions_enabled {
+                if let Some(ref live_tm) = live_captions_tm {
+                    let live = live_tm.clone();
+                    let finalize_result = tauri::async_runtime::spawn_blocking(move || {
+                        let guard = live.lock();
+                        guard.finalize_stream()
+                    })
+                    .await;
+                    match finalize_result {
+                        Ok(Ok(Some(_text))) => {
+                            debug!("Live captions stream finalized successfully");
+                        }
+                        Ok(Ok(None)) => {
+                            debug!("No live captions stream was active");
+                        }
+                        Ok(Err(e)) => {
+                            warn!("Live captions stream finalize failed: {}", e);
+                        }
+                        Err(e) => {
+                            warn!("Live captions stream finalize task panicked: {}", e);
+                        }
+                    }
+                }
+            }
+
+            if let Some((processed_samples, raw_samples)) = recording_result {
                 debug!(
-                    "Recording stopped and samples retrieved in {:?}, sample count: {}",
+                    "Recording stopped and samples retrieved in {:?}, processed: {}, raw: {}",
                     stop_recording_time.elapsed(),
-                    samples.len()
+                    processed_samples.len(),
+                    raw_samples.len()
                 );
 
-                if samples.is_empty() {
-                    debug!("Recording produced no audio samples; skipping persistence");
+                if processed_samples.is_empty() {
+                    warn!("[STOP-DIAGNOSTIC] Recording produced no audio samples; hiding overlay");
                     utils::hide_recording_overlay(&ah);
                     change_tray_icon(&ah, TrayIconState::Idle);
                 } else {
-                    // Save WAV concurrently with transcription
-                    let sample_count = samples.len();
+                    info!(
+                        "[STOP-DIAGNOSTIC] Recording has {} processed / {} raw samples; continuing transcription pipeline",
+                        processed_samples.len(),
+                        raw_samples.len()
+                    );
+                    // Save RAW WAV (what the mic actually captured — unfiltered)
+                    let raw_sample_count = raw_samples.len();
                     let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
                     let wav_path = hm.recordings_dir().join(&file_name);
                     let wav_path_for_verify = wav_path.clone();
-                    let samples_for_wav = samples.clone();
+                    let samples_for_wav = raw_samples;
                     let wav_handle = tauri::async_runtime::spawn_blocking(move || {
                         crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
                     });
 
-                    // Transcribe concurrently with WAV save
+                    // Save VAD-filtered WAV (for debugging VAD quality)
+                    let vad_file_name = format!("handy-{}-vad.wav", chrono::Utc::now().timestamp());
+                    let vad_wav_path = hm.recordings_dir().join(&vad_file_name);
+                    let vad_samples = processed_samples.clone();
+                    let vad_wav_handle = tauri::async_runtime::spawn_blocking(move || {
+                        crate::audio_toolkit::save_wav_file(&vad_wav_path, &vad_samples)
+                    });
+
+                    // Transcribe concurrently with WAV save (using VAD-filtered samples)
                     let transcription_time = Instant::now();
                     // Use a bounded lock timeout to avoid indefinite blocking when a streaming
                     // transcription is in-flight holding the TM lock (1-5s of GPU work).
-                    let transcription_result = match tm.try_lock_for(Duration::from_secs(10)) {
+                    let transcription_result = match tm.try_lock_for(TRANSCRIBING_SLOT_WAIT_TIMEOUT)
+                    {
                         Some(guard) => {
-                            // Clear the streaming cancel flag before the final transcription.
-                            guard.clear_streaming_cancel();
-                            guard.transcribe(samples)
+                            // Capture the shared streaming cancel flag so it can be cleared
+                            // only after the final transcription acquires the `is_transcribing`
+                            // slot. Clearing it before the slot is owned lets queued streaming
+                            // callbacks race ahead and steal the slot, causing
+                            // `AppError::TranscriptionBusy`.
+                            let cancel_flag = guard.streaming_cancel_flag();
+                            guard.transcribe_with_hook(processed_samples, move || {
+                                cancel_flag.store(false, Ordering::Release);
+                                debug!("Cleared streaming cancel flag after acquiring transcription slot");
+                            })
                         }
                         None => {
-                            warn!("Timed out waiting for TranscriptionManager lock after 10s — aborting transcription");
+                            warn!("Timed out waiting for TranscriptionManager lock after {:?} — aborting transcription", TRANSCRIBING_SLOT_WAIT_TIMEOUT);
                             Err(AppError::TranscriptionBusy)
                         }
                     };
+
+                    if matches!(transcription_result, Err(AppError::TranscriptionBusy)) {
+                        warn!(
+                            "[TRANSCRIBE-STOP] TranscriptionBusy returned — the TM is_transcribing slot may be wedged"
+                        );
+                    }
 
                     // ── Structured session tracking: advance to Transcribing phase ──
                     let model_id = transcription_result
@@ -336,32 +468,45 @@ impl super::ShortcutAction for TranscribeAction {
                         tracker.advance_to_transcribing(
                             s,
                             &model_id,
-                            sample_count,
+                            raw_sample_count,
                             stop_recording_time.elapsed().as_millis() as u64,
                         );
                     }
 
-                    // Await WAV save and verify
+                    // Await RAW WAV save and verify
                     let wav_saved = match wav_handle.await {
                         Ok(Ok(())) => {
                             match crate::audio_toolkit::verify_wav_file(
                                 &wav_path_for_verify,
-                                sample_count,
+                                raw_sample_count,
                             ) {
                                 Ok(()) => true,
                                 Err(e) => {
-                                    error!("WAV verification failed: {}", e);
+                                    error!("RAW WAV verification failed: {}", e);
                                     false
                                 }
                             }
                         }
                         Ok(Err(e)) => {
-                            error!("Failed to save WAV file: {}", e);
+                            error!("Failed to save RAW WAV file: {}", e);
                             false
                         }
                         Err(e) => {
-                            error!("WAV save task panicked: {}", e);
+                            error!("RAW WAV save task panicked: {}", e);
                             false
+                        }
+                    };
+
+                    // Await VAD WAV save (best-effort, non-critical)
+                    match vad_wav_handle.await {
+                        Ok(Ok(())) => {
+                            debug!("VAD-filtered WAV saved: {}", vad_file_name);
+                        }
+                        Ok(Err(e)) => {
+                            error!("Failed to save VAD WAV file: {}", e);
+                        }
+                        Err(e) => {
+                            error!("VAD WAV save task panicked: {}", e);
                         }
                     };
 
@@ -397,7 +542,7 @@ impl super::ShortcutAction for TranscribeAction {
 
                             // Save to history if WAV was saved
                             if wav_saved {
-                                if let Err(err) = hm.save_entry(
+                                if let Err(err) = hm.save_entry_with_vad(
                                     file_name,
                                     transcription.text.clone(),
                                     post_process,
@@ -405,6 +550,7 @@ impl super::ShortcutAction for TranscribeAction {
                                     processed.post_process_prompt.clone(),
                                     Some(transcription.model_id.clone()),
                                     false, // routed: not sent to router
+                                    Some(vad_file_name),
                                 ) {
                                     error!("Failed to save history entry: {}", err);
                                 }
@@ -413,7 +559,7 @@ impl super::ShortcutAction for TranscribeAction {
                             if processed.final_text.is_empty() {
                                 // Transcription returned empty text - may indicate dead mic
                                 warn!("Transcription returned empty text - checking if USB watchdog should cycle");
-                                let duration_secs = sample_count as f32 / 16000.0;
+                                let duration_secs = raw_sample_count as f32 / 16000.0;
                                 if rm.usb_watchdog.on_silent_transcription(duration_secs) {
                                     if let Err(e) = rm.restart_microphone_if_needed() {
                                         error!("Failed to restart microphone after silent transcription USB cycle: {}", e);
@@ -578,6 +724,13 @@ impl super::ShortcutAction for TranscribeAction {
                             utils::hide_recording_overlay(&ah);
                             change_tray_icon(&ah, TrayIconState::Idle);
 
+                            // Play the failure/dismissal sound so the user hears
+                            // that the transcription did not complete. We reuse the
+                            // existing stop asset as a fallback because no error
+                            // asset exists yet; the path resolution layer will
+                            // fall back automatically.
+                            play_feedback_sound(&ah, SoundType::Error);
+
                             // Emit a recoverable transcription error for the error dialog system
                             let model_id_for_error = {
                                 let settings = get_settings(&ah);
@@ -589,11 +742,34 @@ impl super::ShortcutAction for TranscribeAction {
                                 Some(&model_id_for_error),
                                 true, // Transcription errors are generally retriable
                             );
+
+                            // Explicitly drop the FinishGuard so the coordinator
+                            // transitions out of Processing immediately. This is
+                            // idempotent and avoids relying on the 30s processing
+                            // timeout if any of the cleanup above stalls.
+                            drop(_guard);
                         }
                     }
                 }
+
+                // After the main transcription pipeline completes (success or
+                // failure), cancel the live captions stream if it is still
+                // active. This releases the live captions engine lease so the
+                // next recording starts fresh and does not feed leftover frames.
+                if live_captions_enabled {
+                    if let Some(ref live_tm) = live_captions_tm {
+                        let live = live_tm.clone();
+                        std::thread::spawn(move || {
+                            let guard = live.lock();
+                            guard.cancel_stream();
+                        });
+                    }
+                }
             } else {
-                debug!("No samples retrieved from recording stop");
+                warn!(
+                    "[STOP-DIAGNOSTIC] rm.stop_recording returned None (no samples or binding mismatch) for binding: {}",
+                    binding_id_spawn
+                );
                 // ── Structured event: no samples ──
                 if let (Some(ref s), Some(tracker)) = (&sid, ah.try_state::<Arc<SessionTracker>>())
                 {
@@ -601,11 +777,53 @@ impl super::ShortcutAction for TranscribeAction {
                 }
                 utils::hide_recording_overlay(&ah);
                 change_tray_icon(&ah, TrayIconState::Idle);
+
+                // If no samples were captured, make sure the live captions
+                // stream is cancelled rather than left dangling.
+                if live_captions_enabled {
+                    if let Some(ref live_tm) = live_captions_tm {
+                        let live = live_tm.clone();
+                        std::thread::spawn(move || {
+                            let guard = live.lock();
+                            guard.cancel_stream();
+                        });
+                    }
+                }
             }
+
+            info!(
+                "[STOP-DIAGNOSTIC] Async transcription task finishing for binding: {} (total elapsed {:?})",
+                binding_id_spawn,
+                async_start.elapsed()
+            );
         });
 
-        debug!(
-            "TranscribeAction::stop completed in {:?}",
+        info!(
+            "[STOP-DIAGNOSTIC] TranscribeAction::stop spawn completed in {:?}",
+            stop_time.elapsed()
+        );
+
+        // Play audio feedback immediately so the user hears that stop was
+        // registered even if transcription later fails or UI cleanup stalls.
+        // This must happen on the main thread right after spawning the stop work.
+        play_feedback_sound(app, SoundType::Stop);
+
+        // UI/feedback updates are intentionally dispatched AFTER spawning the stop work.
+        // They are best-effort: if any of them hangs (e.g. AppleScript mute after
+        // sleep/wake, or overlay JS evaluation), it must not prevent the recording
+        // from stopping and the visualizer from eventually hiding.
+        change_tray_icon(app, TrayIconState::Transcribing);
+        show_transcribing_overlay(app);
+
+        // Unmute in a detached thread so a stuck osascript/System Events cannot block
+        // the stop path. The stop sound may be slightly delayed, but that is far
+        // preferable to a hung recording.
+        std::thread::spawn(move || {
+            rm_mute.remove_mute();
+        });
+
+        info!(
+            "[STOP-DIAGNOSTIC] TranscribeAction::stop UI/feedback dispatched in {:?}",
             stop_time.elapsed()
         );
     }

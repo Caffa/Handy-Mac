@@ -35,7 +35,7 @@ language: en-US
 enable_free_tier: true
 
 reviews:
-  profile: assertive          # chill, balanced, or assertive
+  profile: assertive # chill, balanced, or assertive
   request_changes_workflow: false
   high_level_summary: true
   poem: false
@@ -71,23 +71,23 @@ tools:
 
 ## What CodeRabbit Reviews
 
-| Area | Details |
-|------|---------|
-| Rust (`src-tauri/`) | Unsafe blocks, error propagation, Tauri command patterns, thread safety |
-| TypeScript/React (`src/`) | Component patterns, hook usage, type safety, i18next compliance |
-| CI workflows (`.github/`) | YAML correctness, action versions, dependency caching |
-| Config files | `biome.json`, `eslint.config.js`, `Cargo.toml`, `package.json` |
+| Area                      | Details                                                                 |
+| ------------------------- | ----------------------------------------------------------------------- |
+| Rust (`src-tauri/`)       | Unsafe blocks, error propagation, Tauri command patterns, thread safety |
+| TypeScript/React (`src/`) | Component patterns, hook usage, type safety, i18next compliance         |
+| CI workflows (`.github/`) | YAML correctness, action versions, dependency caching                   |
+| Config files              | `biome.json`, `eslint.config.js`, `Cargo.toml`, `package.json`          |
 
 ## How It Complements CI
 
-| Tool | Catches | Runs on |
-|------|---------|---------|
-| ESLint | Missing i18next translations | CI (code-quality.yml) |
-| Biome | Formatting, unused imports, suspicious code | CI (code-quality.yml + ci.yml) |
-| Prettier | Formatting consistency | CI (code-quality.yml) |
-| Clippy | Rust code smells | CI (ci.yml) |
-| rustfmt | Rust formatting | CI (ci.yml) |
-| CodeRabbit | Logic errors, missing edge cases, pattern inconsistencies | Every PR (GitHub App) |
+| Tool       | Catches                                                   | Runs on                        |
+| ---------- | --------------------------------------------------------- | ------------------------------ |
+| ESLint     | Missing i18next translations                              | CI (code-quality.yml)          |
+| Biome      | Formatting, unused imports, suspicious code               | CI (code-quality.yml + ci.yml) |
+| Prettier   | Formatting consistency                                    | CI (code-quality.yml)          |
+| Clippy     | Rust code smells                                          | CI (ci.yml)                    |
+| rustfmt    | Rust formatting                                           | CI (ci.yml)                    |
+| CodeRabbit | Logic errors, missing edge cases, pattern inconsistencies | Every PR (GitHub App)          |
 
 ## Troubleshooting
 

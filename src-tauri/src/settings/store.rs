@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::RwLock;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -57,6 +57,25 @@ pub(crate) fn sanitize_floats(settings: &mut AppSettings) {
     }
 }
 
+/// Migrate legacy single `current_binding` values into per-implementation
+/// storage. On first load of an older `settings_store.json`, both backends
+/// inherit the existing binding so the user doesn't lose their shortcut.
+/// Returns true if any binding was changed.
+pub(crate) fn migrate_bindings(settings: &mut AppSettings) -> bool {
+    let mut changed = false;
+    for binding in settings.bindings.values_mut() {
+        if binding.tauri_binding.is_empty() && !binding.current_binding.is_empty() {
+            binding.tauri_binding = binding.current_binding.clone();
+            changed = true;
+        }
+        if binding.handy_keys_binding.is_empty() && !binding.current_binding.is_empty() {
+            binding.handy_keys_binding = binding.current_binding.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Helper: serialize settings to a serde_json::Value, logging errors instead of panicking.
 pub(crate) fn settings_to_value(settings: &AppSettings) -> Option<serde_json::Value> {
     match serde_json::to_value(settings) {
@@ -69,9 +88,9 @@ pub(crate) fn settings_to_value(settings: &AppSettings) -> Option<serde_json::Va
 }
 
 /// Helper: open the settings store, logging errors instead of panicking.
-pub(crate) fn open_settings_store(
-    app: &AppHandle,
-) -> Option<Arc<tauri_plugin_store::Store<tauri::Wry>>> {
+pub(crate) fn open_settings_store<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Option<Arc<tauri_plugin_store::Store<R>>> {
     match app.store(crate::portable::store_path(SETTINGS_STORE_PATH)) {
         Ok(store) => Some(store),
         Err(e) => {
@@ -157,7 +176,7 @@ pub(crate) fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
 
 /// Safe wrapper around [`load_or_create_app_settings`] that catches panics
 /// and falls back to defaults.
-pub fn load_or_create_app_settings_safe(app: &AppHandle) -> AppSettings {
+pub fn load_or_create_app_settings_safe<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     safe_settings_operation("load_or_create_app_settings", || {
         load_or_create_app_settings(app)
     })
@@ -170,7 +189,7 @@ pub fn load_or_create_app_settings_safe(app: &AppHandle) -> AppSettings {
 /// Safe wrapper around [`get_settings`] that catches panics and falls back to defaults.
 /// Reads from the in-memory cache when available, eliminating the read-modify-write
 /// race with the debounced disk writer.
-pub fn get_settings_safe(app: &AppHandle) -> AppSettings {
+pub fn get_settings_safe<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     safe_settings_operation("get_settings_safe", || {
         if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             trace!("[settings] get_safe (cache hit)");
@@ -204,6 +223,41 @@ pub fn write_settings_immediate_safe(app: &AppHandle, settings: AppSettings) {
     });
 }
 
+/// Atomically patch the in-memory settings cache and flush the result to disk.
+///
+/// This helper is intended for small, isolated field updates (e.g. custom
+/// words, selected model). It holds the `SettingsCache` write lock across the
+/// entire patch, sanitization, and synchronous disk flush. This prevents two
+/// common loss scenarios:
+///
+/// 1. Read-modify-write races where two writers read the same snapshot,
+///    mutate different fields, and the second disk write clobbers the first.
+///    Because the disk flush happens while the cache lock is held, the value
+///    written to disk is always the latest merged cache value.
+/// 2. Debounced disk writes that are lost because the app quits or crashes
+///    before the flush fires.
+///
+/// Callers pass a closure that receives `&mut AppSettings` and can modify any
+/// field; the patched value is then written to the cache and immediately saved.
+pub fn patch_settings<R: Runtime, F>(app: &AppHandle<R>, f: F)
+where
+    F: FnOnce(&mut AppSettings),
+{
+    let _ = safe_settings_operation("patch_settings", || {
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            let mut guard = cache.settings.write().unwrap();
+            f(&mut guard);
+            sanitize_floats(&mut guard);
+            write_settings_to_disk(app, &guard);
+            // guard drops here, releasing the write lock after disk flush.
+        } else {
+            let mut settings = get_settings(app);
+            f(&mut settings);
+            write_settings_immediate(app, settings);
+        }
+    });
+}
+
 // ── Core load/save functions ──
 
 /// Rebuilds settings from a store value that failed to deserialize as a whole.
@@ -216,6 +270,27 @@ fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
         warn!("Stored settings are not a JSON object; falling back to defaults");
         return get_default_settings();
     };
+
+    // Track which per-implementation binding keys were actually present in the
+    // stored JSON. This is the signal used below to decide whether a legacy
+    // binding (only `current_binding`) needs to be migrated into the newer
+    // `tauri_binding` / `handy_keys_binding` fields. We record presence *before*
+    // any merging happens, because a missing key should be treated differently
+    // from an empty key.
+    let mut binding_impl_keys_present: HashMap<String, (bool, bool)> = HashMap::new();
+    if let Some(bindings) = stored_map.get("bindings").and_then(|v| v.as_object()) {
+        for (id, binding) in bindings {
+            if let Some(obj) = binding.as_object() {
+                binding_impl_keys_present.insert(
+                    id.clone(),
+                    (
+                        obj.contains_key("tauri_binding"),
+                        obj.contains_key("handy_keys_binding"),
+                    ),
+                );
+            }
+        }
+    }
 
     let mut merged = serde_json::to_value(get_default_settings())
         .expect("default settings serialize to a JSON object");
@@ -238,13 +313,43 @@ fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
         }
     }
 
+    // After the deep/top-level merge, force any stored binding that did not
+    // contain `tauri_binding` / `handy_keys_binding` to have an explicit empty
+    // string for those fields. Without this, a deep merge would keep the
+    // default non-empty binding, and `migrate_bindings` would skip the legacy
+    // `current_binding` copy because the per-implementation field would no
+    // longer be empty. We only do this when the stored value for the binding
+    // was an object; non-object values are left for serde to handle.
+    if let Some(merged_bindings) = merged
+        .as_object_mut()
+        .and_then(|m| m.get_mut("bindings"))
+        .and_then(|b| b.as_object_mut())
+    {
+        for (id, (has_tauri, has_handy)) in &binding_impl_keys_present {
+            if let Some(binding_obj) = merged_bindings.get_mut(id).and_then(|b| b.as_object_mut()) {
+                if !has_tauri && !binding_obj.contains_key("tauri_binding") {
+                    binding_obj.insert(
+                        "tauri_binding".to_string(),
+                        serde_json::Value::String(String::new()),
+                    );
+                }
+                if !has_handy && !binding_obj.contains_key("handy_keys_binding") {
+                    binding_obj.insert(
+                        "handy_keys_binding".to_string(),
+                        serde_json::Value::String(String::new()),
+                    );
+                }
+            }
+        }
+    }
+
     serde_json::from_value(merged).unwrap_or_else(|e| {
         warn!("Failed to reassemble salvaged settings ({e}); falling back to defaults");
         get_default_settings()
     })
 }
 
-pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
+pub fn load_or_create_app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     // Initialize store
     let Some(store) = open_settings_store(app) else {
         error!("Cannot load settings: store initialization failed, returning defaults");
@@ -265,6 +370,11 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
                         settings.bindings.insert(key, value);
                         updated = true;
                     }
+                }
+
+                // Migrate legacy single-binding storage to per-implementation fields
+                if migrate_bindings(&mut settings) {
+                    updated = true;
                 }
 
                 // Migrate new settings fields
@@ -314,9 +424,18 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
             }
             Err(e) => {
                 warn!("Failed to parse stored settings ({e}); salvaging valid fields");
-                let salvaged = salvage_settings(&settings_value);
+                let mut salvaged = salvage_settings(&settings_value);
+                // migrate_bindings must run before the salvaged value is saved
+                // back to disk; otherwise the per-implementation binding fields
+                // that salvage_settings deliberately emptied never get filled
+                // from the legacy `current_binding` value at real startup.
+                migrate_bindings(&mut salvaged);
                 if let Some(value) = settings_to_value(&salvaged) {
                     store.set("settings", value);
+                    match store.save() {
+                        Ok(()) => info!("[settings] flushed to disk"),
+                        Err(e) => error!("[settings] disk write FAILED: {e}"),
+                    }
                 }
                 salvaged
             }
@@ -339,7 +458,7 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
-pub fn get_settings(app: &AppHandle) -> AppSettings {
+pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     // Prefer the in-memory cache — this is the single source of truth at runtime.
     // Only fall back to the plugin-store path during early startup before
     // SettingsCache is managed (e.g. during load_or_create_app_settings).
@@ -356,14 +475,25 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
     };
 
     let mut settings = if let Some(settings_value) = store.get("settings") {
-        serde_json::from_value::<AppSettings>(settings_value).unwrap_or_else(|e| {
-            warn!("Failed to parse settings: {}, returning defaults", e);
-            let default_settings = get_default_settings();
-            if let Some(value) = settings_to_value(&default_settings) {
-                store.set("settings", value);
+        match serde_json::from_value::<AppSettings>(settings_value.clone()) {
+            Ok(settings) => settings,
+            Err(e) => {
+                warn!("Failed to parse settings: {}, salvaging valid fields", e);
+                let mut salvaged = salvage_settings(&settings_value);
+                // Same migration as load_or_create_app_settings: legacy bindings
+                // present in the partial store value must be written back to the
+                // per-implementation fields before saving.
+                migrate_bindings(&mut salvaged);
+                if let Some(value) = settings_to_value(&salvaged) {
+                    store.set("settings", value);
+                    match store.save() {
+                        Ok(()) => info!("[settings] flushed to disk"),
+                        Err(e) => error!("[settings] disk write FAILED: {e}"),
+                    }
+                }
+                salvaged
             }
-            default_settings
-        })
+        }
     } else {
         let default_settings = get_default_settings();
         if let Some(value) = settings_to_value(&default_settings) {
@@ -402,6 +532,11 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         }
     }
 
+    // Migrate legacy single-binding storage to per-implementation fields
+    if migrate_bindings(&mut settings) {
+        needs_save = true;
+    }
+
     if needs_save {
         sanitize_floats(&mut settings);
         if let Some(value) = settings_to_value(&settings) {
@@ -427,20 +562,33 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
 /// Also updates the in-memory cache immediately so that subsequent reads
 /// (via `get_settings` or `get_settings_safe`) see the new value, eliminating
 /// the read-modify-write race with the debounced disk writer.
-pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+pub fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: AppSettings) {
     let _ = safe_settings_operation("write_settings", || {
+        // Diagnostics: log any change to keyboard_implementation so future
+        // unexpected reverts can be traced to the code path that wrote them.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            let previous = cache.get().keyboard_implementation;
+            if previous != settings.keyboard_implementation {
+                warn!(
+                    "[settings] keyboard_implementation changing from {:?} to {:?}",
+                    previous, settings.keyboard_implementation
+                );
+            }
+        }
+
         // Update the in-memory cache first — mirror what write_settings_safe does.
         if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             cache.update(settings.clone());
         }
 
         debug!(
-            "[settings] write: active_model_id={:?} live_captions={} selected_language={} post_process_enabled={} overlay_position={:?}",
+            "[settings] write: active_model_id={:?} live_captions={} selected_language={} post_process_enabled={} overlay_position={:?} keyboard_implementation={:?}",
             settings.selected_model,
             settings.live_captions_enabled,
             settings.selected_language,
             settings.post_process_enabled,
             settings.overlay_position,
+            settings.keyboard_implementation,
         );
 
         if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
@@ -455,102 +603,91 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
     });
 }
 
+/// Write `settings` to the persistent store without touching the
+/// in-memory `SettingsCache`. This is the low-level disk-only path used by
+/// callers that already hold the cache write lock and have already sanitized
+/// the value.
+fn write_settings_to_disk<R: Runtime>(app: &AppHandle<R>, settings: &AppSettings) {
+    let Some(store) = open_settings_store(app) else {
+        error!("Cannot write settings: store initialization failed, settings not saved");
+        return;
+    };
+
+    let Some(value) = settings_to_value(settings) else {
+        error!("Cannot write settings: serialization failed, settings not saved");
+        return;
+    };
+
+    store.set("settings", value);
+    match store.save() {
+        Ok(()) => info!("[settings] flushed to disk"),
+        Err(e) => error!("[settings] disk write FAILED: {e}"),
+    }
+}
+
 /// Write settings to disk immediately, bypassing the debounce timer.
 /// Also updates the in-memory cache if available, to keep reads consistent.
-pub fn write_settings_immediate(app: &AppHandle, mut settings: AppSettings) {
+pub fn write_settings_immediate<R: Runtime>(app: &AppHandle<R>, mut settings: AppSettings) {
     let _ = safe_settings_operation("write_settings_immediate", || {
+        // Diagnostics: log any change to keyboard_implementation so future
+        // unexpected reverts can be traced to the code path that wrote them.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            let previous = cache.get().keyboard_implementation;
+            if previous != settings.keyboard_implementation {
+                warn!(
+                    "[settings] keyboard_implementation changing from {:?} to {:?}",
+                    previous, settings.keyboard_implementation
+                );
+            }
+        }
+
         // Update the in-memory cache so reads reflect the immediate write.
         if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             cache.update(settings.clone());
         }
 
-        let Some(store) = open_settings_store(app) else {
-            error!("Cannot write settings: store initialization failed, settings not saved");
-            return;
-        };
-
         sanitize_floats(&mut settings);
-
-        let Some(value) = settings_to_value(&settings) else {
-            error!("Cannot write settings: serialization failed, settings not saved");
-            return;
-        };
-
-        store.set("settings", value);
-        match store.save() {
-            Ok(()) => info!("[settings] flushed to disk"),
-            Err(e) => error!("[settings] disk write FAILED: {e}"),
-        }
+        write_settings_to_disk(app, &settings);
     });
 }
 
-/// Flush any pending debounced settings to disk.
+/// Flush any pending debounced settings to disk synchronously.
 ///
-/// On exit (`RunEvent::ExitRequested`) we must ensure in-flight settings
-/// are persisted. The previous implementation unconditionally called
-/// `block_in_place` + `block_on` which can deadlock if the Tokio runtime
-/// is already tearing down.
+/// Called from Tauri's `RunEvent::ExitRequested` run callback, which executes
+/// on the main event-loop thread with **no active Tokio runtime context**.
+/// That means any use of `tokio::runtime::Handle::current()`, `block_in_place`,
+/// or `block_on` would panic (or deadlock if the runtime is already tearing
+/// down). The panic is swallowed by `safe_settings_operation`, so the pending
+/// write would be silently dropped — which is exactly how custom words were
+/// lost on quit.
 ///
-/// This version:
-/// 1. Checks whether there is a pending write first (cheap, async lock).
-/// 2. If no pending write, returns immediately — no blocking needed.
-/// 3. If there IS a pending write, does a synchronous disk write via
-///    `write_settings_immediate` (which calls `store.save()` synchronously)
-///    wrapped in a `block_in_place` + `block_on` with a 2-second timeout
-///    guard so a deadlocked runtime cannot hang the app on quit.
-pub fn flush_settings(app: &AppHandle) {
+/// Instead, this function relies on the fact that `write_settings` and
+/// `write_settings_immediate` always update the in-memory `SettingsCache`
+/// synchronously before scheduling a disk write. On exit we simply grab the
+/// current cache value and perform a synchronous `write_settings_immediate`.
+/// If the cache is not available there is nothing authoritative to flush, so
+/// we log a warning and return without panicking or blocking.
+pub fn flush_settings<R: Runtime>(app: &AppHandle<R>) {
     let _ = safe_settings_operation("flush_settings", || {
-        let Some(writer) = app.try_state::<Arc<SettingsWriter>>() else {
-            info!("[settings] exit flush: no writer registered, nothing to flush");
+        let Some(cache) = app.try_state::<Arc<SettingsCache>>() else {
+            warn!(
+                "[settings] exit flush: SettingsCache not available, cannot flush pending changes"
+            );
             return;
         };
 
-        // Use block_in_place because we're in a sync context (Tauri run callback)
-        // but need to check the async pending lock.
-        let has_pending = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async { writer.has_pending().await })
-        });
-
-        info!("[settings] exit flush: pending={}", has_pending);
-
-        if !has_pending {
-            info!("[settings] exit flush complete (nothing to write)");
-            return;
-        }
-
-        // There is a pending write. Flush it with a timeout so we don't
-        // hang if the runtime is shutting down.
-        let result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(2), writer.flush(app)).await
-            })
-        });
-
-        match result {
-            Ok(()) => info!("[settings] exit flush complete"),
-            Err(_) => {
-                warn!("[settings] exit flush timed out after 2s — performing direct disk write as fallback");
-                // Fallback: write directly from the pending settings if we can
-                // grab them, then do a synchronous save.
-                if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
-                    write_settings_immediate(app, cache.get());
-                    info!("[settings] exit flush complete (via direct fallback)");
-                } else {
-                    warn!(
-                        "[settings] exit flush fallback: cache not available, settings may be lost"
-                    );
-                }
-            }
-        }
+        let settings = cache.get();
+        write_settings_immediate(app, settings);
+        info!("[settings] exit flush complete");
     });
 }
 
-pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
+pub fn get_bindings<R: Runtime>(app: &AppHandle<R>) -> HashMap<String, ShortcutBinding> {
     let settings = get_settings_safe(app);
     settings.bindings
 }
 
-pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
+pub fn get_stored_binding<R: Runtime>(app: &AppHandle<R>, id: &str) -> ShortcutBinding {
     let bindings = get_bindings(app);
 
     if let Some(binding) = bindings.get(id) {
@@ -577,6 +714,8 @@ pub fn get_stored_binding(app: &AppHandle, id: &str) -> ShortcutBinding {
         description: format!("{} shortcut", id),
         default_binding: String::new(),
         current_binding: String::new(),
+        tauri_binding: String::new(),
+        handy_keys_binding: String::new(),
     }
 }
 
@@ -631,7 +770,7 @@ impl SettingsWriter {
 
     /// Schedule a settings write. If a write is already pending the new value
     /// replaces it and the debounce timer is restarted.
-    pub async fn write(&self, app: AppHandle, settings: AppSettings) {
+    pub async fn write<R: Runtime>(&self, app: AppHandle<R>, settings: AppSettings) {
         {
             let mut pending = self.pending.lock().await;
             *pending = Some(settings);
@@ -662,7 +801,7 @@ impl SettingsWriter {
     }
 
     /// Flush any pending settings to disk immediately.
-    pub async fn flush(&self, app: &AppHandle) {
+    pub async fn flush<R: Runtime>(&self, app: &AppHandle<R>) {
         {
             let mut timer = self.timer.lock().await;
             if let Some(handle) = timer.take() {
@@ -673,7 +812,7 @@ impl SettingsWriter {
     }
 
     /// Internal flush: write the pending settings (if any) to the store.
-    async fn flush_inner(&self, app: &AppHandle) {
+    async fn flush_inner<R: Runtime>(&self, app: &AppHandle<R>) {
         let maybe_settings = {
             let mut pending = self.pending.lock().await;
             pending.take()
@@ -727,5 +866,377 @@ mod tests {
         let out = format!("{:?}", map);
         assert!(!out.contains("secret"));
         assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn salvage_preserves_binding_fields_added_after_user_saved() {
+        // Simulates a settings file that was saved before per-implementation
+        // bindings existed: it has `current_binding` but not `tauri_binding` or
+        // `handy_keys_binding`. A separate *broken* field forces the salvage path.
+        let mut stored = serde_json::to_value(get_default_settings()).unwrap();
+        stored
+            .as_object_mut()
+            .unwrap()
+            .insert("broken_future_field".into(), serde_json::json!("nope"));
+        stored
+            .as_object_mut()
+            .unwrap()
+            .get_mut("bindings")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .get_mut("transcribe")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "current_binding".into(),
+                serde_json::json!("ctrl_right+command_right+y"),
+            );
+        stored
+            .as_object_mut()
+            .unwrap()
+            .get_mut("bindings")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .get_mut("transcribe")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("tauri_binding");
+        stored
+            .as_object_mut()
+            .unwrap()
+            .get_mut("bindings")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .get_mut("transcribe")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("handy_keys_binding");
+
+        let mut salvaged = salvage_settings(&stored);
+        assert!(migrate_bindings(&mut salvaged));
+
+        let binding = salvaged
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding");
+        assert_eq!(binding.current_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.handy_keys_binding, "ctrl_right+command_right+y");
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::Tauri),
+            "ctrl_right+command_right+y"
+        );
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::HandyKeys),
+            "ctrl_right+command_right+y"
+        );
+    }
+
+    #[test]
+    fn salvage_migrates_legacy_binding_after_broken_field_forces_salvage() {
+        // Legacy stored settings with only `current_binding` for a shortcut,
+        // plus a broken unrelated top-level field that forces `salvage_settings`.
+        let stored = serde_json::json!({
+            "bindings": {
+                "transcribe": {
+                    "id": "transcribe",
+                    "name": "Transcribe",
+                    "description": "Converts your speech into text.",
+                    "default_binding": "option+space",
+                    "current_binding": "ctrl_right+command_right+y"
+                }
+            },
+            "broken_future_field": "nope"
+        });
+
+        let mut salvaged = salvage_settings(&stored);
+        assert!(migrate_bindings(&mut salvaged));
+
+        let binding = salvaged
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding");
+        assert_eq!(binding.current_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.handy_keys_binding, "ctrl_right+command_right+y");
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::Tauri),
+            "ctrl_right+command_right+y"
+        );
+        assert_eq!(
+            binding.binding_for(KeyboardImplementation::HandyKeys),
+            "ctrl_right+command_right+y"
+        );
+    }
+
+    /// Verifies that `salvage_settings` preserves `custom_words` (and related
+    /// per-field settings) when an unrelated top-level field is broken. This
+    /// is the load path used whenever a stored settings file fails full
+    /// deserialization. If salvage dropped custom_words, the user's words would
+    /// silently revert to defaults on the next launch — matching the reported
+    /// symptom.
+    #[test]
+    fn salvage_settings_preserves_custom_words_across_broken_field() {
+        let mut stored = serde_json::to_value(get_default_settings()).unwrap();
+        let map = stored.as_object_mut().unwrap();
+        // Add user custom words as they would appear on disk.
+        map.insert(
+            "custom_words".into(),
+            serde_json::json!(["Zettelkasten", "MacBook"]),
+        );
+        map.insert(
+            "advanced_custom_words".into(),
+            serde_json::json!([{ "word": "Kubernetes", "pronunciations": [] }]),
+        );
+        map.insert(
+            "word_replacements".into(),
+            serde_json::json!([{ "mistranslation": "teh", "correction": "the" }]),
+        );
+        map.insert(
+            "custom_filler_words".into(),
+            serde_json::json!(["um", "uh"]),
+        );
+        // An unrelated invalid field forces the salvage path.
+        map.insert("broken_future_field".into(), serde_json::json!("nope"));
+
+        let salvaged = salvage_settings(&stored);
+
+        assert_eq!(
+            salvaged.custom_words,
+            vec!["Zettelkasten".to_string(), "MacBook".to_string()]
+        );
+        assert_eq!(salvaged.advanced_custom_words.len(), 1);
+        assert_eq!(salvaged.advanced_custom_words[0].word, "Kubernetes");
+        assert_eq!(salvaged.word_replacements.len(), 1);
+        assert_eq!(
+            salvaged.custom_filler_words,
+            Some(vec!["um".to_string(), "uh".to_string()])
+        );
+    }
+
+    /// Verifies that `flush_settings` can write the in-memory cache to disk
+    /// from a thread with no Tokio runtime context. This mirrors Tauri's
+    /// `RunEvent::ExitRequested` callback, which runs on the main event-loop
+    /// thread without an active runtime. The previous async implementation
+    /// panicked in this situation and the panic was swallowed, so custom words
+    /// were lost on quit.
+    #[test]
+    fn flush_settings_writes_cache_to_disk_without_runtime() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        app.manage(Arc::new(SettingsWriter::new()));
+
+        let mut settings = get_default_settings();
+        settings.custom_words = vec!["Zettelkasten".to_string(), "MacBook".to_string()];
+        app.manage(Arc::new(SettingsCache::new(settings)));
+
+        // Run the flush from a plain std::thread with no Tokio runtime — exactly
+        // the context in which Tauri invokes `RunEvent::ExitRequested`.
+        let flushed = std::thread::spawn({
+            let app = app.clone();
+            move || std::panic::catch_unwind(AssertUnwindSafe(|| flush_settings(&app)))
+        })
+        .join()
+        .expect("flush thread should not panic");
+
+        assert!(
+            flushed.is_ok(),
+            "flush_settings must not panic outside a Tokio runtime context"
+        );
+
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        let stored_value = store
+            .get("settings")
+            .expect("settings should be written to disk");
+        let stored: AppSettings =
+            serde_json::from_value(stored_value).expect("stored settings should deserialize");
+
+        assert_eq!(
+            stored.custom_words,
+            vec!["Zettelkasten".to_string(), "MacBook".to_string()]
+        );
+    }
+
+    /// Regression test for the exact user-reported scenario: custom words are
+    /// added in the UI, `write_settings` updates the cache and schedules a
+    /// debounced disk flush, then the app is quit before the debounce fires.
+    /// `flush_settings` must persist the cached words even when called from a
+    /// thread with no Tokio runtime.
+    #[test]
+    fn flush_settings_preserves_debounced_custom_words_on_exit() {
+        let rt = tokio::runtime::Runtime::new().expect("test runtime");
+
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        app.manage(Arc::new(SettingsWriter::new()));
+        app.manage(Arc::new(SettingsCache::new(get_default_settings())));
+
+        rt.block_on(async {
+            let mut settings = get_settings_safe(&app);
+            settings.custom_words = vec!["Kubernetes".to_string(), "Terraform".to_string()];
+            // This updates the cache immediately and schedules a debounced write
+            // that we intentionally do not let fire.
+            write_settings(&app, settings);
+        });
+
+        // Ensure the debounce task has not had time to run.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let flushed = std::thread::spawn({
+            let app = app.clone();
+            move || std::panic::catch_unwind(AssertUnwindSafe(|| flush_settings(&app)))
+        })
+        .join()
+        .expect("flush thread should not panic");
+
+        assert!(
+            flushed.is_ok(),
+            "flush_settings must not panic outside a Tokio runtime context"
+        );
+
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        let stored_value = store
+            .get("settings")
+            .expect("settings should be written to disk");
+        let stored: AppSettings =
+            serde_json::from_value(stored_value).expect("stored settings should deserialize");
+
+        assert_eq!(
+            stored.custom_words,
+            vec!["Kubernetes".to_string(), "Terraform".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_or_create_app_settings_migrates_legacy_binding_in_salvage_path() {
+        // End-to-end simulation of the runtime salvage path: create a mock
+        // app, seed the store with a legacy settings JSON that fails full
+        // deserialization (because of a broken field), then call
+        // `load_or_create_app_settings` directly. The function must both
+        // salvage and migrate the binding, and persist the migrated value
+        // so that subsequent loads no longer need the salvage path.
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        let stored = serde_json::json!({
+            "bindings": {
+                "transcribe": {
+                    "id": "transcribe",
+                    "name": "Transcribe",
+                    "description": "Converts your speech into text.",
+                    "default_binding": "option+space",
+                    "current_binding": "ctrl_right+command_right+y"
+                }
+            },
+            "broken_future_field": "nope"
+        });
+
+        // Seed the store with legacy, partially-broken JSON.
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        store.set("settings", stored);
+        store.save().expect("store saves");
+
+        // This is the real startup path being fixed.
+        let settings = load_or_create_app_settings(&app);
+
+        let binding = settings
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding");
+        assert_eq!(binding.current_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(binding.handy_keys_binding, "ctrl_right+command_right+y");
+
+        // Verify the migrated value was written back to disk.
+        let reloaded_value = store
+            .get("settings")
+            .expect("settings still in store after load");
+        let reloaded: AppSettings = serde_json::from_value(reloaded_value)
+            .expect("reloaded settings deserialize cleanly after migration");
+        let reloaded_binding = reloaded
+            .bindings
+            .get("transcribe")
+            .expect("transcribe binding after reload");
+        assert_eq!(reloaded_binding.tauri_binding, "ctrl_right+command_right+y");
+        assert_eq!(
+            reloaded_binding.handy_keys_binding,
+            "ctrl_right+command_right+y"
+        );
+    }
+
+    /// Verifies that `patch_settings` applies concurrent field updates
+    /// atomically and persists the merged result to disk. Without atomic
+    /// patching, two read-modify-write writers that touch different fields can
+    /// clobber each other: whichever writes last keeps only its own field.
+    /// This test reproduces that exact race scenario with two threads.
+    #[test]
+    fn patch_settings_atomic_concurrent_fields() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        app.manage(Arc::new(SettingsCache::new(get_default_settings())));
+
+        let app_words = app.clone();
+        let handle_words = std::thread::spawn(move || {
+            patch_settings(&app_words, |s| {
+                s.custom_words = vec!["Zettelkasten".to_string()];
+            });
+        });
+
+        let app_model = app.clone();
+        let handle_model = std::thread::spawn(move || {
+            patch_settings(&app_model, |s| {
+                s.selected_model = "test-model".to_string();
+            });
+        });
+
+        handle_words
+            .join()
+            .expect("custom_words thread should finish");
+        handle_model
+            .join()
+            .expect("selected_model thread should finish");
+
+        // Both fields must survive in the in-memory cache.
+        let cached = app
+            .try_state::<Arc<SettingsCache>>()
+            .expect("SettingsCache should be managed")
+            .get();
+        assert_eq!(cached.custom_words, vec!["Zettelkasten".to_string()]);
+        assert_eq!(cached.selected_model, "test-model".to_string());
+
+        // And both fields must have been written to disk.
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        let stored_value = store
+            .get("settings")
+            .expect("settings should be written to disk");
+        let stored: AppSettings =
+            serde_json::from_value(stored_value).expect("stored settings should deserialize");
+        assert_eq!(stored.custom_words, vec!["Zettelkasten".to_string()]);
+        assert_eq!(stored.selected_model, "test-model".to_string());
     }
 }

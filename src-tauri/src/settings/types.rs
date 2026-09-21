@@ -92,6 +92,37 @@ pub struct ShortcutBinding {
     pub description: String,
     pub default_binding: String,
     pub current_binding: String,
+    /// Tauri global-shortcut backend binding, stored independently so switching
+    /// implementations never requires re-recording.
+    #[serde(default)]
+    pub tauri_binding: String,
+    /// Handy-keys backend binding, stored independently so switching
+    /// implementations never requires re-recording.
+    #[serde(default)]
+    pub handy_keys_binding: String,
+}
+
+impl ShortcutBinding {
+    /// Return the stored binding for the requested keyboard implementation.
+    /// If the per-implementation field is empty (legacy data), the caller will
+    /// see the empty string and should fall back via migration or default.
+    pub fn binding_for(&self, implementation: KeyboardImplementation) -> &str {
+        match implementation {
+            KeyboardImplementation::Tauri => &self.tauri_binding,
+            KeyboardImplementation::HandyKeys => &self.handy_keys_binding,
+        }
+    }
+
+    /// Update the binding for a specific implementation and mirror it to
+    /// `current_binding` so existing UI and backend code that reads
+    /// `current_binding` always sees the active binding.
+    pub fn set_binding_for(&mut self, implementation: KeyboardImplementation, value: String) {
+        match implementation {
+            KeyboardImplementation::Tauri => self.tauri_binding = value.clone(),
+            KeyboardImplementation::HandyKeys => self.handy_keys_binding = value.clone(),
+        }
+        self.current_binding = value;
+    }
 }
 
 // ── LLMPrompt ──
@@ -275,40 +306,67 @@ impl NoiseSuppressionLevel {
 
 // ── VadSensitivity ──
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VadSensitivity {
-    VeryQuick,
-    Quick,
-    Balanced,
-    Relaxed,
+    /// Minimal VAD filtering: keeps almost everything, including quiet speech.
+    #[default]
     VeryRelaxed,
-}
-
-impl Default for VadSensitivity {
-    fn default() -> Self {
-        VadSensitivity::Balanced
-    }
+    /// Light filtering: removes obvious silence while keeping softer words.
+    Relaxed,
+    /// Moderate filtering: balanced between noise removal and speech capture.
+    Balanced,
+    /// Faster filtering: removes more background sound, may clip softer words.
+    Quick,
+    /// Strongest filtering in the reduced range: cuts quickly on silence.
+    VeryQuick,
 }
 
 impl VadSensitivity {
     pub fn threshold(&self) -> f32 {
         match self {
-            VadSensitivity::VeryQuick => 0.45,
-            VadSensitivity::Quick => 0.38,
-            VadSensitivity::Balanced => 0.30,
-            VadSensitivity::Relaxed => 0.25,
-            VadSensitivity::VeryRelaxed => 0.20,
+            // Narrowed, less aggressive range: the highest threshold is still
+            // lower than the previous VeryQuick (0.45), so even the "strongest"
+            // setting here is more forgiving than before.
+            VadSensitivity::VeryRelaxed => 0.15,
+            VadSensitivity::Relaxed => 0.20,
+            VadSensitivity::Balanced => 0.25,
+            VadSensitivity::Quick => 0.30,
+            VadSensitivity::VeryQuick => 0.35,
         }
     }
 
     pub fn hangover_frames(&self) -> usize {
         match self {
-            VadSensitivity::VeryQuick => 8,
-            VadSensitivity::Quick => 12,
-            VadSensitivity::Balanced => 15,
-            VadSensitivity::Relaxed => 20,
-            VadSensitivity::VeryRelaxed => 30,
+            // Longer hangover at the relaxed end keeps trailing words; shorter
+            // at the quick end makes cuts snappier, but still not as short as
+            // the old aggressive settings.
+            VadSensitivity::VeryRelaxed => 35,
+            VadSensitivity::Relaxed => 30,
+            VadSensitivity::Balanced => 25,
+            VadSensitivity::Quick => 20,
+            VadSensitivity::VeryQuick => 15,
+        }
+    }
+
+    /// Resolve the effective VAD sensitivity for a model, honoring a per-model
+    /// override if present, then falling back to engine-specific defaults, and
+    /// finally the global `vad_sensitivity` setting.
+    pub fn default_for_model(
+        model_id: &str,
+        settings: &AppSettings,
+        model_manager: &crate::managers::model::ModelManager,
+    ) -> Self {
+        if let Some(override_sensitivity) = settings.per_model_vad_sensitivity.get(model_id) {
+            return *override_sensitivity;
+        }
+
+        match model_manager.get_model_info(model_id) {
+            Some(model_info) => match model_info.engine_type {
+                crate::managers::model::EngineType::Parakeet => VadSensitivity::VeryRelaxed,
+                _ => VadSensitivity::Balanced,
+            },
+            None => settings.vad_sensitivity,
         }
     }
 }
@@ -356,6 +414,11 @@ impl SoundTheme {
 
     pub fn to_stop_path(&self) -> String {
         format!("resources/{}_stop.wav", self.as_str())
+    }
+
+    pub fn to_error_path(&self) -> String {
+        // Reuse the stop sound for errors until a dedicated error asset is added.
+        self.to_stop_path()
     }
 }
 
@@ -406,6 +469,16 @@ impl Default for OrtAcceleratorSetting {
     fn default() -> Self {
         OrtAcceleratorSetting::Auto
     }
+}
+
+// ── VadBackend ──
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VadBackend {
+    #[default]
+    Silero,
+    Earshot,
 }
 
 // ── CustomWord ──
@@ -503,6 +576,10 @@ pub struct AppSettings {
     pub always_on_microphone: bool,
     #[serde(default)]
     pub selected_microphone: Option<String>,
+    /// Which input channel to use on the selected microphone device.
+    /// None means "average all channels" (original behavior).
+    #[serde(default)]
+    pub selected_channel: Option<u16>,
     #[serde(default)]
     pub clamshell_microphone: Option<String>,
     #[serde(default)]
@@ -590,8 +667,14 @@ pub struct AppSettings {
     pub transcribe_accelerator: TranscribeAcceleratorSetting,
     #[serde(default)]
     pub ort_accelerator: OrtAcceleratorSetting,
-    #[serde(default = "default_transcribe_gpu_device")]
-    pub transcribe_gpu_device: i32,
+    /// Stable transcribe.cpp device selector. This is derived from the backend's
+    /// `device_id` when available (or its name for backends such as Metal),
+    /// never from the process-local device registry index.
+    #[serde(
+        default = "default_transcribe_gpu_device",
+        deserialize_with = "deserialize_transcribe_gpu_device"
+    )]
+    pub transcribe_gpu_device: Option<String>,
     #[serde(default)]
     pub extra_recording_buffer_ms: u64,
     #[serde(default)]
@@ -605,11 +688,17 @@ pub struct AppSettings {
     #[serde(default)]
     pub vad_sensitivity: VadSensitivity,
     #[serde(default)]
+    pub per_model_vad_sensitivity: HashMap<String, VadSensitivity>,
+    #[serde(default)]
     pub live_captions_enabled: bool,
+    #[serde(default)]
+    pub live_captions_model: String,
     #[serde(default = "default_overlay_scale")]
     pub overlay_scale: f64,
     #[serde(default)]
     pub convert_us_to_british: bool,
+    #[serde(default)]
+    pub convert_number_words_to_digits: bool,
     #[serde(default)]
     pub spelling_dictionary: SpellingDictionary,
     #[serde(default)]
@@ -618,6 +707,9 @@ pub struct AppSettings {
     pub noise_suppression_enabled: bool,
     #[serde(default)]
     pub noise_suppression_level: NoiseSuppressionLevel,
+    /// Experimental detector implementation. Silero remains the stable default.
+    #[serde(default)]
+    pub vad_backend: VadBackend,
 }
 
 impl Default for AppSettings {
@@ -869,8 +961,25 @@ pub(crate) fn default_post_process_prompts() -> Vec<LLMPrompt> {
     }]
 }
 
-pub(crate) fn default_transcribe_gpu_device() -> i32 {
-    -1 // auto
+pub(crate) fn default_transcribe_gpu_device() -> Option<String> {
+    None // automatic device selection
+}
+
+/// Accept the 0.1-era integer registry index long enough for the schema
+/// migration to clear it. Device indices are process-local in transcribe.cpp
+/// 0.2 and must never be carried across launches.
+fn deserialize_transcribe_gpu_device<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value)),
+        Some(serde_json::Value::Number(_)) => Ok(None),
+        Some(_) => Err(de::Error::custom(
+            "transcribe GPU device must be a string, integer, or null",
+        )),
+    }
 }
 
 pub(crate) fn default_typing_tool() -> TypingTool {

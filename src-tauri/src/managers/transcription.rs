@@ -12,7 +12,7 @@ use parking_lot::{Condvar as ParkingLotCondvar, Mutex as ParkingLotMutex};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -38,6 +38,45 @@ use transcribe_rs::{
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const STREAM_FINALIZE_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Number of consecutive non-panic engine failures before we treat the
+/// loaded engine as wedged and force a full reload. The panic path already
+/// drops the engine on the first panic; this threshold lets a single transient
+/// error recover without an expensive reload.
+const ENGINE_HEALTH_RELOAD_THRESHOLD: u32 = 2;
+
+/// Maximum time a caller will wait for an in-progress transcription to finish
+/// before declaring the slot busy. The watchdog below is independent and much
+/// larger to avoid killing legitimate long transcriptions.
+pub(crate) const TRANSCRIBING_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// If the wait timeout above expires and the current owner has held the slot
+/// for at least this long, the waiter force-releases the slot once and retries
+/// acquisition. This recovers when a streaming/batch worker wedges inside the
+/// engine call and the user tries to start a new recording shortly after.
+/// Set equal to the wait timeout so we only recover from holds that were
+/// already stale when the waiter arrived.
+const TRANSCRIBING_SLOT_FORCE_RELEASE_ON_OWN_TIMEOUT: Duration = TRANSCRIBING_SLOT_WAIT_TIMEOUT;
+
+/// If a transcription claims the `is_transcribing` slot for longer than this
+/// and the owner did not release it, the next waiter force-releases it. This
+/// recovers from worker threads that wedge without clearing the flag (e.g. a
+/// panic that is swallowed or a GPU callback that never returns). Keep this
+/// large — it only has to be shorter than the forever-hang it replaces.
+const TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER: Duration = Duration::from_secs(60);
+
+/// Background idle-watchdog threshold for force-releasing a stuck
+/// `is_transcribing` slot. This must be significantly longer than any realistic
+/// final transcription, because the watcher runs while *not* recording and a long
+/// final transcription also runs after `is_recording` becomes false. The waiter
+/// watchdog above handles active recovery; this one only catches the case
+/// where the slot is left stuck during an idle gap.
+const TRANSCRIBING_SLOT_BG_FORCE_RELEASE_AFTER: Duration = Duration::from_secs(300);
+
+/// Maximum time `transcribe_internal` will wait for a model load to finish.
+/// Prevents a wedged loader thread from blocking the final-transcription path
+/// indefinitely; if this fires we defensively clear the flag and fail fast.
+const MODEL_LOAD_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -45,6 +84,26 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
         message.clone()
     } else {
         "unknown panic".to_string()
+    }
+}
+
+/// Optional text cleanup must never discard a successful model result. The
+/// transform is pure and owns its input, so recovering the untouched text is
+/// safe even if a bug in custom-word or filler filtering unwinds.
+fn fail_open_text_transform<F>(raw: String, transform: F) -> String
+where
+    F: FnOnce(String) -> String,
+{
+    let fallback = raw.clone();
+    match catch_unwind(AssertUnwindSafe(|| transform(raw))) {
+        Ok(processed) => processed,
+        Err(payload) => {
+            error!(
+                "Optional transcription text post-processing panicked: {}; using the raw transcription",
+                panic_payload_message(payload.as_ref())
+            );
+            fallback
+        }
     }
 }
 
@@ -319,8 +378,16 @@ pub struct TranscriptionManager {
     active_engine_lease: Arc<AtomicU64>,
     /// Flag to prevent concurrent transcription calls (streaming vs final).
     is_transcribing: Arc<ParkingLotMutex<bool>>,
+    /// Timestamp when the current owner acquired `is_transcribing`. Used by
+    /// the slot watchdog to detect a flag stuck by a wedged/panicked worker.
+    is_transcribing_since: Arc<ParkingLotMutex<Option<Instant>>>,
     transcribing_condvar: Arc<ParkingLotCondvar>,
     cancel_streaming: Arc<AtomicBool>,
+    /// Consecutive non-panic engine failures. Reaches
+    /// ENGINE_HEALTH_RELOAD_THRESHOLD -> engine is dropped so the next
+    /// initiate_model_load_for actually reloads instead of reusing a wedged
+    /// session. Reset to 0 on any successful transcription or explicit unload.
+    consecutive_engine_failures: Arc<AtomicU32>,
 }
 
 impl TranscriptionManager {
@@ -343,8 +410,10 @@ impl TranscriptionManager {
             active_stream_worker: Arc::new(AtomicU64::new(0)),
             active_engine_lease: Arc::new(AtomicU64::new(0)),
             is_transcribing: Arc::new(ParkingLotMutex::new(false)),
+            is_transcribing_since: Arc::new(ParkingLotMutex::new(None)),
             transcribing_condvar: Arc::new(ParkingLotCondvar::new()),
             cancel_streaming: Arc::new(AtomicBool::new(false)),
+            consecutive_engine_failures: Arc::new(AtomicU32::new(0)),
         };
 
         // Start the idle watcher
@@ -381,6 +450,10 @@ impl TranscriptionManager {
                         manager_cloned.touch_activity();
                         continue;
                     }
+
+                    // Proactive background watchdog: recover a wedged transcription
+                    // slot even when no waiter is currently blocked on it.
+                    manager_cloned.check_and_force_release_transcribing_slot();
 
                     if let Some(limit_seconds) = timeout.to_seconds() {
                         let last = manager_cloned.last_activity.load(Ordering::Relaxed);
@@ -435,6 +508,55 @@ impl TranscriptionManager {
         self.lock_engine().is_some() || self.active_engine_lease.load(Ordering::Acquire) != 0
     }
 
+    /// Best-effort variant of [`is_model_loaded`] that never blocks waiting for
+    /// the engine mutex. Used by the tray menu rebuild, which runs on the main
+    /// thread and must not freeze the UI if a background streaming or
+    /// transcription thread currently holds the engine lock.
+    pub fn try_is_model_loaded(&self) -> bool {
+        match self.engine.try_lock() {
+            Ok(guard) => guard.is_some() || self.active_engine_lease.load(Ordering::Acquire) != 0,
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                warn!("Engine mutex was poisoned by a previous panic, recovering");
+                e.into_inner().is_some() || self.active_engine_lease.load(Ordering::Acquire) != 0
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // Contended case: fall back to the lease counter. If a lease is
+                // active the model is definitely loaded; otherwise report false
+                // rather than block.
+                self.active_engine_lease.load(Ordering::Acquire) != 0
+            }
+        }
+    }
+
+    /// Wait for an in-progress model load to finish.
+    ///
+    /// Called while the caller already holds the transcription manager lock.
+    /// The condvar wait releases the `is_loading` mutex internally, so this
+    /// method does not sleep while holding the manager lock. After waking it
+    /// verifies a model is actually loaded; if the load failed or no load ran,
+    /// it returns an error so callers can fail fast instead of trying to
+    /// transcribe against a missing model.
+    ///
+    /// Note: this checks the engine is physically present in the mutex. If the
+    /// engine is leased out to a streaming worker it will report as absent, so
+    /// callers should only use this when they know no stream is active (e.g.
+    /// during retry transcription on non-streaming audio).
+    pub fn wait_for_model_load(&self) -> Result<(), String> {
+        {
+            let mut is_loading = self.is_loading.lock().map_err(|e| e.to_string())?;
+            while *is_loading {
+                is_loading = self
+                    .loading_condvar
+                    .wait(is_loading)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if self.lock_engine().is_none() {
+            return Err("Model failed to load or is currently in use by streaming".to_string());
+        }
+        Ok(())
+    }
+
     pub fn is_model_loading(&self) -> bool {
         *self.is_loading.lock().unwrap()
     }
@@ -482,6 +604,10 @@ impl TranscriptionManager {
     pub fn unload_model(&self) -> Result<()> {
         let unload_start = std::time::Instant::now();
         debug!("Starting to unload model");
+
+        // Any explicit unload resets the engine-health failure counter so a
+        // manual retry or model switch starts from a clean slate.
+        self.consecutive_engine_failures.store(0, Ordering::Release);
 
         {
             let mut engine = self.lock_engine();
@@ -548,6 +674,61 @@ impl TranscriptionManager {
         Arc::clone(&self.cancel_streaming)
     }
 
+    /// Proactive background recovery for the `is_transcribing` slot. Called by
+    /// the idle watcher every 10s when not recording. Uses a much longer
+    /// threshold than the waiter-side watchdog so it never interrupts a
+    /// legitimate long final transcription; it only catches slots left stuck
+    /// during an idle gap. When force-releasing, also clears the cached model
+    /// and resets engine-health counters so the next transcription reloads a
+    /// fresh engine instead of re-entering the wedged one.
+    pub fn check_and_force_release_transcribing_slot(&self) {
+        let mut is_transcribing = self.is_transcribing.lock();
+        if !*is_transcribing {
+            return;
+        }
+        let held_for = {
+            let guard = self.is_transcribing_since.lock();
+            guard
+                .as_ref()
+                .copied()
+                .map(|s| Instant::now().duration_since(s))
+        };
+        if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_BG_FORCE_RELEASE_AFTER) {
+            warn!(
+                "[SLOT-WATCHDOG-BG] proactive force-release of is_transcribing held for {:?}; clearing cached model and failure counter",
+                held_for
+            );
+            *is_transcribing = false;
+            *self.is_transcribing_since.lock() = None;
+            self.transcribing_condvar.notify_all();
+
+            // A slot held this long means the engine call is wedged (e.g.
+            // GPU context loss, never-returning callback). Clear the cached
+            // model so the next transcription actually reloads a fresh engine
+            // instead of reusing the wedged one. Reset the failure counter as
+            // well; the reload itself starts a clean health record.
+            self.consecutive_engine_failures.store(0, Ordering::Release);
+            {
+                let mut current_model = self
+                    .current_model_id
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *current_model = None;
+            }
+            let _ = self.app_handle.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "unloaded".to_string(),
+                    model_id: None,
+                    model_name: None,
+                    error: Some(
+                        "Transcription slot watchdog recovered from wedged engine".to_string(),
+                    ),
+                },
+            );
+        }
+    }
+
     /// Unloads the model immediately if the setting is enabled and the model is loaded
     pub fn maybe_unload_immediately(&self, context: &str) {
         let settings = get_settings(&self.app_handle);
@@ -590,13 +771,19 @@ impl TranscriptionManager {
                 error: None,
             },
         );
-        debug!("[LOAD-TRACE] loading_started event emitted for {}", model_id);
+        debug!(
+            "[LOAD-TRACE] loading_started event emitted for {}",
+            model_id
+        );
 
         let model_info = self
             .model_manager
             .get_model_info(model_id)
             .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
-        debug!("[LOAD-TRACE] got model_info for {}, engine_type={:?}", model_id, model_info.engine_type);
+        debug!(
+            "[LOAD-TRACE] got model_info for {}, engine_type={:?}",
+            model_id, model_info.engine_type
+        );
 
         if !model_info.is_downloaded {
             let error_msg = "Model not downloaded";
@@ -623,7 +810,10 @@ impl TranscriptionManager {
             let mut engine = self.lock_engine();
             *engine = None;
         }
-        debug!("[LOAD-TRACE] old engine dropped, entering engine_type match for {}", model_id);
+        debug!(
+            "[LOAD-TRACE] old engine dropped, entering engine_type match for {}",
+            model_id
+        );
         {
             let mut current_model = self.current_model_id.lock().unwrap();
             *current_model = None;
@@ -649,30 +839,43 @@ impl TranscriptionManager {
                 // --device-index flag) hard-select that registered device;
                 // otherwise re-read the persisted accelerator preference (so an
                 // accelerator change marked for reload takes effect here).
-                let (backend, gpu_device) = match device_index {
+                let (backend, device) = match device_index {
                     Some(index) => resolve_device_index(index).inspect_err(|e| {
                         emit_loading_failed(&e.to_string());
                     })?,
                     None => {
                         let settings = get_settings(&self.app_handle);
                         let accelerator = settings.transcribe_accelerator;
-                        (
-                            select_transcribe_backend(accelerator),
-                            resolve_gpu_device(accelerator, settings.transcribe_gpu_device),
-                        )
+                        let device = resolve_gpu_device(
+                            accelerator,
+                            settings.transcribe_gpu_device.as_deref(),
+                        );
+                        // Backend::Auto accepts an exact CPU/GPU device. When
+                        // no exact device is saved, retain Handy's strict
+                        // accelerator/backend policy and native fallback.
+                        let backend = if device.is_some() {
+                            Backend::Auto
+                        } else {
+                            select_transcribe_backend(accelerator)
+                        };
+                        (backend, device)
                     }
                 };
-                debug!("[LOAD-TRACE] backend resolved: {:?}, gpu_device={}", backend, gpu_device);
-                let model_options = ModelOptions {
-                    backend,
-                    gpu_device,
-                };
+                let requested_device = device
+                    .as_ref()
+                    .map(transcribe_device_label)
+                    .unwrap_or_else(|| "automatic".to_string());
+                debug!(
+                    "[LOAD-TRACE] backend resolved: {:?}, requested_device='{}'",
+                    backend, requested_device
+                );
+                let model_options = ModelOptions { backend, device };
                 // Log transcribe-cpp version for debugging load failures
                 let tc_version = transcribe_cpp::version();
                 let tc_compiled = transcribe_cpp::compiled_version();
                 info!(
-                    "Loading model '{}' via transcribe-cpp (runtime={}, compiled={}, backend={:?}, gpu_device={})",
-                    model_id, tc_version, tc_compiled, backend, gpu_device
+                    "Loading model '{}' via transcribe-cpp (runtime={}, compiled={}, backend={:?}, requested_device='{}')",
+                    model_id, tc_version, tc_compiled, backend, requested_device
                 );
                 let model = Model::load_with(&model_path, &model_options).map_err(|e| {
                     let error_msg = format!("Failed to load whisper model {}: {}", model_id, e);
@@ -702,13 +905,19 @@ impl TranscriptionManager {
                     caps.supports_language_detect,
                     caps.languages.clone(),
                 );
+                let bound_device = model
+                    .device()
+                    .map(|device| transcribe_device_label(&device))
+                    .unwrap_or_else(|_| "unknown".to_string());
                 info!(
-                    "Loaded whisper model '{}' (requested {:?}, gpu_device {}, bound backend '{}', \
-                     supports_streaming={}, supports_translate={}, supports_language_detect={})",
+                    "Loaded whisper model '{}' (requested {:?}, requested device '{}', \
+                     bound backend '{}', bound device '{}', supports_streaming={}, \
+                     supports_translate={}, supports_language_detect={})",
                     model_id,
                     backend,
-                    gpu_device,
+                    requested_device,
                     bound_backend,
+                    bound_device,
                     caps.supports_streaming,
                     caps.supports_translate,
                     caps.supports_language_detect
@@ -820,36 +1029,91 @@ impl TranscriptionManager {
             model_id,
             load_duration.as_millis()
         );
+
+        // A successful load gives us a fresh engine, so reset the failure
+        // counter before this engine goes into the pool.
+        self.consecutive_engine_failures.store(0, Ordering::Release);
+
         Ok(())
     }
 
     /// Kicks off the model loading in a background thread if it's not already loaded
     pub fn initiate_model_load(&self) {
+        let settings = get_settings(&self.app_handle);
+        self.initiate_model_load_for(&settings.selected_model);
+    }
+
+    /// Kicks off loading of a specific model ID in a background thread.
+    ///
+    /// This is the model-agnostic core used by `initiate_model_load` (which
+    /// loads the user's selected model) and by the live captions path, which
+    /// may need a different model loaded in a second TranscriptionManager.
+    /// The load runs in a detached thread so callers never block on the
+    /// potentially multi-second model initialization.
+    pub fn initiate_model_load_for(&self, model_id: &str) {
         let mut is_loading = self.is_loading.lock().unwrap();
         if *is_loading {
             return;
         }
 
         let reload_pending = self.reload_model_on_next_use.load(Ordering::Acquire);
-        if !reload_pending && self.is_model_loaded() {
+        // If a specific model is already loaded and matches the request, skip.
+        let already_loaded = !reload_pending
+            && self.is_model_loaded()
+            && self.get_current_model().as_deref() == Some(model_id);
+        if already_loaded {
             return;
         }
 
         *is_loading = true;
+        let model_id = model_id.to_string();
         let self_clone = self.clone();
         thread::spawn(move || {
+            // This guard guarantees that `is_loading` is cleared and waiters
+            // are notified in every exit path, including panics inside the load
+            // thread. It deliberately runs *after* any pending-model auto-load
+            // recursion in LoadingGuard::drop so that nested failures still
+            // release the slot.
+            struct ResetLoadingGuard {
+                is_loading: Arc<Mutex<bool>>,
+                loading_condvar: Arc<Condvar>,
+            }
+            impl Drop for ResetLoadingGuard {
+                fn drop(&mut self) {
+                    let mut guard = match self.is_loading.lock() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            warn!("Recovered poisoned is_loading mutex during model-load thread exit — a panic occurred earlier this session");
+                            e.into_inner()
+                        }
+                    };
+                    *guard = false;
+                    self.loading_condvar.notify_all();
+                }
+            }
+            let _reset_guard = ResetLoadingGuard {
+                is_loading: self_clone.is_loading.clone(),
+                loading_condvar: self_clone.loading_condvar.clone(),
+            };
+
             if reload_pending {
                 self_clone
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
             }
-            let settings = get_settings(&self_clone.app_handle);
-            if let Err(e) = self_clone.load_model(&settings.selected_model) {
-                error!("Failed to load model: {}", e);
+
+            let load_result = catch_unwind(AssertUnwindSafe(|| self_clone.load_model(&model_id)));
+            match load_result {
+                Ok(Ok(())) => {
+                    info!("Model '{}' loaded successfully", model_id);
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to load model '{}': {}", model_id, e);
+                }
+                Err(_) => {
+                    error!("[MODEL-LOAD] load thread panicked for model '{}'", model_id);
+                }
             }
-            let mut is_loading = self_clone.is_loading.lock().unwrap();
-            *is_loading = false;
-            self_clone.loading_condvar.notify_all();
         });
     }
 
@@ -924,11 +1188,52 @@ impl TranscriptionManager {
         };
 
         // Wait for any in-progress model load to finish (start_stream races the
-        // background load kicked off when recording starts).
+        // background load kicked off when recording starts). We cannot block
+        // indefinitely on the condvar: if the user stops the recording
+        // immediately after starting it, `finalize_stream()`/`cancel_stream()`
+        // close the router and send a command, but this worker would still be
+        // asleep on `is_loading` and unable to reply. That produces a 30-second
+        // hang waiting for `STREAM_FINALIZE_REPLY_TIMEOUT`.
+        //
+        // Fix: wait with a short timeout and poll `rx.try_recv()` between
+        // sleeps. If a `Finalize` or `Cancel` arrives before the model has
+        // loaded, reply with `None` (no usable stream) and exit cleanly.
         {
             let mut is_loading = self.is_loading.lock().unwrap();
             while *is_loading {
-                is_loading = self.loading_condvar.wait(is_loading).unwrap();
+                // Drop the lock while sleeping so the loader thread can
+                // acquire it to set `is_loading = false`.
+                let guard = self
+                    .loading_condvar
+                    .wait_timeout(is_loading, Duration::from_millis(100))
+                    .unwrap();
+                is_loading = guard.0;
+
+                // Check whether the caller already gave up on this stream.
+                while let Ok(cmd) = rx.try_recv() {
+                    match cmd {
+                        StreamCmd::Feed(_) => {
+                            // Audio arrived before the stream could begin.
+                            // Drop it; the caller will fall back to batch.
+                            debug!("Live preview: dropping feed received before model loaded");
+                        }
+                        StreamCmd::Finalize(reply) => {
+                            info!(
+                                "Live preview: finalize received while model still loading; aborting stream"
+                            );
+                            let _ = reply.send(None);
+                            self.router.clear();
+                            return;
+                        }
+                        StreamCmd::Cancel => {
+                            info!(
+                                "Live preview: cancel received while model still loading; aborting stream"
+                            );
+                            self.router.clear();
+                            return;
+                        }
+                    }
+                }
             }
         }
 
@@ -1092,8 +1397,8 @@ impl TranscriptionManager {
                     StreamCmd::Finalize(reply) => {
                         let finalize_start = Instant::now();
                         let result = match stream.finalize() {
-                            // After finalize the committed prefix holds the full
-                            // text; display() = committed + tentative is the safe read.
+                            // Moonshine streaming needs the full-field result
+                            // (committed + tentative collapsed), not display().
                             Ok(update) => {
                                 perf.record_compute(finalize_start.elapsed());
                                 perf.record_update(
@@ -1102,7 +1407,7 @@ impl TranscriptionManager {
                                     update.audio_committed_ms,
                                     update.buffered_ms,
                                 );
-                                Some(stream.text().display())
+                                Some(stream.text().full)
                             }
                             Err(e) => {
                                 perf.record_compute(finalize_start.elapsed());
@@ -1197,20 +1502,24 @@ impl TranscriptionManager {
         let settings = get_settings(&self.app_handle);
         // Streaming models do not receive a decode prompt, so custom words
         // always go through the shared post-correction path.
-        let filtered = process_transcription_text(
-            &raw,
-            settings.word_correction_mode,
-            &settings.custom_words,
-            &settings.advanced_custom_words,
-            &settings.word_replacements,
-            settings.word_correction_threshold,
-            false,
-            &settings.app_language,
-            &settings.custom_filler_words,
-            settings.convert_us_to_british,
-            settings.spelling_dictionary,
-            settings.repetition_suppression_level,
-        );
+        // Wrap the optional cleanup so a panic cannot discard the raw result.
+        let filtered = fail_open_text_transform(raw, |raw| {
+            process_transcription_text(
+                &raw,
+                settings.word_correction_mode,
+                &settings.custom_words,
+                &settings.advanced_custom_words,
+                &settings.word_replacements,
+                settings.word_correction_threshold,
+                false,
+                &settings.app_language,
+                &settings.custom_filler_words,
+                settings.convert_us_to_british,
+                settings.convert_number_words_to_digits,
+                settings.spelling_dictionary,
+                settings.repetition_suppression_level,
+            )
+        });
 
         self.maybe_unload_immediately("streaming transcription");
         Ok(Some(filtered))
@@ -1241,6 +1550,177 @@ impl TranscriptionManager {
         .emit(&self.app_handle);
     }
 
+    /// Acquire the `is_transcribing` slot, waiting up to `max_wait`. If the slot
+    /// is currently held and the hold duration has exceeded
+    /// `TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER`, the slot is force-released so
+    /// the caller can proceed.
+    ///
+    /// `cancel_check` is called between waits; if it returns true, acquisition
+    /// is aborted with `AppError::TranscriptionBusy`.
+    fn try_acquire_transcribing_slot<F>(
+        &self,
+        max_wait: Duration,
+        cancel_check: F,
+    ) -> AppResult<TranscribingGuard>
+    where
+        F: Fn() -> bool,
+    {
+        let wait_start = Instant::now();
+        let deadline = wait_start + max_wait;
+        let mut force_released_once = false;
+
+        let mut is_transcribing = self.is_transcribing.lock();
+        while *is_transcribing {
+            // Watchdog: if the current owner has held the slot for too long,
+            // force-release it. This recovers from a wedged worker without
+            // killing legitimate long transcriptions.
+            let held_for = {
+                let guard = self.is_transcribing_since.lock();
+                guard
+                    .as_ref()
+                    .copied()
+                    .map(|s| Instant::now().duration_since(s))
+            };
+            if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+                error!(
+                    "[SLOT-WATCHDOG] force-releasing is_transcribing held for {:?}",
+                    held_for
+                );
+                *is_transcribing = false;
+                *self.is_transcribing_since.lock() = None;
+                self.transcribing_condvar.notify_all();
+            }
+
+            if cancel_check() {
+                debug!("[SLOT] aborting acquisition: cancellation requested while waiting");
+                return Err(AppError::TranscriptionBusy);
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let held_for = {
+                    let guard = self.is_transcribing_since.lock();
+                    guard
+                        .as_ref()
+                        .copied()
+                        .map(|s| Instant::now().duration_since(s))
+                };
+                if !force_released_once
+                    && held_for.map_or(false, |d| {
+                        d >= TRANSCRIBING_SLOT_FORCE_RELEASE_ON_OWN_TIMEOUT
+                    })
+                {
+                    warn!(
+                        "[SLOT-RECOVER] force-releasing is_transcribing held for {:?} after wait timeout",
+                        held_for
+                    );
+                    *is_transcribing = false;
+                    *self.is_transcribing_since.lock() = None;
+                    self.transcribing_condvar.notify_all();
+                    force_released_once = true;
+                    continue;
+                }
+                warn!(
+                    "[SLOT-BUSY] returning TranscriptionBusy; held_for={:?}",
+                    held_for
+                );
+                return Err(AppError::TranscriptionBusy);
+            }
+
+            // Wait in small slices so we can re-check the watchdog and cancel
+            // flag without blocking until the full remaining timeout.
+            let slice = remaining.min(Duration::from_millis(100));
+            let timed_out = self
+                .transcribing_condvar
+                .wait_for(&mut is_transcribing, slice)
+                .timed_out();
+            if timed_out && cancel_check() {
+                return Err(AppError::TranscriptionBusy);
+            }
+        }
+
+        // Own the slot.
+        *is_transcribing = true;
+        let acquired_at = Instant::now();
+        *self.is_transcribing_since.lock() = Some(acquired_at);
+        drop(is_transcribing);
+
+        let guard = TranscribingGuard {
+            flag: self.is_transcribing.clone(),
+            timestamp: self.is_transcribing_since.clone(),
+            condvar: self.transcribing_condvar.clone(),
+            acquired_at,
+        };
+
+        debug!(
+            "[SLOT] acquired is_transcribing after {:?}",
+            acquired_at.duration_since(wait_start)
+        );
+        Ok(guard)
+    }
+
+    /// Run a full batch transcription on the held engine.
+    ///
+    /// Streaming callers (live captions) should use [`transcribe`], which
+    /// respects the streaming-cancellation flag and returns early when cancelled.
+    ///
+    /// Final-transcription callers (after the user stops recording) should use
+    /// this variant. It ignores the cancellation flag while waiting for the
+    /// `is_transcribing` slot so that a stop-induced cancellation does not abort
+    /// the user's own transcription. The caller-supplied hook is invoked only
+    /// after the slot has been acquired, which is the only safe moment to clear
+    /// the streaming-cancellation flag. Clearing it earlier lets queued
+    /// streaming callbacks race ahead and steal the slot, producing
+    /// `AppError::TranscriptionBusy`.
+    pub fn transcribe_with_hook<F>(
+        &self,
+        audio: Vec<f32>,
+        clear_cancel_after_slot: F,
+    ) -> AppResult<TranscriptionOutput>
+    where
+        F: FnOnce(),
+    {
+        #[cfg(debug_assertions)]
+        if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
+            return Err(AppError::Transcription {
+                message: "Simulated transcription failure (HANDY_FORCE_TRANSCRIPTION_FAILURE)"
+                    .to_string(),
+                source: anyhow::anyhow!("Simulated failure for testing"),
+            });
+        }
+
+        let guard = match self.try_acquire_transcribing_slot(
+            TRANSCRIBING_SLOT_WAIT_TIMEOUT,
+            || false, // final transcription ignores the streaming cancel flag
+        ) {
+            Ok(guard) => guard,
+            Err(AppError::TranscriptionBusy) => {
+                // The slot is wedged by a prior streaming/batch transcription
+                // that never released it. Force-recover the slot, clear the
+                // cached engine state, and retry once so the user's final
+                // transcription can proceed instead of failing immediately.
+                warn!(
+                    "[SLOT-RECOVER] final transcription busy; force-releasing wedged slot and retrying once"
+                );
+                self.check_and_force_release_transcribing_slot();
+                self.try_acquire_transcribing_slot(Duration::from_secs(5), || false)
+                    .map_err(|_| AppError::TranscriptionBusy)?
+            }
+            Err(e) => return Err(e),
+        };
+
+        // NOW it is safe to clear the streaming cancel flag: we own the
+        // `is_transcribing` slot, so any queued streaming callback that checks
+        // the flag and the slot will see the slot is taken and abort instead of
+        // racing into the engine.
+        clear_cancel_after_slot();
+
+        self.transcribe_internal(audio, guard)
+    }
+
+    /// Convenience wrapper for streaming callers that respect the cancellation
+    /// flag. Returns `TranscriptionBusy` while the flag is set so the audio
+    /// streaming path can skip work when recording has stopped.
     pub fn transcribe(&self, audio: Vec<f32>) -> AppResult<TranscriptionOutput> {
         #[cfg(debug_assertions)]
         if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
@@ -1251,53 +1731,27 @@ impl TranscriptionManager {
             });
         }
 
-        // Wait for any in-progress transcription to complete.
-        {
-            let mut is_transcribing = self.is_transcribing.lock();
-            let max_wait = Duration::from_secs(30);
-            let wait_deadline = std::time::Instant::now() + max_wait;
-            while *is_transcribing {
-                if self.is_streaming_cancelled() {
-                    debug!("Transcribe aborted: streaming cancellation requested while waiting for in-progress transcription");
-                    return Err(AppError::TranscriptionBusy);
-                }
-                let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    warn!("Timed out waiting for previous transcription to complete");
-                    return Err(AppError::TranscriptionBusy);
-                }
-                let _timed_out = self
-                    .transcribing_condvar
-                    .wait_for(&mut is_transcribing, remaining);
-            }
-        }
+        let guard = self.try_acquire_transcribing_slot(TRANSCRIBING_SLOT_WAIT_TIMEOUT, || {
+            self.is_streaming_cancelled()
+        })?;
 
+        // Cancelled after acquiring the slot: bail out without touching the engine.
         if self.is_streaming_cancelled() {
             debug!("Transcribe aborted: streaming cancellation requested after acquiring transcribing slot");
             return Err(AppError::TranscriptionBusy);
         }
 
-        // Set transcribing flag for the duration of this transcription.
-        struct TranscribingGuard {
-            flag: Arc<ParkingLotMutex<bool>>,
-            condvar: Arc<ParkingLotCondvar>,
-        }
-        impl Drop for TranscribingGuard {
-            fn drop(&mut self) {
-                let mut flag = self.flag.lock();
-                *flag = false;
-                self.condvar.notify_all();
-            }
-        }
-        {
-            let mut flag = self.is_transcribing.lock();
-            *flag = true;
-        }
-        let _guard = TranscribingGuard {
-            flag: self.is_transcribing.clone(),
-            condvar: self.transcribing_condvar.clone(),
-        };
+        self.transcribe_internal(audio, guard)
+    }
 
+    /// Shared body of `transcribe` / `transcribe_with_hook`.
+    /// Kept as a private helper so the public API stays simple while the hook
+    /// variant can inject work immediately after acquiring the slot.
+    fn transcribe_internal(
+        &self,
+        audio: Vec<f32>,
+        _guard: TranscribingGuard,
+    ) -> AppResult<TranscriptionOutput> {
         // Update last activity timestamp
         self.touch_activity();
 
@@ -1317,10 +1771,34 @@ impl TranscriptionManager {
 
         // Check if model is loaded, if not try to load it
         {
-            // If the model is loading, wait for it to complete.
-            let mut is_loading = self.is_loading.lock().unwrap();
+            // If the model is loading, wait bounded for it to complete. The
+            // watchdog below prevents a wedged loader thread from blocking the
+            // final-transcription path forever. On timeout we defensively clear
+            // the flag and fail fast.
+            let mut is_loading = match self.is_loading.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    warn!("Recovered poisoned is_loading mutex in transcribe_internal — a panic occurred earlier this session");
+                    e.into_inner()
+                }
+            };
+            let wait_start = Instant::now();
             while *is_loading {
-                is_loading = self.loading_condvar.wait(is_loading).unwrap();
+                if wait_start.elapsed() >= MODEL_LOAD_WAIT_TIMEOUT {
+                    error!("[IS_LOADING-WATCHDOG] timed out waiting for model load");
+                    *is_loading = false;
+                    self.loading_condvar.notify_all();
+                    // Clear any pending model request so a stale LoadingGuard::drop
+                    // does not spawn another load after this watchdog fires.
+                    self.take_pending_model();
+                    return Err(AppError::ModelNotLoaded);
+                }
+
+                let guard = self
+                    .loading_condvar
+                    .wait_timeout(is_loading, Duration::from_millis(100))
+                    .unwrap();
+                is_loading = guard.0;
             }
 
             let engine_guard = self.lock_engine();
@@ -1364,6 +1842,12 @@ impl TranscriptionManager {
         // Perform transcription with the appropriate engine.
         // We use catch_unwind to prevent engine panics from poisoning the mutex,
         // which would make the app hang indefinitely on subsequent operations.
+        debug!(
+            "[ENGINE] starting transcription for model '{}' on {:.2}s of audio",
+            active_model,
+            audio_len as f64 / 16_000.0
+        );
+        let engine_start = Instant::now();
         let result = {
             let mut engine_guard = self.lock_engine();
 
@@ -1527,18 +2011,80 @@ impl TranscriptionManager {
             }));
 
             match transcribe_result {
-                Ok(inner_result) => {
-                    // Success or normal error: return the engine unless a model
-                    // switch/unload invalidated it while it was in use.
+                Ok(Ok(text)) => {
+                    // Healthy path: reset failure counter and return engine to the pool.
+                    self.consecutive_engine_failures.store(0, Ordering::Release);
                     self.return_engine(engine, &active_model);
-                    inner_result?
+                    text
+                }
+                Ok(Err(inner_err)) => {
+                    // Non-panic engine error. The engine object is still alive but may
+                    // be wedged (e.g. Metal/Vulkan context lost after sleep). Decide
+                    // whether to keep retrying with it or force a reload based on
+                    // consecutive failure count. Never drop the engine while a stream
+                    // is actively using it; the batch path holds the is_transcribing
+                    // slot, but we double-check defensively.
+                    let failures = self
+                        .consecutive_engine_failures
+                        .fetch_add(1, Ordering::AcqRel)
+                        + 1;
+                    let stream_busy = self.active_engine_lease.load(Ordering::Acquire) != 0
+                        || self.is_streaming();
+                    if failures >= ENGINE_HEALTH_RELOAD_THRESHOLD && !stream_busy {
+                        warn!(
+                            "Engine returned error {} time(s); treating as wedged and forcing reload on next attempt (last error: {})",
+                            failures, inner_err
+                        );
+                        // Drop the wedged engine here (do NOT return_engine). Clear
+                        // current_model_id so is_model_loaded() returns false and the
+                        // next initiate_model_load_for actually reloads.
+                        drop(engine);
+                        {
+                            let mut current_model = self
+                                .current_model_id
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            *current_model = None;
+                        }
+                        let _ = self.app_handle.emit(
+                            "model-state-changed",
+                            ModelStateEvent {
+                                event_type: "unloaded".to_string(),
+                                model_id: None,
+                                model_name: None,
+                                error: Some(format!(
+                                    "Engine failed {} times; forcing reload: {}",
+                                    failures, inner_err
+                                )),
+                            },
+                        );
+                        let message = format!(
+                            "Transcription failed (engine marked wedged after {} consecutive errors): {}",
+                            failures, inner_err
+                        );
+                        return Err(AppError::Transcription {
+                            message,
+                            source: inner_err,
+                        });
+                    }
+                    // Below threshold or stream in flight: keep the engine, return it,
+                    // and surface the error so the caller can retry.
+                    self.return_engine(engine, &active_model);
+                    return Err(AppError::Transcription {
+                        message: format!("Transcription failed: {}", inner_err),
+                        source: inner_err,
+                    });
                 }
                 Err(panic_payload) => {
+                    // Engine panicked — drop it and clear state. Also reset the
+                    // failure counter so a fresh load after a panic starts clean.
+                    self.consecutive_engine_failures.store(0, Ordering::Release);
                     // Engine panicked — do NOT put it back (it's in an unknown state).
                     // The engine is dropped here, effectively unloading it.
                     let panic_msg = panic_payload_message(panic_payload.as_ref());
                     error!(
-                        "Transcription engine panicked: {}. Model has been unloaded.",
+                        "[ENGINE-PANIC] Transcription engine panicked after {:?}: {}. Model has been unloaded.",
+                        engine_start.elapsed(),
                         panic_msg
                     );
 
@@ -1577,20 +2123,24 @@ impl TranscriptionManager {
 
         let raw_text = result.clone();
 
-        let final_result = process_transcription_text(
-            &result,
-            settings.word_correction_mode,
-            &settings.custom_words,
-            &settings.advanced_custom_words,
-            &settings.word_replacements,
-            settings.word_correction_threshold,
-            is_whisper,
-            &settings.app_language,
-            &settings.custom_filler_words,
-            settings.convert_us_to_british,
-            settings.spelling_dictionary,
-            settings.repetition_suppression_level,
-        );
+        // Optional text cleanup must never discard the successful model result.
+        let final_result = fail_open_text_transform(result, |result| {
+            process_transcription_text(
+                &result,
+                settings.word_correction_mode,
+                &settings.custom_words,
+                &settings.advanced_custom_words,
+                &settings.word_replacements,
+                settings.word_correction_threshold,
+                is_whisper,
+                &settings.app_language,
+                &settings.custom_filler_words,
+                settings.convert_us_to_british,
+                settings.convert_number_words_to_digits,
+                settings.spelling_dictionary,
+                settings.repetition_suppression_level,
+            )
+        });
 
         if final_result != raw_text {
             info!(
@@ -1612,8 +2162,8 @@ impl TranscriptionManager {
         let audio_secs = audio_len as f64 / 16_000.0;
         let speedup = real_time_factor(audio_secs, elapsed_secs);
         info!(
-            "Transcription completed in {:.2}s for {:.2}s of audio ({:.2}x real-time){}",
-            elapsed_secs, audio_secs, speedup, translation_note
+            "[ENGINE] transcription completed for model '{}' in {:.2}s for {:.2}s of audio ({:.2}x real-time){}",
+            active_model, elapsed_secs, audio_secs, speedup, translation_note
         );
 
         if final_result.is_empty() {
@@ -1636,6 +2186,43 @@ impl TranscriptionManager {
         match self.transcribe(audio) {
             Ok(output) => Ok(output.text),
             Err(e) => Err(anyhow::anyhow!("Benchmark transcription failed: {e}")),
+        }
+    }
+}
+
+/// RAII guard that clears the `is_transcribing` flag and notifies waiters on drop.
+/// Critical invariant: if the slot was force-released by a later waiter while this
+/// guard's owner was still running, the stale Drop must be a no-op. It must NOT
+/// overwrite the new owner's timestamp. We detect this by recording the instant
+/// at which we acquired the slot and only clearing if that same instant is still
+/// stored in `is_transcribing_since`.
+struct TranscribingGuard {
+    flag: Arc<ParkingLotMutex<bool>>,
+    timestamp: Arc<ParkingLotMutex<Option<Instant>>>,
+    condvar: Arc<ParkingLotCondvar>,
+    acquired_at: Instant,
+}
+
+impl Drop for TranscribingGuard {
+    fn drop(&mut self) {
+        let mut flag = self.flag.lock();
+        // Only clear the slot if it is still held *and* still owned by this guard.
+        // If a later acquire force-released the slot and started a new
+        // transcription, `is_transcribing_since` will contain a different
+        // instant (or None), so this stale Drop must not clobber the new owner.
+        let still_mine = *self.timestamp.lock() == Some(self.acquired_at);
+        if *flag && still_mine {
+            *flag = false;
+            *self.timestamp.lock() = None;
+            self.condvar.notify_all();
+            debug!(
+                "[SLOT] released is_transcribing after {:?}",
+                self.acquired_at.elapsed()
+            );
+        } else {
+            warn!(
+                "[SLOT-STALE-DROP] stale TranscribingGuard drop skipped (wedged owner recovered)"
+            );
         }
     }
 }
@@ -1912,95 +2499,92 @@ pub fn describe_compute_devices() -> Vec<String> {
         .collect()
 }
 
-/// Resolve a `--list-devices` registry index to the (backend, gpu_device) pair
-/// for a transcribe-cpp model load (the `--device-index` flag). The
-/// backend is set explicitly from the device's kind, so there's no "index 0 =
-/// auto" ambiguity. Errors if the index isn't a registered, loadable device.
-fn resolve_device_index(index: usize) -> Result<(Backend, i32)> {
+/// Resolve a `--list-devices` registry index to an exact opaque device handle
+/// for a transcribe-cpp model load (the `--device-index` flag). In 0.2 index 0
+/// is an exact selection too; only an omitted index requests automatic device
+/// selection. Errors if the index isn't a registered, loadable primary device.
+fn resolve_device_index(index: usize) -> Result<(Backend, Option<transcribe_cpp::Device>)> {
     let device = transcribe_compute_devices()
         .into_iter()
         .find(|d| d.index == Some(index))
         .ok_or_else(|| {
             anyhow::anyhow!("No compute device with index {index} (see --list-devices)")
         })?;
-    let backend = match device.kind.as_str() {
-        "cpu" => Backend::Cpu,
-        "metal" => Backend::Metal,
-        "cuda" => Backend::Cuda,
-        "vulkan" => Backend::Vulkan,
-        other => {
-            return Err(anyhow::anyhow!(
-                "Device index {index} has kind '{other}', which cannot host a model"
-            ))
-        }
-    };
-    // gpu_device is a registry index used only by GPU backends; CPU ignores it.
-    let gpu_device = if matches!(backend, Backend::Cpu) {
-        0
-    } else {
-        index as i32
-    };
-    Ok((backend, gpu_device))
+    if matches!(
+        device.device_type,
+        transcribe_cpp::DeviceType::Accel | transcribe_cpp::DeviceType::Unknown
+    ) {
+        return Err(anyhow::anyhow!(
+            "Device index {index} ({}) cannot host a model",
+            device.kind
+        ));
+    }
+
+    // 0.2's opaque handle makes every index, including zero, an exact
+    // selection. Backend::Auto accepts any primary device and cannot conflict
+    // with the selected device's vendor backend.
+    Ok((Backend::Auto, Some(device)))
 }
 
 /// Map Handy's whisper accelerator setting to a transcribe-cpp [`Backend`].
 ///
-/// `Auto` lets the library pick the best device (with CPU fallback). `Cpu` forces
-/// strict CPU. `Gpu` requests the platform GPU backend, but only if a device for
-/// it is actually registered — otherwise it falls back to `Auto` so the load
-/// never fails outright on a machine without that GPU backend. An emulated x64
-/// process on Windows ARM64 forces strict CPU for every setting.
+/// `Auto` lets the library pick the best device (with CPU fallback), while
+/// `Cpu` forces strict CPU. `Gpu` only remains as the companion setting for an
+/// exact device; without a valid exact device it has the retired generic GPU
+/// state's new Auto semantics. An emulated x64 process on Windows ARM64 forces
+/// strict CPU for every setting.
 fn select_transcribe_backend(setting: TranscribeAcceleratorSetting) -> Backend {
-    match effective_transcribe_accelerator(setting, transcribe_gpu_disabled_for_host()) {
-        TranscribeAcceleratorSetting::Cpu => Backend::Cpu,
-        TranscribeAcceleratorSetting::Auto => Backend::Auto,
-        TranscribeAcceleratorSetting::Gpu => {
-            #[cfg(target_os = "macos")]
-            let candidates = [Backend::Metal];
-            #[cfg(not(target_os = "macos"))]
-            let candidates = [Backend::Cuda, Backend::Vulkan];
+    select_transcribe_backend_for_host(setting, transcribe_gpu_disabled_for_host())
+}
 
-            match candidates
-                .into_iter()
-                .find(|&b| transcribe_cpp::backend_available(b))
-            {
-                Some(b) => b,
-                None => {
-                    warn!("No GPU backend available for transcribe.cpp; falling back to Auto");
-                    Backend::Auto
-                }
-            }
-        }
+fn select_transcribe_backend_for_host(
+    setting: TranscribeAcceleratorSetting,
+    gpu_disabled: bool,
+) -> Backend {
+    match effective_transcribe_accelerator(setting, gpu_disabled) {
+        TranscribeAcceleratorSetting::Cpu => Backend::Cpu,
+        TranscribeAcceleratorSetting::Auto | TranscribeAcceleratorSetting::Gpu => Backend::Auto,
     }
 }
 
-/// Resolve the user's stored GPU device choice into a [`ModelOptions::gpu_device`]
-/// registry index for the next model load.
-///
-/// Settings store a registry index into [`transcribe_cpp::devices`] (`-1` is the
-/// UI's auto/CPU sentinel); transcribe-cpp treats `0` as "auto / first match" and
-/// rejects an out-of-range or non-GPU index. So an explicit selection is honored
-/// only when the user chose the GPU accelerator and the stored index still
-/// resolves to a registered GPU device — otherwise fall back to `0` so a stale
-/// selection can never fail the load.
-fn resolve_gpu_device(setting: TranscribeAcceleratorSetting, gpu_device: i32) -> i32 {
-    if transcribe_gpu_disabled_for_host()
-        || setting != TranscribeAcceleratorSetting::Gpu
-        || gpu_device <= 0
-    {
-        return 0;
+/// Resolve the user's persisted GPU identity to a fresh opaque 0.2 device
+/// handle. Registry indices and handles are process-local, so settings store a
+/// key based on the backend's stable `device_id` (falling back to name for
+/// backends such as Metal that do not report one).
+fn resolve_gpu_device(
+    setting: TranscribeAcceleratorSetting,
+    gpu_device: Option<&str>,
+) -> Option<transcribe_cpp::Device> {
+    if transcribe_gpu_disabled_for_host() || setting != TranscribeAcceleratorSetting::Gpu {
+        return None;
     }
-    let still_valid = transcribe_compute_devices()
-        .iter()
-        .any(|d| d.index == Some(gpu_device as usize) && is_transcribe_gpu_device(d));
-    if still_valid {
-        gpu_device
-    } else {
+    let gpu_device = gpu_device?;
+    let resolved = transcribe_compute_devices().into_iter().find(|device| {
+        is_transcribe_gpu_device(device) && transcribe_device_key(device) == gpu_device
+    });
+    if resolved.is_none() {
         warn!(
-            "Stored transcribe GPU device index {} is no longer available; using auto",
+            "Stored transcribe GPU device '{}' is no longer available; using automatic device selection",
             gpu_device
         );
-        0
+    }
+    resolved
+}
+
+fn transcribe_device_key(device: &transcribe_cpp::Device) -> String {
+    let (identity_kind, identity) = match device.device_id.as_deref() {
+        Some(device_id) => ("id", device_id),
+        None => ("name", device.name.as_str()),
+    };
+    serde_json::to_string(&(device.kind.as_str(), identity_kind, identity))
+        .expect("transcribe device identity is always JSON serializable")
+}
+
+fn transcribe_device_label(device: &transcribe_cpp::Device) -> String {
+    if device.description.is_empty() {
+        device.name.clone()
+    } else {
+        device.description.clone()
     }
 }
 
@@ -2033,7 +2617,7 @@ pub fn apply_accelerator_settings(app: &tauri::AppHandle) {
 
 #[derive(Serialize, Clone, Debug, Type)]
 pub struct GpuDeviceOption {
-    pub id: i32,
+    pub id: String,
     pub name: String,
     pub total_vram_mb: usize,
 }
@@ -2056,7 +2640,10 @@ fn effective_transcribe_accelerator(
 }
 
 fn is_transcribe_gpu_device(device: &transcribe_cpp::Device) -> bool {
-    device.kind != "cpu" && device.kind != "accel"
+    matches!(
+        device.device_type,
+        transcribe_cpp::DeviceType::Gpu | transcribe_cpp::DeviceType::Igpu
+    )
 }
 
 fn transcribe_device_allowed(kind: &str, gpu_disabled: bool) -> bool {
@@ -2085,22 +2672,17 @@ fn available_transcribe_accelerators(gpu_disabled: bool) -> Vec<String> {
 }
 
 fn cached_gpu_devices() -> &'static [GpuDeviceOption] {
-    // GPU compute devices transcribe-cpp registered at startup. `id` is the
-    // device's registry index (`Device::index`, not a re-counted position) so it
-    // feeds straight back as `ModelOptions::gpu_device` (see `resolve_gpu_device`).
-    // `total_vram_mb` is the backend-reported capacity, 0 when unreported (some
-    // Metal/Vulkan drivers).
+    // GPU compute devices transcribe-cpp registered at startup. `id` is a
+    // persistent identity key, never the process-local registry index. It uses
+    // the backend's device_id where available and its name otherwise (Metal).
+    // `total_vram_mb` is 0 when the backend does not report capacity.
     GPU_DEVICES.get_or_init(|| {
         transcribe_compute_devices()
             .into_iter()
             .filter(is_transcribe_gpu_device)
             .map(|d| GpuDeviceOption {
-                id: d.index.unwrap_or(0) as i32,
-                name: if d.description.is_empty() {
-                    d.name
-                } else {
-                    d.description
-                },
+                id: transcribe_device_key(&d),
+                name: transcribe_device_label(&d),
                 total_vram_mb: (d.memory_total / (1024 * 1024)) as usize,
             })
             .collect()
@@ -2179,6 +2761,16 @@ mod tests {
     }
 
     #[test]
+    fn optional_text_transform_falls_back_to_raw_text_after_panic() {
+        let raw = "原始轉錄。".to_string();
+        let result = fail_open_text_transform(raw.clone(), |_| {
+            panic!("simulated optional cleanup failure")
+        });
+
+        assert_eq!(result, raw);
+    }
+
+    #[test]
     fn transcribe_cpp_run_plan_maps_chinese_variants() {
         let plan = transcribe_cpp_run_plan(false, "zh-Hant", &languages(&["zh"]), true);
 
@@ -2212,6 +2804,495 @@ mod tests {
         assert!(matches!(plan.task, Task::Transcribe));
         assert_eq!(plan.language.as_deref(), Some("es"));
         assert_eq!(plan.target_language, None);
+    }
+
+    // ── Slot watchdog tests: these exercise the pure mutex/condvar state
+    // without constructing a full TranscriptionManager (which requires an
+    // AppHandle). The same primitives are used by `try_acquire_transcribing_slot`.
+
+    /// A held-too-long `is_transcribing` slot is force-released by the next
+    /// waiter so a wedged worker cannot block transcription forever.
+    #[test]
+    fn transcription_slot_force_releases_after_watchdog_threshold() {
+        use parking_lot::{Condvar as ParkingLotCondvar, Mutex as ParkingLotMutex};
+
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Simulate a transcription that grabbed the slot long ago and vanished.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER);
+        }
+
+        // A waiter should observe the stale hold, force-release it, and acquire.
+        let wait_start = Instant::now();
+        let deadline = wait_start + Duration::from_secs(30);
+        let mut is_transcribing = flag.lock();
+        while *is_transcribing {
+            let held_for = {
+                let guard = since.lock();
+                guard
+                    .as_ref()
+                    .copied()
+                    .map(|s| Instant::now().duration_since(s))
+            };
+            if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+                *is_transcribing = false;
+                *since.lock() = None;
+                condvar.notify_all();
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                panic!("timed out waiting for slot");
+            }
+            let slice = remaining.min(Duration::from_millis(100));
+            condvar.wait_for(&mut is_transcribing, slice);
+        }
+        *is_transcribing = true;
+        *since.lock() = Some(Instant::now());
+        drop(is_transcribing);
+
+        // Slot acquired; clean it up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    /// If a model load never finishes, the `is_loading` wait eventually times
+    /// out, clears the flag, and returns `ModelNotLoaded` rather than hanging.
+    /// This test uses a shortened timeout so it does not run for 60 seconds.
+    #[test]
+    fn is_loading_wait_returns_model_not_loaded_after_timeout() {
+        let is_loading = Arc::new(std::sync::Mutex::new(true));
+        let condvar = Arc::new(std::sync::Condvar::new());
+
+        let mut guard = is_loading.lock().unwrap();
+        let wait_start = Instant::now();
+        let mut timed_out = false;
+        // Use a short test timeout so this remains a unit test; the production
+        // constant is 60s, which is intentionally too long to exercise here.
+        let test_timeout = Duration::from_millis(250);
+        while *guard {
+            if wait_start.elapsed() >= test_timeout {
+                *guard = false;
+                condvar.notify_all();
+                timed_out = true;
+                break;
+            }
+            let result = condvar
+                .wait_timeout(guard, Duration::from_millis(100))
+                .unwrap();
+            guard = result.0;
+        }
+
+        assert!(timed_out, "expected the is_loading wait to time out");
+        assert!(!*guard, "is_loading should have been cleared on timeout");
+    }
+
+    /// Dropping a guard whose slot was already force-released by a later owner
+    /// must not clear the new owner's flag or overwrite its timestamp.
+    #[test]
+    fn stale_transcribing_guard_drop_does_not_clobber_new_owner() {
+        use parking_lot::{Condvar as ParkingLotCondvar, Mutex as ParkingLotMutex};
+
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Owner A acquires the slot and stores its timestamp.
+        let a_acquired_at = Instant::now();
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(a_acquired_at);
+        }
+        let a_guard = TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at: a_acquired_at,
+        };
+        // Keep A's guard alive by moving it into a variable that outlives B.
+        let _a_holder = a_guard;
+
+        // Simulate the slot being force-released by setting the timestamp to an
+        // old instant, then a new owner B acquires the slot with a fresh timestamp.
+        let b_acquired_at = Instant::now() - Duration::from_secs(5);
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(b_acquired_at);
+        }
+
+        // Drop owner A's stale guard.
+        drop(_a_holder);
+
+        // Owner B's slot must still be held and the timestamp must not be clobbered.
+        let flag_after = *flag.lock();
+        let since_after = *since.lock();
+        assert!(flag_after, "stale TranscribingGuard drop cleared the slot");
+        assert_eq!(
+            since_after,
+            Some(b_acquired_at),
+            "stale TranscribingGuard drop overwrote the new owner's timestamp"
+        );
+
+        // Clean up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn slot_force_releases_on_wait_timeout_then_acquires() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Simulate a transcription that grabbed the slot 5s ago. The inner 60s
+        // watchdog cannot fire during a 30s wait, but the outer
+        // FORCE_RELEASE_ON_OWN_TIMEOUT path (>=30s held at timeout) will fire
+        // at the 30s deadline (held = 35s) and let us acquire the slot.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - Duration::from_secs(5));
+        }
+
+        let guard = TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at: Instant::now(),
+        };
+
+        // Helper mirrors try_acquire_transcribing_slot's timeout branch.
+        let acquired =
+            try_acquire_test_slot(&flag, &since, &condvar, Duration::from_secs(30), || false);
+
+        assert!(
+            acquired.is_some(),
+            "should acquire via the outer FORCE_RELEASE_ON_OWN_TIMEOUT path"
+        );
+        let new_guard = acquired.unwrap();
+        assert!(*flag.lock(), "slot should be held by the new guard");
+        assert_eq!(*since.lock(), Some(new_guard.acquired_at));
+
+        // Clean up: drop old guard then new guard.
+        drop(guard);
+        drop(new_guard);
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn slot_returns_busy_if_retaken_after_force_release() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // First stale owner held for 31s.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - Duration::from_secs(31));
+        }
+
+        // A second owner retakes the slot inside the on_force_release hook.
+        // Because the helper drops its lock before invoking the hook, this
+        // second owner can acquire the same outer lock, set the flag, and
+        // release it. When the helper re-acquires the lock, the slot is busy
+        // and the helper returns None.
+        let second_owner_timestamp = Instant::now();
+        let flag_for_hook = flag.clone();
+        let since_for_hook = since.clone();
+        let b_took = Arc::new(ParkingLotMutex::new(false));
+        let b_took_for_hook = b_took.clone();
+
+        let acquired = try_acquire_test_slot_with_hook(
+            &flag,
+            &since,
+            &condvar,
+            Duration::from_millis(10),
+            || false,
+            || {
+                let mut g = flag_for_hook.lock();
+                *g = true;
+                *since_for_hook.lock() = Some(second_owner_timestamp);
+                *b_took_for_hook.lock() = true;
+                // g drops here, releasing the lock.
+            },
+        );
+
+        assert!(*b_took.lock(), "second owner should have retaken the slot");
+        assert!(
+            acquired.is_none(),
+            "should return busy when another owner retakes the slot after force-release"
+        );
+
+        // Clean up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn background_watchdog_force_releases_idle_held_slot() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Stale owner held for 70s.
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(Instant::now() - Duration::from_secs(70));
+        }
+
+        check_and_force_release_test_slot(&flag, &since, &condvar);
+
+        assert!(!*flag.lock(), "watchdog should clear the stale slot");
+        assert_eq!(*since.lock(), None);
+    }
+
+    #[test]
+    fn stale_guard_drop_after_background_force_release_is_noop() {
+        let flag = Arc::new(ParkingLotMutex::new(false));
+        let since = Arc::new(ParkingLotMutex::new(None::<Instant>));
+        let condvar = Arc::new(ParkingLotCondvar::new());
+
+        // Owner A acquires the slot.
+        let a_acquired_at = Instant::now();
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(a_acquired_at);
+        }
+        let a_guard = TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at: a_acquired_at,
+        };
+
+        // Background watchdog force-releases A's slot.
+        check_and_force_release_test_slot(&flag, &since, &condvar);
+
+        // New owner B acquires with a fresh timestamp.
+        let b_acquired_at = Instant::now();
+        {
+            let mut g = flag.lock();
+            *g = true;
+            *since.lock() = Some(b_acquired_at);
+            condvar.notify_all();
+        }
+
+        // Dropping the stale A guard must not clobber B.
+        drop(a_guard);
+        assert!(
+            *flag.lock(),
+            "stale guard drop should not clear the active slot"
+        );
+        assert_eq!(
+            *since.lock(),
+            Some(b_acquired_at),
+            "stale guard drop should not overwrite the new owner's timestamp"
+        );
+
+        // Clean up.
+        {
+            let mut g = flag.lock();
+            *g = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    /// Helpers for the slot-recovery tests above. They mirror the production
+    /// logic in `try_acquire_transcribing_slot` and
+    /// `check_and_force_release_transcribing_slot` but do not need an AppHandle.
+    fn try_acquire_test_slot(
+        flag: &Arc<ParkingLotMutex<bool>>,
+        since: &Arc<ParkingLotMutex<Option<Instant>>>,
+        condvar: &Arc<ParkingLotCondvar>,
+        max_wait: Duration,
+        cancel_check: impl Fn() -> bool,
+    ) -> Option<TranscribingGuard> {
+        try_acquire_test_slot_with_hook(flag, since, condvar, max_wait, cancel_check, || {})
+    }
+
+    fn try_acquire_test_slot_with_hook(
+        flag: &Arc<ParkingLotMutex<bool>>,
+        since: &Arc<ParkingLotMutex<Option<Instant>>>,
+        condvar: &Arc<ParkingLotCondvar>,
+        max_wait: Duration,
+        cancel_check: impl Fn() -> bool,
+        on_force_release: impl FnMut(),
+    ) -> Option<TranscribingGuard> {
+        let wait_start = Instant::now();
+        let deadline = wait_start + max_wait;
+        let mut force_released_once = false;
+        let mut on_force_release = on_force_release;
+
+        let mut is_transcribing = flag.lock();
+        while *is_transcribing {
+            let held_for = {
+                let guard = since.lock();
+                guard
+                    .as_ref()
+                    .copied()
+                    .map(|s| Instant::now().duration_since(s))
+            };
+
+            // Inner watchdog: force-release if the owner has held far too long.
+            if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+                *is_transcribing = false;
+                *since.lock() = None;
+                condvar.notify_all();
+            }
+
+            if cancel_check() {
+                return None;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // Outer recovery: this waiter's own timeout has expired. If the
+                // slot has been held for at least the wait timeout, force-release
+                // it once and retry acquisition.
+                if !force_released_once
+                    && held_for.map_or(false, |d| {
+                        d >= TRANSCRIBING_SLOT_FORCE_RELEASE_ON_OWN_TIMEOUT
+                    })
+                {
+                    *is_transcribing = false;
+                    *since.lock() = None;
+                    condvar.notify_all();
+                    force_released_once = true;
+                    drop(is_transcribing);
+                    on_force_release();
+                    is_transcribing = flag.lock();
+                    continue;
+                }
+                return None;
+            }
+
+            let slice = remaining.min(Duration::from_millis(100));
+            let timed_out = condvar.wait_for(&mut is_transcribing, slice).timed_out();
+            if timed_out && cancel_check() {
+                return None;
+            }
+        }
+
+        let acquired_at = Instant::now();
+        *is_transcribing = true;
+        *since.lock() = Some(acquired_at);
+        drop(is_transcribing);
+
+        Some(TranscribingGuard {
+            flag: flag.clone(),
+            timestamp: since.clone(),
+            condvar: condvar.clone(),
+            acquired_at,
+        })
+    }
+
+    fn check_and_force_release_test_slot(
+        flag: &Arc<ParkingLotMutex<bool>>,
+        since: &Arc<ParkingLotMutex<Option<Instant>>>,
+        condvar: &Arc<ParkingLotCondvar>,
+    ) {
+        let mut is_transcribing = flag.lock();
+        if !*is_transcribing {
+            return;
+        }
+        let held_for = {
+            let guard = since.lock();
+            guard
+                .as_ref()
+                .copied()
+                .map(|s| Instant::now().duration_since(s))
+        };
+        if held_for.map_or(false, |d| d >= TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER) {
+            *is_transcribing = false;
+            *since.lock() = None;
+            condvar.notify_all();
+        }
+    }
+
+    /// A panic inside the model-load thread still clears `is_loading` and wakes
+    /// waiters, because the thread's reset guard runs on unwind.
+    #[test]
+    fn model_load_thread_panic_clears_is_loading() {
+        let is_loading = Arc::new(std::sync::Mutex::new(true));
+        let condvar = Arc::new(std::sync::Condvar::new());
+
+        let is_loading_clone = is_loading.clone();
+        let condvar_clone = condvar.clone();
+
+        std::thread::spawn(move || {
+            struct ResetLoadingGuard {
+                is_loading: Arc<std::sync::Mutex<bool>>,
+                loading_condvar: Arc<std::sync::Condvar>,
+            }
+            impl Drop for ResetLoadingGuard {
+                fn drop(&mut self) {
+                    let mut guard = match self.is_loading.lock() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            warn!(
+                                "Recovered poisoned is_loading mutex during model-load thread exit"
+                            );
+                            e.into_inner()
+                        }
+                    };
+                    *guard = false;
+                    self.loading_condvar.notify_all();
+                }
+            }
+            let _reset_guard = ResetLoadingGuard {
+                is_loading: is_loading_clone,
+                loading_condvar: condvar_clone,
+            };
+
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("simulated model load panic");
+            }))
+            .ok();
+            // _reset_guard drops here and must clear is_loading.
+        });
+
+        // Wait up to a few seconds for the panic thread to finish.
+        let mut guard = is_loading.lock().unwrap();
+        let wait_start = Instant::now();
+        while *guard {
+            let result = condvar
+                .wait_timeout(guard, Duration::from_millis(100))
+                .unwrap();
+            guard = result.0;
+            if wait_start.elapsed() > Duration::from_secs(5) {
+                panic!("is_loading was not cleared after model-load panic");
+            }
+        }
+
+        assert!(!*guard);
     }
 }
 

@@ -62,6 +62,7 @@ bindings.insert(
 ```
 
 Other shortcuts defined:
+
 - `"transcribe"` (lines 19-28) — platform-specific: `option+space` (macOS), `ctrl+space` (Windows/Linux)
 - `"transcribe_with_post_process"` (lines 38-48) — `option+shift+space` (macOS)
 - `"transcribe_with_router"` (lines 58-67) — `option+ctrl+space` (macOS)
@@ -84,16 +85,19 @@ File-based Store (tauri-plugin-store → settings_store.json)
 ```
 
 **`SettingsCache`** (lines 23-42):
+
 - Single source of truth for reads
 - Updated immediately on writes
 - Protected by `RwLock`
 
 **`SettingsWriter`** (lines 599-687):
+
 - Debounces writes by 500ms
 - Replaces pending writes on new changes (restarts timer)
 - Flushes to disk on timer expiry
 
 **Write path** (`write_settings`, lines 430-456):
+
 1. Updates cache immediately
 2. Replaces pending write in debounced writer
 3. If no writer available, writes synchronously
@@ -103,6 +107,7 @@ File-based Store (tauri-plugin-store → settings_store.json)
 **File:** `src-tauri/src/settings/store.rs`, `load_or_create_app_settings()` (lines 247-340)
 
 On startup:
+
 1. Opens the settings store (JSON file)
 2. Tries to deserialize full `AppSettings` from the `"settings"` key
 3. On success:
@@ -161,12 +166,12 @@ if id == "cancel" {
 
 **Critical differences:**
 
-| Aspect | Cancel Shortcut | Other Shortcuts |
-|--------|----------------|-----------------|
-| Validation | **None** — invalid values saved silently | Validated before save |
-| OS registration | **Skipped** — dynamically managed | Registered immediately |
-| Unregister old | **Skipped** | Unregistered before new registration |
-| Conflicting check | **Skipped** | Checked, warning emitted |
+| Aspect               | Cancel Shortcut                                                                                               | Other Shortcuts                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Validation           | **None** — invalid values saved silently                                                                      | Validated before save                                      |
+| OS registration      | **Skipped** — dynamically managed                                                                             | Registered immediately                                     |
+| Unregister old       | **Skipped**                                                                                                   | Unregistered before new registration                       |
+| Conflicting check    | **Skipped**                                                                                                   | Checked, warning emitted                                   |
 | `if let` fallthrough | **`if let` without `else`** — falls through to the non-cancel path if the binding is missing from the HashMap | Uses `binding_to_modify` which also falls back to defaults |
 
 ### 2.2 Dynamic Registration During Recording
@@ -181,6 +186,7 @@ The cancel shortcut is NOT registered during app startup. Instead, it's dynamica
 The registration reads the current value from settings at call time:
 
 **File:** `src-tauri/src/shortcut/tauri_impl.rs`, lines 158-181 (Tauri impl):
+
 ```rust
 pub fn register_cancel_shortcut(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -202,6 +208,7 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
 Both shortcut implementations skip the cancel shortcut during initialization:
 
 **File:** `src-tauri/src/shortcut/tauri_impl.rs`, line 23:
+
 ```rust
 if id == "cancel" {
     continue; // Skip cancel shortcut, it will be registered dynamically
@@ -209,6 +216,7 @@ if id == "cancel" {
 ```
 
 **File:** `src-tauri/src/shortcut/handy_keys.rs`, lines 422-424:
+
 ```rust
 if id == "cancel" {
     continue;
@@ -245,6 +253,7 @@ This is a classic TOCTOU (Time-of-Check Time-of-Use) race. If TWO settings comma
 The commit `ea9f7fd5` introduced `modify_settings()` with a `tokio::sync::Mutex` to fix this, but that commit was never merged into the `new-models` branch (it exists only as a detached commit or on a different branch).
 
 **Files that don't have modify_settings and are vulnerable:**
+
 - `src-tauri/src/shortcut/mod.rs` — `change_binding()`, all individual `change_*_setting()` commands
 - `src-tauri/src/commands/audio.rs`
 - `src-tauri/src/commands/history.rs`
@@ -267,6 +276,7 @@ if id == "cancel" {
 ```
 
 If the cancel binding is somehow missing from the settings HashMap (edge case: corrupted settings file, migration issue, race condition), the code falls through to the non-cancel path which tries to:
+
 1. Unregister whatever `binding_to_modify` was computed (line 179)
 2. Validate the new shortcut (line 185)
 3. **Register the cancel shortcut as a normal shortcut** (line 219) — this would register "escape" as a global shortcut, which may or may not work
@@ -303,10 +313,14 @@ This doesn't directly cause non-persistence, but it means users get NO FEEDBACK 
 **File:** `src/components/settings/general/GeneralSettings.tsx`, lines 26-29
 
 ```tsx
-{/* Cancel shortcut is hidden with push-to-talk (release key cancels) and on Linux */}
-{!isLinux && !pushToTalk && (
+{
+  /* Cancel shortcut is hidden with push-to-talk (release key cancels) and on Linux */
+}
+{
+  !isLinux && !pushToTalk && (
     <ShortcutInput shortcutId="cancel" grouped={true} />
-)}
+  );
+}
 ```
 
 When push-to-talk is enabled (which is the default on macOS: `push_to_talk: true`), the cancel shortcut input is **completely hidden from the UI**. Users can't see what it's set to, can't change it, and might not even know it exists.
@@ -331,6 +345,7 @@ The debounce interval is 500ms (`SETTINGS_DEBOUNCE_MS`). The potential race:
 The current code DOES call `flush_settings` on `RunEvent::ExitRequested`:
 
 **File:** `src-tauri/src/lib.rs`, lines 1042-1045:
+
 ```rust
 if let tauri::RunEvent::ExitRequested { .. } = &event {
     crate::settings::flush_settings(app);
@@ -415,23 +430,23 @@ Since the cancel binding should already be in the saved settings (it was saved w
 
 ## Files Examined
 
-| File | Lines | Key Content |
-|------|-------|-------------|
-| `src-tauri/src/settings/types.rs` | 1-878 | `AppSettings` struct, `ShortcutBinding`, serde setup |
-| `src-tauri/src/settings/defaults.rs` | 1-175 | Default bindings including cancel with "escape" |
-| `src-tauri/src/settings/store.rs` | 1-731 | Cache, debounced writer, load/save/migration, flush |
-| `src-tauri/src/settings/mod.rs` | 1-16 | Module re-exports |
-| `src-tauri/src/shortcut/mod.rs` | 1-1527 | `change_binding` command with cancel-specific path |
-| `src-tauri/src/shortcut/handler.rs` | 1-73 | Cancel shortcut event handler (only fires when recording) |
-| `src-tauri/src/shortcut/handy_keys.rs` | 1-608 | HandyKeys impl, skip cancel on init |
-| `src-tauri/src/shortcut/tauri_impl.rs` | 1-206 | Tauri impl, skip cancel on init, dynamic registration |
-| `src-tauri/src/shortcut/conflicts.rs` | 1-532 | Shortcut conflict detection |
-| `src-tauri/src/lib.rs` | 1-1049 | App setup, `flush_settings` on `ExitRequested` |
-| `src-tauri/src/actions/transcribe.rs` | 150-249 | Cancel registration during recording start/stop |
-| `src-tauri/src/utils.rs` | 40-139 | Cancel flow with timing diagnostics |
-| `src/components/settings/general/GeneralSettings.tsx` | 1-45 | Cancel input hidden when PTT enabled |
-| `src/components/settings/ShortcutInput.tsx` | 1-30 | Wrapper that selects Tauri vs HandyKeys input |
-| `src/components/settings/GlobalShortcutInput.tsx` | 1-297 | Tauri shortcut input (calls `changeBinding`) |
-| `src/components/settings/HandyKeysShortcutInput.tsx` | 1-289 | HandyKeys shortcut input (calls `changeBinding`) |
-| `src/hooks/useSettings.ts` | 1-84 | Hook that delegates to `settingsStore` |
-| `src/stores/settingsStore.ts` | 1-770 | Zustand store, `updateBinding` calls `commands.changeBinding` |
+| File                                                  | Lines   | Key Content                                                   |
+| ----------------------------------------------------- | ------- | ------------------------------------------------------------- |
+| `src-tauri/src/settings/types.rs`                     | 1-878   | `AppSettings` struct, `ShortcutBinding`, serde setup          |
+| `src-tauri/src/settings/defaults.rs`                  | 1-175   | Default bindings including cancel with "escape"               |
+| `src-tauri/src/settings/store.rs`                     | 1-731   | Cache, debounced writer, load/save/migration, flush           |
+| `src-tauri/src/settings/mod.rs`                       | 1-16    | Module re-exports                                             |
+| `src-tauri/src/shortcut/mod.rs`                       | 1-1527  | `change_binding` command with cancel-specific path            |
+| `src-tauri/src/shortcut/handler.rs`                   | 1-73    | Cancel shortcut event handler (only fires when recording)     |
+| `src-tauri/src/shortcut/handy_keys.rs`                | 1-608   | HandyKeys impl, skip cancel on init                           |
+| `src-tauri/src/shortcut/tauri_impl.rs`                | 1-206   | Tauri impl, skip cancel on init, dynamic registration         |
+| `src-tauri/src/shortcut/conflicts.rs`                 | 1-532   | Shortcut conflict detection                                   |
+| `src-tauri/src/lib.rs`                                | 1-1049  | App setup, `flush_settings` on `ExitRequested`                |
+| `src-tauri/src/actions/transcribe.rs`                 | 150-249 | Cancel registration during recording start/stop               |
+| `src-tauri/src/utils.rs`                              | 40-139  | Cancel flow with timing diagnostics                           |
+| `src/components/settings/general/GeneralSettings.tsx` | 1-45    | Cancel input hidden when PTT enabled                          |
+| `src/components/settings/ShortcutInput.tsx`           | 1-30    | Wrapper that selects Tauri vs HandyKeys input                 |
+| `src/components/settings/GlobalShortcutInput.tsx`     | 1-297   | Tauri shortcut input (calls `changeBinding`)                  |
+| `src/components/settings/HandyKeysShortcutInput.tsx`  | 1-289   | HandyKeys shortcut input (calls `changeBinding`)              |
+| `src/hooks/useSettings.ts`                            | 1-84    | Hook that delegates to `settingsStore`                        |
+| `src/stores/settingsStore.ts`                         | 1-770   | Zustand store, `updateBinding` calls `commands.changeBinding` |

@@ -11,8 +11,8 @@ interface OverlayScreenTargetProps {
   grouped?: boolean;
 }
 
-export const OverlayScreenTarget: React.FC<OverlayScreenTargetProps> = React.memo(
-  ({ descriptionMode = "tooltip", grouped = false }) => {
+export const OverlayScreenTarget: React.FC<OverlayScreenTargetProps> =
+  React.memo(({ descriptionMode = "tooltip", grouped = false }) => {
     const { t } = useTranslation();
     const { getSetting, updateSetting, isUpdating } = useSettings();
     const [monitorCount, setMonitorCount] = useState<number | null>(null);
@@ -29,8 +29,14 @@ export const OverlayScreenTarget: React.FC<OverlayScreenTargetProps> = React.mem
     }
 
     const options = [
-      { value: "cursor", label: t("settings.advanced.overlayScreenTarget.options.cursor") },
-      { value: "side_screen", label: t("settings.advanced.overlayScreenTarget.options.sideScreen") },
+      {
+        value: "cursor",
+        label: t("settings.advanced.overlayScreenTarget.options.cursor"),
+      },
+      {
+        value: "side_screen",
+        label: t("settings.advanced.overlayScreenTarget.options.sideScreen"),
+      },
     ];
 
     const selectedTarget = (getSetting("overlay_screen_target") ||
@@ -47,11 +53,13 @@ export const OverlayScreenTarget: React.FC<OverlayScreenTargetProps> = React.mem
           options={options}
           selectedValue={selectedTarget}
           onSelect={(value) =>
-            updateSetting("overlay_screen_target", value as OverlayScreenTargetType)
+            updateSetting(
+              "overlay_screen_target",
+              value as OverlayScreenTargetType,
+            )
           }
           disabled={isUpdating("overlay_screen_target")}
         />
       </SettingContainer>
     );
-  },
-);
+  });

@@ -98,8 +98,9 @@
       }
     },
     "errors": {
+      "downloadModel": "Failed to download model: {{error}}",
       "loadModels": "Failed to load available models",
-      "downloadModel": "Failed to download model: {{error}}"
+      "selectModel": "Failed to select model. Please try again."
     },
     "permissions": {
       "title": "Permissions Required",
@@ -136,6 +137,11 @@
     "downloading": "Downloading {{percentage}}%",
     "downloadingMultiple": "Downloading {{count}} models...",
     "modelReady": "Model Ready",
+    "vadSensitivity": {
+      "label": "Voice Detection",
+      "default": "Default for {{engine}} engine",
+      "resetToDefault": "Reset to default"
+    },
     "loading": "Loading {{modelName}}...",
     "loadingGeneric": "Loading...",
     "loadingWithQueued": "{{baseText}} → {{pendingModelName}}",
@@ -199,12 +205,23 @@
         "conflictWarning": "Shortcut \"{{shortcut}}\" may conflict with system shortcuts:\n{{conflictList}}"
       },
       "language": {
-        "title": "Language",
+        "title": "Transcription language",
         "description": "Select the language for speech recognition. Auto will automatically determine the language, while selecting a specific language can improve accuracy for that language.",
-        "descriptionUnsupported": "Parakeet model automatically detects the language. No manual selection is needed.",
+        "descriptionUnsupported": "The current model automatically detects the language. No manual selection is needed.",
         "searchPlaceholder": "Search languages...",
         "noResults": "No languages found",
         "auto": "Auto"
+      },
+      "micReadiness": {
+        "title": "Mic readiness",
+        "description": "Keep the microphone warm to reduce the delay before transcription starts.",
+        "off": "Off",
+        "brief": "Keep open 30s after recording",
+        "always": "Always on"
+      },
+      "capturePadding": {
+        "title": "Capture padding",
+        "preRecordingDisabledHint": "Only available when Mic readiness is set to Always on."
       },
       "pushToTalk": {
         "label": "Push To Talk",
@@ -255,6 +272,12 @@
         "placeholder": "Select microphone...",
         "loading": "Loading..."
       },
+      "channel": {
+        "title": "Input Channel",
+        "description": "For multi-channel microphones, select a single channel or average all channels",
+        "average": "Average all channels",
+        "channel": "Channel {{n}}"
+      },
       "audioFeedback": {
         "label": "Audio Feedback",
         "description": "Play sound when recording starts and stops"
@@ -294,6 +317,14 @@
       "lazyStreamClose": {
         "label": "Keep Mic Open Between Transcriptions",
         "description": "Keeps the microphone stream open for 30 seconds after recording stops, reducing latency for back-to-back transcriptions. May degrade Bluetooth audio quality while active."
+      },
+      "vadBackend": {
+        "title": "Voice Activity Backend",
+        "description": "Choose the detector used to filter silence. Earshot is experimental; switch back to Silero if speech is clipped or noise is retained.",
+        "options": {
+          "silero": "Silero",
+          "earshot": "Earshot"
+        }
       },
       "verificationMode": {
         "label": "Verification Mode",
@@ -366,6 +397,14 @@
           "top": "Top"
         }
       },
+      "overlayScale": {
+        "label": "Overlay Size",
+        "description": "Scale the overlay pill and live captions. Large mode makes text easier to read.",
+        "options": {
+          "normal": "Normal",
+          "large": "Large (2x)"
+        }
+      },
       "overlayScreenTarget": {
         "title": "Overlay Screen",
         "description": "Choose which screen the visualizer appears on. 'Side Screen' shows it on the screen your mouse is NOT on (requires multiple monitors).",
@@ -422,6 +461,10 @@
         "label": "Convert to British English",
         "description": "Convert US English spelling to British English (e.g., color → colour, analyze → analyse, center → centre)."
       },
+      "convertNumberWordsToDigits": {
+        "label": "Convert number words to digits",
+        "description": "Convert spoken number sequences like \"zero zero four\" into digits \"004\". Applies to English transcriptions; lone number words are left as words."
+      },
       "modelUnload": {
         "title": "Unload Model",
         "description": "Automatically free GPU/CPU memory when the model hasn't been used for the specified time",
@@ -438,7 +481,7 @@
       },
       "customWords": {
         "title": "Custom Words",
-        "description": "Add words that are often misheard or misspelled during transcription. The system will automatically correct similar-sounding words to match your list.",
+        "description": "Help supported models recognize names and specialized terms. Fuzzy correction is currently limited to words using A–Z and numbers.",
         "placeholder": "Add a word",
         "add": "Add",
         "remove": "Remove {{word}}",
@@ -465,11 +508,26 @@
         "relaxedTooltip": "Lower sensitivity. Requires clearer speech to trigger. Good for noisy environments to avoid false starts.",
         "veryRelaxed": "Very Relaxed",
         "veryRelaxedTooltip": "Minimum sensitivity. Only triggers on clear, loud speech. Best for very noisy environments or if you speak deliberately.",
-        "placeholder": "Select sensitivity..."
+        "placeholder": "Select sensitivity...",
+        "levels": {
+          "none": "None",
+          "light": "Light",
+          "balanced": "Balanced",
+          "aggressive": "Aggressive",
+          "strongAggressive": "Very Aggressive"
+        },
+        "labels": {
+          "no": "Less sensitive",
+          "strong": "More sensitive"
+        }
       },
       "liveCaptions": {
         "label": "Live Captions",
-        "description": "Show live captions below the volume bars during recording. Uses additional CPU."
+        "description": "Show live captions below the volume bars during recording. Uses additional CPU.",
+        "modelLabel": "Live captions model",
+        "modelDescription": "Choose a dedicated model for live captions, or use the main transcription model.",
+        "useMainModel": "Use main transcription model",
+        "streaming": "Streaming"
       },
       "noiseSuppression": {
         "label": "Noise Suppression",
@@ -487,6 +545,9 @@
     },
     "postProcessing": {
       "title": "Post Process",
+      "enable": {
+        "title": "Post-processing"
+      },
       "hotkey": {
         "title": "Hotkey"
       },
@@ -567,11 +628,38 @@
       "exportJson": "Export JSON",
       "exportCsv": "Export CSV",
       "exportSuccess": "History exported successfully!",
-      "exportError": "Failed to export history. Please try again."
+      "exportError": "Failed to export history. Please try again.",
+      "audioSource": "Audio source",
+      "rawAudio": "Raw",
+      "vadAudio": "VAD-filtered",
+      "vadNotAvailable": "VAD-filtered recording not available for this entry"
+    },
+    "retryQueue": {
+      "title": "Failed Transcriptions",
+      "retryAll": "Retry All",
+      "clearAll": "Clear",
+      "retrySuccess": "Retry successful",
+      "retryError": "Retry failed: {{error}}",
+      "removeError": "Failed to remove: {{error}}",
+      "removed": "Entry removed",
+      "cleared": "Queue cleared",
+      "clearError": "Failed to clear queue: {{error}}",
+      "batchSuccess": "{{count}} entries retried successfully",
+      "batchFail": "{{count}} entries failed to retry",
+      "retrying": "Retrying...",
+      "retry": "Retry",
+      "readyNow": "Ready now",
+      "retryInMinutes": "Retry in {{mins}}m",
+      "retryInHours": "Retry in {{hours}}h",
+      "attempts": "Attempt {{current}}/{{max}}",
+      "fallback": "Fallback: {{count}} models",
+      "model": "Model: {{modelId}}",
+      "usingFallback": "using fallback"
     },
     "usage": {
       "title": "Usage Statistics",
       "today": "Today",
+      "last7Days": "Last 7 Days",
       "last30Days": "Last 30 Days",
       "totalTranscriptions": "Total transcriptions",
       "totalWords": "Words transcribed",
@@ -580,7 +668,11 @@
       "currentStreak": "Current streak",
       "bestStreak": "Best",
       "transcriptions": "Transcriptions",
-      "words": "Words"
+      "words": "Words",
+      "loading": "Loading usage statistics...",
+      "loadError": "Failed to load usage statistics: {{error}}",
+      "noActivity": "No activity in the last 7 days",
+      "tooltip": "{{count}} transcriptions, {{words}} words"
     },
     "debug": {
       "title": "Debug",
@@ -721,8 +813,7 @@
       },
       "keyboardImplementation": {
         "title": "Keyboard Implementation",
-        "description": "Choose the keyboard shortcut backend.",
-        "bindingsReset": "Keyboard shortcuts were incompatible and reset to defaults"
+        "description": "Choose the keyboard shortcut backend."
       },
       "paths": {
         "appData": "App Data:",
@@ -734,12 +825,12 @@
         "description": "Delay before sending paste keystroke (in milliseconds). Increase if wrong text is being pasted."
       },
       "recordingBuffer": {
-        "title": "Recording Buffer",
-        "description": "Maximum extra time (ms) to keep recording after releasing the key. The buffer stops early when the microphone detects silence, so it rarely waits the full duration. 0 = no extra buffer."
+        "title": "Post-recording buffer",
+        "description": "Maximum extra time (ms) to keep recording after you release the shortcut. The buffer stops early when the microphone detects silence, so it rarely waits the full duration. 0 = no extra buffer."
       },
       "preRecordingBuffer": {
-        "title": "Pre-Recording Buffer",
-        "description": "Capture audio from before you pressed the hotkey. When using Always-On microphone mode, stores the last N ms of audio continuously. When you press the hotkey, this audio is prepended to capture words you started saying before pressing. Recommended: 1000-3000ms. Only works with Always-On microphone mode."
+        "title": "Pre-recording buffer",
+        "description": "Capture audio from before you press the shortcut. Stores the last N ms of audio continuously while the microphone is kept warm, then prepends it to the recording so words you start before pressing the shortcut are not lost. Recommended: 1000-3000ms."
       },
       "usbWatchdog": {
         "label": "USB Power Watchdog",
@@ -897,7 +988,7 @@
     "needsUserAction": "This requires your action before retrying."
   },
   "appLanguage": {
-    "title": "Application Language",
+    "title": "Interface language",
     "description": "Change the language of the Handy interface"
   },
   "overlay": {
@@ -915,10 +1006,15 @@
     "filing": "Filing…",
     "micDead": "Microphone not responding",
     "lowAudio": "Low audio - check microphone",
+    "live": "Live",
+    "liveIndicator": "Streaming live",
     "confirming": "Sending in",
     "editing": "Edit text:",
     "send": "Send",
     "cancel": "Cancel",
+    "timeoutWarning": "Recording ending in {{seconds}}s",
+    "timeoutWarningHardCap": "Recording hard limit in {{seconds}}s",
+    "extendButton": "Extend +{{minutes}}m",
     "clickToEdit": "Click to edit",
     "editPlaceholder": "Edit your text...",
     "routerError": "Routing failed",

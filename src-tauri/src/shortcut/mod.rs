@@ -24,15 +24,15 @@ use tauri_plugin_autostart::ManagerExt;
 
 use conflicts::ConflictInfo;
 
-use crate::managers::transcription::TranscriptionManager;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
     self, get_settings, AutoSubmitKey, ClipboardHandling, CustomWord, KeyboardImplementation,
     LLMPrompt, OverlayPosition, OverlayScreenTarget, PasteMethod, ShortcutBinding, SoundTheme,
-    TypingTool, APPLE_INTELLIGENCE_PROVIDER_ID,
+    TypingTool, VadBackend, APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
+use crate::LiveCaptionsTranscriptionManager;
 
 // Note: Commands are accessed via shortcut::handy_keys:: in lib.rs
 
@@ -80,21 +80,34 @@ pub fn unregister_cancel_shortcut(app: &AppHandle) {
     }
 }
 
-/// Register a shortcut using the appropriate implementation
+/// Register a shortcut using the appropriate implementation.
+/// The implementation-specific binding string is copied into
+/// `current_binding` before dispatching to the backend so existing
+/// implementation code only needs to read `current_binding`.
 pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
     let settings = get_settings(app);
+    let mut active_binding = binding.clone();
+    active_binding.current_binding = binding
+        .binding_for(settings.keyboard_implementation)
+        .to_string();
     match settings.keyboard_implementation {
-        KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, binding),
-        KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, binding),
+        KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, active_binding),
+        KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, active_binding),
     }
 }
 
-/// Unregister a shortcut using the appropriate implementation
+/// Unregister a shortcut using the appropriate implementation.
+/// The implementation-specific binding string is copied into
+/// `current_binding` before dispatching to the backend.
 pub fn unregister_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
     let settings = get_settings(app);
+    let mut active_binding = binding.clone();
+    active_binding.current_binding = binding
+        .binding_for(settings.keyboard_implementation)
+        .to_string();
     match settings.keyboard_implementation {
-        KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, binding),
-        KeyboardImplementation::HandyKeys => handy_keys::unregister_shortcut(app, binding),
+        KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, active_binding),
+        KeyboardImplementation::HandyKeys => handy_keys::unregister_shortcut(app, active_binding),
     }
 }
 
@@ -137,9 +150,11 @@ fn apply_cancel_binding_update(
                 description: "Cancels the current recording.".to_string(),
                 default_binding: "escape".to_string(),
                 current_binding: "escape".to_string(),
+                tauri_binding: "escape".to_string(),
+                handy_keys_binding: "escape".to_string(),
             })
     });
-    b.current_binding = new_binding;
+    b.set_binding_for(settings.keyboard_implementation, new_binding);
     settings.bindings.insert(id.to_string(), b.clone());
     b
 }
@@ -202,7 +217,10 @@ pub fn change_binding(
     }
 
     // Defensive: cancel should never reach the registration path
-    debug_assert!(id != "cancel", "cancel binding should have been handled above");
+    debug_assert!(
+        id != "cancel",
+        "cancel binding should have been handled above"
+    );
 
     // Unregister the existing binding
     if let Err(e) = unregister_shortcut(&app, binding_to_modify.clone()) {
@@ -240,9 +258,11 @@ pub fn change_binding(
         );
     }
 
-    // Create an updated binding
+    // Create an updated binding for the active keyboard implementation.
+    // The per-implementation helper also mirrors the value to `current_binding`
+    // so the frontend immediately sees the new binding.
     let mut updated_binding = binding_to_modify;
-    updated_binding.current_binding = binding;
+    updated_binding.set_binding_for(settings.keyboard_implementation, binding);
 
     // Register the new binding
     if let Err(e) = register_shortcut(&app, updated_binding.clone()) {
@@ -281,8 +301,13 @@ pub fn reset_binding(app: AppHandle, id: String) -> Result<BindingResponse, Stri
 #[tauri::command]
 #[specta::specta]
 pub fn suspend_binding(app: AppHandle, id: String) -> Result<(), String> {
+    let settings = get_settings(&app);
     if let Some(b) = settings::get_bindings(&app).get(&id).cloned() {
-        if let Err(e) = unregister_shortcut(&app, b) {
+        let mut active_binding = b;
+        active_binding.current_binding = active_binding
+            .binding_for(settings.keyboard_implementation)
+            .to_string();
+        if let Err(e) = unregister_shortcut(&app, active_binding) {
             error!("suspend_binding error for id '{}': {}", id, e);
             return Err(e);
         }
@@ -294,8 +319,13 @@ pub fn suspend_binding(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub fn resume_binding(app: AppHandle, id: String) -> Result<(), String> {
+    let settings = get_settings(&app);
     if let Some(b) = settings::get_bindings(&app).get(&id).cloned() {
-        if let Err(e) = register_shortcut(&app, b) {
+        let mut active_binding = b;
+        active_binding.current_binding = active_binding
+            .binding_for(settings.keyboard_implementation)
+            .to_string();
+        if let Err(e) = register_shortcut(&app, active_binding) {
             error!("resume_binding error for id '{}': {}", id, e);
             return Err(e);
         }
@@ -433,9 +463,17 @@ fn unregister_all_shortcuts(app: &AppHandle, implementation: KeyboardImplementat
             continue;
         }
 
+        // Mirror the stored implementation-specific binding into `current_binding`
+        // before dispatching, so we unregister the shortcut that was actually
+        // registered under the old implementation.
+        let mut active_binding = binding.clone();
+        active_binding.current_binding = binding.binding_for(implementation).to_string();
+
         let result = match implementation {
-            KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, binding),
-            KeyboardImplementation::HandyKeys => handy_keys::unregister_shortcut(app, binding),
+            KeyboardImplementation::Tauri => tauri_impl::unregister_shortcut(app, active_binding),
+            KeyboardImplementation::HandyKeys => {
+                handy_keys::unregister_shortcut(app, active_binding)
+            }
         };
 
         if let Err(e) = result {
@@ -447,7 +485,9 @@ fn unregister_all_shortcuts(app: &AppHandle, implementation: KeyboardImplementat
     }
 }
 
-/// Register all shortcuts for a specific implementation, validating and resetting invalid ones
+/// Register all shortcuts for a specific implementation, validating and resetting invalid ones.
+/// Only the per-implementation field is reset; the other implementation's stored binding is
+/// preserved so switching back later does not require re-recording.
 fn register_all_shortcuts_for_implementation(
     app: &AppHandle,
     implementation: KeyboardImplementation,
@@ -473,27 +513,32 @@ fn register_all_shortcuts_for_implementation(
             .cloned()
             .unwrap_or_else(|| default_binding.clone());
 
+        let impl_binding = binding.binding_for(implementation).to_string();
+
         // Validate the shortcut for the target implementation
-        if let Err(e) =
-            validate_shortcut_for_implementation(&binding.current_binding, implementation)
-        {
+        if let Err(e) = validate_shortcut_for_implementation(&impl_binding, implementation) {
             info!(
                 "Shortcut '{}' ({}) is invalid for {:?}: {}. Resetting to default.",
-                id, binding.current_binding, implementation, e
+                id, impl_binding, implementation, e
             );
 
-            // Reset to default
-            binding.current_binding = default_binding.current_binding.clone();
+            // Reset only the per-implementation field; the other implementation's binding
+            // is preserved so switching back later keeps the user's recorded shortcut.
+            binding.set_binding_for(implementation, default_binding.current_binding.clone());
             current_settings
                 .bindings
                 .insert(id.clone(), binding.clone());
             reset_bindings.push(id.clone());
         }
 
-        // Register with the appropriate implementation
+        // Register with the appropriate implementation. Use a clone with `current_binding`
+        // set to the implementation-specific value so the backend doesn't need to know
+        // about the dual-storage design. Re-read from `binding` in case it was reset above.
+        let mut active_binding = binding.clone();
+        active_binding.current_binding = binding.binding_for(implementation).to_string();
         let result = match implementation {
-            KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, binding),
-            KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, binding),
+            KeyboardImplementation::Tauri => tauri_impl::register_shortcut(app, active_binding),
+            KeyboardImplementation::HandyKeys => handy_keys::register_shortcut(app, active_binding),
         };
 
         if let Err(e) = result {
@@ -598,6 +643,18 @@ pub fn change_translate_to_english_setting(app: AppHandle, enabled: bool) -> Res
 pub fn change_convert_us_to_british_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.convert_us_to_british = enabled;
+    settings::write_settings_safe(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_convert_number_words_to_digits_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.convert_number_words_to_digits = enabled;
     settings::write_settings_safe(&app, settings);
     Ok(())
 }
@@ -755,9 +812,9 @@ pub fn change_update_checks_setting(app: AppHandle, enabled: bool) -> Result<(),
 #[tauri::command]
 #[specta::specta]
 pub fn update_custom_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.custom_words = words;
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.custom_words = words;
+    });
     Ok(())
 }
 
@@ -776,18 +833,18 @@ pub fn change_word_correction_threshold_setting(
 #[tauri::command]
 #[specta::specta]
 pub fn update_advanced_custom_words(app: AppHandle, words: Vec<CustomWord>) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.advanced_custom_words = words;
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.advanced_custom_words = words;
+    });
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn update_custom_filler_words(app: AppHandle, words: Vec<String>) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.custom_filler_words = if words.is_empty() { None } else { Some(words) };
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.custom_filler_words = if words.is_empty() { None } else { Some(words) };
+    });
     Ok(())
 }
 
@@ -829,9 +886,9 @@ pub fn update_word_replacements(
     app: AppHandle,
     replacements: Vec<settings::WordReplacement>,
 ) -> Result<(), String> {
-    let mut settings = settings::get_settings_safe(&app);
-    settings.word_replacements = replacements;
-    settings::write_settings_safe(&app, settings);
+    settings::patch_settings(&app, |s| {
+        s.word_replacements = replacements;
+    });
     Ok(())
 }
 
@@ -1294,13 +1351,30 @@ pub fn change_lazy_stream_close_setting(app: AppHandle, enabled: bool) -> Result
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_app_language_setting(app: AppHandle, language: String) -> Result<(), String> {
+pub async fn change_app_language_setting(app: AppHandle, language: String) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.app_language = language.clone();
     settings::write_settings_safe(&app, settings);
 
-    // Refresh the tray menu with the new language
-    tray::update_tray_menu(&app, &tray::TrayIconState::Idle, Some(&language));
+    // Refresh the tray menu with the new language, but do it off the
+    // synchronous command path. The tray rebuild touches backend locks
+    // (transcription engine, available models) that can be held by streaming
+    // or model threads; running it inline here blocks the main thread and
+    // freezes the UI. Scheduling it on the async runtime lets the IPC call
+    // return immediately, and the best-effort reads inside the tray code
+    // prevent the actual rebuild from hanging the event loop.
+    let app_for_tray = app.clone();
+    let language_for_tray = language.clone();
+    tauri::async_runtime::spawn(async move {
+        let app_inside = app_for_tray.clone();
+        let _ = app_for_tray.run_on_main_thread(move || {
+            tray::update_tray_menu(
+                &app_inside,
+                &tray::TrayIconState::Idle,
+                Some(&language_for_tray),
+            );
+        });
+    });
 
     Ok(())
 }
@@ -1361,7 +1435,7 @@ pub fn change_ort_accelerator_setting(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_transcribe_gpu_device(app: AppHandle, device: i32) -> Result<(), String> {
+pub fn change_transcribe_gpu_device(app: AppHandle, device: Option<String>) -> Result<(), String> {
     let mut s = settings::get_settings_safe(&app);
     s.transcribe_gpu_device = device;
     apply_and_reload_accelerator(&app, s);
@@ -1383,20 +1457,38 @@ pub async fn get_available_accelerators(
         .map_err(|e| format!("get_available_accelerators task failed: {}", e))
 }
 
+/// Parse a string into a `VadSensitivity` enum value.
+///
+/// Returns `Ok(None)` if the input is `None`, allowing callers to treat a
+/// missing value as "remove any override".
+fn parse_vad_sensitivity(
+    sensitivity: Option<String>,
+) -> Result<Option<settings::VadSensitivity>, String> {
+    match sensitivity {
+        None => Ok(None),
+        Some(s) => match s.as_str() {
+            "very_relaxed" => Ok(Some(settings::VadSensitivity::VeryRelaxed)),
+            "relaxed" => Ok(Some(settings::VadSensitivity::Relaxed)),
+            "balanced" => Ok(Some(settings::VadSensitivity::Balanced)),
+            "quick" => Ok(Some(settings::VadSensitivity::Quick)),
+            "very_quick" => Ok(Some(settings::VadSensitivity::VeryQuick)),
+            _ => Err(format!("Invalid VAD sensitivity: {}", s)),
+        },
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Result<(), String> {
-    let vad_sensitivity = match sensitivity.as_str() {
-        "very_quick" => settings::VadSensitivity::VeryQuick,
-        "quick" => settings::VadSensitivity::Quick,
-        "balanced" => settings::VadSensitivity::Balanced,
-        "relaxed" => settings::VadSensitivity::Relaxed,
-        "very_relaxed" => settings::VadSensitivity::VeryRelaxed,
-        _ => return Err(format!("Invalid VAD sensitivity: {}", sensitivity)),
-    };
+    let vad_sensitivity = parse_vad_sensitivity(Some(sensitivity.clone()))?
+        .ok_or_else(|| "VAD sensitivity cannot be empty".to_string())?;
+
+    info!("Changing VAD sensitivity to '{}'", sensitivity);
+
     let mut settings = settings::get_settings_safe(&app);
     settings.vad_sensitivity = vad_sensitivity;
     settings::write_settings_safe(&app, settings);
+    info!("VAD sensitivity '{}' saved to settings cache", sensitivity);
 
     // Recreate the recorder so the new VAD sensitivity takes effect immediately.
     // vad_threshold and vad_hangover_frames are read in create_audio_recorder()
@@ -1423,18 +1515,94 @@ pub fn change_vad_sensitivity_setting(app: AppHandle, sensitivity: String) -> Re
 
 #[tauri::command]
 #[specta::specta]
+pub async fn change_vad_backend_setting(app: AppHandle, backend: VadBackend) -> Result<(), String> {
+    if settings::get_settings(&app).vad_backend == backend {
+        return Ok(());
+    }
+
+    // Construct/swap the detector and, when necessary, reopen cpal away from
+    // the webview thread. Persist only after the runtime change succeeds so a
+    // rejected in-progress switch or failed microphone reopen rolls back cleanly.
+    let manager = app
+        .state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+        .inner()
+        .clone();
+    tokio::task::spawn_blocking(move || manager.update_vad_backend(backend))
+        .await
+        .map_err(|e| format!("audio task join failed: {e}"))?
+        .map_err(|e| format!("Failed to update VAD backend: {e}"))?;
+
+    let mut current_settings = settings::get_settings(&app);
+    current_settings.vad_backend = backend;
+    settings::write_settings(&app, current_settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_model_vad_sensitivity(
+    app: AppHandle,
+    model_id: String,
+    sensitivity: Option<String>,
+) -> Result<(), String> {
+    let parsed = parse_vad_sensitivity(sensitivity)?;
+
+    let mut settings = settings::get_settings_safe(&app);
+    match parsed {
+        Some(s) => {
+            info!(
+                "Setting per-model VAD sensitivity for '{}' to '{:?}'",
+                model_id, s
+            );
+            settings.per_model_vad_sensitivity.insert(model_id, s);
+        }
+        None => {
+            info!(
+                "Removing per-model VAD sensitivity override for '{}'",
+                model_id
+            );
+            settings.per_model_vad_sensitivity.remove(&model_id);
+        }
+    }
+    settings::write_settings_safe(&app, settings);
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.live_captions_enabled = enabled;
+    let live_captions_model = settings.live_captions_model.clone();
     settings::write_settings_safe(&app, settings.clone());
 
-    // Pre-warm the model when live captions is enabled so it's ready
-    // for the first recording. Without this, the model loads lazily
-    // on first hotkey press, causing a delay before live captions appear.
-    if enabled {
-        if let Some(transcription_manager) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() {
-            transcription_manager.lock().initiate_model_load();
-            debug!("Live captions enabled — pre-warming transcription model");
+    // Pre-warm the model when live captions is enabled AND a dedicated live
+    // captions model is configured. Without this, the model loads lazily on
+    // first hotkey press, causing a delay before live captions appear.
+    // We intentionally target the dedicated live captions TM here, never the
+    // main TM, so the two transcription paths do not steal each other's engine.
+    if enabled && !live_captions_model.is_empty() {
+        if let Some(live_captions_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+            live_captions_tm
+                .0
+                .lock()
+                .initiate_model_load_for(&live_captions_model);
+            debug!(
+                "Live captions enabled — pre-warming live captions model '{}'",
+                live_captions_model
+            );
+        }
+    }
+
+    // When disabling live captions, cancel any active live captions stream
+    // worker so it stops consuming audio immediately. This is especially
+    // important when a dedicated live captions model is configured, because
+    // the streaming router may still be feeding it frames.
+    if !enabled && !live_captions_model.is_empty() {
+        if let Some(live_captions_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+            live_captions_tm.0.lock().cancel_stream();
+            debug!("Live captions disabled — cancelling active live captions stream");
         }
     }
 
@@ -1464,6 +1632,56 @@ pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Re
     } else {
         log::warn!(
             "AudioRecordingManager not initialized, skipping live captions streaming toggle"
+        );
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_captions_model_setting(app: AppHandle, model_id: String) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.live_captions_model = model_id.clone();
+    settings::write_settings_safe(&app, settings.clone());
+
+    // If the user selected a specific live captions model, pre-warm it so
+    // it's ready for the first recording. An empty string means "use the
+    // main transcription model", in which case the main model load already
+    // handles pre-warming.
+    if !model_id.is_empty() {
+        if let Some(live_captions_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
+            live_captions_tm.0.lock().initiate_model_load_for(&model_id);
+            debug!(
+                "Live captions model set to '{}' — pre-warming live captions model",
+                model_id
+            );
+        }
+    }
+
+    // Recreate the recorder so the stream router is attached (when a dedicated
+    // live captions model is selected) or detached (when the model is cleared).
+    // The recorder's create_audio_recorder() reads live_captions_model and
+    // decides whether to wire the streaming callback to the live captions TM or
+    // the main TM, so a recreation is required for the change to take effect.
+    if let Some(rm) =
+        app.try_state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+    {
+        if let Err(e) = rm.recreate_recorder() {
+            warn!(
+                "Failed to recreate recorder after live captions model change: {}",
+                e
+            );
+            return Err(format!("Failed to apply live captions model change: {}", e));
+        } else {
+            debug!(
+                "Recorder recreated for live captions model change (model_id='{}')",
+                model_id
+            );
+        }
+    } else {
+        log::warn!(
+            "AudioRecordingManager not initialized, skipping recorder recreation after live captions model change"
         );
     }
 
@@ -1566,7 +1784,8 @@ mod tests {
         settings.bindings.remove("cancel");
         assert!(!settings.bindings.contains_key("cancel"));
 
-        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
+        let result =
+            apply_cancel_binding_update(&mut settings, "cancel", "cmd+backspace".to_string());
 
         assert_eq!(result.current_binding, "cmd+backspace");
         assert!(settings.bindings.contains_key("cancel"));
@@ -1578,7 +1797,8 @@ mod tests {
         let mut settings = get_default_settings();
         assert_eq!(settings.bindings["cancel"].current_binding, "escape");
 
-        let result = apply_cancel_binding_update(&mut settings, "cancel", "cmd+shift+x".to_string());
+        let result =
+            apply_cancel_binding_update(&mut settings, "cancel", "cmd+shift+x".to_string());
 
         assert_eq!(result.current_binding, "cmd+shift+x");
         assert_eq!(settings.bindings["cancel"].current_binding, "cmd+shift+x");

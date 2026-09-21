@@ -26,6 +26,23 @@ pub async fn cancel_operation(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Extend the current recording's deadlines by `seconds`.
+///
+/// Sent by the overlay's timeout warning "Extend" button. The coordinator
+/// validates that it is currently Recording before applying the extension;
+/// otherwise the command is ignored and an error is returned so the frontend
+/// can disable/hide the button when not applicable.
+#[tauri::command]
+#[specta::specta]
+pub fn extend_recording(app: AppHandle, seconds: u64) -> Result<(), String> {
+    if let Some(coordinator) = app.try_state::<crate::TranscriptionCoordinator>() {
+        coordinator.extend_recording(seconds);
+        Ok(())
+    } else {
+        Err("Transcription coordinator not available".into())
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn is_portable() -> bool {
@@ -231,7 +248,7 @@ pub fn confirm_routing(app: AppHandle, text: String) -> Result<(), String> {
         // Try to take the sender out of the Mutex
         let pending_opt = state.lock().take();
         if let Some(pending) = pending_opt {
-            if let Err(_) = pending.confirm_tx.send(text) {
+            if pending.confirm_tx.send(text).is_err() {
                 log::warn!("Failed to send routing confirmation - receiver already dropped");
             }
             Ok(())

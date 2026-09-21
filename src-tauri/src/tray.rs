@@ -3,7 +3,7 @@ use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings;
 use crate::tray_i18n::get_tray_translations;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tauri::image::Image;
@@ -117,6 +117,13 @@ fn version_label() -> String {
 
 /// Internal implementation that updates the tray menu without acquiring the lock.
 /// Called from within lock-holding functions like change_tray_icon.
+///
+/// This rebuild is best-effort: it uses non-blocking reads for backend locks
+/// (transcription engine, available models). If those locks are currently held
+/// by streaming, model loading, or model scanning threads, the menu rebuild is
+/// skipped for this cycle rather than blocking the main thread and freezing
+/// the UI. The next refresh (e.g. on tray icon change or model-state-changed
+/// event) will pick up the updated menu.
 fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
     let settings = settings::get_settings_safe(app);
 
@@ -179,7 +186,11 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
     };
     let model_loaded = app
         .try_state::<Arc<Mutex<TranscriptionManager>>>()
-        .map(|tm| tm.lock().is_model_loaded())
+        .map(|tm| {
+            tm.try_lock()
+                .map(|guard| guard.try_is_model_loaded())
+                .unwrap_or(false)
+        })
         .unwrap_or(false);
     let quit_i = match MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator) {
         Ok(item) => item,
@@ -195,7 +206,10 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
         warn!("ModelManager not available for tray menu");
         return;
     };
-    let models = model_manager.get_available_models();
+    let Some(models) = model_manager.try_get_available_models() else {
+        debug!("available_models lock is contended; skipping tray menu rebuild this cycle");
+        return;
+    };
     let current_model_id = &settings.selected_model;
 
     let mut downloaded: Vec<_> = models.into_iter().filter(|m| m.is_downloaded).collect();
@@ -330,6 +344,21 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
     }));
 }
 
+/// Best-effort variant of [`update_tray_menu`] that skips the rebuild if the
+/// global tray lock is already held. Use this for event-driven refreshes
+/// (e.g. `model-state-changed`) where multiple events can arrive in quick
+/// succession and waiting on an in-progress rebuild could deadlock with backend
+/// locks held by the same thread.
+pub fn try_update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(_guard) = TRAY_LOCK.try_lock() else {
+            debug!("TRAY_LOCK already held; skipping best-effort tray menu update");
+            return;
+        };
+        update_tray_menu_internal(app, state, locale);
+    }));
+}
+
 fn last_transcript_text(entry: &HistoryEntry) -> &str {
     entry
         .post_processed_text
@@ -405,6 +434,7 @@ mod tests {
             model_id: None,
             routed: false,
             routing_result: None,
+            file_name_vad: None,
             tags: None,
             ground_truth: None,
             quality: None,

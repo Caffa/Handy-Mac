@@ -11,7 +11,6 @@ import { PasteMethodSetting } from "../PasteMethod";
 import { TypingToolSetting } from "../TypingTool";
 import { ClipboardHandlingSetting } from "../ClipboardHandling";
 import { AutoSubmit } from "../AutoSubmit";
-import { PostProcessingToggle } from "../PostProcessingToggle";
 import { AppendTrailingSpace } from "../AppendTrailingSpace";
 import { HistoryLimit } from "../HistoryLimit";
 import { RecordingRetentionPeriodSelector } from "../RecordingRetentionPeriod";
@@ -19,8 +18,8 @@ import { ExperimentalToggle } from "../ExperimentalToggle";
 import { useSettings } from "../../../hooks/useSettings";
 import { KeyboardImplementationSelector } from "../debug/KeyboardImplementationSelector";
 import { AccelerationSelector } from "../AccelerationSelector";
-import { LazyStreamClose } from "../LazyStreamClose";
 import { OverlayScale } from "../OverlayScale";
+import { VadBackendSelector } from "../VadBackendSelector";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -58,13 +57,12 @@ export const AdvancedSettings: React.FC = () => {
 
       {experimentalEnabled && (
         <SettingsGroup title={t("settings.advanced.groups.experimental")}>
-          <PostProcessingToggle descriptionMode="tooltip" grouped={true} />
           <KeyboardImplementationSelector
             descriptionMode="tooltip"
             grouped={true}
           />
           <AccelerationSelector descriptionMode="tooltip" grouped={true} />
-          <LazyStreamClose descriptionMode="tooltip" grouped={true} />
+          <VadBackendSelector descriptionMode="tooltip" grouped={true} />
         </SettingsGroup>
       )}
     </div>
