@@ -1210,6 +1210,11 @@ fn run_consumer(
     // against its own Instant-based timeout without cross-thread Instant math.
     let mut recording_start_instant: Option<Instant> = None;
 
+    // Diagnostic flag: logs once when Cmd::Start is drained before any audio
+    // chunk has arrived. This distinguishes the wake/startup latency fix path
+    // from the normal post-chunk command drain path.
+    let mut start_drained_before_first_chunk = false;
+
     // ---------- spectrum visualisation setup ---------------------------- //
     const BUCKETS: usize = 16;
     // Scale the FFT window to the device sample rate so the analysis window
@@ -1291,18 +1296,229 @@ fn run_consumer(
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     // No audio data in 100ms — the stream may be dead (e.g.
                     // after macOS sleep/wake where the CoreAudio input unit
-                    // is suspended and never resumes).  Check for pending
-                    // commands so that Cmd::Shutdown can be processed even
-                    // when no audio is flowing; without this, close() hangs
-                    // forever trying to join the worker thread.
+                    // is suspended and never resumes).  Drain pending commands
+                    // so that Cmd::Start (startup/wake latency fix), Cmd::Stop,
+                    // Cmd::SmartStop, and Cmd::Shutdown can be processed even
+                    // when no audio is flowing. Without this, close() hangs
+                    // forever trying to join the worker thread, and a Start
+                    // command queued before the first chunk would be dropped.
                     //
                     // During normal streaming, data arrives every ~10–50ms
                     // (depending on buffer size), so this branch is rarely
                     // exercised.
                     while let Ok(cmd) = cmd_rx.try_recv() {
-                        if let Cmd::Shutdown = cmd {
-                            stop_flag.store(true, Ordering::Relaxed);
-                            return;
+                        match cmd {
+                            Cmd::Start { binding_id } => {
+                                let was_before_first_chunk = recording_start_instant.is_none();
+                                stop_flag.store(false, Ordering::Relaxed);
+                                processed_samples.clear();
+                                raw_samples.clear();
+
+                                // Start or re-attach the global emergency backup. We use
+                                // the OnceLock-based global so the recorder doesn't need
+                                // an extra constructor parameter, matching how lib.rs
+                                // initializes the backup before any recording can begin.
+                                emergency_backup =
+                                    emergency_save::get_emergency_backup().map(Arc::clone);
+                                if let Some(backup) = emergency_backup.as_ref() {
+                                    backup.start_recording(&binding_id);
+                                    log::info!(
+                                        "[EMERGENCY-BACKUP] started for binding '{}'",
+                                        binding_id
+                                    );
+                                }
+                                last_backup_update = None;
+                                recording_start_instant = Some(Instant::now());
+                                last_voice_activity_ms.store(0, Ordering::Relaxed);
+
+                                // Prepend pre-buffer if configured (always-on mode)
+                                // This captures speech that started BEFORE the hotkey was pressed
+                                if pre_buffer_max_samples > 0 && !pre_buffer.is_empty() {
+                                    let pre_buffer_len = pre_buffer.len();
+                                    processed_samples.reserve(pre_buffer_len);
+                                    processed_samples.extend(pre_buffer.iter().copied());
+                                    // Also prepend pre-buffer to raw_samples
+                                    raw_samples.reserve(pre_buffer_len);
+                                    raw_samples.extend(pre_buffer.iter().copied());
+                                    log::debug!(
+                                        "Pre-buffer: prepended {} samples ({}ms) to recording",
+                                        pre_buffer_len,
+                                        pre_buffer_len * 1000
+                                            / constants::WHISPER_SAMPLE_RATE as usize
+                                    );
+                                    // Clear the pre-buffer after use
+                                    pre_buffer.clear();
+                                }
+
+                                recording = true;
+                                if let Some(ref flag) = streaming_cancel_flag {
+                                    flag.set(false, "Cmd::Start");
+                                }
+                                noise_floor = DEFAULT_NOISE_FLOOR;
+                                noise_floor_initialised = false;
+                                smart_stop = None;
+                                visualizer.reset();
+                                frame_resampler.reset();
+                                max_level.store(0, Ordering::Relaxed); // Reset max level for new recording
+                                streaming_last_invoked = None; // Reset streaming timer for new recording
+                                consecutive_speech_frames = 0; // Reset speech frame counter for new recording
+                                if let Some(v) = &vad {
+                                    v.lock().reset();
+                                }
+                                // Reset noise suppressor state for new recording
+                                if let Some(ns) = &noise_suppressor {
+                                    ns.lock().reset();
+                                }
+
+                                // Emit a one-time debug log when Cmd::Start is drained
+                                // before any audio chunk has arrived. This validates that
+                                // the startup/wake latency fix path is being exercised.
+                                if was_before_first_chunk && !start_drained_before_first_chunk {
+                                    start_drained_before_first_chunk = true;
+                                    log::debug!(
+                                        "Cmd::Start drained before first chunk (binding_id='{}')",
+                                        binding_id
+                                    );
+                                }
+                            }
+                            Cmd::Stop(reply_tx) => {
+                                log::info!("[STOP-DIAGNOSTIC] Consumer thread received Cmd::Stop");
+                                // Finalise the emergency backup as a successful recording
+                                // (delete the in-progress file). Do this before draining
+                                // audio so a crash during drain still leaves a recoverable
+                                // backup from the last periodic update.
+                                if let Some(backup) = emergency_backup.take() {
+                                    backup.complete_recording();
+                                    log::info!("[EMERGENCY-BACKUP] completed successfully");
+                                }
+                                recording_start_instant = None;
+                                last_voice_activity_ms.store(0, Ordering::Relaxed);
+                                log::info!("[STOP-DIAGNOSTIC] Consumer thread received Cmd::Stop");
+                                // If a smart-stop is in progress, resolve it with
+                                // whatever samples we have so far so the caller
+                                // doesn't hang forever on resp_rx.recv().
+                                if let Some(ss) = smart_stop.take() {
+                                    frame_resampler.finish(&mut |frame: &[f32]| {
+                                        let _ = handle_frame(
+                                            frame,
+                                            true,
+                                            &vad,
+                                            &noise_suppressor,
+                                            &mut processed_samples,
+                                        );
+                                        raw_samples.extend_from_slice(frame);
+                                    });
+                                    let _ = ss.reply_tx.send((
+                                        std::mem::take(&mut processed_samples),
+                                        std::mem::take(&mut raw_samples),
+                                    ));
+                                    log::debug!("Smart-stop: resolved by Cmd::Stop (cancel)");
+                                }
+
+                                recording = false;
+                                stop_flag.store(true, Ordering::Relaxed);
+
+                                // Drain all remaining audio until the producer confirms end-of-stream.
+                                // The cpal callback sees the stop flag, sends EndOfStream, and goes
+                                // silent — guaranteeing every captured sample is in the channel
+                                // ahead of the sentinel.
+                                let t_drain = std::time::Instant::now();
+                                loop {
+                                    match sample_rx.recv_timeout(Duration::from_secs(2)) {
+                                        Ok(AudioChunk::Samples(remaining)) => {
+                                            frame_resampler.push(
+                                                &remaining,
+                                                &mut |frame: &[f32]| {
+                                                    let _ = handle_frame(
+                                                        frame,
+                                                        true,
+                                                        &vad,
+                                                        &noise_suppressor,
+                                                        &mut processed_samples,
+                                                    );
+                                                    raw_samples.extend_from_slice(frame);
+                                                },
+                                            );
+                                        }
+                                        Ok(AudioChunk::EndOfStream) => {
+                                            log::info!(
+                                                "[STOP-DIAGNOSTIC] EndOfStream received after {:?}",
+                                                t_drain.elapsed()
+                                            );
+                                            break;
+                                        }
+                                        Err(_) => {
+                                            log::warn!(
+                                                "[STOP-DIAGNOSTIC] Timed out waiting for EndOfStream from audio callback after {:?}",
+                                                t_drain.elapsed()
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                let t_finish = std::time::Instant::now();
+                                frame_resampler.finish(&mut |frame: &[f32]| {
+                                    let _ = handle_frame(
+                                        frame,
+                                        true,
+                                        &vad,
+                                        &noise_suppressor,
+                                        &mut processed_samples,
+                                    );
+                                    raw_samples.extend_from_slice(frame);
+                                });
+                                log::info!(
+                                    "[STOP-DIAGNOSTIC] frame_resampler.finish completed in {:?}",
+                                    t_finish.elapsed()
+                                );
+
+                                let t_send = std::time::Instant::now();
+                                let _ = reply_tx.send((
+                                    std::mem::take(&mut processed_samples),
+                                    std::mem::take(&mut raw_samples),
+                                ));
+                                log::info!(
+                                    "[STOP-DIAGNOSTIC] Consumer thread sent stop reply in {:?}",
+                                    t_send.elapsed()
+                                );
+
+                                // Resume the audio callback so the consumer loop can continue
+                                // receiving chunks (important for always-on microphone mode).
+                                stop_flag.store(false, Ordering::Relaxed);
+                            }
+                            Cmd::SmartStop {
+                                max_buffer_ms,
+                                reply_tx,
+                            } => {
+                                // Enter volume-aware trailing buffer mode.
+                                // Recording continues; we monitor volume and stop
+                                // early when sustained silence is detected.
+                                let now = Instant::now();
+                                smart_stop = Some(SmartStopState {
+                                    start: now,
+                                    max_duration: Duration::from_millis(max_buffer_ms),
+                                    reply_tx,
+                                    noise_floor,
+                                    last_voice_above_floor: now,
+                                });
+                                log::debug!(
+                                    "Smart-stop: entering trailing buffer (max {}ms, noise_floor={:.6})",
+                                    max_buffer_ms,
+                                    noise_floor,
+                                );
+                            }
+                            Cmd::Shutdown => {
+                                stop_flag.store(true, Ordering::Relaxed);
+                                // Leave the emergency backup in its in-progress state if a
+                                // recording was active. The next app launch will run
+                                // recover_orphaned_recordings() and surface the file. The
+                                // recording_start_instant drop is implicit; clearing the
+                                // voice-activity stamp prevents a stale value from being
+                                // read by the coordinator after the worker exits.
+                                last_voice_activity_ms.store(0, Ordering::Relaxed);
+                                return;
+                            }
                         }
                     }
                     continue;
@@ -1310,6 +1526,11 @@ fn run_consumer(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         };
+
+        // Reset the diagnostic flag now that a real audio chunk has arrived.
+        // The next recording can then log again if its Cmd::Start is also
+        // drained before a chunk.
+        start_drained_before_first_chunk = false;
 
         let raw = match chunk {
             AudioChunk::Samples(s) => s,
@@ -1574,6 +1795,7 @@ fn run_consumer(
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 Cmd::Start { binding_id } => {
+                    let was_before_first_chunk = recording_start_instant.is_none();
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
                     raw_samples.clear();
@@ -1627,6 +1849,17 @@ fn run_consumer(
                     // Reset noise suppressor state for new recording
                     if let Some(ns) = &noise_suppressor {
                         ns.lock().reset();
+                    }
+
+                    // Emit a one-time debug log when Cmd::Start is drained
+                    // before any audio chunk has arrived. This validates that
+                    // the startup/wake latency fix path is being exercised.
+                    if was_before_first_chunk && !start_drained_before_first_chunk {
+                        start_drained_before_first_chunk = true;
+                        log::debug!(
+                            "Cmd::Start drained before first chunk (binding_id='{}')",
+                            binding_id
+                        );
                     }
                 }
                 Cmd::Stop(reply_tx) => {
