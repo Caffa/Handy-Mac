@@ -118,50 +118,40 @@ impl super::ShortcutAction for TranscribeAction {
         let settings = get_settings(app);
         let live_captions_model = settings.live_captions_model.clone();
 
-        // Safely kick model load without blocking the coordinator thread on a contended
-        // TranscriptionManager mutex. If the lock is unavailable for 2s, skip the kick
-        // rather than stalling the start path — the next audio chunk will retry loading.
-        if let Some(tm_guard) = tm.try_lock_for(Duration::from_secs(2)) {
-            let lock_dt = start_time.elapsed();
-            tm_guard.clear_streaming_cancel();
-            let before_init = Instant::now();
-            tm_guard.initiate_model_load();
-            let init_dt = before_init.elapsed();
-            debug!(
-                "[START-LOCK] TM lock acquired for '{}' (lock wait+init took {:?}, clear+initiate took {:?})",
-                binding_id, lock_dt, init_dt
-            );
-            if init_dt > Duration::from_millis(100) {
+        // Kick model load entirely off the coordinator thread. The coordinator's
+        // only job during start is to open the mic and show the overlay; waiting on
+        // the TM mutex here could delay recording by up to 2 seconds.
+        let tm_for_kick = Arc::clone(&tm);
+        let live_tm_for_kick = if !live_captions_model.is_empty() {
+            app.try_state::<LiveCaptionsTranscriptionManager>()
+                .map(|live_tm| Arc::clone(&live_tm.0))
+        } else {
+            None
+        };
+        let live_model_id_for_kick = if live_captions_model.is_empty() {
+            None
+        } else {
+            Some(live_captions_model.clone())
+        };
+        std::thread::spawn(move || {
+            if let Some(guard) = tm_for_kick.try_lock_for(Duration::from_secs(2)) {
+                guard.clear_streaming_cancel();
+                guard.initiate_model_load();
+                debug!("[START-KICK] main model load kicked");
+            } else {
                 warn!(
-                    "[START-LOCK] clear_streaming_cancel + initiate_model_load took {:?} for '{}'",
-                    init_dt, binding_id
+                    "[START-KICK] main TM lock NOT acquired within 2s on start — model-load kick skipped"
                 );
             }
 
-            // If the user configured a separate live captions model, kick its load
-            // in the dedicated live captions TM and then open its streaming router.
-            // We do both in the same spawned thread so that initiate_model_load_for()
-            // is guaranteed to run before start_stream(). The stream worker itself
-            // waits for the load to finish, but starting the load first avoids any
-            // race where the worker sees is_loading=false before the load begins.
-            if !live_captions_model.is_empty() {
-                if let Some(live_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
-                    let live_model_id = live_captions_model.clone();
-                    let live_tm = Arc::clone(&live_tm.0);
-                    std::thread::spawn(move || {
-                        let guard = live_tm.lock();
-                        guard.clear_streaming_cancel();
-                        guard.initiate_model_load_for(&live_model_id);
-                        guard.start_stream();
-                    });
-                }
+            if let Some((live_tm, live_model_id)) = live_tm_for_kick.zip(live_model_id_for_kick) {
+                let guard = live_tm.lock();
+                guard.clear_streaming_cancel();
+                guard.initiate_model_load_for(&live_model_id);
+                guard.start_stream();
+                debug!("[START-KICK] live-captions model load and stream kicked");
             }
-        } else {
-            warn!(
-                "[START-LOCK] TM lock NOT acquired within 2s on start for '{}' — skipping model-load kick",
-                binding_id
-            );
-        }
+        });
 
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {

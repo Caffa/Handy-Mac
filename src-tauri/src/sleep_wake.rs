@@ -211,24 +211,34 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
     crate::shortcut::handy_keys::reset_hotkey_state_after_wake(app_handle);
 
     // Sleep/wake is a known trigger for GPU/Metal context loss that can wedge
-    // a previously-healthy transcribe-cpp session. Mark the transcription
-    // manager(s) stale so the next recording reloads a fresh session instead
-    // of reusing a wedged one. This only flips a flag; an engine currently
-    // leased by a stream is not disturbed because load_model clears
-    // current_model_id before building the new engine, so the stream worker's
-    // return_engine sees a stale model_id and drops its engine rather than
-    // putting it back.
+    // a previously-healthy transcribe-cpp session. Instead of unconditionally
+    // reloading (which makes every wake as slow as a cold model load), only
+    // force a reload if the engine is not currently loaded. A loaded engine
+    // that is actually wedged will be caught and reloaded by the failure-counted
+    // engine recovery path on its first failed transcription.
     if let Some(tm) =
         app_handle.try_state::<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>()
     {
-        tm.lock().reload_model_on_next_use();
-        info!("on_system_wake: marked main TranscriptionManager for reload on next use");
+        if let Some(guard) = tm.try_lock_for(std::time::Duration::from_secs(2)) {
+            if !guard.is_model_loaded() {
+                guard.reload_model_on_next_use();
+                info!("on_system_wake: main model not loaded; marked for reload on next use");
+            } else {
+                info!("on_system_wake: main model already loaded; skipping preemptive wake reload");
+            }
+        } else {
+            warn!("on_system_wake: could not acquire main TM lock; marking for reload to be safe");
+            tm.lock().reload_model_on_next_use();
+        }
     }
     if let Some(live_tm) = app_handle.try_state::<crate::LiveCaptionsTranscriptionManager>() {
-        // LiveCaptionsTranscriptionManager wraps a parking_lot::Mutex, whose
-        // lock() returns a guard directly (never a Result).
-        live_tm.0.lock().reload_model_on_next_use();
-        info!("on_system_wake: marked live-captions TranscriptionManager for reload on next use");
+        let guard = live_tm.0.lock();
+        if !guard.is_model_loaded() {
+            guard.reload_model_on_next_use();
+            info!("on_system_wake: live-captions model not loaded; marked for reload on next use");
+        } else {
+            info!("on_system_wake: live-captions model already loaded; skipping preemptive wake reload");
+        }
     }
 
     // USB watchdog recovery

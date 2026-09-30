@@ -1622,8 +1622,9 @@ impl AudioRecordingManager {
                 return Err(msg);
             }
 
-            // Allow the new stream to stabilize before recording
-            std::thread::sleep(Duration::from_millis(200));
+            // No stabilization sleep: the recorder consumer now processes Cmd::Start as soon
+            // as it is queued and begins recording on the first real audio chunk, so the
+            // chunk itself is the readiness signal.
 
             if is_always_on {
                 // Don't hide the cycling overlay here — the caller
