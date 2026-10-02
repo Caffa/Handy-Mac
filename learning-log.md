@@ -815,3 +815,30 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - Lock-ordering tests should replicate the lock STRUCTURE (which `parking_lot::Mutex<()>` pair), not the full production types. This makes tests independent of AppHandle, audio devices, or other heavy infrastructure.
 - `std::thread::JoinHandle` has no `join_timeout()`. Use a helper that spawns a watcher thread + `mpsc::channel` with `recv_timeout` to detect hung threads.
 - AB-BA deadlock tests must be `#[ignore]`d — they genuinely hang forever when the bug exists.
+
+## VAD Pre-Roll Discard Bug — First Word Cut Off (2026-10-02)
+
+### Problem
+- First word of dictation often missing ("Add the visual…" → "The visual…"), even with 1000ms pre-recording buffer.
+- Reported 3× across days; two earlier latency fixes (Cmd::Start ordering, 200ms sleep, wake reload) were real but not the cause.
+
+### Investigation method (this is the reusable part)
+- Bisect empirically: app saves raw WAV + VAD WAV (= transcription input) + transcripts in history.db.
+- Find failing takes via re-dictation pairs: JOIN consecutive history entries ≤60s apart on overlapping text prefixes.
+- Re-transcribe stored WAVs with the same model via a tiny example harness (examples/transcribe_wav.rs) → raw heard "Add", vad didn't → loss in VAD stage.
+- Sample-exact alignment (64-sample block greedy match with resync) showed vad = raw minus one hole [hotkey..hotkey+0.5-0.8s] containing exactly the first word.
+
+### Root cause
+- handle_frame() matched VadFrame::Speech(_) and appended only the current 16ms frame, discarding SmoothedVad's ~464ms pre-roll emission at speech onset.
+- Soft/short first words ("Add", "She", "Can't") can't trigger the 4-frame VAD onset themselves → they lived only in the discarded pre-roll.
+- Regression from f6c2ac1c (2026-06-28 noise-suppression refactor, Speech(buf) → Speech(_)).
+
+### Fix (ddffa435)
+- handle_frame appends the full emitted slice when noise suppression is off (emitted frames are byte-identical to originals).
+- smoothed.rs onset emission skips already-emitted hangover frames (else speech→pause→speech duplicates ~350ms mid-recording — caught by deep review).
+- Regression tests in smoothed.rs; cargo test 471 pass.
+
+### Key insights
+- Energy-preserving ≠ content-preserving: VAD passed all onset-timing checks yet dropped words; only model-level raw-vs-vad A/B exposed it.
+- Don't trim leading silence before ASR — in testing it caused hallucinations ("Big Brother"); leading silence helps these models.
+- Known limitation: noise-suppression-enabled users keep old behavior (suppressed pre-roll frames can't map back to originals).
