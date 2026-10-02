@@ -1104,10 +1104,20 @@ fn handle_frame(
             .push_frame(&processed_samples)
             .unwrap_or(VadFrame::Speech(samples))
         {
-            VadFrame::Speech(_) => {
-                // Use original samples for output quality — we don't want
-                // the noise suppressor's artifacts in the final transcription.
-                out_buf.extend_from_slice(samples);
+            VadFrame::Speech(emitted) => {
+                if noise_suppressor.is_none() {
+                    // No noise suppression: the emitted slice is made of the
+                    // exact frames we pushed in, so appending it restores the
+                    // full pre-roll (frames withheld during the VAD onset
+                    // delay). This fixes the first-word-cut-off bug.
+                    out_buf.extend_from_slice(emitted);
+                } else {
+                    // Noise suppression active: the emitted buffer holds
+                    // suppressed frames we cannot map back to originals, so
+                    // keep the pre-fix behavior (append only the current
+                    // original frame).
+                    out_buf.extend_from_slice(samples);
+                }
                 FrameClass::Speech
             }
             VadFrame::Noise => FrameClass::Noise,

@@ -79,10 +79,15 @@ impl VoiceActivityDetector for SmoothedVad {
                     self.hangover_counter = self.hangover_frames;
                     self.onset_counter = 0; // Reset for next time
 
-                    // Collect prefill + current frame
+                    // Collect prefill + current frame (skip frames already
+                    // emitted during a previous speech segment's hangover —
+                    // re-emitting them duplicates audio when speech pauses
+                    // past the hangover and re-triggers onset mid-recording)
                     self.temp_out.clear();
                     for buffered in self.frame_buffer.iter_mut() {
-                        self.temp_out.extend(buffered.samples.iter());
+                        if !buffered.emitted {
+                            self.temp_out.extend(buffered.samples.iter());
+                        }
                         buffered.emitted = true;
                     }
                     Ok(VadFrame::Speech(&self.temp_out))
@@ -160,5 +165,126 @@ impl VoiceActivityDetector for SmoothedVad {
         self.onset_counter = 0;
         self.in_speech = false;
         self.temp_out.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A trivial energy-based inner VAD: voiced for frames whose RMS exceeds a threshold.
+    struct EnergyVad {
+        threshold: f32,
+        frame_samples: usize,
+    }
+
+    impl VoiceActivityDetector for EnergyVad {
+        fn push_frame<'a>(&'a mut self, frame: &'a [f32]) -> Result<VadFrame<'a>> {
+            let rms = (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt();
+            if rms > self.threshold {
+                Ok(VadFrame::Speech(frame))
+            } else {
+                Ok(VadFrame::Noise)
+            }
+        }
+
+        fn frame_samples(&self) -> usize {
+            self.frame_samples
+        }
+    }
+
+    #[test]
+    fn smoothed_vad_preroll_is_emitted_into_out_buf() {
+        // 10 frames of silence, then 4 voiced frames (onset = 4), then more voiced.
+        // SmoothedVad::new(inner, prefill=20, hangover=5, onset=4).
+        // After the onset, the FIRST emission must contain 20 prefill + onset
+        // frames worth of samples (silence + voiced), NOT just the current frame.
+        let mut vad = SmoothedVad::new(
+            Box::new(EnergyVad {
+                threshold: 0.01,
+                frame_samples: 256,
+            }),
+            20,
+            5,
+            4,
+        );
+
+        let silence = vec![0.0f32; 256];
+        let voiced = vec![0.5f32; 256];
+        let mut buf: Vec<f32> = Vec::new();
+
+        for _ in 0..10 {
+            let _ = vad.push_frame(&silence).unwrap();
+        }
+
+        // Feed frames one by one; simulate handle_frame's contract manually.
+        for _ in 0..6 {
+            match vad.push_frame(&voiced).unwrap() {
+                VadFrame::Speech(emitted) => {
+                    // FIRST emission must include the pre-roll: silence frames
+                    // (10*256) + voiced-so-far frames. It must be larger than
+                    // one frame (256 samples) — the essence of the bug fix.
+                    buf.extend_from_slice(emitted);
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            buf.len() > 256,
+            "pre-roll must be emitted with speech onset; got {} samples",
+            buf.len()
+        );
+        // The pre-roll silence must be at the start (10 frames were silence).
+        assert!(buf[..10 * 256].iter().all(|s| s.abs() < 1e-6));
+        assert_eq!(buf.len() % 256, 0);
+    }
+
+    #[test]
+    fn re_onset_does_not_duplicate_hangover_frames() {
+        // speech -> pause long enough to exhaust hangover -> speech again.
+        // The second onset must emit only un-emitted frames (the pause frames
+        // still in the prefill window), NOT repeat the hangover-tail frames.
+        // Feed: 8 silence, 4 voiced (onset), 3 voiced (ongoing), 8 silence
+        // (hangover exhausts after 5), 4 voiced (re-onset).
+        // Track total appended across ALL Speech emissions; must equal the
+        // number of unique frames fed (i.e., no frame appended twice).
+        let mut vad = SmoothedVad::new(
+            Box::new(EnergyVad {
+                threshold: 0.01,
+                frame_samples: 256,
+            }),
+            20,
+            5,
+            4,
+        );
+        let silence = vec![0.0f32; 256];
+        let voiced = vec![0.5f32; 256];
+        let mut total = 0usize;
+        let mut fed = 0usize;
+        let mut feed = |frame: &[f32], vad: &mut SmoothedVad| {
+            fed += 1;
+            if let Ok(VadFrame::Speech(emitted)) = vad.push_frame(frame) {
+                total += emitted.len() / 256;
+            }
+        };
+        for _ in 0..8 {
+            feed(&silence, &mut vad);
+        }
+        for _ in 0..7 {
+            feed(&voiced, &mut vad);
+        } // onset(4) + ongoing(3)
+        for _ in 0..8 {
+            feed(&silence, &mut vad);
+        } // hangover exhausts after 5
+        for _ in 0..4 {
+            feed(&voiced, &mut vad);
+        } // re-onset
+        assert_eq!(
+            total,
+            fed,
+            "every fed frame must be appended at most once (re-onset duplicated {} frames)",
+            total.saturating_sub(fed)
+        );
     }
 }
