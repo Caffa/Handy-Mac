@@ -1,6 +1,3 @@
-<!-- Status: Active — Upstream sync execution plan for range cdbc223..9e57a0d7.
-Generated 2026-10-18. Reviewed (analytic pass, 14 findings fixed). Companion registry: Handy-Fork/UPSTREAM_SYNC.md -->
-
 # Upstream Sync Plan — Handy fork (stable-handy) × cjpais/Handy
 
 **Range:** `cdbc2239..9e57a0d7` (161 upstream commits, 2026-07-18 → 2026-10-15)
@@ -309,26 +306,54 @@ The fork already adopted an upstream-first strategy (UPSTREAM_SYNC.md, July 2026
 
 ## 3. Decision Gates
 
-Present to user **before starting the arc phases** (6–9); gates D4–D6 can be decided at Phase 3/4 time.
+Present to user **before starting the arc phases** (6–9); gates D4–D6 can be decided later (see "What can be safely deferred"). Each gate below carries: what it decides, why the fork/upstream divergence forces the choice, per-option consequences (work + user-facing gains/losses), and the recommendation with its honest uncertainty. The D1×D2×D3 closure matrix maps every permutation; original one-line defaults are kept under **Default.**
 
 ### D1 (umbrella) — Adopt the upstream engine architecture wholesale?
 **Question:** Adopt engine_supervisor child-process isolation + transcribe-cpp 0.4.0 (+serde) for all ASR?
-**Options:** (a) Full adopt — Phases 6, 8, 9 run as designed · (b) Partial: bump to 0.4.0 but keep in-process engines — `c8262ab3` S, `1b011a19` lands with in-process adaptation; `3985508a`/`4150a4a8` re-skinned in-process; `9e57a0d7` partial/deferred (supervisor isolation, the arc's headline value, is lost) · (c) Stay at 0.2.3 — **skip Phases 6, 8, 9 ONLY** (Phase 7 `a42131d2` is independent of transcribe-cpp 0.4.x and stays governed solely by its own gate D2); vocabulary (4150a4a8) becomes S (fork already sends initial_prompt at 0.2.3), chunking deferred (~35% of range value forgone).
-**Recommendation:** (a). Upstream-first strategy + this is where upstream's reliability gains live (crash→worker isolation, vocabulary, chunking).
+**Options (short):** (a) Full adopt — Phases 6, 8, 9 run as designed · (b) Partial: bump to 0.4.0 but keep in-process engines — `c8262ab3` S, `1b011a19` lands with in-process adaptation; `3985508a`/`4150a4a8` re-skinned in-process; `9e57a0d7` partial/deferred · (c) Stay at 0.2.3 — **skip Phases 6, 8, 9 ONLY** (Phase 7 `a42131d2` is independent of transcribe-cpp 0.4.x and stays governed solely by its own gate D2) — ~35% of range value forgone.
 **Default:** (a).
-**Consequence:** transcription.rs becomes supervisor client; `catch_unwind` less central; mock needs EngineClient trait.
+
+**What it decides (plain terms):** How the speech engine runs inside the app. Today the fork loads models **in-process** — GGUF whisper via transcribe-cpp 0.2.3, and Parakeet/GigaAM/SenseVoice/Moonshine via transcribe-rs ONNX. Upstream (shipped in released v0.9.6–0.9.8) runs **every** model in a separate child process ("transcribe worker", `engine_supervisor/`) on transcribe-cpp 0.4.0. D1 decides whether the fork gets: (1) *crash isolation* — a GPU driver fault, `GGML_ASSERT` abort, or hang kills only a throwaway worker, the app itself (and your recording pipeline, health monitor, tray) survives and can relaunch the worker / fall back to CPU — or whether the whole app still dies in-process; and (2) the 0.4.0 API layer that P8's GGUF VAD and P9's vocabulary/chunking are built on.
+
+**Why it exists:** Both sides heavily rewrote `managers/transcription.rs` from the same ancestor and the rewrites are incompatible: fork +2756 lines (its own `StreamRouter`/`StreamCmd`, `run_stream_worker()`/`finalize_stream()`, `StreamingCancelFlag` seq/flag atomics, run-plan + catch-unwind, `StreamPerf`, watchdog force-release, `suppressed_token_count`), upstream's `c8262ab3` rewrote the same file (1479 lines) and moved the engine out of process. Cherry-picks cannot apply — only *behavior* can be re-skinned onto fork structure (Playbook §5.1). That is 4–6 blocks of work on the fork's most sensitive file, so it deserves an explicit decision, not a silent default.
+
+**Options & concrete consequences:**
+- **(a) Full adopt** — 4–6 blocks (P6) + shapes P8/P9. Gains: crash isolation (the arc's headline value), vocabulary custom words, GGUF VAD, long-form chunking — the fork stops drifting from upstream, future syncs cheapen.
+- **(b) 0.4.0 in-process** — ~2 blocks (P6 only, `1b011a19` + call-site adaptation). Gains: vocabulary + GGUF VAD still available in-process (0.4.0 API exists regardless of supervisor). Losses: GPU faults still take the whole app down; `9e57a0d7` chunking partial/deferred (its `CancelMark`/`transcribe_since` cancel plumbing assumes the supervisor).
+- **(c) Stay 0.2.3** — 0 blocks here. Keeps today's `catch_unwind` guards and crash behavior; vocabulary = S (fork already sends `initial_prompt` at 0.2.3 — a no-op), GGUF VAD = S (hard-requires `Model::vad_info`/`vad_session_with`/`BackendMask`), chunking = deferred optional re-skin. Lowest risk this release, but the fork's divergence keeps compounding — the *next* sync pays more.
+
+**Recommendation & honest uncertainty:** (a). Rationale: engine failures are this fork's #1 failure mode — fork already built `health.rs`, `usb_watchdog.rs`, and catch-unwind machinery around them; the supervisor is upstream's answer to the same disease and it has run in released upstream builds since early October. Evidence for: production-tested upstream-side; all fork load-bearing pieces have a mapped preservation plan (§5.1); per-phase tags keep exit cheap. Uncertainty: nobody has yet verified the fork's live-captions seam (per-frame feed into `StreamRouter`) across a child-process boundary — it's the least-tested mapping; P6's smoke tests target exactly that, and if it fails badly the fallback is (b), taken mid-arc, cheap thanks to tags. *What would change the answer:* demonstrated protocol instability under the fork's streaming cadence → (b); user priority "minimum change this release" → (c).
 
 ### D2 — handy-recorder switch
 **Question:** Delete fork's `recorder.rs`/`resampler.rs` in favor of `handy-recorder` crate + `sink.rs`, re-porting the preroll/command-loop semantics on the new path?
-**Options:** (a) Adopt + full preroll re-port (plan as written) · (b) Adopt, defer preroll re-port to a fast-follow with explicit known-regression note (NOT recommended — reintroduces the Oct-2 first-word-cut class of bug) · (c) Reject — keep fork recorder.rs; then `9e57a0d7` (and its P8 patch-shape dependency) need fork-side `create_audio_recorder()`-shape adaptations instead of upstream's `create_detector()` shape.
-**Recommendation:** (a) — with the re-port as a **hard, non-skippable subtask** and the transcribe_wav A/B harness as acceptance test.
+**Options (short):** (a) Adopt + full preroll re-port (plan as written) · (b) Adopt, defer preroll re-port to a fast-follow with explicit known-regression note (NOT recommended — reintroduces the Oct-2 first-word-cut class of bug) · (c) Reject — keep fork recorder.rs; then `9e57a0d7`/`3985508a`-adjacent work needs fork-side `create_audio_recorder()`-shape adaptations instead of upstream's `create_detector()` shape.
 **Default:** (a).
+
+**What it decides (plain terms):** Which code captures your microphone and turns raw frames into VAD-processed audio. Fork: its own 1046-line `recorder.rs` + resampler, carrying bug fixes born from real incidents. Upstream: deleted that entire style of recorder and switched to the external `handy-recorder` crate with an app-side `CaptureSink`.
+
+**Why it exists:** `a42131d2` (Oct 12) is a wholesale replacement: it deletes `recorder.rs`, `recorder/tests.rs`, `resampler.rs`, `bin/cli.rs` — files that exist only in the fork and host the fork's preroll fixes (`9e3b7f65` apply-start-before-chunk/command-drain, `ddffa435` full preroll-slice emission = the "first word cut off" fix, investigated 2026-10-02). Adopting the switch without re-porting those semantics silently regresses voice capture. It is gated separately from D1 only because of this fidelity risk — it needs neither 0.4.x nor the supervisor and is otherwise independent.
+
+**Options & concrete consequences:**
+- **(a) Adopt + full re-port** — 3–5 blocks. Keeps every fork capture behavior (command-drain/apply_start, pending_stop/finalize_stop, NS-off full preroll slice, `router.feed(frame)` seam, always-on/channel-select/mute) expressed on `CaptureSink`/`RecorderConfig`/`VadSlot`/`OpenMicrophone.needs_reopen()`/`EndReason`; Gains: upstream-maintained capture stack, device-ID resolution + permission-error mapping the fork hand-rolled, prerequisite shape for P8/P9 wiring. Acceptance test: WAV A/B harness (first word intact, NS-off).
+- **(b) Adopt + defer re-port** — 2–3 blocks but a **known regression ships** (first-word truncation returns for NS-off users) until the fast-follow lands. Only tolerable if no NS-off users exist — not the case.
+- **(c) Reject** — keep `recorder.rs` (zero regression risk now); permanent cost: the fork keeps maintaining its own capture stack solo, and P8/P9 commits that upstream wrote on top of handy-recorder's shape need heavier adaptation (matrix rows 3/4/6/8).
+
+**Recommendation & honest uncertainty:** (a) with the re-port as a hard, non-skippable subtask. Rationale: the fork's fixes are *behaviors*, not code — they port; upstream's crate is where capture maintenance happens going forward. Uncertainty: how cleanly `CaptureSink` exposes what fork's recorder handed to the stream router and `emergency_save.rs` — the least-verified mapping in the plan (flagged in §5.2); the A/B harness is the protection. *What would change the answer:* if the A/B harness cannot be satisfied after honest effort (sink API lacks a needed seam), fall back to (c) with a registry note — nothing upstream-side is truly lost except crate alignment.
 
 ### D3 — Full ONNX removal (5197faf0)
 **Question:** Delete transcribe-rs/ONNX entirely; all models GGUF via handy-computer catalog; retired-model migration UI for existing ONNX users?
-**Options:** (a) Adopt fully (migration UI included) · (b) Adopt backend removal but skip migration UI (users self-recover — worse UX) · (c) Keep ONNX alongside (fork maintains the dual-stack; see matrix rows 2/4/6).
-**Recommendation:** (a) — consistent with upstream-first; fork's custom-GGUF discovery (`discover_hf_cache_models`) survives as additive layer.
+**Options (short):** (a) Adopt fully (migration UI included) · (b) Adopt backend removal but skip migration UI (users self-recover — worse UX) · (c) Keep ONNX alongside (fork maintains the dual-stack; see matrix rows 2/4/6).
 **Default:** (a).
+
+**What it decides (plain terms):** Whether the app carries **two** model runtimes (transcribe.cpp GGUF + ONNX Runtime for Parakeet/GigaAM/SenseVoice/Moonshine) or **one** (GGUF only; VAD via transcribe-cpp too). Also swaps the macOS build's ORT packing for an explicit `libclang_rt.osx.a` link (`build.rs` −79 lines), and removes the `ort_accelerator` setting (serde-migrated).
+
+**Why it exists:** The fork still lives in 5197faf0's pre-state: `transcribe-rs 0.3.8 [onnx]`, `vad-rs`, `silero_vad_v4.onnx`; upstream deleted all of it (Oct 15) in favor of `handy-computer/*-gguf` models, and the fork's catalog **already ships those GGUF repos**. Keeping ONNX = keeping the dual stack = every future upstream sync carries both worlds.
+
+**Options & concrete consequences:**
+- **(a) Full adopt** — inside P8's 2–4 blocks. Users with retired ONNX models get a guided migration UI (download the GGUF replacement with progress/retry; existing models stay on disk until the user deletes them — nothing force-deleted). Binary drops ORT (`onnxruntime`), `tar`/`flate2`; settings cleanly migrated; fork's custom-GGUF discovery (`discover_hf_cache_models`, `gguf_meta.rs` prober) survives untouched as an additive layer.
+- **(c) Reject/dual-stack (matrix row 2/4/6)** — 0 P8 blocks saved in effort, but: vocabulary works only on the transcribe-cpp half (ONNX half keeps fork's `initial_prompt`), migration UI = S, `3985508a` = S (VAD stays `vad-rs` v4 ONNX), binary keeps ORT, and the fork maintains the ONNX engine paths solo as upstream deletes them around it — the hardest long-term position.
+
+**Recommendation & honest uncertainty:** (a). Rationale: consistent with the adopted upstream-first strategy; availability is proven (GGUF replacements exist in the catalog the fork already ships); migration UX is decent and user-paced. Honest caveat: **the analysis never measured quality parity** for the GGUF replacements of specific retired models (e.g. GigaAM/Moonshine GGUF vs their ONNX versions). Mitigation: users' old models are never auto-deleted and the migration is opt-in, so a disappointed user can stay. *What would change the answer:* credible accuracy regressions reported on a specific retired-model replacement **before** `5197faf0` lands → flip to (c) cheaply; **after** it lands, (c) means re-adding ONNX code the wrong way around. Therefore D3 must be decided before Phase 8 starts.
 
 ### D1×D2×D3 branch-closure matrix (what happens to Phases 6–9 in each permutation)
 
@@ -348,21 +373,61 @@ Present to user **before starting the arc phases** (6–9); gates D4–D6 can be
 - Whenever D3 = reject: fork keeps `transcribe-rs`, `tar`, `flate2`, `vad-rs`, `ort_accelerator`, ORT-full build.rs — record the deliberate divergence in the registry as "dual-stack kept by decision D3=(c) (date)".
 - Whenever D2 = reject: P8/P9 commits that upstream wrote on top of handy-recorder shape need the `create_audio_recorder()` adaptation noted — heavier, not blocked.
 
+### How the gates interact
+- **D1 dominates.** D3 is only meaningful under D1 = (a)/(b): rows 1–6 all have D1 ≥ (b); under D1 = (c), ONNX removal is impossible anyway (`5197faf0` requires 0.4.0), so D3 collapses to "keep" by implication — asking D3 separately then would be noise. D3-adopt while rejecting 0.4.0 is a *contradictory state* and the matrix forbids it.
+- **D1 also sets Phase 9's fate** (vocabulary needs 0.4.0 + supervisor; chunking needs 0.4.0 + GGUF VAD scoring), **and changes how the six Phase-2 deferred hunks rewire.**
+- **D2 is independent of D1/D3** (the recorder swap needs neither 0.4.x nor supervisor) but constrains the *effort shape* of P8/P9 (rows 3/4/6/8: heavier fork-shape adaptation), not their possibility.
+- **D4/D5/D6 are orthogonal** to D1–D3 and to each other — they can be decided independently and never cascade.
+
+### What can be safely deferred
+- **Must be answered before Phase 6 starts:** **D1** (it re-shapes the arc and the P2 deferred hunks land inside Phase 6's rewrite) and **D3** (needed before Phase 8's `3985508a`/`5197faf0` are attempted; reversible cheaply only before it).
+- **Answered mid-arc at the latest — D2:** Phase 7 sits after Phase 6 in sequence; D2 can be decided any time before Phase 7 starts (deferring it does not block Phase 6).
+- **Freely deferrable:** **D4** (gates only one P4 row; P4 items 1–7 proceed regardless), **D5** (conditional trigger — decide lazily on the compile outcome of P4/P5), **D6** (`f6fac42e` row is S-by-default; the bump can be taken any time later).
+
 ### D4 — paste_tx reliable paste
 **Question:** Port upstream's receipt-sequenced paste as a separate opt-in `reliable_paste` setting, borrow only its ideas, or skip?
-**Options:** (a) Full port as opt-in (default OFF — fork AX-verify stays default) · (b) Idea-borrow only: NSPasteboard concealment markers (`org.nspasteboard.ConcealedType/Transient/AutoGenerated`) + changeCount guard + quiet-period logic folded into fork's restore path · (c) Skip.
-**Recommendation:** (c) now, (b) as eligible follow-up if clipboard-manager interference reports appear — fork's design is verified and the port cost (paste_tx module + wiring + settings + FE debug panel) is not justified speculatively.
-**Default:** (c) with (b) noted for later. **In all outcomes, `b1b2d9f9` stays S (Windows policy skip) — its macOS-relevant substance (concealment markers) is the (b) option itself.**
+**Options (short):** (a) Full port as opt-in (default OFF — fork AX-verify stays default) · (b) Idea-borrow only: NSPasteboard concealment markers (`org.nspasteboard.ConcealedType/Transient/AutoGenerated`) + changeCount guard + quiet-period logic folded into fork's restore path · (c) Skip. `b1b2d9f9` stays S in all outcomes (Windows policy skip).
+**Default:** (c) with (b) noted for later.
+
+**What it decides (plain terms):** Whether the app gains an *alternative* paste engine beside the fork's existing one — or whether some of its ideas are folded into the fork's paste path.
+
+**Why it exists:** The fork and upstream **independently solved the same bug class** (pasted text not landing / clipboard restore racing, upstream #502 family) with two complete, rival designs in the same file (`clipboard.rs`, diverged ~951 lines). Fork: **"AX verify-then-commit"** — inject paste keys via Enigo, then read the target app's AX value through raw `macos_ax` FFI and only restore the clipboard once the text verifiably landed. Upstream: **"receipt-sequenced"** (`a70ac84f`) — publish the transcript as a lazy NSPasteboard promise (`declareTypes:owner:`), use the consuming app's read as a receipt, gate clipboard restore on receipts + 200 ms quiet period + `changeCount` + 8 s cap, and stamp NSPasteboard concealment markers so clipboard-manager apps skip the transcription. Both designs work; they are not mergeable — one wins, or they coexist behind a setting.
+
+**Options & concrete consequences:**
+- **(a) Full port as opt-in** — ~2–3 blocks (new `paste_tx/` module + `reliable_paste` setting + wiring + FE debug panel). Gains: an alternate path for paste targets where AX reading fails (non-accessibility-enabled apps), OS-level receipt timing. Cost: real, and it duplicates maintenance of the app's highest-churn paste file.
+- **(b) Idea-borrow** — ~0.5 block: add the three `org.nspasteboard.*` concealment markers to fork's publish path (clipboard managers — which read *any* copied content — stop capturing transcripts) + optionally the changeCount guard in restore.
+- **(c) Skip** — 0 blocks; fork's verified design untouched.
+
+**Recommendation & honest uncertainty:** (c) now, (b) on evidence. Rationale: the fork's design is verified in production and fork-owned; upstream's ships as opt-in upstream too; and port cost is real. Honest uncertainty: neither analysis surfaced fork-side incidents of clipboard managers capturing transcriptions — (b) insures against a failure mode **not yet observed** in this fork, which is why it isn't the default. *What would change the answer:* one credible "my clipboard-history app shows my transcription" report → do (b); repeated "paste doesn't land in app X" reports where AX verification fails → consider (a).
 
 ### D5 — handy-keys vendor refresh
 **Question:** Refresh vendored `handy-keys` (fork copy diverged ~352 lines) to upstream's 0.3.1–0.3.4, or keep?
-**Options:** (a) Keep vendored as-is · (b) Refresh + re-apply fork deltas + diff-audit.
-**Recommendation:** (a) unless a ported Phase-4/5 commit fails to compile against the vendored API — then do a minimal targeted refresh.
+**Options (short):** (a) Keep vendored as-is · (b) Refresh + re-apply fork deltas + diff-audit. Upstream's handy-keys bumps 0.3.1–0.3.4 in-range are SKIPs under (a).
 **Default:** (a).
+
+**What it decides (plain terms):** Whether the crate that actually hears global hotkeys (including under Secure Input) stays on the fork's modified vendored copy or updates to upstream's newer releases. End-user behavior is unchanged either way as long as the fork's `shortcut/` layer compiles and compensates.
+
+**Why it exists:** The fork vendors `handy-keys` and its copy diverged ~352 lines from upstream's; the Phase-4/5 ports (secure-input fallback registration, compound-key names, HoldOrToggle) were written upstream against the newer crate API. If any ported code needs an API that only exists in 0.3.1–0.3.4, the vendored copy must be refreshed — otherwise not.
+
+**Options & concrete consequences:**
+- **(a) Keep (0 extra blocks):** all P4/P5 commits target fork-owned `shortcut/{mod,handler,handy_keys,tauri_impl}.rs`; fork-specific behaviors (state reset, listener discipline, per-implementation bindings) stay intact by construction.
+- **(b) Refresh (1–2 blocks):** take 0.3.4, re-apply the fork's deltas, diff-audit + regression-test shortcuts. Gains: closer to upstream (future syncs cheaper), any crate-level fixes in the bumps.
+
+**Recommendation & honest uncertainty:** (a), with refresh as a **conditional trigger**, not a speculative port. Rationale: the P5 port list was deliberately chosen to touch the fork's app-layer files; fork analysis already verified unknown-ID rejection and fire-during-recording are satisfied at the app layer. **Honest uncertainty: the plan has not diffed the vendored crate's API vs 0.3.1–0.3.4** (the fork-side analysis flags that the crate itself must be diffed before any shortcut port) — so (a) rests on "likely compatible," verified only when P4/P5 compile. If compilation fails, the minimal targeted refresh resolves it; nothing user-visible is at stake.
 
 ### D6 — Updater plugin 2.10.0 → 2.10.1
 **Question:** Keep vendored tauri-plugin-updater 2.10.0 (with `dangerous-skip-verify`) or move to crates.io 2.10.1?
-**Recommendation/Default:** Keep vendored (fork's skip-verify is deliberate for the stable channel); revisit if upstream 2.10.1 fixes a real defect fork users hit. Decided at Phase 1 (it gates the `f6fac42e` VERIFY row's outcome).
+**Default:** Keep vendored.
+
+**What it decides (plain terms):** Only the implementation source of the app's auto-update mechanism. No visible behavior change either way — unless 2.10.1 fixed a defect fork users actually hit (unknown; that is the honest gap).
+
+**Why it exists:** The fork vendored the updater deliberately (2.10.0 + `dangerous-skip-verify`) for its stable-channel re-signing workflow; upstream meanwhile bumped to crates.io 2.10.1 in-range (`f6fac42e`). The Phase-1 `f6fac42e` row is therefore a VERIFY row: "confirm fork updater state → S unless D6 outcome = bump."
+
+**Options & concrete consequences:**
+- **(a) Keep vendored** — 0 blocks; the deliberate skip-verify + `HANDY_DISABLE_UPDATER`/portable gating keep working as built.
+- **(b) Adopt 2.10.1** — ~1 block: swap the vendored dir for the crates dep and re-apply or re-evaluate `dangerous-skip-verify`; risk: the skip-verify path may now be patches-on-patches if the crate changed shape.
+
+**Recommendation & honest uncertainty:** Keep. Thin evidence both ways: no updater defect is known to the fork that 2.10.1 fixes, and adopting touches the one plugin the fork forked *on purpose*. *What would change the answer:* the upstream 2.10.1 changelog showing a real fix for an updater symptom fork users report, or a future fork feature requiring the newer crate APIs. Zero urgency — defer freely.
 
 ### Non-gated defaults (no user input needed, recorded here):
 - `7b2a28a3` = PORTED (change present via fork `ddffa435`, the stronger version with tests + tail_report).
