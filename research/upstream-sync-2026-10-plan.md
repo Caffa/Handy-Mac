@@ -412,6 +412,24 @@ Present to user **before starting the arc phases** (6–9); gate D5 now has a fi
 **Options (short):** (a) ~~Keep vendored~~ — now the **fallback**, not the default · (b) **Refresh to 0.3.4 + re-apply `reset_pressed_hotkeys()` + adopt upstream #31 tap-recovery + REQUIRED macOS regression pass** — the default (APPLY-conditional in Phase 5).
 **Default:** **(b) refresh**, gated on the acceptance pass; rollback = revert the vendored-dir swap.
 
+> **D5 EXECUTION NOTE (2026-10-19, Phase 5 step 0):** Refresh executed as planned — vendored
+> dir swapped to the crates.io 0.3.4 tarball (fork commit `04ad75d5`). Fork deltas re-applied
+> onto the new `manager.rs`: `reset_pressed_hotkeys()` + press-suppression diagnostic warns;
+> the `log` dependency re-added (0.3.4 ships with no logging facade). Fork's ~300-line
+> CGEventTap silent-death recovery dropped in favor of upstream #31's `CallbackCtx`/`TapRunLoop`
+> event-driven recovery inside 0.3.4. Automated gates green: vendored `cargo test --lib` 55/55
+> (×3 stable, incl. #31's tap-recovery tests), app `cargo check`, app `cargo test --lib` 511
+> pass (only the 4 documented pre-existing failures), `bun run build`. One vendored
+> integration test (`macos_ipc_quiescence::idle_listener_sends_no_recurring_ipc`) could not be
+> run meaningfully: it forbids ANY user input for 15 s while counting task-wide mach messages,
+> and this Mac is in active interactive use — the failure was environment contamination, not
+> listener IPC (re-run on an idle machine before release if desired).
+> **⏳ REGRESSION-TEST-REQUIRED (open):** the physical macOS sleep/wake + recording-hotkey
+> pass (wake-from-sleep stuck keys, rapid start/stop, cancel spam, Secure-Input fallback)
+> MUST be done manually by the user; the agent deliberately did not run pmset/suspend.
+> Until that pass, treat the 0.3.4 swap as provisionally trusted; rollback =
+> `git revert 04ad75d5` (single vendored directory).
+
 **What it decides (plain terms):** The crate that actually hears global hotkeys (including under Secure Input) moves from the fork's patched 0.2.4-based vendored copy to upstream 0.3.4 — a rewrite of the macOS listener core. End-user behavior should be identical or better; the risk is the rewrite itself.
 
 **Why it exists — the 2026-10-18 vendor audit changed the recommendation.** Findings that overturned "keep vendored":
