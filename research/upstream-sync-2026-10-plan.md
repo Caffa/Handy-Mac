@@ -2,7 +2,7 @@
 
 **Range:** `cdbc2239..9e57a0d7` (161 upstream commits, 2026-07-18 → 2026-10-15)
 **Fork:** branch `main`, HEAD `644fa46f` (v0.12.2), +371 commits past merge-base `4b7bb4e5`
-**Generated:** 2026-10-18 · Sources: /tmp/u-sync-upstream.md, /tmp/u-sync-fork.md, UPSTREAM_SYNC.md (stale)
+**Generated:** 2026-10-18 · Decision-gate field research (D3, D5): 2026-10-18 · Sources: /tmp/u-sync-upstream.md, /tmp/u-sync-fork.md, UPSTREAM_SYNC.md (stale), `HANDY-FORK/research/onnx-to-gguf-consolidation-research.md` (D3 evidence base)
 **Working directory:** `/Users/caffae/Local-Projects-2026/Handy-Fork/stable-handy` (all code work is in the Handy-Mac submodule tree)
 
 ---
@@ -32,7 +32,7 @@ The fork already adopted an upstream-first strategy (UPSTREAM_SYNC.md, July 2026
 
 **Execution mode:** dedicated branch `sync/2026-10-1`, tag before each phase, conventional commits, standing phase gate = `cargo check` + `bun run build` (+ `bun run lint` where FE touched) before the phase is closed and tagged.
 
-**Total estimate = per-phase sums: ~25–42 focused blocks (≈30–60 min each).** Realistic wall-clock: the engine arc dominates — P6–P9 ≈ 12–20 blocks of that total; the low-risk runway P0–P5 ≈ 11–16 blocks. (Sums derived from per-phase estimates in §2: 1+1+(3–5)+(1–2)+(3–5)+(2–4)+(4–6)+(3–5)+(2–4)+(3–5)+(1.5–2.5).)
+**Total estimate = per-phase sums: ~26–43 focused blocks (≈30–60 min each).** Realistic wall-clock: the engine arc dominates — P6–P9 ≈ 12–20 blocks of that total; the low-risk runway P0–P5 ≈ 12–18 blocks (incl. D5's conditional 1–2). (Sums derived from per-phase estimates in §2: 1+1+(3–5)+(1–2)+(3–5)+(2–4 + D5 1–2)+(4–6)+(3–5)+(2–4)+(3–5)+(1.5–2.5).)
 
 ---
 
@@ -189,12 +189,13 @@ The fork already adopted an upstream-first strategy (UPSTREAM_SYNC.md, July 2026
 
 ---
 
-### Phase 5 — Shortcut lifecycle hardening (7 APPLY)
+### Phase 5 — Shortcut lifecycle hardening (7 APPLY + 1 conditional D5 vendor step)
 
-**Purpose:** Batch the shortcut/ subsystem: validation fixes first (independent), then the racing/parity work, then push-to-talk on top.
+**Purpose:** Batch the shortcut/ subsystem: vendor refresh first (D5, so the ports land against the 0.3.x crate API), then validation fixes, then the racing/parity work, then push-to-talk on top.
 
 | Commit | Title | Strategy | Notes |
 |---|---|---|---|
+| **step 0 (D5)** | handy-keys vendor refresh: `0.2.4-handy.1` → **0.3.4** | **conditional APPLY (D5 default)** | Swap `vendor/handy-keys/` to 0.3.4; **re-apply fork's `pub fn reset_pressed_hotkeys()` + press-suppression diagnostics** (~20 ln mechanical re-application onto `manager.rs`); **drop fork's ~300 ln CGEventTap silent-death recovery in favor of upstream #31 (`7903fda`) `CallbackCtx`/`TapRunLoop` implementation (+ its unit tests)** — same failure, incompatible design, carrying both is untestable. API is additions-only 0.2.4→0.3.4 (fork call sites in `shortcut/handy_keys.rs` compile as-is). **Acceptance gate: macOS sleep/wake + recording-hotkey regression pass** (wake-from-sleep stuck keys, rapid start/stop, cancel spam, Secure-Input fallback); on failure revert the vendored-dir swap. Gains: modifier-only release fix, Globe key 0xB0, Pause/PrintScreen. |
 | `f5c27e69` | validate_shortcut parses raw accelerator (#2158) | A/B | `shortcut/tauri_impl.rs`; self-contained |
 | `a6eed754` | reject unknown binding IDs on reset (#2033) | B, path-remap | valid-ids list → fork `settings/store.rs` region of `reset_binding` + `settings/types.rs` if the list lives in settings. **Fork analysis: unknown-input rejection already satisfied in handler.rs (warns + skips) — verify reset path specifically since that's what a6eed754 fixes** |
 | `141f981d` | compound key compact names (#1862) | B/C | shared mapping table `shortcut/mod.rs` + `shortcut/handy_keys.rs` + `shortcut/tauri_impl.rs` + FE `src/lib/utils/keyboard.ts` (+fork test); friendly labels separate |
@@ -203,9 +204,9 @@ The fork already adopted an upstream-first strategy (UPSTREAM_SYNC.md, July 2026
 | `c6fa60da` | toggle parity across busy-window presses (#1910) | **C — behavior port** | upstream patches a coordinator that structurally differs from fork's. Port the *behaviors* into fork's coordinator: (1) busy-window `PendingPress` remembered while pipeline busy (BusyAction Ignore/Remember/Forget), (2) external triggers (SIGUSR2/CLI — fork uses SIGUSR1/2 in `signal_handle.rs`) bypass keyboard debounce, (3) delayed-hide dropped when new session shows overlay, (4) other bindings ignored while a busy-window press is pending. Fork already has `CoordinatorCore`/`Stage` machine + tests — express as new `StageAction` rules |
 | `c62a5fcd` | auto push-to-talk / HoldOrToggle (#1971) | C | **hard dep on c6fa60da behavior**: hold-vs-tap classify for remembered presses; new `ShortcutActivation` enum (replaces push_to_talk bool + migration); `shortcut/handler.rs` + FE PushToTalk/ShortcutActivation/HoldThreshold/GeneralSettings; settings-remap playbook |
 
-**Verification:** standing gate + `cargo test transcription_coordinator_tests` (extend fork tests for new StageActions) + smoke: rapid start/stop spam, cancel-spam during Processing, PTT vs toggle modes, record-rebind flow.
-**Rollback:** per-commit; `c6fa60da`+`c62a5fcd` are one logical unit if the builder struggles to split.
-**Risk:** MEDIUM–HIGH (coordinator behavior port; fork tests are the safety net). **Effort:** 2–4 blocks.
+**Verification:** standing gate + `cargo test transcription_coordinator_tests` (extend fork tests for new StageActions) + **D5 acceptance pass: macOS sleep/wake + recording-hotkey regression (must pass before trusting the 0.3.4 swap)** + smoke: rapid start/stop spam, cancel-spam during Processing, PTT vs toggle modes, record-rebind flow.
+**Rollback:** per-commit; `c6fa60da`+`c62a5fcd` are one logical unit if the builder struggles to split; **D5 rollback = revert the vendored-dir swap to `0.2.4-handy.1` (single directory).**
+**Risk:** MEDIUM–HIGH (coordinator behavior port; fork tests are the safety net; D5's upstream #31 is rewrite-grade — mitigated by its unit tests + the regression pass). **Effort:** 2–4 blocks + 1–2 for D5 (conditional, default-on).
 
 ---
 
@@ -306,7 +307,7 @@ The fork already adopted an upstream-first strategy (UPSTREAM_SYNC.md, July 2026
 
 ## 3. Decision Gates
 
-Present to user **before starting the arc phases** (6–9); gates D4–D6 can be decided later (see "What can be safely deferred"). Each gate below carries: what it decides, why the fork/upstream divergence forces the choice, per-option consequences (work + user-facing gains/losses), and the recommendation with its honest uncertainty. The D1×D2×D3 closure matrix maps every permutation; original one-line defaults are kept under **Default.**
+Present to user **before starting the arc phases** (6–9); gate D5 now has a field-researched default (refresh) that must be applied at Phase 5 start; D4/D6 can be decided later (see "What can be safely deferred"). Each gate below carries: what it decides, why the fork/upstream divergence forces the choice, per-option consequences (work + user-facing gains/losses), and the recommendation with its honest uncertainty. The D1×D2×D3 closure matrix maps every permutation; original one-line defaults are kept under **Default.**
 
 ### D1 (umbrella) — Adopt the upstream engine architecture wholesale?
 **Question:** Adopt engine_supervisor child-process isolation + transcribe-cpp 0.4.0 (+serde) for all ASR?
@@ -347,13 +348,18 @@ Present to user **before starting the arc phases** (6–9); gates D4–D6 can be
 
 **What it decides (plain terms):** Whether the app carries **two** model runtimes (transcribe.cpp GGUF + ONNX Runtime for Parakeet/GigaAM/SenseVoice/Moonshine) or **one** (GGUF only; VAD via transcribe-cpp too). Also swaps the macOS build's ORT packing for an explicit `libclang_rt.osx.a` link (`build.rs` −79 lines), and removes the `ort_accelerator` setting (serde-migrated).
 
-**Why it exists:** The fork still lives in 5197faf0's pre-state: `transcribe-rs 0.3.8 [onnx]`, `vad-rs`, `silero_vad_v4.onnx`; upstream deleted all of it (Oct 15) in favor of `handy-computer/*-gguf` models, and the fork's catalog **already ships those GGUF repos**. Keeping ONNX = keeping the dual stack = every future upstream sync carries both worlds.
+**Why it exists:** The fork still lives in 5197faf0's pre-state: `transcribe-rs 0.3.8 [onnx]`, `vad-rs`, `silero_vad_v4.onnx`; upstream deleted all of it (Oct 15) in favor of `handy-computer/*-gguf` models, and the fork's catalog **already ships those GGUF repos**. Upstream's motive was never licensing (ORT is MIT) or binary size — the real drivers were **GPU fragmentation and packaging pain**: ONNX Runtime's AVX2 baseline crashed pre-Haswell Macs with illegal instructions (#2226), ORT leftovers broke Windows ARM64 code signing, and every platform needed its own ORT plumbing. The maintainer said this outright in [Discussion #1295](https://github.com/cjpais/Handy/discussions/1295) (2026-08-15, quoted): ONNX GPU acceleration **"is a mess for STT"**, community implementations are "all over the place", and **"I would rather just own it end to end in ggml."** Pushing every model through transcribe.cpp is stated as the future of the app — and transcribe.cpp itself is a [Mozilla.ai](https://blog.mozilla.ai/announcing-transcribe-cpp/)–backed "llama.cpp for STT" (MIT, Metal/Vulkan/CUDA, ~2k★, [github.com/handy-computer/transcribe.cpp](https://github.com/handy-computer/transcribe.cpp), announced 2026-06-30). Keeping ONNX means betting against the direction the engine's own authors named.
+
+**Field data (2026-10-18 research → `HANDY-FORK/research/onnx-to-gguf-consolidation-research.md`):**
+- **Nothing was dropped:** all 11 retired ONNX models have GGUF replacements (full id→replacement mapping in the research doc); translation survives (Whisper + Canary, now GGUF).
+- **No accuracy-regression reports found post-switch.** Honest qualification: the removal (Oct 15) is **not yet in a tagged release** (latest v0.9.8 = Oct 3), so feedback is from main-branch/bleeding users — real but early. Praise exists for Parakeet Unified GGUF.
+- **The loud post-switch issues were GPU device-selection bugs, not model-quality problems:** #2270 (outdated Intel driver → fixed by driver update), #2281 (wrong GPU auto-selected → fixed by device choice), #1884 (still open: `Auto` binding can pick a slower iGPU). These validate the fork's `transcribe_gpu_device` device-handle setting; #1884 is worth watching for fork users on dual-GPU Macs.
 
 **Options & concrete consequences:**
 - **(a) Full adopt** — inside P8's 2–4 blocks. Users with retired ONNX models get a guided migration UI (download the GGUF replacement with progress/retry; existing models stay on disk until the user deletes them — nothing force-deleted). Binary drops ORT (`onnxruntime`), `tar`/`flate2`; settings cleanly migrated; fork's custom-GGUF discovery (`discover_hf_cache_models`, `gguf_meta.rs` prober) survives untouched as an additive layer.
-- **(c) Reject/dual-stack (matrix row 2/4/6)** — 0 P8 blocks saved in effort, but: vocabulary works only on the transcribe-cpp half (ONNX half keeps fork's `initial_prompt`), migration UI = S, `3985508a` = S (VAD stays `vad-rs` v4 ONNX), binary keeps ORT, and the fork maintains the ONNX engine paths solo as upstream deletes them around it — the hardest long-term position.
+- **(c) Reject/dual-stack (matrix row 2/4/6)** — 0 P8 blocks saved in effort, but: vocabulary works only on the transcribe-cpp half (ONNX half keeps fork's `initial_prompt`), migration UI = S, `3985508a` = S (VAD stays `vad-rs` v4 ONNX), binary keeps ORT, and the fork maintains the ONNX engine paths solo as upstream deletes them around it — against the maintainer's stated direction.
 
-**Recommendation & honest uncertainty:** (a). Rationale: consistent with the adopted upstream-first strategy; availability is proven (GGUF replacements exist in the catalog the fork already ships); migration UX is decent and user-paced. Honest caveat: **the analysis never measured quality parity** for the GGUF replacements of specific retired models (e.g. GigaAM/Moonshine GGUF vs their ONNX versions). Mitigation: users' old models are never auto-deleted and the migration is opt-in, so a disappointed user can stay. *What would change the answer:* credible accuracy regressions reported on a specific retired-model replacement **before** `5197faf0` lands → flip to (c) cheaply; **after** it lands, (c) means re-adding ONNX code the wrong way around. Therefore D3 must be decided before Phase 8 starts.
+**Recommendation & honest uncertainty:** **(a)** — now research-backed, not just policy-inferred. Rationale: maintainer's end-game statement (#1295) + Mozilla.ai backing of transcribe.cpp (the engine won't be an orphaned dependency) + zero accuracy-regression reports + all 11 replacements mapped + the fork's catalog already carrying them. Residual honesty: post-switch feedback predates a stable tag, and #1884 (`Auto` → iGPU) matters on dual-GPU Macs — the fork's exact-device binding already mitigates what #2281's fix addresses. Mitigation unchanged: old models stay on disk, migration is opt-in, so a disappointed user can stay. *What would change the answer:* credible accuracy regressions reported once the removal reaches a tagged release **before** our `5197faf0` lands → flip to (c) cheaply; **after** it lands, (c) means re-adding ONNX code the wrong way around. Therefore D3 must be decided before Phase 8 starts.
 
 ### D1×D2×D3 branch-closure matrix (what happens to Phases 6–9 in each permutation)
 
@@ -382,7 +388,8 @@ Present to user **before starting the arc phases** (6–9); gates D4–D6 can be
 ### What can be safely deferred
 - **Must be answered before Phase 6 starts:** **D1** (it re-shapes the arc and the P2 deferred hunks land inside Phase 6's rewrite) and **D3** (needed before Phase 8's `3985508a`/`5197faf0` are attempted; reversible cheaply only before it).
 - **Answered mid-arc at the latest — D2:** Phase 7 sits after Phase 6 in sequence; D2 can be decided any time before Phase 7 starts (deferring it does not block Phase 6).
-- **Freely deferrable:** **D4** (gates only one P4 row; P4 items 1–7 proceed regardless), **D5** (conditional trigger — decide lazily on the compile outcome of P4/P5), **D6** (`f6fac42e` row is S-by-default; the bump can be taken any time later).
+- **Before Phase 5 starts — D5 (default = refresh):** the vendor-dir swap must precede the P5 shortcut ports (upstream wrote them against the 0.3.x API); acceptance = macOS sleep/wake + recording-hotkey regression pass; on failure, revert the swap (trivial rollback) — decided at P5 start, not later.
+- **Freely deferrable:** **D4** (gates only one P4 row; P4 items 1–7 proceed regardless), **D6** (`f6fac42e` row is S-by-default; the bump can be taken any time later).
 
 ### D4 — paste_tx reliable paste
 **Question:** Port upstream's receipt-sequenced paste as a separate opt-in `reliable_paste` setting, borrow only its ideas, or skip?
@@ -400,20 +407,25 @@ Present to user **before starting the arc phases** (6–9); gates D4–D6 can be
 
 **Recommendation & honest uncertainty:** (c) now, (b) on evidence. Rationale: the fork's design is verified in production and fork-owned; upstream's ships as opt-in upstream too; and port cost is real. Honest uncertainty: neither analysis surfaced fork-side incidents of clipboard managers capturing transcriptions — (b) insures against a failure mode **not yet observed** in this fork, which is why it isn't the default. *What would change the answer:* one credible "my clipboard-history app shows my transcription" report → do (b); repeated "paste doesn't land in app X" reports where AX verification fails → consider (a).
 
-### D5 — handy-keys vendor refresh
-**Question:** Refresh vendored `handy-keys` (fork copy diverged ~352 lines) to upstream's 0.3.1–0.3.4, or keep?
-**Options (short):** (a) Keep vendored as-is · (b) Refresh + re-apply fork deltas + diff-audit. Upstream's handy-keys bumps 0.3.1–0.3.4 in-range are SKIPs under (a).
-**Default:** (a).
+### D5 — handy-keys vendor refresh (default: **refresh to 0.3.4, conditional**)
+**Question:** Refresh vendored `handy-keys` to upstream 0.3.4 (re-applying the fork's deltas on the new base), or keep the vendored 0.2.4-handy.1 copy?
+**Options (short):** (a) ~~Keep vendored~~ — now the **fallback**, not the default · (b) **Refresh to 0.3.4 + re-apply `reset_pressed_hotkeys()` + adopt upstream #31 tap-recovery + REQUIRED macOS regression pass** — the default (APPLY-conditional in Phase 5).
+**Default:** **(b) refresh**, gated on the acceptance pass; rollback = revert the vendored-dir swap.
 
-**What it decides (plain terms):** Whether the crate that actually hears global hotkeys (including under Secure Input) stays on the fork's modified vendored copy or updates to upstream's newer releases. End-user behavior is unchanged either way as long as the fork's `shortcut/` layer compiles and compensates.
+**What it decides (plain terms):** The crate that actually hears global hotkeys (including under Secure Input) moves from the fork's patched 0.2.4-based vendored copy to upstream 0.3.4 — a rewrite of the macOS listener core. End-user behavior should be identical or better; the risk is the rewrite itself.
 
-**Why it exists:** The fork vendors `handy-keys` and its copy diverged ~352 lines from upstream's; the Phase-4/5 ports (secure-input fallback registration, compound-key names, HoldOrToggle) were written upstream against the newer crate API. If any ported code needs an API that only exists in 0.3.1–0.3.4, the vendored copy must be refreshed — otherwise not.
+**Why it exists — the 2026-10-18 vendor audit changed the recommendation.** Findings that overturned "keep vendored":
+- **The vendor base is upstream 0.2.4** (crates.io tarball, `0.2.4-handy.1`, no `.git`) — the fork diverged **from 0.2.4, not 0.3.0** as assumed. Upstream moved 0.2.4→0.3.4 in 18 commits; all 4 Handy-side bump commits are Cargo-only (confirmed).
+- **Public API 0.2.4→0.3.4: signatures identical, additions only** — the refresh is API-safe for the fork's `shortcut/` layer.
+- **Fork deltas (what must survive):** ① **new `pub fn reset_pressed_hotkeys()`** + press-suppression/reset diagnostics in `manager.rs` (~60 ln) — the fork's wake-from-sleep stuck-hotkey recovery, **used by fork `shortcut/handy_keys.rs`** (three call sites) with **no upstream equivalent** → mechanical re-apply (~20 ln + optional warns); ② **~300 ln macOS listener rewrite**: CGEventTap silent-death recovery (1 s heartbeat `CALLBACK_COUNT`, tap recreation after ~5 s of zero callbacks while enabled, double-`Arc::from_raw` free fix); ③ rustfmt noise only.
+- **Critical overlap:** upstream #31 (`7903fda`) "replace event tap polling with callback recovery" is a ~350 ln rewrite of the macOS listener (`CallbackCtx`/`TapRunLoop` + unit tests) solving the **same tap-death failure with an incompatible implementation** — carrying both would be untestable, so the fork's copy is **dropped in favor of upstream #31's**.
+- **Other 0.3.x gains:** modifier-only release fix, Globe key (0xB0), Pause/PrintScreen keys, Windows/Linux fixes (orthogonal to a macOS fork but free).
 
 **Options & concrete consequences:**
-- **(a) Keep (0 extra blocks):** all P4/P5 commits target fork-owned `shortcut/{mod,handler,handy_keys,tauri_impl}.rs`; fork-specific behaviors (state reset, listener discipline, per-implementation bindings) stay intact by construction.
-- **(b) Refresh (1–2 blocks):** take 0.3.4, re-apply the fork's deltas, diff-audit + regression-test shortcuts. Gains: closer to upstream (future syncs cheaper), any crate-level fixes in the bumps.
+- **(b) Refresh (default)** — 1–2 blocks in Phase 5 as step 0, **before** the shortcut ports land (they were written upstream against the newer crate): swap `vendor/handy-keys/` to 0.3.4, re-apply `reset_pressed_hotkeys()` (~20 ln mechanical), rely on upstream #31's callback recovery + its unit tests instead of the fork's 300-ln copy. Gains: bug-for-bug coverage of the same tap-death failure **with tested code**, modifier-release + Globe-key + Pause/PrintScreen fixes, and a cheaper next sync.
+- **(a) Keep vendored (fallback)** — 0 blocks now, but the fork carries a 500+ ln hand-maintained listener forever (two rival recovery designs coexisting in spirit, one fork-only, zero upstream tests), and every future shortcut port pays the 0.2.4-vs-0.3.x API gap.
 
-**Recommendation & honest uncertainty:** (a), with refresh as a **conditional trigger**, not a speculative port. Rationale: the P5 port list was deliberately chosen to touch the fork's app-layer files; fork analysis already verified unknown-ID rejection and fire-during-recording are satisfied at the app layer. **Honest uncertainty: the plan has not diffed the vendored crate's API vs 0.3.1–0.3.4** (the fork-side analysis flags that the crate itself must be diffed before any shortcut port) — so (a) rests on "likely compatible," verified only when P4/P5 compile. If compilation fails, the minimal targeted refresh resolves it; nothing user-visible is at stake.
+**Recommendation & honest uncertainty:** **(b)** — the audit made "keep vendored" untenable: the vendored copy's own load-bearing trick (tap-death recovery) exists upstream as a tested, incompatible rewrite; maintaining two versions of that mechanism is the worst option. Required acceptance before trusting it: **a macOS sleep/wake + recording-hotkey regression pass** (wake-from-sleep stuck keys, rapid start/stop, cancel spam, Secure-Input fallback from P4). Residual risk, stated honestly: upstream #31 is new and rewrite-grade — its unit tests prove the mechanism, not our integration; the regression pass is the gate. *What would change the answer:* if the pass fails in ways #31's design can't be patched for, revert the vendored-dir swap (rollback is trivial — one directory) and stay on (a) with a registry note.
 
 ### D6 — Updater plugin 2.10.0 → 2.10.1
 **Question:** Keep vendored tauri-plugin-updater 2.10.0 (with `dangerous-skip-verify`) or move to crates.io 2.10.1?
@@ -456,6 +468,7 @@ Bucket totals: **PORTED 13 · VERIFY 6 · SKIP-superseded 5 · SKIP-policy 76 (6
 - Windows: `b1b2d9f9` (windows paste fix — under ALL D4 outcomes), `a94b403e` (portable legacy cache retention), `76736d5a` (portable installer dialog), vsredist-era items
 - Nix: `2c5c7601`, `b0266607`
 - Misc policy/CI: `e1152d86`, `3f24f4b2`, `bf8756c3`, `838f8a24`, `8fd66912`, `48a3d8e9`, `2266b29b`, `96afb0cf`, `07a54e29`, `e449f69c`, `c7a68fed`, `9bcb6d9d`, `99052eef`, `eba5d9e2`, `8605699d`, `14cfed8a`
+- handy-keys 0.3.1→0.3.4 bump commits — SKIP **as upstream commits**; superseded by **D5** (the crate content lands via Phase 5 step 0's vendored-dir swap to 0.3.4, which also re-applies the fork's `reset_pressed_hotkeys()` and adopts upstream #31 tap-recovery)
 - Releases/version bumps (fork keeps own 0.12.x scheme + release process; CI don't apply to fork's build-reinstall + vendored updater): `17d6c763`, `3388983e`, `af48dd68`, `05e0aedd`, `14f6f0d3`, `468129fd`, `2281b8b2`, `59ec6959`, `5c77861f`, `70327582`, `390729a8`, `f602ef4f`, `286e66cb`, `80995b53`, `7a5f397d`
 - Docs: `42afd1bf`, `2f7c2fca`, `8758dccb`, `8282c400`, `b8ad109d`, `8f9cf53c`, `05ca5f48`, `30062fa2`, `586a838c`, `73ab851c`, `f6b3f829`, `afe5a631`, README/Sponsors/PR-template commits
 - Translations (fork keeps en/zh/zh-TW only): `f4e3587b`, `ed1bfb9b`, `2bdf9ac0`, `ea3c20a3`, `09a6a710`, `9aae694d`, `8abb8026`, `5276dd3c`, plus the locale-file hunks of `6fa85061` (its logic half is APPLY)
@@ -546,6 +559,7 @@ Run all after Phase 10 (and spot-run after each arc phase):
 3. ONNX removal (or D3-reject dual-stack rationale): serde-migration of settings changes, clang_rt.osx link note / ORT-kept note, model-path migration notes.
 4. Vocabulary/long-form interplay with fork post-correction (the exact skip-when vocabulary-sent rule).
 5. Any shortcut/coordinator behavior-port nuances (PendingPress ↔ fork Stage machinery).
+6. handy-keys 0.2.4→0.3.4 vendor refresh (D5): `reset_pressed_hotkeys()` re-application, fork's 300-ln CGEventTap silent-death recovery replaced by upstream #31 (`7903fda`) callback recovery; record the macOS sleep/wake + recording-hotkey regression pass result (acceptance gate).
 
 ---
 
