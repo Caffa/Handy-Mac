@@ -135,6 +135,11 @@ enum Command {
         hotkey_string: String,
         is_pressed: bool,
         push_to_talk: bool,
+        /// True for non-keyboard triggers (signals, CLI flags). External
+        /// triggers are exempt from the keyboard debounce: each one is a
+        /// deliberate edge from the user's own integration, and dropping it
+        /// desyncs toggle parity. (upstream c6fa60da)
+        external: bool,
     },
     Cancel {
         recording_was_active: bool,
@@ -153,6 +158,47 @@ enum Command {
     ExtendRecording {
         seconds: u64,
     },
+}
+
+/// A press that arrived while the pipeline was still busy processing the
+/// previous transcription. Toggle-style triggers (signals, CLI flags, pedals
+/// that signal on both edges) flip state on every edge, so dropping a busy
+/// press desyncs the parity: the next edge starts a recording nobody will
+/// ever stop. (upstream c6fa60da)
+struct PendingPress {
+    binding_id: String,
+    hotkey_string: String,
+}
+
+/// What to do with an input that arrives while the pipeline is busy
+/// (`Stage::Processing`). `remembered` is whether a press for the same binding
+/// is already waiting for the pipeline to drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BusyAction {
+    /// Ignore the input entirely.
+    Ignore,
+    /// Remember the press; start recording when the pipeline finishes.
+    Remember,
+    /// This input cancels a previously remembered press (toggle parity: two
+    /// presses during one busy window net to no-op; PTT: the key was already
+    /// released, so the remembered press must not fire).
+    Forget,
+}
+
+fn classify_busy_input(is_pressed: bool, push_to_talk: bool, remembered: bool) -> BusyAction {
+    match (push_to_talk, is_pressed) {
+        // Toggle: presses alternate remember/forget to preserve parity.
+        (false, true) if remembered => BusyAction::Forget,
+        (false, true) => BusyAction::Remember,
+        // Toggle mode ignores releases.
+        (false, false) => BusyAction::Ignore,
+        // PTT: a press while busy means the user is holding the key — start as
+        // soon as the pipeline drains. A release while busy means the tap is
+        // already over; forget the remembered press (or ignore if none).
+        (true, true) => BusyAction::Remember,
+        (true, false) if remembered => BusyAction::Forget,
+        (true, false) => BusyAction::Ignore,
+    }
 }
 
 /// Pipeline lifecycle, owned exclusively by the coordinator thread.
@@ -233,6 +279,11 @@ enum StageAction {
 struct CoordinatorCore {
     stage: Stage,
     last_press: Option<Instant>,
+    /// Press remembered while the pipeline was busy (`Stage::Processing`).
+    /// At most one press is remembered; it starts recording as soon as the
+    /// pipeline drains (`Command::ProcessingFinished`). An explicit cancel
+    /// or a processing timeout abandons it.
+    pending_press: Option<PendingPress>,
     /// Processing timeout duration. In production this is 30s; in tests
     /// it can be set to a much shorter value via `new_for_test()`.
     processing_timeout: Duration,
@@ -247,6 +298,7 @@ impl CoordinatorCore {
         Self {
             stage: Stage::Idle,
             last_press: None,
+            pending_press: None,
             processing_timeout,
             hard_cap_extension: Duration::ZERO,
         }
@@ -435,10 +487,14 @@ impl CoordinatorCore {
                 hotkey_string,
                 is_pressed,
                 push_to_talk,
+                external,
             } => {
                 // Debounce rapid-fire press events (key repeat / double-tap).
-                // Releases always pass through for push-to-talk.
-                if is_pressed {
+                // Releases always pass through for push-to-talk. External
+                // triggers are exempt: each one is a deliberate edge from the
+                // user's own integration, and dropping it desyncs toggle
+                // parity (upstream c6fa60da).
+                if is_pressed && !external {
                     let now = Instant::now();
                     if self
                         .last_press
@@ -448,6 +504,46 @@ impl CoordinatorCore {
                         return StageAction::None;
                     }
                     self.last_press = Some(now);
+                }
+
+                // A busy pipeline can't accept lifecycle changes now: classify
+                // the input against any already-remembered press instead of
+                // dropping it silently (upstream c6fa60da). The fork's
+                // try_recover_stop drift recovery below is unaffected — it
+                // only fires for non-Processing stages.
+                if matches!(self.stage, Stage::Processing { .. }) {
+                    // Only one press can be remembered. Once a binding has
+                    // claimed it, inputs for a different binding are ignored —
+                    // the same rule as a different binding pressed while
+                    // recording — rather than silently replacing the
+                    // remembered press and breaking its parity.
+                    if let Some(pending) = &self.pending_press {
+                        if pending.binding_id != binding_id {
+                            debug!(
+                                "Ignoring input for '{}': '{}' is already pending",
+                                binding_id, pending.binding_id
+                            );
+                            return StageAction::None;
+                        }
+                    }
+                    let remembered = self.pending_press.is_some();
+                    match classify_busy_input(is_pressed, push_to_talk, remembered) {
+                        BusyAction::Remember => {
+                            debug!("Remembering press for '{}': pipeline busy", binding_id);
+                            self.pending_press = Some(PendingPress {
+                                binding_id,
+                                hotkey_string,
+                            });
+                        }
+                        BusyAction::Forget => {
+                            debug!("Forgetting remembered press for '{}'", binding_id);
+                            self.pending_press = None;
+                        }
+                        BusyAction::Ignore => {
+                            debug!("Ignoring input for '{}': pipeline busy", binding_id);
+                        }
+                    }
+                    return StageAction::None;
                 }
 
                 if push_to_talk {
@@ -644,6 +740,10 @@ impl CoordinatorCore {
                     "CoordinatorCore: cancel received, recording_was_active={}",
                     recording_was_active
                 );
+                // An explicit cancel abandons any remembered start too — the
+                // user asked for silence, not a deferred recording
+                // (upstream c6fa60da).
+                self.pending_press = None;
                 let was_active = self.stage.is_active();
                 if recording_was_active || matches!(self.stage, Stage::Recording { .. }) {
                     self.hard_cap_extension = Duration::ZERO;
@@ -678,6 +778,28 @@ impl CoordinatorCore {
                     self.sync_state(active_use, current_state);
                     info!("Session complete, resetting handy-keys pressed-hotkey state");
                     crate::shortcut::handy_keys::reset_all_pressed_hotkeys(app);
+                    // Pipeline drained: start a press that arrived while the
+                    // pipeline was busy, restoring toggle parity
+                    // (upstream c6fa60da). The optimistic Recording transition
+                    // mirrors the normal input path; the thread's start()
+                    // rolls it back if the recorder fails to begin.
+                    if let Some(pending) = self.pending_press.take() {
+                        debug!(
+                            "Pipeline drained; starting remembered press for '{}'",
+                            pending.binding_id
+                        );
+                        self.transition_to(Stage::Recording {
+                            binding_id: pending.binding_id.clone(),
+                            since: Instant::now(),
+                            silence_extension: Duration::ZERO,
+                            warned: false,
+                        });
+                        self.sync_state(active_use, current_state);
+                        return StageAction::StartRecording {
+                            binding_id: pending.binding_id,
+                            hotkey_string: pending.hotkey_string,
+                        };
+                    }
                 }
                 StageAction::None
             }
@@ -736,6 +858,13 @@ impl CoordinatorCore {
                     self.sync_state(active_use, current_state);
                     info!("Processing timeout, resetting handy-keys pressed-hotkey state");
                     crate::shortcut::handy_keys::reset_all_pressed_hotkeys(app);
+                    // The timeout path abandons the session (overlay hidden,
+                    // tray reset), so any remembered press is stale by now —
+                    // drop it rather than auto-starting a recording the user
+                    // asked for before a 30s hang. (Fork divergence from
+                    // upstream c6fa60da, which has no timeout concept; here
+                    // the timeout is deliberate "reset to known-good Idle".)
+                    self.pending_press = None;
                     StageAction::ProcessingTimeoutExpired
                 } else {
                     StageAction::None
@@ -1386,6 +1515,8 @@ impl TranscriptionCoordinator {
 
     /// Send a keyboard/signal input event for a transcribe binding.
     /// For signal-based toggles, use `is_pressed: true` and `push_to_talk: false`.
+    /// Keyboard inputs pass through the 30ms debounce; see `send_external_input`
+    /// for triggers that must bypass it.
     pub fn send_input(
         &self,
         binding_id: &str,
@@ -1399,6 +1530,7 @@ impl TranscriptionCoordinator {
             hotkey_string: hotkey_string.to_string(),
             is_pressed,
             push_to_talk,
+            external: false,
         });
         let dt = send_start.elapsed();
         if dt > Duration::from_millis(100) {
@@ -1413,6 +1545,26 @@ impl TranscriptionCoordinator {
             );
         }
         if result.is_err() {
+            warn!("Transcription coordinator channel closed");
+        }
+    }
+
+    /// Send an external trigger (SIGUSR1/2, CLI flags). Always a toggle press,
+    /// always exempt from the keyboard debounce — each edge is a deliberate
+    /// event from the user's own integration, and dropping it desyncs toggle
+    /// parity (upstream c6fa60da).
+    pub fn send_external_input(&self, binding_id: &str, source: &str) {
+        if self
+            .tx
+            .send(Command::Input {
+                binding_id: binding_id.to_string(),
+                hotkey_string: source.to_string(),
+                is_pressed: true,
+                push_to_talk: false,
+                external: true,
+            })
+            .is_err()
+        {
             warn!("Transcription coordinator channel closed");
         }
     }
