@@ -74,7 +74,7 @@ tar = "0.4.44"
 flate2 = "1.0"
 sha2 = "0.10"
 transcribe-rs = { version = "0.3.8", features = ["onnx"] }
-transcribe-cpp = { version = "0.2.3", default-features = false }
+transcribe-cpp = { version = "0.2.4", default-features = false }
 handy-keys = { path = "vendor/handy-keys" }
 ferrous-opencc = "0.2.3"
 uuid = { version = "1", features = ["v4"] }
@@ -109,7 +109,7 @@ winreg = "0.55"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
-transcribe-cpp = { version = "0.2.3", default-features = false, features = ["metal"] }
+transcribe-cpp = { version = "0.2.4", default-features = false, features = ["metal"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSPanel", "NSTrackingArea", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSNotification"] }
@@ -117,13 +117,13 @@ objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSNotification"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
 gtk = "0.18"
-transcribe-cpp = { version = "0.2.3", default-features = false, features = ["dynamic-backends", "vulkan"] }
+transcribe-cpp = { version = "0.2.4", default-features = false, features = ["dynamic-backends", "vulkan"] }
 
 [target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
-transcribe-cpp = { version = "0.2.3", default-features = false, features = ["dynamic-backends", "vulkan"] }
+transcribe-cpp = { version = "0.2.4", default-features = false, features = ["dynamic-backends", "vulkan"] }
 
 [target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
-transcribe-cpp = { version = "0.2.3", default-features = false }
+transcribe-cpp = { version = "0.2.4", default-features = false }
 
 [patch.crates-io]
 tauri-runtime = { git = "https://github.com/cjpais/tauri.git", branch = "handy-2.10.2" }
