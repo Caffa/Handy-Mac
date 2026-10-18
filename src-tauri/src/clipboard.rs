@@ -9,6 +9,15 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
+/// Original clipboard contents saved before a clipboard paste, for later
+/// restoration. Text takes priority; an image is only captured when the
+/// clipboard held no text, so the common text path costs exactly what it
+/// did before (reading an image decodes the full bitmap).
+struct SavedClipboard {
+    text: Option<String>,
+    image: Option<tauri::image::Image<'static>>,
+}
+
 #[cfg(target_os = "linux")]
 use crate::utils::{is_kde_wayland, is_wayland};
 
@@ -313,22 +322,36 @@ fn paste_via_clipboard(
     paste_delay_ms: u64,
 ) -> Result<(), String> {
     // Phase 1: Write text to clipboard + delay (no Enigo lock needed).
-    let clipboard_content = prepare_clipboard_for_paste(text, app_handle, paste_delay_ms)?;
+    let saved_clipboard = prepare_clipboard_for_paste(text, app_handle, paste_delay_ms)?;
 
     // Phase 2: Send paste key combo + verify (Enigo lock held by caller).
-    send_paste_keys_and_verify(enigo, text, app_handle, paste_method, &clipboard_content)
+    send_paste_keys_and_verify(
+        enigo,
+        text,
+        app_handle,
+        paste_method,
+        &saved_clipboard,
+    )
 }
 
 /// Phase 1 of clipboard paste: write text to clipboard and sleep for paste_delay_ms.
-/// Returns the original clipboard content for later restoration.
+/// Returns the original clipboard contents for later restoration.
 /// Does NOT require the Enigo lock — safe to call before acquiring it.
 fn prepare_clipboard_for_paste(
     text: &str,
     app_handle: &AppHandle,
     paste_delay_ms: u64,
-) -> Result<String, String> {
+) -> Result<SavedClipboard, String> {
     let clipboard = app_handle.clipboard();
-    let clipboard_content = clipboard.read_text().unwrap_or_default();
+    let saved_text = clipboard.read_text().ok().filter(|t| !t.is_empty());
+    // Only probe for an image when there is no text to restore. Text is by far
+    // the common case, and reading an image decodes the full bitmap, so this
+    // keeps the text path exactly as cheap as it was before.
+    let saved_image = if saved_text.is_none() {
+        clipboard.read_image().ok().map(|image| image.to_owned())
+    } else {
+        None
+    };
 
     // Write text to clipboard first
     // On Wayland, prefer wl-copy for better compatibility (especially with umlauts)
@@ -354,7 +377,10 @@ fn prepare_clipboard_for_paste(
     // are not starved during the delay.
     std::thread::sleep(Duration::from_millis(paste_delay_ms));
 
-    Ok(clipboard_content)
+    Ok(SavedClipboard {
+        text: saved_text,
+        image: saved_image,
+    })
 }
 
 /// Phase 2 of clipboard paste: send the paste key combo, verify it landed,
@@ -365,7 +391,7 @@ fn send_paste_keys_and_verify(
     text: &str,
     app_handle: &AppHandle,
     paste_method: &PasteMethod,
-    clipboard_content: &str,
+    saved_clipboard: &SavedClipboard,
 ) -> Result<(), String> {
     // Send paste key combo
     #[cfg(target_os = "linux")]
@@ -406,18 +432,30 @@ fn send_paste_keys_and_verify(
     let clipboard = app_handle.clipboard();
 
     if paste_verified {
-        // Paste verified — safe to restore original clipboard content
+        // Paste verified — safe to restore original clipboard contents.
+        // Text takes priority so this path stays identical to the previous
+        // behavior; an image is only restored when the clipboard held no
+        // text at all, which is the case that used to silently wipe
+        // screenshots.
         info!("Paste verified — restoring original clipboard content");
 
-        #[cfg(target_os = "linux")]
-        if is_wayland() && is_wl_copy_available() {
-            let _ = write_clipboard_via_wl_copy(clipboard_content);
-        } else {
-            let _ = clipboard.write_text(clipboard_content);
-        }
+        if let Some(clipboard_content) = &saved_clipboard.text {
+            #[cfg(target_os = "linux")]
+            if is_wayland() && is_wl_copy_available() {
+                let _ = write_clipboard_via_wl_copy(clipboard_content);
+            } else {
+                let _ = clipboard.write_text(clipboard_content);
+            }
 
-        #[cfg(not(target_os = "linux"))]
-        let _ = clipboard.write_text(clipboard_content);
+            #[cfg(not(target_os = "linux"))]
+            let _ = clipboard.write_text(clipboard_content);
+        } else if let Some(image) = &saved_clipboard.image {
+            info!("Restoring image to clipboard");
+            let _ = clipboard.write_image(image);
+        } else {
+            // Nothing was there to begin with — don't leave the transcription behind.
+            let _ = clipboard.clear();
+        }
     } else {
         // Paste NOT verified — keep transcription text on clipboard.
         // The user can manually Cmd+V to paste again. The transcription
@@ -993,7 +1031,7 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     // ── Clipboard-based methods: do clipboard write + delay BEFORE Enigo lock ──
     // The Enigo lock is only needed for key-sending, not for clipboard I/O or
     // sleep delays. Holding it across paste_delay_ms starves other Enigo users.
-    let clipboard_saved_content: Option<String> = match paste_method {
+    let clipboard_saved_content: Option<SavedClipboard> = match paste_method {
         PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
             info!("Pasting via clipboard method (preparing clipboard)");
             Some(prepare_clipboard_for_paste(
@@ -1038,7 +1076,7 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
                 &text,
                 &app_handle,
                 &paste_method,
-                clipboard_saved_content.as_deref().unwrap_or(""),
+                clipboard_saved_content.as_ref().unwrap(),
             )
         }
         PasteMethod::ExternalScript => {
