@@ -3,11 +3,15 @@ use std::sync::Arc;
 
 const GAIN: f32 = 1.3;
 const CURVE_POWER: f32 = 0.7;
-/// Fixed normalization window — wide enough to cover any mic from very
-/// quiet (-70 dB) to loud (-5 dB).  This is the base range; the peak
-/// boost below auto-amplifies quiet mics so their speech fills the bars.
-const DB_MIN: f32 = -70.0;
-const DB_MAX: f32 = -5.0;
+/// `db` below is not true dBFS: it's a per-bin average divided by the FFT
+/// window size, which lands ~20 dB low for speech. This window is calibrated
+/// against measured mic audio (dictation ~-32 dBFS, room tone ~-48 dBFS)
+/// rather than absolute dBFS. The old -70/-5 window left speech barely above
+/// the overlay's floor, which reads as a frozen waveform (#1694).
+/// Not lowered past -68: at -70 a noisy room starts making the idle waveform
+/// twitch. The peak boost below still auto-amplifies quiet mics.
+const DB_MIN: f32 = -68.0;
+const DB_MAX: f32 = -30.0;
 /// Maximum gain boost applied to quiet mics.  If the user's peak speech
 /// only reaches 40% of the fixed window, the boost is 2.5× so their bars
 /// still move meaningfully without all bars maxing out.  Capped to prevent
