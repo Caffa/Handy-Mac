@@ -239,6 +239,7 @@ pub fn change_binding(
     if let Err(e) = validate_shortcut_for_implementation(&binding, settings.keyboard_implementation)
     {
         warn!("change_binding validation error: {}", e);
+        restore_registration(&app, &binding_to_modify);
         return Err(e);
     }
 
@@ -268,13 +269,14 @@ pub fn change_binding(
     // Create an updated binding for the active keyboard implementation.
     // The per-implementation helper also mirrors the value to `current_binding`
     // so the frontend immediately sees the new binding.
-    let mut updated_binding = binding_to_modify;
+    let mut updated_binding = binding_to_modify.clone();
     updated_binding.set_binding_for(settings.keyboard_implementation, binding);
 
     // Register the new binding
     if let Err(e) = register_shortcut(&app, updated_binding.clone()) {
         let error_msg = format!("Failed to register shortcut: {}", e);
         error!("change_binding error: {}", error_msg);
+        restore_registration(&app, &binding_to_modify);
         return Ok(BindingResponse {
             success: false,
             binding: None,
@@ -304,40 +306,71 @@ pub fn reset_binding(app: AppHandle, id: String) -> Result<BindingResponse, Stri
     change_binding(app, id, binding.default_binding)
 }
 
-/// Temporarily unregister a binding while the user is editing it in the UI.
-/// This avoids firing the action while keys are being recorded.
-#[tauri::command]
-#[specta::specta]
-pub fn suspend_binding(app: AppHandle, id: String) -> Result<(), String> {
-    let settings = get_settings(&app);
-    if let Some(b) = settings::get_bindings(&app).get(&id).cloned() {
-        let mut active_binding = b;
-        active_binding.current_binding = active_binding
+/// Best-effort re-register of the previous binding after a failed change,
+/// so a failure leaves the user's shortcut working exactly as before.
+fn restore_registration(app: &AppHandle, binding: &ShortcutBinding) {
+    if let Err(e) = register_shortcut(app, binding.clone()) {
+        error!(
+            "Failed to restore previous binding '{}' ({}): {}",
+            binding.id, binding.current_binding, e
+        );
+    }
+}
+
+/// Unregister every binding while the user is recording a new shortcut in
+/// the UI, so no existing shortcut can fire — or swallow the keystrokes —
+/// mid-capture. The "cancel" binding is untouched: it is managed dynamically
+/// by the recording lifecycle.
+pub fn suspend_all_shortcuts(app: &AppHandle) {
+    let settings = get_settings(app);
+    for (id, mut binding) in settings.bindings {
+        if id == "cancel" {
+            continue;
+        }
+        binding.current_binding = binding
             .binding_for(settings.keyboard_implementation)
             .to_string();
-        if let Err(e) = unregister_shortcut(&app, active_binding) {
-            error!("suspend_binding error for id '{}': {}", id, e);
-            return Err(e);
+        if let Err(e) = unregister_shortcut(app, binding) {
+            debug!("suspend_all_shortcuts: could not unregister '{}': {}", id, e);
         }
     }
+}
+
+/// Re-register every binding from settings after shortcut recording ends.
+/// Registering an already-registered shortcut fails cleanly in both
+/// implementations, so this is idempotent and safe on every exit path.
+pub fn resume_all_shortcuts(app: &AppHandle) {
+    let settings = get_settings(app);
+    for (id, mut binding) in settings.bindings.clone() {
+        if id == "cancel" {
+            continue;
+        }
+        if id == "transcribe_with_post_process" && !settings.post_process_enabled {
+            continue;
+        }
+        binding.current_binding = binding
+            .binding_for(settings.keyboard_implementation)
+            .to_string();
+        if let Err(e) = register_shortcut(app, binding) {
+            debug!("resume_all_shortcuts: could not register '{}': {}", id, e);
+        }
+    }
+}
+
+/// Temporarily unregister all bindings while the user is recording a
+/// shortcut in the UI. This avoids firing actions while keys are recorded.
+#[tauri::command]
+#[specta::specta]
+pub fn suspend_all_bindings(app: AppHandle) -> Result<(), String> {
+    suspend_all_shortcuts(&app);
     Ok(())
 }
 
-/// Re-register the binding after the user has finished editing.
+/// Re-register all bindings after the user has finished recording.
 #[tauri::command]
 #[specta::specta]
-pub fn resume_binding(app: AppHandle, id: String) -> Result<(), String> {
-    let settings = get_settings(&app);
-    if let Some(b) = settings::get_bindings(&app).get(&id).cloned() {
-        let mut active_binding = b;
-        active_binding.current_binding = active_binding
-            .binding_for(settings.keyboard_implementation)
-            .to_string();
-        if let Err(e) = register_shortcut(&app, active_binding) {
-            error!("resume_binding error for id '{}': {}", id, e);
-            return Err(e);
-        }
-    }
+pub fn resume_all_bindings(app: AppHandle) -> Result<(), String> {
+    resume_all_shortcuts(&app);
     Ok(())
 }
 
