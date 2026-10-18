@@ -131,6 +131,36 @@ fn build_console_filter() -> env_filter::Filter {
     builder.build()
 }
 
+/// Choose the macOS activation policy the process *launches* with.
+///
+/// Must run between `build()` and `run()`: that is the only point where
+/// `App::set_activation_policy` sets tao's initial policy, which
+/// `applicationDidFinishLaunching` then applies directly. Calling the
+/// `AppHandle` variant from `setup` (which Tauri runs on `RunEvent::Ready`,
+/// i.e. after launch) is instead a runtime Regular -> Accessory demotion of an
+/// already-activated foreground app — the transition Apple documents as
+/// unreliable, and what left a Dock icon behind for start-hidden launches on
+/// macOS 26+ (#1787). Launching as Accessory avoids the transition entirely;
+/// showing the window later promotes to Regular, which is the supported direction.
+///
+/// Mirrors the show-window decision in `setup`: the app launches without a
+/// Dock icon only when it will start hidden (setting or `--start-hidden`) AND a
+/// tray icon is available (setting and not `--no-tray`). With no tray the Dock
+/// icon stays as the only way back into the app.
+#[cfg(target_os = "macos")]
+fn apply_startup_activation_policy(app: &mut tauri::App) {
+    let cli_args = app.state::<CliArgs>().inner().clone();
+    let settings = settings::get_settings(app.handle());
+
+    let should_hide = settings.start_hidden || cli_args.start_hidden;
+    let tray_available = settings.show_tray_icon && !cli_args.no_tray;
+
+    if should_hide && tray_available {
+        log::info!("Starting hidden with tray available: launching as Accessory (no Dock icon)");
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(main_window) = app.get_webview_window("main") {
         if let Err(e) = main_window.unminimize() {
@@ -308,15 +338,11 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     #[cfg(unix)]
     signal_handle::setup_signal_handler(app_handle.clone(), signals);
 
-    // Apply macOS Accessory policy if starting hidden and tray is available.
-    // If the tray icon is disabled, keep the dock icon so the user can reopen.
-    #[cfg(target_os = "macos")]
-    {
-        let settings = settings::get_settings_safe(app_handle);
-        if settings.start_hidden && settings.show_tray_icon {
-            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-        }
-    }
+    // The macOS activation policy for a start-hidden launch is applied before
+    // the event loop runs (see `apply_startup_activation_policy`), not here:
+    // by the time `setup` runs the app has already launched as a Regular
+    // (Dock) app, and demoting it at runtime is unreliable (#1787).
+
     // Get the current theme to set the appropriate initial icon
     let initial_theme = tray::get_current_theme(app_handle);
 
@@ -817,7 +843,8 @@ pub fn run(cli_args: CliArgs) {
         builder = builder.plugin(tauri_nspanel::init());
     }
 
-    builder
+    #[allow(unused_mut)]
+    let mut app = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--toggle-transcription") {
                 signal_handle::send_transcription_input(app, "transcribe", "CLI");
@@ -1132,8 +1159,12 @@ pub fn run(cli_args: CliArgs) {
         })
         .invoke_handler(invoke_handler)
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app, event| {
+        .expect("error while building tauri application");
+
+    #[cfg(target_os = "macos")]
+    apply_startup_activation_policy(&mut app);
+
+    app.run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = &event {
                 show_main_window(app);
