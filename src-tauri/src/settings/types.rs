@@ -267,6 +267,18 @@ impl Default for ClipboardHandling {
     }
 }
 
+/// Script applied to Mandarin and Cantonese output. Other languages are never
+/// converted.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChineseScript {
+    /// Keep whatever script the model produced.
+    #[default]
+    AsTranscribed,
+    Simplified,
+    Traditional,
+}
+
 // ── AutoSubmitKey ──
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
@@ -682,6 +694,13 @@ pub struct AppSettings {
     pub filler_word_removal_enabled: bool,
     #[serde(default)]
     pub custom_filler_words: Option<Vec<String>>,
+    /// Fresh installs default from the OS locale. Existing stores keep
+    /// `AsTranscribed`; the fork's zh-Hans/zh-Hant language intents continue to
+    /// drive conversion in `actions/post_process.rs` (upstream's migration that
+    /// rewrites `selected_language` is not adopted — the fork's picker still
+    /// exposes those intents).
+    #[serde(default)]
+    pub chinese_script: ChineseScript,
     #[serde(default)]
     pub transcribe_accelerator: TranscribeAcceleratorSetting,
     #[serde(default)]
@@ -849,6 +868,12 @@ pub(crate) fn default_post_process_enabled() -> bool {
 
 pub(crate) fn default_filler_word_removal_enabled() -> bool {
     true
+}
+
+pub(crate) fn default_chinese_script() -> ChineseScript {
+    tauri_plugin_os::locale()
+        .and_then(|locale| crate::chinese_script::chinese_script_for_locale(&locale))
+        .unwrap_or_default()
 }
 
 pub(crate) fn default_app_language() -> String {

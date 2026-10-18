@@ -158,6 +158,10 @@ const settingUpdaters: {
     commands.updateCustomFillerWords(value as string[]),
   filler_word_removal_enabled: (value) =>
     commands.changeFillerWordRemovalEnabledSetting(value as boolean),
+  chinese_script: (value) =>
+    commands.changeChineseScriptSetting(
+      value as import("@/bindings").ChineseScript,
+    ),
   advanced_custom_words: (value) =>
     commands.updateAdvancedCustomWords(value as any[]),
   word_replacements: (value) =>

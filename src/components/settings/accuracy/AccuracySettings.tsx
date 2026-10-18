@@ -15,6 +15,7 @@ import { ConvertUsToBritish } from "../ConvertUsToBritish";
 import { ConvertNumberWordsToDigits } from "../ConvertNumberWordsToDigits";
 import { TranslateToEnglish } from "../TranslateToEnglish";
 import { NoiseSuppression } from "../NoiseSuppression";
+import { ChineseScriptSetting } from "../ChineseScript";
 
 export const AccuracySettings: React.FC = () => {
   const { t } = useTranslation();
@@ -47,6 +48,7 @@ export const AccuracySettings: React.FC = () => {
 
       <SettingsGroup title={t("settings.accuracy.groups.language")}>
         <TranslateToEnglish descriptionMode="tooltip" grouped />
+        <ChineseScriptSetting descriptionMode="tooltip" grouped />
         <ConvertUsToBritish descriptionMode="tooltip" grouped />
         <ConvertNumberWordsToDigits descriptionMode="tooltip" grouped />
       </SettingsGroup>

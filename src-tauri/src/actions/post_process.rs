@@ -3,8 +3,8 @@
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::apple_intelligence;
-use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID};
-use ferrous_opencc::{config::BuiltinConfig, OpenCC};
+use crate::chinese_script::{convert_chinese_script, ChineseVariety};
+use crate::settings::{get_settings, AppSettings, ChineseScript, APPLE_INTELLIGENCE_PROVIDER_ID};
 use log::{debug, error, warn};
 use tauri::AppHandle;
 
@@ -277,44 +277,40 @@ async fn maybe_convert_chinese_variant(
     settings: &AppSettings,
     transcription: &str,
 ) -> Option<String> {
-    // Check if language is set to Simplified or Traditional Chinese
-    let is_simplified = settings.selected_language == "zh-Hans";
-    let is_traditional = settings.selected_language == "zh-Hant";
+    // Explicit script selection (upstream 0bb0428e) takes precedence; the
+    // legacy zh-Hans/zh-Hant language intents remain the fallback until the
+    // Phase 6 rewrite supplies real output-language evidence. Until then the
+    // selected recognition language doubles as the output-language signal, so
+    // non-Chinese selections are never converted.
+    let script = if settings.chinese_script != ChineseScript::AsTranscribed {
+        Some(settings.chinese_script)
+    } else {
+        match settings.selected_language.as_str() {
+            "zh-Hans" => Some(ChineseScript::Simplified),
+            "zh-Hant" => Some(ChineseScript::Traditional),
+            _ => None,
+        }
+    };
 
-    if !is_simplified && !is_traditional {
-        debug!("selected_language is not Simplified or Traditional Chinese; skipping translation");
+    let script = script?;
+    if ChineseVariety::from_language(&settings.selected_language).is_none()
+        && settings.chinese_script != ChineseScript::AsTranscribed
+    {
+        debug!(
+            "selected language '{}' is not Chinese; skipping script conversion",
+            settings.selected_language
+        );
         return None;
     }
 
     debug!(
-        "Starting Chinese translation using OpenCC for language: {}",
-        settings.selected_language
+        "Converting Chinese script to {:?} for language: {}",
+        script, settings.selected_language
     );
 
-    // Use OpenCC to convert based on selected language
-    let config = if is_simplified {
-        // Convert Traditional Chinese to Simplified Chinese
-        BuiltinConfig::Tw2sp
-    } else {
-        // Convert Simplified Chinese to Traditional Chinese
-        BuiltinConfig::S2tw
-    };
-
-    match OpenCC::from_config(config) {
-        Ok(converter) => {
-            let converted = converter.convert(transcription);
-            debug!(
-                "OpenCC translation completed. Input length: {}, Output length: {}",
-                transcription.len(),
-                converted.len()
-            );
-            Some(converted)
-        }
-        Err(e) => {
-            error!("Failed to initialize OpenCC converter: {}. Falling back to original transcription.", e);
-            None
-        }
-    }
+    let variety = ChineseVariety::from_language(&settings.selected_language)
+        .unwrap_or(ChineseVariety::Mandarin);
+    Some(convert_chinese_script(transcription, variety, script))
 }
 
 pub struct ProcessedTranscription {

@@ -5,6 +5,7 @@ mod audio_feedback;
 pub mod audio_toolkit;
 mod autostart;
 pub mod catalog;
+pub mod chinese_script;
 pub mod cli;
 mod clipboard;
 mod commands;
@@ -669,6 +670,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_append_trailing_space_setting,
             shortcut::change_lazy_stream_close_setting,
             shortcut::change_filler_word_removal_enabled_setting,
+            shortcut::change_chinese_script_setting,
             shortcut::change_app_language_setting,
             shortcut::change_update_checks_setting,
             shortcut::change_keyboard_implementation_setting,

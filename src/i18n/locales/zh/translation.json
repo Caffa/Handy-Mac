@@ -531,6 +531,15 @@
         "title": "移除填充词",
         "description": "从转录文本中移除常见的犹豫词。关闭后保留。"
       },
+      "chineseScript": {
+        "title": "中文简繁转换",
+        "description": "将普通话和粤语的转录文本转换为简体或繁体字。其他语言保持不变。",
+        "options": {
+          "asTranscribed": "按原样输出",
+          "simplified": "简体中文",
+          "traditional": "繁体中文"
+        }
+      },
       "keyboardImplementation": {
         "title": "键盘实现",
         "description": "选择键盘快捷键的后端。",
