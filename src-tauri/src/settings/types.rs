@@ -678,6 +678,8 @@ pub struct AppSettings {
     pub router_script_path: Option<String>,
     #[serde(default)]
     pub router_env_file: Option<String>,
+    #[serde(default = "default_filler_word_removal_enabled")]
+    pub filler_word_removal_enabled: bool,
     #[serde(default)]
     pub custom_filler_words: Option<Vec<String>>,
     #[serde(default)]
@@ -843,6 +845,10 @@ pub(crate) fn default_sound_theme() -> SoundTheme {
 
 pub(crate) fn default_post_process_enabled() -> bool {
     false
+}
+
+pub(crate) fn default_filler_word_removal_enabled() -> bool {
+    true
 }
 
 pub(crate) fn default_app_language() -> String {

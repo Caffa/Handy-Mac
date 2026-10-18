@@ -1372,6 +1372,18 @@ pub fn change_lazy_stream_close_setting(app: AppHandle, enabled: bool) -> Result
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_filler_word_removal_enabled_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.filler_word_removal_enabled = enabled;
+    settings::write_settings_safe(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn change_app_language_setting(app: AppHandle, language: String) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.app_language = language.clone();

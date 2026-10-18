@@ -142,6 +142,7 @@ pub fn get_default_settings() -> AppSettings {
         router_env_file: Some(
             "/Users/caffae/Local-Projects-2026/Voice-Memo-to-Router/.env".to_string(),
         ),
+        filler_word_removal_enabled: default_filler_word_removal_enabled(),
         custom_filler_words: None,
         transcribe_accelerator: TranscribeAcceleratorSetting::default(),
         ort_accelerator: OrtAcceleratorSetting::default(),

@@ -156,6 +156,8 @@ const settingUpdaters: {
   custom_words: (value) => commands.updateCustomWords(value as string[]),
   custom_filler_words: (value) =>
     commands.updateCustomFillerWords(value as string[]),
+  filler_word_removal_enabled: (value) =>
+    commands.changeFillerWordRemovalEnabledSetting(value as boolean),
   advanced_custom_words: (value) =>
     commands.updateAdvancedCustomWords(value as any[]),
   word_replacements: (value) =>

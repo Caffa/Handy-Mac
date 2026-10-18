@@ -5,6 +5,7 @@ import { useSettings } from "../../../hooks/useSettings";
 import { WordCorrectionModeSelector } from "../WordCorrectionModeSelector";
 import { CustomWords } from "../CustomWords";
 import { CustomFillerWords } from "../CustomFillerWords";
+import { FillerWordRemoval } from "../FillerWordRemoval";
 import { WordCorrectionThreshold } from "../WordCorrectionThreshold";
 import { AdvancedCustomWords } from "../AdvancedCustomWords";
 import { WordReplacements } from "../WordReplacements";
@@ -24,6 +25,7 @@ export const AccuracySettings: React.FC = () => {
     <div className="max-w-3xl w-full mx-auto space-y-6">
       <SettingsGroup title={t("settings.accuracy.groups.wordCorrection")}>
         <WordCorrectionModeSelector descriptionMode="tooltip" grouped />
+        <FillerWordRemoval descriptionMode="tooltip" grouped />
         {wordCorrectionMode === "word_bias" ? (
           <>
             <CustomWords descriptionMode="tooltip" grouped />

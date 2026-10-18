@@ -495,6 +495,10 @@
         "remove": "Remove {{word}}",
         "duplicate": "\"{{word}}\" already exists in your filler words list"
       },
+      "fillerWordRemoval": {
+        "title": "Remove Filler Words",
+        "description": "Removes common hesitation words from transcriptions. Turn off to keep them."
+      },
       "vadSensitivity": {
         "title": "Voice Detection Sensitivity",
         "description": "Controls when the app starts and stops recording based on voice activity. Higher sensitivity catches speech earlier but may pick up background noise.",
