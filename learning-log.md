@@ -842,3 +842,27 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - Energy-preserving ≠ content-preserving: VAD passed all onset-timing checks yet dropped words; only model-level raw-vs-vad A/B exposed it.
 - Don't trim leading silence before ASR — in testing it caused hallucinations ("Big Brother"); leading silence helps these models.
 - Known limitation: noise-suppression-enabled users keep old behavior (suppressed pre-roll frames can't map back to originals).
+
+## ESC-Cancel Lag + Visualizer Dead After Cancel (2026-10-17)
+
+### Problem
+- Cmd+Escape cancel of an active recording felt like a multi-second freeze ("very bad lag"), and afterwards the visualizer didn't appear properly on the next recording.
+- Event-log forensics (handy-events.jsonl) showed the smoking gun: `RecordingStarted` emitted, then 20ms later `RecordingFailed error="Already recording"` (sessions s-20261017T052618.527Z, s-20261016T062500.906Z) — the audio manager was wedged in `RecordingState::Recording` while the coordinator/UI thought otherwise.
+
+### Root causes (three verified defects, one chain)
+1. **Manager-thread starvation (the lag):** `handle_shortcut_event` (shortcut/handler.rs) dispatched `CancelAction::start` INLINE on the handy-keys manager thread. `cancel_current_operation` (utils.rs) step 2 `unregister_cancel_shortcut` does `recv_timeout(5s)` against that SAME thread's command queue — a guaranteed ~5s self-wait on every ESC — plus `cancel_recording`'s `try_lock_for` waits. The whole hotkey loop starved during the block. CLI `--cancel` never showed this because `commands/mod.rs` `cancel_operation` already runs on `spawn_blocking` (live repro: 35-40ms).
+2. **Escape hatch leaves state wedged (the visualizer symptom):** `cancel_recording`'s `state.try_lock_for(2s)` failure branch stored `is_recording=false` and silently RETURNED, leaving the enum as `Recording`. Then `transcription_coordinator`'s `start()` consulted `is_recording()` (enum-only!) → emitted `AppState::Recording` for a start that actually failed "Already recording" → overlay visible with no capture → no mic-level events → micDeadWarning/no bars.
+3. **Latent self-deadlock:** `schedule_lazy_close` held `state.lock()` while calling `stop_microphone_stream`, whose Phase 2 does `*self.state.lock() = Idle` (parking_lot non-reentrant → permanent lock deadlock 30s after every recording end when lazy_stream_close=true; comment claimed it doesn't take the lock — false).
+
+### Fix (2026-10-17, uncommitted)
+- handler.rs + both lib.rs cancel call sites: dispatch via `tauri::async_runtime::spawn_blocking` (parity with the CLI path) — manager thread never blocks.
+- `cancel_recording` escape hatch: no silent return; detaches `recovery_after_state_lock_timeout` (bounded 3-phase worker: recorder stop without waiting for the reply → gated state heal `Recording && !is_recording` → on-demand stream close/lazy close parity with no locks held).
+- `try_start_recording` check 2: self-heal `Recording` + atomic false → Idle (`[RECOVERY]` log), killing the "Already recording" retry loop.
+- New `AudioRecordingManager::is_recording_effective()` (enum Recording AND atomic true) used ONLY by the coordinator's start-vs-rollback decision; `is_recording()` stays enum-only so ESC stays armed during a wedge.
+- `schedule_lazy_close`: drop the state guard after the gen+Idle check, re-check `close_generation`, then close — deadlock gone.
+
+### Key insights
+- Two sources of truth (`is_recording` AtomicBool vs `RecordingState` enum) is the wedge's enabler: the escape hatch cleared one and left the other. Self-heal paths must gate on the atomic, which is always cleared/stored under the state lock.
+- Never call a method that takes `state.lock()` while holding `state.lock()` — parking_lot is non-reentrant and will deadlock silently. Audit every "close" helper for hidden lock acquisition.
+- Inline work on the hotkey manager thread must never do channel round-trips to itself or wait on locks; every second there reads as "app dead" to the user.
+- Empirical checks that mattered: CLI repro measured the happy path fast (35-40ms) which disproved "cancel is inherently slow" and pointed at threading; events jsonl (RecordingStarted→Failed pairs) pinpointed the wedge without needing a debugger.

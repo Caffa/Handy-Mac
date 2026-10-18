@@ -486,6 +486,27 @@ impl CoordinatorCore {
                             hotkey_string,
                         }
                     } else if !is_pressed
+                        && matches!(
+                            &self.stage,
+                            Stage::Recording { binding_id: id, .. } if id != &binding_id
+                        )
+                    {
+                        // Cross-binding PTT release while another binding owns
+                        // the active recording: ignore it so the owner's release
+                        // completes the session. Recovering here would rebind the
+                        // stage to the pressed binding and cause a stop_recording
+                        // binding mismatch (discarded audio, wedged recorder).
+                        if let Stage::Recording {
+                            binding_id: owner, ..
+                        } = &self.stage
+                        {
+                            debug!(
+                                "Ignoring cross-binding PTT release for '{}': owner '{}'",
+                                binding_id, owner
+                            );
+                        }
+                        StageAction::None
+                    } else if !is_pressed
                         && self.try_recover_stop(
                             binding_id.clone(),
                             active_use,
@@ -547,6 +568,30 @@ impl CoordinatorCore {
                             self.sync_state(active_use, current_state);
                             StageAction::StopRecording {
                                 binding_id,
+                                hotkey_string,
+                            }
+                        }
+                        Stage::Recording { binding_id: id, .. } => {
+                            // Cross-binding press while a recording is active:
+                            // treat it as a universal "stop + complete" of the
+                            // ACTIVE session. Keep the owner's binding id so the
+                            // stop flow (transcribe → paste, router → confirming)
+                            // matches the recorder's active binding; the pressed
+                            // hotkey's identity must neither rebind the stage nor
+                            // start a new recording.
+                            let owner_id = id.clone();
+                            info!(
+                                "Cross-binding stop: owner '{}', pressed '{}'",
+                                owner_id, binding_id
+                            );
+                            self.hard_cap_extension = Duration::ZERO;
+                            self.transition_to(Stage::Processing {
+                                since: Instant::now(),
+                                binding_id: Some(owner_id.clone()),
+                            });
+                            self.sync_state(active_use, current_state);
+                            StageAction::StopRecording {
+                                binding_id: owner_id,
                                 hotkey_string,
                             }
                         }
@@ -1412,7 +1457,7 @@ fn start(
     action.start(app, binding_id, hotkey_string);
     if app
         .try_state::<Arc<AudioRecordingManager>>()
-        .is_some_and(|a| a.is_recording())
+        .is_some_and(|a| a.is_recording_effective())
     {
         // Allocate the new session id BEFORE transitioning so the emitted
         // AppState::Recording carries the id of the session that is starting.

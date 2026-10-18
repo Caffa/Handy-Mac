@@ -1267,3 +1267,221 @@ fn test_hard_cap_extension_resets_when_leaving_recording() {
     assert!(matches!(h.state(), AppState::Processing { .. }));
     assert_eq!(h.core.hard_cap_extension(), Duration::ZERO);
 }
+
+// ── Test 34: Cross-binding press stops with the OWNER's binding ──
+// Pressing a different transcribe hotkey while a recording is active must act
+// as a universal "stop + complete" of the ACTIVE session: the stop action must
+// be dispatched for the owner binding (so the audio is kept and the owner's
+// flow — transcribe→paste, router→confirming — runs), and the state must go
+// to Processing, never to Recording with the pressed binding.
+
+#[test]
+fn test_cross_binding_press_stops_with_owner_binding() {
+    let mut h = TestHarness::new();
+
+    // Start recording with "transcribe"
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // Press a different binding → must stop the OWNER's session
+    let action = h.process(Command::Input {
+        binding_id: "transcribe_with_router".into(),
+        hotkey_string: "Cmd+Shift+R".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    match action {
+        StageAction::StopRecording { binding_id, .. } => {
+            assert_eq!(
+                binding_id, "transcribe",
+                "cross-binding press must stop the owner's session, not the pressed one"
+            );
+        }
+        other => panic!("Expected StopRecording, got {:?}", other),
+    }
+    match h.state() {
+        AppState::Processing { binding_id, .. } => {
+            assert_eq!(
+                binding_id.as_deref(),
+                Some("transcribe"),
+                "Processing must carry the owner binding, never the pressed one"
+            );
+        }
+        other => panic!("Expected Processing state, got {:?}", other),
+    }
+    assert!(h.is_active());
+
+    // ProcessingFinished → Idle, session fully completed
+    h.process(Command::ProcessingFinished);
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+// ── Test 35: Router owner stopped by the plain transcribe binding ──
+// Mirror of Test 34 with the roles swapped: the router binding owns the
+// recording and the plain transcribe hotkey is pressed. The stop must target
+// the router binding so its confirming flow runs.
+
+#[test]
+fn test_router_owner_stopped_by_other_binding() {
+    let mut h = TestHarness::new();
+
+    // Start recording with "transcribe_with_router"
+    let action = h.process(Command::Input {
+        binding_id: "transcribe_with_router".into(),
+        hotkey_string: "Cmd+Shift+R".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // Press "transcribe" → stop the ROUTER's session
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    match action {
+        StageAction::StopRecording { binding_id, .. } => {
+            assert_eq!(
+                binding_id, "transcribe_with_router",
+                "cross-binding press must stop the router owner's session"
+            );
+        }
+        other => panic!("Expected StopRecording, got {:?}", other),
+    }
+    match h.state() {
+        AppState::Processing { binding_id, .. } => {
+            assert_eq!(binding_id.as_deref(), Some("transcribe_with_router"));
+        }
+        other => panic!("Expected Processing state, got {:?}", other),
+    }
+
+    // ProcessingFinished → Idle
+    h.process(Command::ProcessingFinished);
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+// ── Test 36: Cross-binding PTT release is ignored ──
+// Releasing a different push-to-talk key while another binding's PTT recording
+// is active must be a no-op: the session keeps recording under the owner
+// binding and only the owner's release completes it. The cross-binding release
+// step is issued with recorder_is_recording=true via a direct process_command
+// call to prove the guard takes precedence over try_recover_stop drift
+// recovery (which would otherwise rebind the stage to the pressed binding).
+
+#[test]
+fn test_ptt_cross_binding_release_is_ignored() {
+    let mut h = TestHarness::new();
+
+    // PTT press "transcribe" starts recording
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "F6".into(),
+        is_pressed: true,
+        push_to_talk: true,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // Cross-binding PTT release (recorder live) → ignored, stage unchanged
+    let action = h.core.process_command(
+        Command::Input {
+            binding_id: "transcribe_with_post_process".into(),
+            hotkey_string: "F7".into(),
+            is_pressed: false,
+            push_to_talk: true,
+        },
+        &h.active_use,
+        &h.current_state,
+        true,
+        &h.app,
+    );
+    assert!(
+        matches!(action, StageAction::None),
+        "cross-binding PTT release must be ignored, got {:?}",
+        action
+    );
+    match h.state() {
+        AppState::Recording { binding_id, .. } => {
+            assert_eq!(
+                binding_id, "transcribe",
+                "stage must stay Recording under the owner binding"
+            );
+        }
+        other => panic!("Expected Recording state, got {:?}", other),
+    }
+
+    // Owner's release completes the session
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "F6".into(),
+        is_pressed: false,
+        push_to_talk: true,
+    });
+    match action {
+        StageAction::StopRecording { binding_id, .. } => {
+            assert_eq!(binding_id, "transcribe");
+        }
+        other => panic!("Expected StopRecording, got {:?}", other),
+    }
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // ProcessingFinished → Idle
+    h.process(Command::ProcessingFinished);
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+// ── Test 37: Press during Processing is still ignored ──
+// The cross-binding stop applies only while Recording. Presses during
+// Processing (and Confirming/UsbCycling upstream) must remain no-ops.
+
+#[test]
+fn test_press_during_processing_still_ignored() {
+    let mut h = TestHarness::new();
+
+    // Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Press a different binding during Processing → ignored
+    let action = h.process(Command::Input {
+        binding_id: "transcribe_with_router".into(),
+        hotkey_string: "Cmd+Shift+R".into(),
+        is_pressed: true,
+        push_to_talk: false,
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "press during Processing must be ignored, got {:?}",
+        action
+    );
+    match h.state() {
+        AppState::Processing { binding_id, .. } => {
+            assert_eq!(binding_id.as_deref(), Some("transcribe"));
+        }
+        other => panic!("Expected Processing state, got {:?}", other),
+    }
+    assert!(h.is_active());
+}

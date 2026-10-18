@@ -381,8 +381,13 @@ fn initialize_core_logic(app_handle: &AppHandle) {
             "cancel" => {
                 use crate::utils::cancel_current_operation;
 
-                // Use centralized cancellation that handles all operations
-                cancel_current_operation(app);
+                // Offload the blocking cancel path to a worker thread so the
+                // tray handler (main thread) never freezes. cancel_current_operation
+                // can wait on locks and shortcut unregister round-trips.
+                let app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    cancel_current_operation(&app);
+                });
             }
             "quit" => {
                 app.exit(0);
@@ -805,7 +810,10 @@ pub fn run(cli_args: CliArgs) {
             } else if args.iter().any(|a| a == "--toggle-post-process") {
                 signal_handle::send_transcription_input(app, "transcribe_with_post_process", "CLI");
             } else if args.iter().any(|a| a == "--cancel") {
-                crate::utils::cancel_current_operation(app);
+                let app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::utils::cancel_current_operation(&app);
+                });
             } else if args.iter().any(|a| a == "--is-active-use") {
                 // Query active use state: recording, transcribing, or processing.
                 // Writes result to a temp file for the CLI instance to read.

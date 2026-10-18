@@ -1100,25 +1100,34 @@ impl AudioRecordingManager {
                 debug!("AudioRecordingManager not available for lazy close");
                 return;
             };
-            // Hold state lock across the check AND close to serialize against
-            // try_start_recording, preventing a race where the stream is closed
-            // under an active recording.
-            let state = rm.state.lock();
-            // Never close the stream if BT keep-alive is active
-            if bt_keep_alive.load(Ordering::Acquire) {
-                debug!("Skipping lazy close: BT keep-alive is active");
-                return;
-            }
-            if rm.close_generation.load(Ordering::SeqCst) == gen
-                && matches!(*state, RecordingState::Idle)
-            {
-                // stop_microphone_stream does not acquire the state lock,
-                // so holding it here is safe (no deadlock).
-                info!(
-                    "Closing idle microphone stream after {:?}",
-                    STREAM_IDLE_TIMEOUT
-                );
-                rm.stop_microphone_stream();
+            // Hold state lock only for the check so the close does not race
+            // with a concurrent try_start_recording. We must drop the lock
+            // before calling stop_microphone_stream() because that method takes
+            // the state lock itself in its Phase 2; parking_lot is non-reentrant,
+            // so holding it here would deadlock.
+            let should_close = {
+                let state = rm.state.lock();
+                // Never close the stream if BT keep-alive is active
+                if bt_keep_alive.load(Ordering::Acquire) {
+                    debug!("Skipping lazy close: BT keep-alive is active");
+                    false
+                } else {
+                    rm.close_generation.load(Ordering::SeqCst) == gen
+                        && matches!(*state, RecordingState::Idle)
+                }
+            };
+            if should_close {
+                // Re-check generation without the lock: a new start bumps it and
+                // must win the race against this close.
+                if rm.close_generation.load(Ordering::SeqCst) == gen {
+                    info!(
+                        "Closing idle microphone stream after {:?}",
+                        STREAM_IDLE_TIMEOUT
+                    );
+                    rm.stop_microphone_stream();
+                } else {
+                    debug!("Skipping lazy close: generation changed after state check");
+                }
             }
         });
     }
@@ -1637,6 +1646,15 @@ impl AudioRecordingManager {
 
         // Re-acquire the state lock for the actual state transition.
         let mut state = self.state.lock();
+        if matches!(*state, RecordingState::Recording { .. })
+            && !self.is_recording.load(Ordering::Acquire)
+        {
+            // The state enum still says Recording but the live capture flag
+            // has already been cleared, usually by the cancel recovery path.
+            // Heal the stale enum and proceed with a normal start.
+            warn!("[RECOVERY] try_start_recording check 2: healing stale Recording state (atomic=false)");
+            *state = RecordingState::Idle;
+        }
         if let RecordingState::Idle = *state {
             if let Some(rec) = self.recorder.lock().as_ref() {
                 if rec.start(binding_id).is_ok() {
@@ -2122,7 +2140,8 @@ impl AudioRecordingManager {
                 ..
             } => {
                 warn!(
-                    "stop_recording binding mismatch: requested '{}', active '{}'",
+                    "stop_recording binding mismatch: requested '{}', active '{}' \
+                     (coordinator state may be wedged; cancel-recording recovers)",
                     binding_id, active
                 );
                 None
@@ -2138,6 +2157,15 @@ impl AudioRecordingManager {
     }
     pub fn is_recording(&self) -> bool {
         matches!(*self.state.lock(), RecordingState::Recording { .. })
+    }
+
+    /// True only when the state enum says Recording AND the capture flag is set.
+    /// Consult when deciding whether a just-dispatched start actually produced a
+    /// live recording; the cancel escape hatch clears the flag while a stale
+    /// enum state may linger until the recovery worker heals it.
+    pub fn is_recording_effective(&self) -> bool {
+        matches!(*self.state.lock(), RecordingState::Recording { .. })
+            && self.is_recording.load(Ordering::Acquire)
     }
 
     /// Diagnostic wrapper around `is_recording()` that logs the result and
@@ -2220,10 +2248,14 @@ impl AudioRecordingManager {
                 guard
             }
             None => {
-                warn!("[CANCEL-TIMING] Could not acquire state lock within 2s — forcing is_recording=false and proceeding");
-                // Force the recording flag off even if we can't get the state lock,
-                // so the app can recover. The recorder will stop on its own.
+                warn!("[CANCEL-TIMING] Could not acquire state lock within 2s — forcing is_recording=false and spawning recovery worker");
+                // Force the recording flag off so the app can recover. The enum
+                // state and the live recorder capture are repaired by a detached
+                // worker so this cancel path returns immediately and never wedges
+                // the caller (e.g. the global shortcut thread).
                 self.is_recording.store(false, Ordering::Release);
+                let this = self.clone();
+                std::thread::spawn(move || this.recovery_after_state_lock_timeout());
                 return;
             }
         };
@@ -2323,6 +2355,117 @@ impl AudioRecordingManager {
         }
 
         info!("[CANCEL-TIMING] cancel_recording COMPLETE");
+    }
+
+    /// Detached recovery worker run when `cancel_recording` cannot acquire the
+    /// state lock within its 2-second timeout. Bounded in every phase so it never
+    /// hangs the caller or leaks resources.
+    ///
+    /// Accepted race: if a new recording start is mid-flight while phase A's
+    /// `stop_send` queues, the queued `Cmd::Stop` could kill the fresh session
+    /// (a few-ms window, logged). This is vastly better than leaving the manager
+    /// permanently wedged with a stale Recording state and a live capture.
+    fn recovery_after_state_lock_timeout(&self) {
+        let t_start = std::time::Instant::now();
+        info!("[CANCEL-TIMING] recovery worker START");
+
+        // Phase A — stop the live recorder capture without waiting for samples.
+        // wait_for_stop_result can block for up to 5s; cancel discards samples,
+        // so dropping the reply receiver is safe (recorder.rs uses `let _ =` on
+        // the send and replaces any previous pending reply channel).
+        let mut stopped_capture = false;
+        for attempt in 1..=3 {
+            let t = std::time::Instant::now();
+            if let Some(guard) = self
+                .recorder
+                .try_lock_for(std::time::Duration::from_millis(500))
+            {
+                info!(
+                    "[CANCEL-TIMING] recovery worker: recorder.try_lock acquired on attempt {} in {:?}",
+                    attempt,
+                    t.elapsed()
+                );
+                if let Some(rec) = guard.as_ref() {
+                    if let Err(e) = rec.stop_send() {
+                        warn!("[CANCEL-TIMING] recovery worker: stop_send failed: {}", e);
+                    } else {
+                        info!("[CANCEL-TIMING] recovery worker: stop_send dispatched");
+                    }
+                }
+                stopped_capture = true;
+                break;
+            } else {
+                warn!(
+                    "[CANCEL-TIMING] recovery worker: recorder.try_lock attempt {} timed out after {:?}",
+                    attempt,
+                    t.elapsed()
+                );
+            }
+        }
+        if !stopped_capture {
+            warn!("[CANCEL-TIMING] recovery worker: could not acquire recorder lock; another owner will finish its stop");
+        }
+
+        // Phase B — heal the stale Recording state. The atomic gate guarantees a
+        // genuinely-new recording (atomic true) or a smart-stop trailing window
+        // (state Recording + atomic true) is never touched.
+        let mut healed = false;
+        let t_heal_start = std::time::Instant::now();
+        while t_heal_start.elapsed() < std::time::Duration::from_secs(10) {
+            let t = std::time::Instant::now();
+            if let Some(mut state) = self
+                .state
+                .try_lock_for(std::time::Duration::from_millis(500))
+            {
+                info!(
+                    "[CANCEL-TIMING] recovery worker: state.try_lock acquired in {:?}",
+                    t.elapsed()
+                );
+                if matches!(*state, RecordingState::Recording { .. })
+                    && !self.is_recording.load(Ordering::Acquire)
+                {
+                    *state = RecordingState::Idle;
+                    info!("[CANCEL-TIMING] recovery worker healed stale Recording state");
+                    healed = true;
+                }
+                break;
+            } else {
+                warn!(
+                    "[CANCEL-TIMING] recovery worker: state.try_lock timed out after {:?}",
+                    t.elapsed()
+                );
+            }
+        }
+
+        // Phase C — on-demand stream close parity with the normal cancel path.
+        // Only run if we actually healed; stop_microphone_stream takes the state
+        // lock in its Phase 2, so it must NEVER be called while holding the lock.
+        if healed {
+            let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
+            let lazy_stream_close = get_settings(&self.app_handle).lazy_stream_close;
+            if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) && !bt_keep_alive {
+                let t = std::time::Instant::now();
+                if lazy_stream_close {
+                    self.schedule_lazy_close();
+                    info!(
+                        "[CANCEL-TIMING] recovery worker: schedule_lazy_close took {:?}",
+                        t.elapsed()
+                    );
+                } else {
+                    self.stop_microphone_stream();
+                    info!(
+                        "[CANCEL-TIMING] recovery worker: stop_microphone_stream took {:?}",
+                        t.elapsed()
+                    );
+                }
+            }
+        }
+
+        info!(
+            "[CANCEL-TIMING] recovery worker COMPLETE in {:?} (healed={})",
+            t_start.elapsed(),
+            healed
+        );
     }
 
     /// Restart the microphone stream if it should be active.

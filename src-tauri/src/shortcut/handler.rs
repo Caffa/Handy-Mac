@@ -59,7 +59,22 @@ pub fn handle_shortcut_event(
             return;
         };
         if audio_manager.is_recording() && is_pressed {
-            action.start(app, binding_id, hotkey_string);
+            // Offload the synchronous cancel path to a blocking thread.
+            // cancel_current_operation() can block on parking_lot locks and,
+            // crucially, calls unregister_cancel_shortcut() which does a
+            // recv_timeout round-trip to this same hotkey loop — running it
+            // inline would self-wait for ~5s and starve the shortcut thread.
+            // commands/mod.rs::cancel_operation already uses the same pattern.
+            let app2 = app.clone();
+            let action2 = Arc::clone(action);
+            let bid = binding_id.to_string();
+            let hk = hotkey_string.to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                action2.start(&app2, &bid, &hk);
+            });
+            // Accepted race: a transcribe hotkey pressed within ~40ms of ESC
+            // (humanly impossible) could interleave; the same race already
+            // exists in the spawned CLI path.
         }
         return;
     }
