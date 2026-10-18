@@ -606,6 +606,29 @@ fn force_overlay_topmost(overlay_window: &tauri::webview::WebviewWindow) {
     });
 }
 
+/// Upper bound for waiting on a main-thread hop result. Matches the
+/// position-confirmation wait in `position_overlay_on_monitor`.
+const MAIN_THREAD_HOP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Runs `f` on the main thread and waits (bounded) for its result.
+///
+/// Monitor and cursor queries touch NSScreen and the CG display list, which
+/// AppKit wants on the main thread (upstream cf49ab35 moves the whole overlay
+/// show path there). The fork keeps its geometry on the calling thread —
+/// `position_overlay_on_monitor` blocks on a oneshot reply from the main
+/// thread — so only the queries hop. Returns `None` when the hop cannot
+/// complete in time; callers fall back to the primary monitor.
+fn run_on_main_with_result<T: Send + 'static>(
+    app_handle: &AppHandle,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = app_handle.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(MAIN_THREAD_HOP_TIMEOUT).ok()
+}
+
 fn get_monitor_with_cursor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
     if let Some(mouse_location) = input::get_cursor_position(app_handle) {
         if let Ok(monitors) = app_handle.available_monitors() {
@@ -644,6 +667,31 @@ fn get_monitor_with_cursor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
 fn get_target_overlay_monitor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
     let screen_target = settings::get_settings_safe(app_handle).overlay_screen_target;
 
+    // The query body touches NSScreen/cursor state and is main-thread-affine.
+    // Setup-time callers (overlay creation in lib.rs setup) already run on the
+    // main thread; queueing a hop from there would stall the bounded wait, so
+    // they run inline exactly as before.
+    let app = app_handle.clone();
+    let query = move || target_monitor_for_screen_target(&app, screen_target);
+
+    if std::thread::current().name() == Some("main") {
+        query()
+    } else {
+        run_on_main_with_result(app_handle, query).flatten()
+    }
+}
+
+/// Body of [`get_target_overlay_monitor`], run on the main thread.
+///
+/// Returns the monitor on which the overlay should appear, based on the
+/// `overlay_screen_target` setting:
+/// - `Cursor` (default): same monitor as the mouse cursor.
+/// - `SideScreen`: the first monitor that is NOT the cursor's monitor.
+///   Falls back to the cursor monitor (then primary) if no other monitor exists.
+fn target_monitor_for_screen_target(
+    app_handle: &AppHandle,
+    screen_target: OverlayScreenTarget,
+) -> Option<tauri::Monitor> {
     match screen_target {
         OverlayScreenTarget::Cursor => {
             let monitor = get_monitor_with_cursor(app_handle);
