@@ -345,22 +345,6 @@ async updateCustomFillerWords(words: string[]) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async changeFillerWordRemovalEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_filler_word_removal_enabled_setting", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async changeChineseScriptSetting(script: ChineseScript) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_chinese_script_setting", { script }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async updateWordReplacements(replacements: WordReplacement[]) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_word_replacements", { replacements }) };
@@ -386,8 +370,8 @@ async changeWordCorrectionMode(mode: WordCorrectionMode) : Promise<Result<null, 
 }
 },
 /**
- * Temporarily unregister a binding while the user is editing it in the UI.
- * This avoids firing the action while keys are being recorded.
+ * Temporarily unregister all bindings while the user is recording a
+ * shortcut in the UI. This avoids firing actions while keys are recorded.
  */
 async suspendAllBindings() : Promise<Result<null, string>> {
     try {
@@ -398,7 +382,7 @@ async suspendAllBindings() : Promise<Result<null, string>> {
 }
 },
 /**
- * Re-register the binding after the user has finished editing.
+ * Re-register all bindings after the user has finished recording.
  */
 async resumeAllBindings() : Promise<Result<null, string>> {
     try {
@@ -427,6 +411,22 @@ async changeAppendTrailingSpaceSetting(enabled: boolean) : Promise<Result<null, 
 async changeLazyStreamCloseSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_lazy_stream_close_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeFillerWordRemovalEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_filler_word_removal_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeChineseScriptSetting(script: ChineseScript) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_chinese_script_setting", { script }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -602,17 +602,10 @@ async stopHandyKeysRecording() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Secure Input status snapshot (live check + monitor state + fallback coverage)
- */
 async getSecureInputStatus() : Promise<SecureInputStatus> {
     return await TAURI_INVOKE("get_secure_input_status");
 },
-/**
- * Count-only keyboard capture diagnostic (macOS). Runs for duration_secs
- * (clamped 3-30, default 10) and tallies event kinds — never key identity.
- */
-async runKeyboardDiagnostic(durationSecs?: number | null) : Promise<Result<KeyboardDiagnosticReport, string>> {
+async runKeyboardDiagnostic(durationSecs: number | null) : Promise<Result<KeyboardDiagnosticReport, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("run_keyboard_diagnostic", { durationSecs }) };
 } catch (e) {
@@ -1548,7 +1541,17 @@ historyUpdate: "history-update"
 
 /** user-defined types **/
 
-export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; shortcut_activation?: ShortcutActivation; hold_threshold_ms?: number; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; 
+export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding }>; 
+/**
+ * Replaces the pre-sync `push_to_talk` bool; stores missing this key are
+ * migrated from it in `load_or_create_app_settings` (upstream c62a5fcd).
+ */
+shortcut_activation: ShortcutActivation; 
+/**
+ * Hold-or-toggle only: a press held at least this long is push-to-talk,
+ * anything shorter is a tap that locks recording on.
+ */
+hold_threshold_ms?: number; audio_feedback: boolean; audio_feedback_volume?: number; sound_theme?: SoundTheme; start_hidden?: boolean; autostart_enabled?: boolean; update_checks_enabled?: boolean; selected_model?: string; always_on_microphone?: boolean; selected_microphone?: string | null; 
 /**
  * Which input channel to use on the selected microphone device.
  * None means "average all channels" (original behavior).
@@ -1561,7 +1564,15 @@ use_advanced_custom_words?: boolean;
 /**
  * Word correction mode. Defaults to WordBias for backward compatibility.
  */
-word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; chinese_script?: ChineseScript; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; 
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; 
+/**
+ * Fresh installs default from the OS locale. Existing stores keep
+ * `AsTranscribed`; the fork's zh-Hans/zh-Hant language intents continue to
+ * drive conversion in `actions/post_process.rs` (upstream's migration that
+ * rewrites `selected_language` is not adopted — the fork's picker still
+ * exposes those intents).
+ */
+chinese_script?: ChineseScript; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; 
 /**
  * Stable transcribe.cpp device selector. This is derived from the backend's
  * `device_id` when available (or its name for backends such as Metal),
@@ -1575,49 +1586,6 @@ vad_backend?: VadBackend }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
-export type SecureInputStatus = { 
-/**
- * Secure input is currently enabled (live check)
- */
-enabled: boolean; 
-/**
- * Enabled continuously long enough to be considered stuck (not just a password field gaining momentary focus)
- */
-sustained: boolean; 
-culprit_pid: number | null; 
-culprit_name: string | null; 
-/**
- * Carbon fallback registrations are currently active
- */
-fallback_active: boolean; 
-/**
- * Binding ids shadow-registered with identical semantics
- */
-covered_bindings: string[]; 
-/**
- * Side-specific binding ids widened to match either side while shadowed
- */
-degraded_bindings: string[]; 
-/**
- * Binding ids that cannot fire at all (e.g. fn+key, registration failure)
- */
-uncovered_bindings: string[]; 
-/**
- * The user tried to record a shortcut while secure input was active. Treated as user impact even when every binding is covered, so the warning banner appears and explains why recording refused.
- */
-recorder_blocked: boolean }
-export type KeyboardDiagnosticReport = { 
-secure_input_enabled: boolean; 
-culprit_pid: number | null; 
-culprit_name: string | null; 
-/**
- * Counts only — key identity is deliberately never captured.
- */
-key_down: number; 
-key_up: number; 
-flags_changed: number; 
-mouse: number; 
-duration_ms: number }
 /**
  * A model that failed during benchmarking (could not load or could not transcribe).
  */
@@ -1685,8 +1653,16 @@ benchmarked_at: number;
  */
 failed?: boolean }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
+/**
+ * Script applied to Mandarin and Cantonese output. Other languages are never
+ * converted.
+ */
+export type ChineseScript = 
+/**
+ * Keep whatever script the model produced.
+ */
+"as_transcribed" | "simplified" | "traditional"
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
-export type ChineseScript = "as_transcribed" | "simplified" | "traditional"
 /**
  * Information about a detected shortcut conflict.
  */
@@ -1794,6 +1770,11 @@ export type ImplementationChangeResult = { success: boolean;
  * List of binding IDs that were reset to defaults due to incompatibility
  */
 reset_bindings: string[] }
+export type KeyboardDiagnosticReport = { secure_input_enabled: boolean; culprit_pid: number | null; culprit_name: string | null; 
+/**
+ * Counts only — key identity is deliberately never captured.
+ */
+key_down: number; key_up: number; flags_changed: number; mouse: number; duration_ms: number }
 export type KeyboardImplementation = "tauri" | "handy_keys"
 export type LLMPrompt = { id: string; name: string; prompt: string }
 export type LogEntry = { timestamp: string; level: string; event_type: string; session_id: string | null; raw_json: string }
@@ -1834,7 +1815,23 @@ export type OverlayScreenTarget = "cursor" | "side_screen"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
-export type PostProcessApiFormat = "openai" | "anthropic"
+/**
+ * Request format a post-processing endpoint speaks. Built-in providers have a
+ * fixed format; only the custom provider lets the user change it.
+ * 
+ * Serialized in lowercase so the values match the frontend's
+ * `PostProcessApiFormat` union (`"openai" | "anthropic"`). The alias keeps
+ * settings saved by fork builds that used `open_ai_compatible` deserializable.
+ */
+export type PostProcessApiFormat = 
+/**
+ * OpenAI-compatible Chat Completions (`/chat/completions`)
+ */
+"openai" | 
+/**
+ * Anthropic Messages (`/messages`)
+ */
+"anthropic"
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean; api_format?: PostProcessApiFormat }
 /**
  * Result of transcribing a pronunciation sample with a single model.
@@ -1925,6 +1922,38 @@ history_entry_id: number | null;
  */
 is_processing: boolean }
 export type SecretMap = Partial<{ [key in string]: string }>
+export type SecureInputStatus = { 
+/**
+ * Secure input is currently enabled (live check)
+ */
+enabled: boolean; 
+/**
+ * Enabled continuously long enough to be considered stuck (not just a
+ * password field gaining momentary focus)
+ */
+sustained: boolean; culprit_pid: number | null; culprit_name: string | null; 
+/**
+ * Carbon fallback registrations are currently active
+ */
+fallback_active: boolean; 
+/**
+ * Binding ids shadow-registered with identical semantics
+ */
+covered_bindings: string[]; 
+/**
+ * Side-specific binding ids widened to match either side while shadowed
+ */
+degraded_bindings: string[]; 
+/**
+ * Binding ids that cannot fire at all (e.g. fn+key, registration failure)
+ */
+uncovered_bindings: string[]; 
+/**
+ * The user tried to record a shortcut while secure input was active.
+ * Treated as user impact even when every binding is covered, so the
+ * warning banner appears and explains why recording refused.
+ */
+recorder_blocked: boolean }
 /**
  * Summary of a completed (or failed) session — stored in the ring buffer
  * for the frontend to query.
@@ -1942,6 +1971,24 @@ phases_json: string | null;
  * Errors encountered during the session.
  */
 errors: string[] }
+/**
+ * How the transcribe shortcut's key events drive a recording.
+ */
+export type ShortcutActivation = 
+/**
+ * Press to start, press again to stop.
+ */
+"toggle" | 
+/**
+ * Hold to record, release to stop.
+ */
+"push_to_talk" | 
+/**
+ * Hold to record and release to stop, or tap to keep recording until the
+ * next press. Which one it was is decided by how long the key was held
+ * (`hold_threshold_ms`). (upstream c62a5fcd)
+ */
+"hold_or_toggle"
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string; 
 /**
  * Tauri global-shortcut backend binding, stored independently so switching
@@ -1954,13 +2001,6 @@ tauri_binding?: string;
  */
 handy_keys_binding?: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
-
-/**
- * How the transcribe shortcut's key events drive a recording.
- * Hold-or-toggle: hold to record, or tap to lock recording on
- * (`hold_threshold_ms` decides which).
- */
-export type ShortcutActivation = "toggle" | "push_to_talk" | "hold_or_toggle"
 /**
  * Dictionary source for US-to-British spelling conversion.
  */

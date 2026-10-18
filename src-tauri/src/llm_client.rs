@@ -670,7 +670,7 @@ mod tests {
             allow_base_url_edit: true,
             models_endpoint: None,
             supports_structured_output: false,
-            api_format: PostProcessApiFormat::OpenAiCompatible,
+            api_format: PostProcessApiFormat::OpenAi,
         }
     }
 

@@ -136,19 +136,21 @@ pub struct LLMPrompt {
 
 // ── PostProcessProvider ──
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
-#[serde(rename_all = "snake_case")]
+/// Request format a post-processing endpoint speaks. Built-in providers have a
+/// fixed format; only the custom provider lets the user change it.
+///
+/// Serialized in lowercase so the values match the frontend's
+/// `PostProcessApiFormat` union (`"openai" | "anthropic"`). The alias keeps
+/// settings saved by fork builds that used `open_ai_compatible` deserializable.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, Type)]
+#[serde(rename_all = "lowercase")]
 pub enum PostProcessApiFormat {
-    /// OpenAI-compatible `/chat/completions` format (default).
-    OpenAiCompatible,
-    /// Native Anthropic `/v1/messages` format.
+    /// OpenAI-compatible Chat Completions (`/chat/completions`)
+    #[default]
+    #[serde(alias = "open_ai_compatible")]
+    OpenAi,
+    /// Anthropic Messages (`/messages`)
     Anthropic,
-}
-
-impl Default for PostProcessApiFormat {
-    fn default() -> Self {
-        PostProcessApiFormat::OpenAiCompatible
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
@@ -926,7 +928,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
-            api_format: PostProcessApiFormat::OpenAiCompatible,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "zai".to_string(),
@@ -935,7 +937,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
-            api_format: PostProcessApiFormat::OpenAiCompatible,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "openrouter".to_string(),
@@ -944,7 +946,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
-            api_format: PostProcessApiFormat::OpenAiCompatible,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "anthropic".to_string(),
@@ -962,7 +964,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
-            api_format: PostProcessApiFormat::OpenAiCompatible,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "cerebras".to_string(),
@@ -971,7 +973,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
-            api_format: PostProcessApiFormat::OpenAiCompatible,
+            api_format: PostProcessApiFormat::OpenAi,
         },
     ];
 
@@ -984,7 +986,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: None,
             supports_structured_output: true,
-            api_format: PostProcessApiFormat::OpenAiCompatible,
+            api_format: PostProcessApiFormat::OpenAi,
         });
     }
 
@@ -995,7 +997,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: false,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: true,
-        api_format: PostProcessApiFormat::OpenAiCompatible,
+        api_format: PostProcessApiFormat::OpenAi,
     });
 
     providers.push(PostProcessProvider {
@@ -1005,7 +1007,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: true,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: false,
-        api_format: PostProcessApiFormat::OpenAiCompatible,
+        api_format: PostProcessApiFormat::OpenAi,
     });
 
     providers
@@ -1068,4 +1070,47 @@ where
 
 pub(crate) fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The serialized names must stay in lockstep with the frontend's
+    /// `PostProcessApiFormat` union (`"openai" | "anthropic"` in
+    /// src/bindings.ts); a mismatch makes the format dropdown fail to save
+    /// with an unknown-variant error.
+    #[test]
+    fn api_format_serializes_to_lowercase_frontend_names() {
+        assert_eq!(
+            serde_json::to_string(&PostProcessApiFormat::OpenAi).unwrap(),
+            r#""openai""#
+        );
+        assert_eq!(
+            serde_json::to_string(&PostProcessApiFormat::Anthropic).unwrap(),
+            r#""anthropic""#
+        );
+    }
+
+    #[test]
+    fn api_format_deserializes_frontend_names() {
+        assert_eq!(
+            serde_json::from_str::<PostProcessApiFormat>(r#""openai""#).unwrap(),
+            PostProcessApiFormat::OpenAi
+        );
+        assert_eq!(
+            serde_json::from_str::<PostProcessApiFormat>(r#""anthropic""#).unwrap(),
+            PostProcessApiFormat::Anthropic
+        );
+    }
+
+    /// Settings saved by fork builds that shipped the `open_ai_compatible`
+    /// name must still load.
+    #[test]
+    fn api_format_accepts_legacy_open_ai_compatible_name() {
+        assert_eq!(
+            serde_json::from_str::<PostProcessApiFormat>(r#""open_ai_compatible""#).unwrap(),
+            PostProcessApiFormat::OpenAi
+        );
+    }
 }
