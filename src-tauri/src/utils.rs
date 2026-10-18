@@ -14,6 +14,16 @@ pub use crate::clipboard::*;
 pub use crate::overlay::*;
 pub use crate::tray::*;
 
+/// Preserve diagnostic text in development builds, but redact it in releases.
+/// Do not use for secrets such as API keys, which must always be redacted.
+pub fn redact_text(text: &str) -> &str {
+    if cfg!(debug_assertions) {
+        text
+    } else {
+        "[REDACTED]"
+    }
+}
+
 /// Centralized cancellation function that can be called from anywhere in the app.
 /// Handles cancelling both recording and transcription operations and updates UI state.
 ///

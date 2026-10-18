@@ -524,7 +524,7 @@ impl super::ShortcutAction for TranscribeAction {
                             debug!(
                                 "Transcription completed in {:?}: '{}' (model: {})",
                                 transcription_time.elapsed(),
-                                transcription.text,
+                                crate::utils::redact_text(&transcription.text),
                                 transcription.model_id,
                             );
 
