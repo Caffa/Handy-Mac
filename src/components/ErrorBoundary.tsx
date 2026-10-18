@@ -6,6 +6,8 @@ interface Props {
   fallback?: ReactNode;
   onError?: (error: Error, errorInfo: ErrorInfo) => void;
   section?: string;
+  /** Alias for `section` — matches upstream ErrorBoundary API. */
+  context?: string;
 }
 
 interface State {
@@ -25,8 +27,9 @@ class ErrorBoundaryClass extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     // Log the error to console for debugging
+    const errorSection = this.props.section ?? this.props.context;
     console.error(
-      `ErrorBoundary caught an error${this.props.section ? ` in ${this.props.section}` : ""}:`,
+      `ErrorBoundary caught an error${errorSection ? ` in ${errorSection}` : ""}:`,
       error,
     );
     console.error("Component stack:", errorInfo.componentStack);
@@ -67,15 +70,18 @@ class ErrorBoundaryClass extends Component<Props, State> {
 function ErrorFallbackUI({
   error,
   section,
+  context,
   onRetry,
 }: {
   error: Error | null;
   section?: string;
+  context?: string;
   onRetry: () => void;
 }): ReactNode {
   const { t } = useTranslation();
 
-  const sectionLabel = section ? ` (${section})` : "";
+  const effectiveSection = section ?? context;
+  const sectionLabel = effectiveSection ? ` (${effectiveSection})` : "";
 
   return (
     <div className="flex flex-col items-center justify-center p-8 min-h-[200px] bg-background border border-mid-gray/20 rounded-lg">
