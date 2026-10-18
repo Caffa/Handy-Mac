@@ -1266,6 +1266,16 @@ impl AudioRecordingManager {
 
         if self.is_open.load(Ordering::Acquire) {
             let prev = get_mute();
+            // `get_mute()` shells out (osascript) and can block for tens to
+            // hundreds of milliseconds. A stop event landing in that window
+            // closes the stream and consumes `did_mute` via `remove_mute`;
+            // committing `set_mute(true)` afterwards would strand the system
+            // muted with no `remove_mute` left to undo it. Re-check liveness
+            // after the probe and skip entirely if the stream is gone.
+            if !self.is_open.load(Ordering::Acquire) {
+                debug!("Stream closed during mute probe; skipping mute");
+                return;
+            }
             *self.prev_muted.lock() = prev;
             set_mute(true);
             self.did_mute.store(true, Ordering::Release);
