@@ -583,7 +583,7 @@ These upstream commits contain transcription.rs hunks that cannot land until Pha
 
 | Upstream SHA | Phase 2 non-transcription work | Deferred transcription.rs hunk | Notes |
 |---|---|---|---|
-| `29bd2c0d` | `lib.rs` — move compute-device reporting off startup path onto prewarm thread | `managers/transcription.rs` `report_compute_devices()` shape / threading | Re-wire `describe_compute_devices()` call site and any device-list command once transcription.rs is supervisor client |
+| `29bd2c0d` | `lib.rs` — move compute-device reporting off startup path onto prewarm thread (APPLIED NOW; transcription.rs hunk was a pure function extraction needed by the lib.rs call) | `managers/transcription.rs` `report_compute_devices()` shape / threading | Function extracted and called from startup + prewarm thread; no further P6 work required for this commit |
 | `e4ae0d44` | `managers/model.rs` + FE ModelsSettings/modelStore — model-file-deletion recovery | `managers/transcription.rs` 46-line `loading_failed` recovery hunk | Fold into supervisor-client load-failure path |
 | `258899a2` | `actions/` + `utils.rs` — redact transcription content from logs | `managers/transcription.rs` hunk (log redaction) | Apply wherever transcription result text is logged in rewritten client |
 | `4cd49950` | `audio_toolkit/lang_id.rs`, `text.rs`, settings, FE FillerWordRemoval | `cpp_translation_task()`-adjacent lang_id text-fallback wiring | Wire `lang_id` fallback into language-param construction in client |

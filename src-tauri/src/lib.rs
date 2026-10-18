@@ -190,6 +190,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // full cold-start cost. This is a no-op on platforms where the backend is
     // demand-initialized.
     crate::managers::transcription::init_transcribe_backend();
+    crate::managers::transcription::report_compute_devices();
 
     // Note: Enigo (keyboard/mouse simulation) is NOT initialized here.
     // The frontend is responsible for calling the `initialize_enigo` command
@@ -1020,13 +1021,17 @@ pub fn run(cli_args: CliArgs) {
             }
 
             // Pre-warm GPU/accelerator enumeration on a background thread.
-            // The first call into transcribe_rs::whisper_cpp::gpu::list_gpu_devices
-            // loads the Metal/Vulkan backend and probes devices, which can take
-            // several seconds. Without this, that cost is paid synchronously the
-            // first time the user opens the Advanced settings page (which calls
-            // the get_available_accelerators command), causing a UI freeze.
-            // Result is cached in a OnceLock inside the transcription manager.
+            // The first device listing opens the GPU, which on macOS loads ggml's
+            // Metal library and compiles it when the system shader cache does not
+            // have it yet, so it stays off the startup path.
+            // get_available_accelerators then enumerates execution providers and
+            // transcribe-cpp compute devices; without this the cost is paid
+            // synchronously the first time the user opens the Advanced settings
+            // page (which calls the get_available_accelerators command), causing
+            // a UI freeze. Result is cached in a OnceLock inside the transcription
+            // manager.
             std::thread::spawn(|| {
+                crate::managers::transcription::report_compute_devices();
                 let _ = crate::managers::transcription::get_available_accelerators();
             });
 
