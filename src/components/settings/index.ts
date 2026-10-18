@@ -3,6 +3,7 @@ export { GeneralSettings } from "./general/GeneralSettings";
 export { AccuracySettings } from "./accuracy/AccuracySettings";
 export { AdvancedSettings } from "./advanced/AdvancedSettings";
 export { DebugSettings } from "./debug/DebugSettings";
+export type { OnboardingPreviewStep } from "./debug/OnboardingPreview";
 export { HistorySettings } from "./history/HistorySettings";
 export { AboutSettings } from "./about/AboutSettings";
 export { PostProcessingSettings } from "./post-processing/PostProcessingSettings";

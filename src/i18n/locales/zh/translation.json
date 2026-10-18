@@ -460,6 +460,13 @@
     },
     "debug": {
       "title": "调试",
+      "onboardingPreview": {
+        "title": "预览新手引导",
+        "description": "预览新手引导界面，而不更改权限、模型或完成状态",
+        "permissionsButton": "权限",
+        "modelsButton": "模型选择",
+        "exitButton": "退出预览"
+      },
       "logDirectory": {
         "title": "日志目录",
         "description": "日志文件的存储位置"

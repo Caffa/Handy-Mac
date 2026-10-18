@@ -460,6 +460,13 @@
     },
     "debug": {
       "title": "偵錯",
+      "onboardingPreview": {
+        "title": "預覽新手引導",
+        "description": "預覽新手引導畫面，而不變更權限、模型或完成狀態",
+        "permissionsButton": "權限",
+        "modelsButton": "模型選擇",
+        "exitButton": "結束預覽"
+      },
       "logDirectory": {
         "title": "日誌目錄",
         "description": "日誌檔案的儲存位置"

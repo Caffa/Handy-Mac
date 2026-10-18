@@ -12,6 +12,10 @@ import "./App.css";
 import AccessibilityPermissions from "./components/AccessibilityPermissions";
 import Footer from "./components/footer";
 import Onboarding, { AccessibilityOnboarding } from "./components/onboarding";
+import {
+  DebugSettings,
+  type OnboardingPreviewStep,
+} from "./components/settings";
 import { Sidebar, SidebarSection, SECTIONS_CONFIG } from "./components/Sidebar";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
@@ -25,7 +29,16 @@ import { ErrorDialog } from "./components/ui/ErrorDialog";
 
 type OnboardingStep = "accessibility" | "model" | "done";
 
-const renderSettingsContent = (section: SidebarSection) => {
+// Stable identity so preview effects do not re-run due to callback changes.
+const NOOP = () => {};
+
+const renderSettingsContent = (
+  section: SidebarSection,
+  onPreviewOnboarding: (step: OnboardingPreviewStep) => void,
+) => {
+  if (section === "debug") {
+    return <DebugSettings onPreviewOnboarding={onPreviewOnboarding} />;
+  }
   const ActiveComponent =
     SECTIONS_CONFIG[section]?.component || SECTIONS_CONFIG.general.component;
   return <ActiveComponent />;
@@ -36,6 +49,8 @@ function App() {
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep | null>(
     null,
   );
+  const [onboardingPreview, setOnboardingPreview] =
+    useState<OnboardingPreviewStep | null>(null);
   // Track if this is a returning user who just needs to grant permissions
   // (vs a new user who needs full onboarding including model selection)
   const [isReturningUser, setIsReturningUser] = useState(false);
@@ -52,7 +67,9 @@ function App() {
   const hasCompletedPostOnboardingInit = useRef(false);
   const settingsScrollRef = useRef<HTMLDivElement>(null);
   const isShowingOnboarding =
-    onboardingStep === "accessibility" || onboardingStep === "model";
+    onboardingPreview !== null ||
+    onboardingStep === "accessibility" ||
+    onboardingStep === "model";
 
   // Classic scrollbars consume layout space. Reserve a matching gutter on the
   // opposite edge while onboarding is visible so its content stays centered in
@@ -275,6 +292,28 @@ function App() {
     return null;
   }
 
+  if (onboardingPreview) {
+    // Render previews in the same top-level slot as real onboarding. Keeping
+    // the settings layout unmounted ensures viewport overflow behaves exactly
+    // as it does during first-run onboarding.
+    return (
+      <ErrorBoundary section="Onboarding Preview">
+        {onboardingPreview === "accessibility" ? (
+          <AccessibilityOnboarding onComplete={NOOP} preview />
+        ) : (
+          <Onboarding onModelSelected={NOOP} preview />
+        )}
+        <button
+          type="button"
+          onClick={() => setOnboardingPreview(null)}
+          className="fixed top-4 end-4 z-50 rounded-lg border border-mid-gray/20 bg-background px-4 py-2 text-sm font-medium text-text shadow-lg hover:bg-background-ui/30 cursor-pointer"
+        >
+          {t("settings.debug.onboardingPreview.exitButton")}
+        </button>
+      </ErrorBoundary>
+    );
+  }
+
   if (onboardingStep === "accessibility") {
     return (
       <ErrorBoundary section="Onboarding">
@@ -325,7 +364,7 @@ function App() {
                 <AccessibilityPermissions />
               </ErrorBoundary>
               <SettingsErrorBoundary section={currentSection}>
-                {renderSettingsContent(currentSection)}
+                {renderSettingsContent(currentSection, setOnboardingPreview)}
               </SettingsErrorBoundary>
             </div>
           </div>

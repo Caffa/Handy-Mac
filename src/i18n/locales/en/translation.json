@@ -700,6 +700,13 @@
     },
     "debug": {
       "title": "Debug",
+      "onboardingPreview": {
+        "title": "Preview Onboarding",
+        "description": "Preview onboarding screens without changing permissions, models, or completion state",
+        "permissionsButton": "Permissions",
+        "modelsButton": "Model Selection",
+        "exitButton": "Exit Preview"
+      },
       "logDirectory": {
         "title": "Log Directory",
         "description": "Location where log files are stored"
