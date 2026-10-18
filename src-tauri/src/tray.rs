@@ -124,6 +124,11 @@ pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
         match resolved {
             Ok(path) => match Image::from_path(&path) {
                 Ok(img) => {
+                    // Keep the template flag in lockstep with the icon. Upstream
+                    // 37a26fd6 uses tauri 2.11's atomic set_icon_with_as_template;
+                    // the fork's lockfile pins tauri 2.10.2 which lacks it, so
+                    // the two calls stay adjacent (template is re-asserted on
+                    // every icon refresh).
                     if let Err(e) = tray.set_icon(Some(img)) {
                         error!("Failed to set tray icon: {}", e);
                     }
@@ -131,6 +136,9 @@ pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
                 Err(e) => error!("Failed to load tray icon image: {}", e),
             },
             Err(e) => error!("Failed to resolve tray icon path: {}", e),
+        }
+        if let Err(e) = tray.set_icon_as_template(true) {
+            error!("Failed to set tray icon as template: {}", e);
         }
 
         // Update menu based on state (internal version that doesn't re-acquire lock)
@@ -396,7 +404,6 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
     }
 
     let _ = tray.set_menu(Some(menu));
-    let _ = tray.set_icon_as_template(true);
     let _ = tray.set_tooltip(Some(tooltip));
 }
 
