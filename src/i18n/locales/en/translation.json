@@ -241,8 +241,9 @@
       "filters": {
         "all": "All",
         "multiLanguage": "Multi-language",
-        "translation": "Translation",
-        "allLanguages": "All Languages"
+        "translation": "Filter models that support translation to English",
+        "allLanguages": "All Languages",
+        "streaming": "Filter models that support live streaming transcription"
       },
       "noModelsMatch": "No models match this filter.",
       "benchmark": {

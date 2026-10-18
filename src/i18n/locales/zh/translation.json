@@ -166,8 +166,9 @@
       "filters": {
         "all": "全部",
         "multiLanguage": "多语言",
-        "translation": "翻译",
-        "allLanguages": "所有语言"
+        "translation": "筛选支持翻译为英语的模型",
+        "allLanguages": "所有语言",
+        "streaming": "筛选支持实时转录的模型"
       },
       "noModelsMatch": "没有符合此筛选条件的模型。",
       "yourModels": "已下载的模型",

@@ -3,9 +3,11 @@ import { useTranslation } from "react-i18next";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
+  AudioLines,
   ChevronDown,
   Globe,
   Gauge,
+  Languages,
   Loader2,
   Trash2,
 } from "lucide-react";
@@ -25,6 +27,8 @@ export const ModelsSettings: React.FC = () => {
   const { t } = useTranslation();
   const [switchingModelId, setSwitchingModelId] = useState<string | null>(null);
   const [languageFilter, setLanguageFilter] = useState("all");
+  const [filterStreaming, setFilterStreaming] = useState(false);
+  const [filterTranslation, setFilterTranslation] = useState(false);
   const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false);
   const [languageSearch, setLanguageSearch] = useState("");
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
@@ -222,15 +226,17 @@ export const ModelsSettings: React.FC = () => {
     }
   };
 
-  // Filter models based on language filter
+  // Filter models based on language filter and streaming/translation toggles
   const filteredModels = useMemo(() => {
     return models.filter((model: ModelInfo) => {
       if (languageFilter !== "all") {
         if (!modelSupportsLanguage(model, languageFilter)) return false;
       }
+      if (filterStreaming && !model.supports_streaming) return false;
+      if (filterTranslation && !model.supports_translation) return false;
       return true;
     });
-  }, [models, languageFilter]);
+  }, [models, languageFilter, filterStreaming, filterTranslation]);
 
   // Split filtered models into downloaded (including custom) and available sections
   const { downloadedModels, availableModels } = useMemo(() => {
@@ -384,14 +390,44 @@ export const ModelsSettings: React.FC = () => {
           </p>
         )}
       </div>
-      {filteredModels.length > 0 ? (
-        <div className="space-y-6">
-          {/* Downloaded Models Section — header always visible so filter stays accessible */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-text/60">
-                {t("settings.models.yourModels")}
-              </h2>
+      <div className="space-y-6">
+        {/* Downloaded Models Section — header always visible so filter stays accessible */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-text/60">
+              {t("settings.models.yourModels")}
+            </h2>
+            <div className="flex items-center gap-2">
+              {/* Vertical divider separating filters from section title */}
+              <div className="h-4 w-px bg-mid-gray/30 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => setFilterStreaming((enabled) => !enabled)}
+                title={t("settings.models.filters.streaming")}
+                aria-label={t("settings.models.filters.streaming")}
+                aria-pressed={filterStreaming}
+                className={`flex items-center justify-center w-8 h-8 text-sm font-medium rounded-lg transition-colors ${
+                  filterStreaming
+                    ? "bg-logo-primary/20 text-logo-primary hover:bg-logo-primary/30"
+                    : "bg-mid-gray/10 text-text/60 hover:bg-mid-gray/20"
+                }`}
+              >
+                <AudioLines className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterTranslation((enabled) => !enabled)}
+                title={t("settings.models.filters.translation")}
+                aria-label={t("settings.models.filters.translation")}
+                aria-pressed={filterTranslation}
+                className={`flex items-center justify-center w-8 h-8 text-sm font-medium rounded-lg transition-colors ${
+                  filterTranslation
+                    ? "bg-logo-primary/20 text-logo-primary hover:bg-logo-primary/30"
+                    : "bg-mid-gray/10 text-text/60 hover:bg-mid-gray/20"
+                }`}
+              >
+                <Languages className="w-3.5 h-3.5" />
+              </button>
               {/* Language filter dropdown */}
               <div className="relative" ref={languageDropdownRef}>
                 <button
@@ -485,7 +521,30 @@ export const ModelsSettings: React.FC = () => {
                 )}
               </div>
             </div>
-            {downloadedModels.map((model: ModelInfo) => (
+          </div>
+          {downloadedModels.map((model: ModelInfo) => (
+            <ModelCard
+              key={model.id}
+              model={model}
+              status={getModelStatus(model.id)}
+              onSelect={handleModelSelect}
+              onDownload={handleModelDownload}
+              onDelete={handleModelDelete}
+              onCancel={handleModelCancel}
+              downloadProgress={getDownloadProgress(model.id)}
+              downloadSpeed={getDownloadSpeed(model.id)}
+              showRecommended={false}
+            />
+          ))}
+        </div>
+
+        {/* Available Models Section */}
+        {availableModels.length > 0 && (
+          <div className="space-y-3">
+            <h2 className="text-sm font-medium text-text/60">
+              {t("settings.models.availableModels")}
+            </h2>
+            {availableModels.map((model: ModelInfo) => (
               <ModelCard
                 key={model.id}
                 model={model}
@@ -500,35 +559,13 @@ export const ModelsSettings: React.FC = () => {
               />
             ))}
           </div>
-
-          {/* Available Models Section */}
-          {availableModels.length > 0 && (
-            <div className="space-y-3">
-              <h2 className="text-sm font-medium text-text/60">
-                {t("settings.models.availableModels")}
-              </h2>
-              {availableModels.map((model: ModelInfo) => (
-                <ModelCard
-                  key={model.id}
-                  model={model}
-                  status={getModelStatus(model.id)}
-                  onSelect={handleModelSelect}
-                  onDownload={handleModelDownload}
-                  onDelete={handleModelDelete}
-                  onCancel={handleModelCancel}
-                  downloadProgress={getDownloadProgress(model.id)}
-                  downloadSpeed={getDownloadSpeed(model.id)}
-                  showRecommended={false}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="text-center py-8 text-text/50">
-          {t("settings.models.noModelsMatch")}
-        </div>
-      )}
+        )}
+        {filteredModels.length === 0 && (
+          <div className="text-center py-8 text-text/50">
+            {t("settings.models.noModelsMatch")}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

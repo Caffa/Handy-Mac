@@ -210,8 +210,9 @@
       "filters": {
         "all": "全部",
         "multiLanguage": "多語言",
-        "translation": "翻譯",
-        "allLanguages": "所有語言"
+        "translation": "篩選支援翻譯為英語的模型",
+        "allLanguages": "所有語言",
+        "streaming": "篩選支援即時轉錄的模型"
       },
       "noModelsMatch": "沒有符合此篩選條件的模型"
     },
