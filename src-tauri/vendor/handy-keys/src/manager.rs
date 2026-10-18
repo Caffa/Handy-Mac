@@ -8,7 +8,6 @@ use std::thread::{self, JoinHandle};
 use crate::error::{Error, Result};
 use crate::listener::{BlockingHotkeys, KeyboardListener};
 use crate::types::{Hotkey, HotkeyEvent, HotkeyId, HotkeyState, KeyEvent};
-use log::warn;
 
 /// Internal state shared between the manager and the processing thread
 struct ManagerState {
@@ -32,7 +31,10 @@ impl ManagerState {
         let mut results = Vec::new();
 
         if event.is_key_down {
-            // Check for hotkeys that should be pressed
+            // Fork delta (re-applied from 0.2.4-handy.1): log when a press is
+            // suppressed because the hotkey is already in the pressed set.
+            // Wake-from-sleep can miss key-release events; without this the
+            // stuck state is invisible in logs.
             let suppressed: Vec<HotkeyId> = self
                 .hotkeys
                 .iter()
@@ -45,13 +47,14 @@ impl ManagerState {
                 .collect();
 
             if !suppressed.is_empty() {
-                warn!(
+                log::warn!(
                     "Hotkey press suppressed: already in pressed_hotkeys set (size={}, contents={:?})",
                     self.pressed_hotkeys.len(),
                     self.pressed_hotkeys
                 );
             }
 
+            // Check for hotkeys that should be pressed
             let to_press: Vec<HotkeyId> = self
                 .hotkeys
                 .iter()
@@ -72,13 +75,17 @@ impl ManagerState {
             }
         } else {
             // Check for hotkeys that should be released
-            // A hotkey is released when either its key is released or its modifiers change
+            // A hotkey is released when its key is released, or — for modifier
+            // events — when the modifiers no longer match. A modifier event
+            // (key == None) whose modifiers still match must not release a
+            // modifier-only hotkey (e.g. tapping Shift while a Cmd-only hotkey
+            // is held).
             let to_release: Vec<HotkeyId> = self
                 .hotkeys
                 .iter()
                 .filter(|(&id, hotkey)| {
                     self.pressed_hotkeys.contains(&id)
-                        && (hotkey.key == event.key
+                        && ((event.key.is_some() && hotkey.key == event.key)
                             || (event.key.is_none() && !hotkey.modifiers.matches(event.modifiers)))
                 })
                 .map(|(&id, _)| id)
@@ -103,7 +110,8 @@ impl ManagerState {
 /// registered hotkeys, emitting `HotkeyEvent`s when matches occur.
 ///
 /// Registered hotkeys are blocked from reaching other applications.
-/// Note: On Linux/Wayland, blocking may not work due to compositor restrictions.
+/// Note: On Linux, blocking requires write access to `/dev/uinput`
+/// (non-blocked keystrokes are re-injected through it).
 pub struct HotkeyManager {
     state: Arc<Mutex<ManagerState>>,
     event_receiver: Receiver<HotkeyEvent>,
@@ -145,7 +153,8 @@ impl HotkeyManager {
     /// On macOS, this will check for accessibility permissions and fail if not granted.
     /// Registered hotkeys will be blocked from reaching other applications.
     ///
-    /// Note: On Linux/Wayland, blocking may not work due to compositor restrictions.
+    /// Note: On Linux, blocking requires write access to `/dev/uinput`
+    /// and this fails with an actionable error without it.
     pub fn new_with_blocking() -> Result<Self> {
         let blocking_hotkeys: BlockingHotkeys = Arc::new(Mutex::new(HashSet::new()));
         let listener = KeyboardListener::new_with_blocking(blocking_hotkeys.clone())?;
@@ -179,24 +188,7 @@ impl HotkeyManager {
     ) {
         const RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
 
-        // Track unexpectedly long recv_timeout calls. If a single call blocks
-        // significantly longer than the configured 100ms, it suggests the
-        // listener thread is stalled (e.g. after sleep/wake or a dead tap).
-        let mut recv_start = std::time::Instant::now();
-
         while running.load(std::sync::atomic::Ordering::SeqCst) {
-            // Log if the previous recv_timeout call took much longer than
-            // expected. We do this once per loop iteration before the next
-            // blocking call so we only emit when we actually observe a delay.
-            let before_recv = std::time::Instant::now();
-            let elapsed_since_last_recv = before_recv.duration_since(recv_start);
-            if elapsed_since_last_recv >= std::time::Duration::from_millis(500) {
-                warn!(
-                    "handy-keys manager event_loop recv_timeout blocked for {:?}",
-                    elapsed_since_last_recv
-                );
-            }
-
             // Block until we receive an event or timeout (to check running flag)
             match listener.recv_timeout(RECV_TIMEOUT) {
                 Ok(key_event) => {
@@ -213,19 +205,11 @@ impl HotkeyManager {
                 Err(crate::error::Error::Timeout) => {
                     // No event received, loop continues to check running flag
                 }
-                Err(crate::error::Error::EventLoopNotRunning) => {
-                    warn!("handy-keys manager listener disconnected, exiting event_loop");
-                    return;
-                }
-                Err(e) => {
-                    warn!(
-                        "handy-keys manager recv_timeout error: {:?}, exiting event_loop",
-                        e
-                    );
+                Err(_) => {
+                    // Listener disconnected, exit
                     return;
                 }
             }
-            recv_start = std::time::Instant::now();
         }
     }
 
@@ -322,10 +306,10 @@ impl HotkeyManager {
 
     /// Reset the internal set of currently-pressed hotkeys.
     ///
-    /// This is intended for recovery after events that cause key-release
-    /// events to be missed (e.g. system sleep/wake), which would otherwise
-    /// leave hotkeys stuck in the pressed set and suppress future press
-    /// events.
+    /// Fork delta (re-applied from 0.2.4-handy.1): intended for recovery
+    /// after events that cause key-release events to be missed (e.g. system
+    /// sleep/wake), which would otherwise leave hotkeys stuck in the pressed
+    /// set and suppress future press events.
     pub fn reset_pressed_hotkeys(&self) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| Error::MutexPoisoned)?;
         state.pressed_hotkeys.clear();
@@ -543,6 +527,101 @@ mod tests {
             let results = state.process_event(&event);
 
             assert_eq!(results.len(), 0);
+        }
+
+        #[test]
+        fn modifier_only_hotkey_not_released_by_unrelated_modifier() {
+            let mut state = ManagerState::new();
+            let hotkey = Hotkey::new(Modifiers::CMD, None).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Cmd down — hotkey pressed
+            let event = make_modifier_event(Modifiers::CMD_LEFT, true, Modifiers::CMD_LEFT);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].state, HotkeyState::Pressed);
+
+            // Shift down while Cmd held — no state change
+            let event = make_modifier_event(
+                Modifiers::CMD_LEFT | Modifiers::SHIFT_LEFT,
+                true,
+                Modifiers::SHIFT_LEFT,
+            );
+            assert_eq!(state.process_event(&event).len(), 0);
+
+            // Shift up — Cmd is still held and still matches, so the hotkey
+            // must NOT be released
+            let event = make_modifier_event(Modifiers::CMD_LEFT, false, Modifiers::SHIFT_LEFT);
+            assert_eq!(state.process_event(&event).len(), 0);
+            assert!(state.pressed_hotkeys.contains(&id));
+
+            // Cmd up — now it releases
+            let event = make_modifier_event(Modifiers::empty(), false, Modifiers::CMD_LEFT);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].state, HotkeyState::Released);
+            assert!(!state.pressed_hotkeys.contains(&id));
+        }
+
+        #[test]
+        fn modifier_only_hotkey_releases_on_own_modifier_release() {
+            let mut state = ManagerState::new();
+            let hotkey = Hotkey::new(Modifiers::CMD, None).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            let event = make_modifier_event(Modifiers::CMD_LEFT, true, Modifiers::CMD_LEFT);
+            state.process_event(&event);
+            assert!(state.pressed_hotkeys.contains(&id));
+
+            let event = make_modifier_event(Modifiers::empty(), false, Modifiers::CMD_LEFT);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].state, HotkeyState::Released);
+        }
+
+        #[test]
+        fn compound_modifier_only_hotkey_releases_on_partial_release() {
+            let mut state = ManagerState::new();
+            let hotkey = Hotkey::new(Modifiers::CMD | Modifiers::SHIFT, None).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Cmd down, then Shift down — pressed once both are held
+            let event = make_modifier_event(Modifiers::CMD_LEFT, true, Modifiers::CMD_LEFT);
+            assert_eq!(state.process_event(&event).len(), 0);
+            let event = make_modifier_event(
+                Modifiers::CMD_LEFT | Modifiers::SHIFT_LEFT,
+                true,
+                Modifiers::SHIFT_LEFT,
+            );
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].state, HotkeyState::Pressed);
+
+            // Releasing either modifier breaks the match — released
+            let event = make_modifier_event(Modifiers::SHIFT_LEFT, false, Modifiers::CMD_LEFT);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].state, HotkeyState::Released);
+        }
+
+        #[test]
+        fn keyed_hotkey_not_released_by_unrelated_key_release() {
+            let mut state = ManagerState::new();
+            let hotkey = Hotkey::new(Modifiers::CMD, Key::K).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            let event = make_key_event(Modifiers::CMD_LEFT, Some(Key::K), true);
+            state.process_event(&event);
+            assert!(state.pressed_hotkeys.contains(&id));
+
+            // Release of a different key while Cmd+K is held — no release
+            let event = make_key_event(Modifiers::CMD_LEFT, Some(Key::J), false);
+            assert_eq!(state.process_event(&event).len(), 0);
+            assert!(state.pressed_hotkeys.contains(&id));
         }
 
         #[test]

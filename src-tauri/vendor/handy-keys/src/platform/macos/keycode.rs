@@ -108,6 +108,13 @@ mod keycodes {
     pub const F16: u16 = 0x6A;
     pub const F14: u16 = 0x6B;
     pub const F10: u16 = 0x6D;
+    /// PC keyboards' context-menu (Application) key. HIToolbox defines no
+    /// kVK_ constant for it, but 0x6E is the keycode macOS reports: SDL
+    /// (scancodes_darwin.h: SCANCODE_APPLICATION, "windows contextual menu
+    /// key, fn-enter on portables"), GLFW (cocoa_init.m: GLFW_KEY_MENU) and
+    /// Chromium (keyboard_code_conversion_mac.mm: VKEY_APPS, "Context Menu
+    /// key") all agree.
+    pub const CONTEXT_MENU: u16 = 0x6E;
     pub const F12: u16 = 0x6F;
     pub const F15: u16 = 0x71;
     pub const HELP: u16 = 0x72; // Insert key on external keyboards
@@ -123,6 +130,10 @@ mod keycodes {
     pub const RIGHT_ARROW: u16 = 0x7C;
     pub const DOWN_ARROW: u16 = 0x7D;
     pub const UP_ARROW: u16 = 0x7E;
+    /// Dictation / voice key. Emitted by the media-row mic key (F5 position)
+    /// and by the Globe key when configured to start dictation. Arrives as a
+    /// normal `KeyDown`/`KeyUp` pair with `MaskSecondaryFn` set in flags.
+    pub const DICTATION: u16 = 0xB0;
 }
 
 /// Convert a macOS virtual keycode to a Key enum
@@ -184,6 +195,7 @@ pub fn keycode_to_key(keycode: CGKeyCode) -> Option<Key> {
         keycodes::F18 => Some(Key::F18),
         keycodes::F19 => Some(Key::F19),
         keycodes::F20 => Some(Key::F20),
+        keycodes::CONTEXT_MENU => Some(Key::ContextMenu),
         keycodes::SPACE => Some(Key::Space),
         keycodes::RETURN => Some(Key::Return),
         keycodes::TAB => Some(Key::Tab),
@@ -235,6 +247,7 @@ pub fn keycode_to_key(keycode: CGKeyCode) -> Option<Key> {
         keycodes::JIS_EISU => Some(Key::JisEisu),
         keycodes::JIS_KANA => Some(Key::JisKana),
         keycodes::CAPS_LOCK => Some(Key::CapsLock),
+        keycodes::DICTATION => Some(Key::Dictation),
         _ => None,
     }
 }

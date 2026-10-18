@@ -50,6 +50,12 @@ pub enum Key {
     Num8,
     Num9,
 
+    // Media keys
+    PlayPause,
+    Stop,
+    PrevTrack,
+    NextTrack,
+
     // Function keys
     F1,
     F2,
@@ -71,6 +77,12 @@ pub enum Key {
     F18,
     F19,
     F20,
+    /// F21–F24 exist on Windows (VK 0x84–0x87) and in evdev; macOS virtual
+    /// keycodes stop at F20, so these are unreachable from macOS hardware.
+    F21,
+    F22,
+    F23,
+    F24,
 
     // Special keys
     Space,
@@ -80,6 +92,18 @@ pub enum Key {
     Delete,
     ForwardDelete,
     Insert,
+    /// The Pause/Break key.
+    ///
+    /// Windows delivers this key's release together with its press: the
+    /// hardware break sequence is part of the make sequence (`E1 1D 45 E1
+    /// 9D C5`, nothing on release — PS/2 behavior the HID driver preserves
+    /// for USB keyboards), so the hook sees key-down and key-up back to
+    /// back at press time. Treat it as tap/toggle only on Windows; a hold
+    /// binding would release immediately. Ctrl+Pause reports `VK_CANCEL`
+    /// rather than `VK_PAUSE`; both map here. Linux evdev reports normal
+    /// press/release for USB keyboards, so holds work there. macOS has no
+    /// virtual keycode for Pause — PC keyboards' Pause key arrives as F15.
+    Pause,
     Home,
     End,
     PageUp,
@@ -136,6 +160,30 @@ pub enum Key {
     ScrollLock,
     NumLock,
 
+    /// The PrintScreen/SysRq key. Windows and Linux only: macOS has no
+    /// virtual keycode for it — PC keyboards' PrintScreen arrives as F13
+    /// there.
+    PrintScreen,
+
+    /// The context-menu (Application) key, right of AltGr on full-size PC
+    /// keyboards. `VK_APPS` on Windows, `KEY_COMPOSE` on Linux evdev;
+    /// macOS reports PC keyboards' Menu key as keycode `0x6E`.
+    ContextMenu,
+
+    /// The dictation / voice key (macOS virtual keycode `0xB0`, macOS only).
+    ///
+    /// Emitted by the microphone/dictation key on the media function row
+    /// (the F5 position on recent Apple keyboards), and by the Globe/Fn key
+    /// when System Settings configures it to start dictation. A Globe tap
+    /// configured for anything else emits `Fn` modifier flags plus a
+    /// different keycode instead.
+    ///
+    /// Hardware events carry `MaskSecondaryFn` in their flags, so hotkeys
+    /// recorded from a key press pair this with the `Fn` modifier (a
+    /// string-configured `"dictation"` hotkey without `fn` will not match
+    /// hardware presses until FN matching is reworked).
+    Dictation,
+
     // Mouse buttons
     MouseLeft,
     MouseRight,
@@ -185,6 +233,10 @@ impl fmt::Display for Key {
             Key::Num7 => write!(f, "7"),
             Key::Num8 => write!(f, "8"),
             Key::Num9 => write!(f, "9"),
+            Key::PlayPause => write!(f, "PlayPause"),
+            Key::Stop => write!(f, "Stop"),
+            Key::PrevTrack => write!(f, "PrevTrack"),
+            Key::NextTrack => write!(f, "NextTrack"),
             Key::F1 => write!(f, "F1"),
             Key::F2 => write!(f, "F2"),
             Key::F3 => write!(f, "F3"),
@@ -205,6 +257,10 @@ impl fmt::Display for Key {
             Key::F18 => write!(f, "F18"),
             Key::F19 => write!(f, "F19"),
             Key::F20 => write!(f, "F20"),
+            Key::F21 => write!(f, "F21"),
+            Key::F22 => write!(f, "F22"),
+            Key::F23 => write!(f, "F23"),
+            Key::F24 => write!(f, "F24"),
             Key::Space => write!(f, "Space"),
             Key::Return => write!(f, "Return"),
             Key::Tab => write!(f, "Tab"),
@@ -212,6 +268,7 @@ impl fmt::Display for Key {
             Key::Delete => write!(f, "Delete"),
             Key::ForwardDelete => write!(f, "ForwardDelete"),
             Key::Insert => write!(f, "Insert"),
+            Key::Pause => write!(f, "Pause"),
             Key::Home => write!(f, "Home"),
             Key::End => write!(f, "End"),
             Key::PageUp => write!(f, "PageUp"),
@@ -258,11 +315,14 @@ impl fmt::Display for Key {
             Key::CapsLock => write!(f, "CapsLock"),
             Key::ScrollLock => write!(f, "ScrollLock"),
             Key::NumLock => write!(f, "NumLock"),
+            Key::PrintScreen => write!(f, "PrintScreen"),
+            Key::ContextMenu => write!(f, "ContextMenu"),
             Key::MouseLeft => write!(f, "MouseLeft"),
             Key::MouseRight => write!(f, "MouseRight"),
             Key::MouseMiddle => write!(f, "MouseMiddle"),
             Key::MouseX1 => write!(f, "MouseX1"),
             Key::MouseX2 => write!(f, "MouseX2"),
+            Key::Dictation => write!(f, "Dictation"),
         }
     }
 }
@@ -314,6 +374,12 @@ impl FromStr for Key {
             "8" | "num8" => Ok(Key::Num8),
             "9" | "num9" => Ok(Key::Num9),
 
+            // Media keys
+            "playpause" => Ok(Key::PlayPause),
+            "stop" => Ok(Key::Stop),
+            "prevtrack" => Ok(Key::PrevTrack),
+            "nexttrack" => Ok(Key::NextTrack),
+
             // Function keys
             "f1" => Ok(Key::F1),
             "f2" => Ok(Key::F2),
@@ -335,6 +401,10 @@ impl FromStr for Key {
             "f18" => Ok(Key::F18),
             "f19" => Ok(Key::F19),
             "f20" => Ok(Key::F20),
+            "f21" => Ok(Key::F21),
+            "f22" => Ok(Key::F22),
+            "f23" => Ok(Key::F23),
+            "f24" => Ok(Key::F24),
 
             // Special keys
             "space" | " " => Ok(Key::Space),
@@ -344,6 +414,7 @@ impl FromStr for Key {
             "delete" | "backspace" => Ok(Key::Delete),
             "forwarddelete" | "del" => Ok(Key::ForwardDelete),
             "insert" | "ins" => Ok(Key::Insert),
+            "pause" | "break" => Ok(Key::Pause),
             "home" => Ok(Key::Home),
             "end" => Ok(Key::End),
             "pageup" => Ok(Key::PageUp),
@@ -399,12 +470,20 @@ impl FromStr for Key {
             "scrolllock" | "scroll" => Ok(Key::ScrollLock),
             "numlock" => Ok(Key::NumLock),
 
+            "printscreen" | "prtsc" | "sysrq" => Ok(Key::PrintScreen),
+            "contextmenu" | "menu" | "apps" | "application" => Ok(Key::ContextMenu),
+
             // Mouse buttons
             "mouseleft" | "leftclick" | "lmb" | "mouse1" => Ok(Key::MouseLeft),
             "mouseright" | "rightclick" | "rmb" | "mouse2" => Ok(Key::MouseRight),
             "mousemiddle" | "middleclick" | "mmb" | "mouse3" => Ok(Key::MouseMiddle),
             "mousex1" | "mouse4" | "back" | "xbutton1" => Ok(Key::MouseX1),
             "mousex2" | "mouse5" | "forward" | "xbutton2" => Ok(Key::MouseX2),
+
+            // Dictation / voice key (macOS keycode 0xB0). "globe" is accepted
+            // because the Globe key emits this keycode when configured to
+            // start dictation.
+            "dictation" | "voice" | "globe" => Ok(Key::Dictation),
 
             _ => Err(Error::UnknownKey(s.to_string())),
         }
@@ -434,6 +513,8 @@ mod tests {
         assert_eq!("F1".parse::<Key>().unwrap(), Key::F1);
         assert_eq!("f12".parse::<Key>().unwrap(), Key::F12);
         assert_eq!("F20".parse::<Key>().unwrap(), Key::F20);
+        assert_eq!("f21".parse::<Key>().unwrap(), Key::F21);
+        assert_eq!("F24".parse::<Key>().unwrap(), Key::F24);
     }
 
     #[test]
@@ -484,10 +565,15 @@ mod tests {
             Key::Num9,
             Key::F1,
             Key::F12,
+            Key::F21,
+            Key::F22,
+            Key::F23,
+            Key::F24,
             Key::Space,
             Key::Return,
             Key::Tab,
             Key::Escape,
+            Key::Pause,
             Key::LeftArrow,
             Key::RightArrow,
             Key::KeypadPlus,
@@ -503,11 +589,58 @@ mod tests {
             Key::JisUnderscore,
             Key::JisEisu,
             Key::JisKana,
+            Key::Dictation,
+            Key::PlayPause,
+            Key::Stop,
+            Key::PrevTrack,
+            Key::NextTrack,
+            Key::PrintScreen,
+            Key::ContextMenu,
         ];
         for key in keys {
             let displayed = format!("{}", key);
             let parsed: Key = displayed.parse().unwrap();
             assert_eq!(parsed, key, "Roundtrip failed for {:?}", key);
         }
+    }
+
+    #[test]
+    fn parse_dictation_aliases() {
+        assert_eq!("dictation".parse::<Key>().unwrap(), Key::Dictation);
+        assert_eq!("voice".parse::<Key>().unwrap(), Key::Dictation);
+        assert_eq!("globe".parse::<Key>().unwrap(), Key::Dictation);
+        // "fn" must keep parsing as the Fn *modifier*, not a key
+        assert!("fn".parse::<Key>().is_err());
+    }
+
+    #[test]
+    fn parse_printscreen_and_context_menu() {
+        assert_eq!("printscreen".parse::<Key>().unwrap(), Key::PrintScreen);
+        assert_eq!("prtsc".parse::<Key>().unwrap(), Key::PrintScreen);
+        assert_eq!("sysrq".parse::<Key>().unwrap(), Key::PrintScreen);
+        assert_eq!("contextmenu".parse::<Key>().unwrap(), Key::ContextMenu);
+        assert_eq!("menu".parse::<Key>().unwrap(), Key::ContextMenu);
+        assert_eq!("apps".parse::<Key>().unwrap(), Key::ContextMenu);
+        assert_eq!("application".parse::<Key>().unwrap(), Key::ContextMenu);
+    }
+
+    #[test]
+    fn parse_media_keys() {
+        // Parsing is case-insensitive and matches the Display spelling.
+        assert_eq!("playpause".parse::<Key>().unwrap(), Key::PlayPause);
+        assert_eq!("PlayPause".parse::<Key>().unwrap(), Key::PlayPause);
+        assert_eq!("stop".parse::<Key>().unwrap(), Key::Stop);
+        assert_eq!("prevtrack".parse::<Key>().unwrap(), Key::PrevTrack);
+        assert_eq!("nexttrack".parse::<Key>().unwrap(), Key::NextTrack);
+    }
+
+    #[test]
+    fn parse_pause_aliases() {
+        // Pause and Break share one physical key on PC hardware.
+        assert_eq!("pause".parse::<Key>().unwrap(), Key::Pause);
+        assert_eq!("Pause".parse::<Key>().unwrap(), Key::Pause);
+        assert_eq!("break".parse::<Key>().unwrap(), Key::Pause);
+        // "playpause" must keep parsing as the media key, not Pause
+        assert_eq!("playpause".parse::<Key>().unwrap(), Key::PlayPause);
     }
 }

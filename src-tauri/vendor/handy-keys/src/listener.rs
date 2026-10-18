@@ -7,8 +7,11 @@
 //!
 //! - **macOS**: Uses CGEventTap. Requires accessibility permissions.
 //! - **Windows**: Uses low-level keyboard hooks. Clean thread shutdown.
-//! - **Linux**: Uses rdev. On Wayland, blocking may not work due to
-//!   compositor restrictions. Thread cleanup is limited.
+//! - **Linux**: Reads evdev devices directly (Wayland, X11, and console
+//!   alike). Requires read access to `/dev/input` (`input` group).
+//!   Blocking grabs keyboards exclusively and re-injects non-blocked
+//!   events through uinput, so it additionally requires write access to
+//!   `/dev/uinput`. Clean thread shutdown.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -30,6 +33,10 @@ pub struct KeyboardListener {
     _thread_handle: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
     blocking_hotkeys: Option<BlockingHotkeys>,
+    /// Backend-specific wakeup invoked on Drop after `running` is cleared.
+    /// macOS parks its listener thread in a CFRunLoop with no periodic
+    /// wakeups (see run_event_tap), so Drop must stop that loop explicitly.
+    stop_wakeup: Option<Box<dyn Fn() + Send>>,
 }
 
 impl KeyboardListener {
@@ -48,7 +55,11 @@ impl KeyboardListener {
     /// other applications. The set can be modified after creation to add/remove
     /// hotkeys dynamically.
     ///
-    /// Note: On Wayland, blocking may not work due to compositor restrictions.
+    /// Note: On Linux this grabs keyboards exclusively and re-injects
+    /// non-blocked events through uinput, so it requires write access to
+    /// `/dev/uinput` (and fails with an actionable error without it).
+    /// Mouse-button hotkeys are detected but not blocked — pointer devices
+    /// are never grabbed (same behavior as Windows).
     pub fn new_with_blocking(blocking_hotkeys: BlockingHotkeys) -> Result<Self> {
         Self::new_internal(Some(blocking_hotkeys))
     }
@@ -58,11 +69,13 @@ impl KeyboardListener {
         {
             use crate::platform::macos::listener;
             let state = listener::spawn(blocking_hotkeys)?;
+            let run_loop = state.run_loop;
             Ok(KeyboardListener {
                 event_receiver: state.event_receiver,
                 _thread_handle: state.thread_handle,
                 running: state.running,
                 blocking_hotkeys: state.blocking_hotkeys,
+                stop_wakeup: Some(Box::new(move || run_loop.stop())),
             })
         }
 
@@ -75,6 +88,7 @@ impl KeyboardListener {
                 _thread_handle: state.thread_handle,
                 running: state.running,
                 blocking_hotkeys: state.blocking_hotkeys,
+                stop_wakeup: None,
             })
         }
 
@@ -87,6 +101,7 @@ impl KeyboardListener {
                 _thread_handle: state.thread_handle,
                 running: state.running,
                 blocking_hotkeys: state.blocking_hotkeys,
+                stop_wakeup: None,
             })
         }
     }
@@ -133,10 +148,13 @@ impl Drop for KeyboardListener {
     fn drop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
 
-        // On macOS and Windows, we can join the thread for clean shutdown.
-        // On Linux (rdev), the thread continues running but becomes idle
-        // because rdev::grab() blocks indefinitely.
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        // Wake the listener thread if the backend parks it (macOS stops the
+        // tap thread's CFRunLoop). Windows/Linux event loops re-check
+        // `running` at least every ~100ms on their own, so the join below is
+        // short and shutdown is clean on all platforms.
+        if let Some(wake) = &self.stop_wakeup {
+            wake();
+        }
         if let Some(handle) = self._thread_handle.take() {
             let _ = handle.join();
         }
