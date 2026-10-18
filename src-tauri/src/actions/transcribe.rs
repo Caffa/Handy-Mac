@@ -38,6 +38,8 @@ pub(super) struct RecordingErrorEvent {
 
 /// Drop guard that notifies the [`TranscriptionCoordinator`] when the
 /// transcription pipeline finishes — whether it completes normally or panics.
+/// Also unloads the model immediately on early exits so an empty/cancelled
+/// recording does not leave a loaded model resident.
 ///
 /// FIXED: Only notifies if we're still in the Processing stage. This prevents
 /// race conditions where:
@@ -50,9 +52,12 @@ pub(super) struct RecordingErrorEvent {
 ///
 /// With this fix, FinishGuard only fires if stage is still Processing,
 /// preventing the race condition.
-pub(crate) struct FinishGuard(pub AppHandle);
+pub(crate) struct FinishGuard(pub AppHandle, pub Arc<Mutex<TranscriptionManager>>);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
+        // Unload the model immediately so a recording that produced no audio
+        // (or was cancelled early) does not keep the model resident.
+        self.1.lock().maybe_unload_immediately("transcription session");
         let has_coordinator = self.0.try_state::<TranscriptionCoordinator>().is_some();
         info!(
             "[FINISH-GUARD] drop firing — requesting Processing→Idle reset (coordinator handle: {})",
@@ -326,7 +331,7 @@ impl super::ShortcutAction for TranscribeAction {
             binding_id_spawn
         );
         tauri::async_runtime::spawn(async move {
-            let _guard = FinishGuard(ah.clone());
+            let _guard = FinishGuard(ah.clone(), Arc::clone(&tm));
 
             // Hide the visualizer immediately so the app feels responsive,
             // before transcription runs and regardless of success or failure.

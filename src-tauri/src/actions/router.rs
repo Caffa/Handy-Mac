@@ -276,7 +276,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         // call that might synchronously block (e.g. AppleScript mute, overlay JS).
         // See the matching comment in TranscribeAction::stop for full rationale.
         tauri::async_runtime::spawn(async move {
-            let mut finish_guard = Some(super::transcribe::FinishGuard(ah.clone()));
+            let mut finish_guard = Some(super::transcribe::FinishGuard(ah.clone(), Arc::clone(&tm)));
             debug!(
                 "Starting async router task for binding: {}",
                 binding_id_spawn
