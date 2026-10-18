@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useLayoutEffect, useState, useRef } from "react";
 import { toast, Toaster } from "sonner";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -50,10 +50,16 @@ function App() {
     (state) => state.refreshOutputDevices,
   );
   const hasCompletedPostOnboardingInit = useRef(false);
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     checkOnboardingStatus();
   }, []);
+
+  // Reset the scroll position whenever the active section changes.
+  useLayoutEffect(() => {
+    settingsScrollRef.current?.scrollTo({ top: 0 });
+  }, [currentSection]);
 
   // Initialize RTL direction when language changes
   useEffect(() => {
@@ -302,7 +308,7 @@ function App() {
         </ErrorBoundary>
         {/* Scrollable content area */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto">
+          <div ref={settingsScrollRef} className="flex-1 overflow-y-auto">
             <div className="flex flex-col items-center p-4 gap-4">
               <ErrorBoundary section="Accessibility Permissions">
                 <AccessibilityPermissions />
