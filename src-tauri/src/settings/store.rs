@@ -388,6 +388,24 @@ pub fn load_or_create_app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSetting
                     updated = true;
                 }
 
+                // One-time shortcut activation migration (only while the new
+                // key is absent): the retired `push_to_talk` bool maps onto
+                // the two legacy modes so upgrading users keep exactly the
+                // behavior they had. Only fresh installs get the
+                // hold-or-toggle default. (upstream c62a5fcd)
+                if settings_value.get("shortcut_activation").is_none() {
+                    if let Some(push_to_talk) =
+                        settings_value.get("push_to_talk").and_then(|v| v.as_bool())
+                    {
+                        settings.shortcut_activation = if push_to_talk {
+                            ShortcutActivation::PushToTalk
+                        } else {
+                            ShortcutActivation::Toggle
+                        };
+                        updated = true;
+                    }
+                }
+
                 // Migrate new settings fields
                 if settings.router_script_path.is_none()
                     && default_settings.router_script_path.is_some()
@@ -838,10 +856,7 @@ mod tests {
 
         let result = get_stored_binding(&settings, "unknown");
 
-        assert_eq!(
-            result.unwrap_err(),
-            "Binding with id 'unknown' not found"
-        );
+        assert_eq!(result.unwrap_err(), "Binding with id 'unknown' not found");
     }
 
     use super::*;

@@ -350,8 +350,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     let initial_theme = tray::get_current_theme(app_handle);
 
     // Choose the appropriate initial icon based on theme
-    let initial_icon_path =
-        tray::get_icon_path(initial_theme, tray::TrayIconState::Idle, false);
+    let initial_icon_path = tray::get_icon_path(initial_theme, tray::TrayIconState::Idle, false);
 
     // Track the current tray state so the Secure Input monitor can re-render
     // the icon (warning badge) without a recording-state transition.
@@ -632,7 +631,8 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_binding,
             shortcut::check_shortcut_conflicts,
             shortcut::reset_binding,
-            shortcut::change_ptt_setting,
+            shortcut::change_shortcut_activation_setting,
+            shortcut::change_hold_threshold_ms_setting,
             shortcut::change_audio_feedback_setting,
             shortcut::change_audio_feedback_volume_setting,
             shortcut::change_sound_theme_setting,
@@ -1180,15 +1180,15 @@ pub fn run(cli_args: CliArgs) {
     apply_startup_activation_policy(&mut app);
 
     app.run(|app, event| {
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = &event {
-                show_main_window(app);
-            }
-            if let tauri::RunEvent::ExitRequested { .. } = &event {
-                // Flush any pending debounced settings writes so that no
-                // settings are lost when the app quits.
-                crate::settings::flush_settings(app);
-            }
-            let _ = (app, event); // suppress unused warnings on non-macOS
-        });
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = &event {
+            show_main_window(app);
+        }
+        if let tauri::RunEvent::ExitRequested { .. } = &event {
+            // Flush any pending debounced settings writes so that no
+            // settings are lost when the app quits.
+            crate::settings::flush_settings(app);
+        }
+        let _ = (app, event); // suppress unused warnings on non-macOS
+    });
 }

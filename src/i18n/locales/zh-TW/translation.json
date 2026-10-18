@@ -204,9 +204,19 @@
         "noResults": "未找到語言",
         "auto": "自動"
       },
-      "pushToTalk": {
-        "label": "按住說話",
-        "description": "按住錄製，放開停止"
+      "shortcutActivation": {
+        "title": "快捷鍵行為",
+        "description": "選擇轉錄快捷鍵如何開始和停止錄音。",
+        "options": {
+          "holdOrToggle": "自動",
+          "pushToTalk": "按住",
+          "toggle": "切換"
+        },
+        "descriptions": {
+          "hold_or_toggle": "按住錄音，或輕點切換",
+          "push_to_talk": "按住快捷鍵時錄音",
+          "toggle": "點按快捷鍵開始錄音，再次點按停止"
+        }
       }
     },
     "models": {
@@ -594,6 +604,10 @@
       "pasteDelay": {
         "title": "貼上延遲",
         "description": "發送貼上按鍵前的延遲（毫秒）。如果貼上了錯誤的文字，請增加此值"
+      },
+      "holdThreshold": {
+        "title": "按住閾值",
+        "description": "僅自動模式：快捷鍵需按住多少毫秒才計為按住而非輕點。如果輕點後錄音一直未停止，請調低；如果有意按住卻被當作輕點，請調高。"
       },
       "recordingBuffer": {
         "title": "額外錄音緩衝",

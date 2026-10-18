@@ -37,7 +37,13 @@ pub fn handle_shortcut_event(
     // Transcribe bindings are handled by the coordinator.
     if is_transcribe_binding(binding_id) {
         if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
-            coordinator.send_input(binding_id, hotkey_string, is_pressed, settings.push_to_talk);
+            coordinator.send_input(
+                binding_id,
+                hotkey_string,
+                is_pressed,
+                settings.shortcut_activation,
+                std::time::Duration::from_millis(settings.hold_threshold_ms),
+            );
         } else {
             warn!("TranscriptionCoordinator is not initialized");
         }

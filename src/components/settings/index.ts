@@ -17,7 +17,7 @@ export { ClamshellMicrophoneSelector } from "./ClamshellMicrophoneSelector";
 export { OutputDeviceSelector } from "./OutputDeviceSelector";
 export { AlwaysOnMicrophone } from "./AlwaysOnMicrophone";
 export { LazyStreamClose } from "./LazyStreamClose";
-export { PushToTalk } from "./PushToTalk";
+export { ShortcutActivationSetting } from "./ShortcutActivation";
 export { AudioFeedback } from "./AudioFeedback";
 export { ShowOverlay } from "./ShowOverlay";
 export { OverlayScreenTarget } from "./OverlayScreenTarget";

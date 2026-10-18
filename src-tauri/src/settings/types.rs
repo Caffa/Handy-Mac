@@ -230,6 +230,23 @@ impl ModelUnloadTimeout {
     }
 }
 
+// ── ShortcutActivation ──
+
+/// How the transcribe shortcut's key events drive a recording.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortcutActivation {
+    /// Press to start, press again to stop.
+    Toggle,
+    /// Hold to record, release to stop.
+    PushToTalk,
+    /// Hold to record and release to stop, or tap to keep recording until the
+    /// next press. Which one it was is decided by how long the key was held
+    /// (`hold_threshold_ms`). (upstream c62a5fcd)
+    #[default]
+    HoldOrToggle,
+}
+
 // ── PasteMethod ──
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
@@ -587,7 +604,13 @@ impl std::ops::DerefMut for SecretMap {
 #[serde(default)]
 pub struct AppSettings {
     pub bindings: HashMap<String, ShortcutBinding>,
-    pub push_to_talk: bool,
+    /// Replaces the pre-sync `push_to_talk` bool; stores missing this key are
+    /// migrated from it in `load_or_create_app_settings` (upstream c62a5fcd).
+    pub shortcut_activation: ShortcutActivation,
+    /// Hold-or-toggle only: a press held at least this long is push-to-talk,
+    /// anything shorter is a tap that locks recording on.
+    #[serde(default = "default_hold_threshold_ms")]
+    pub hold_threshold_ms: u64,
     pub audio_feedback: bool,
     #[serde(default = "default_audio_feedback_volume")]
     pub audio_feedback_volume: f32,
@@ -844,6 +867,10 @@ pub(crate) fn default_paste_delay_ms() -> u64 {
 
 pub(crate) fn default_auto_submit() -> bool {
     false
+}
+
+pub(crate) fn default_hold_threshold_ms() -> u64 {
+    300
 }
 
 pub(crate) fn default_history_limit() -> usize {

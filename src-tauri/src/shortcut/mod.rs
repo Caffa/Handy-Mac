@@ -21,7 +21,6 @@ use specta::Type;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
-
 use conflicts::ConflictInfo;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -29,7 +28,8 @@ use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
     self, get_settings, AutoSubmitKey, ChineseScript, ClipboardHandling, CustomWord,
     KeyboardImplementation, LLMPrompt, OverlayPosition, OverlayScreenTarget, PasteMethod,
-    ShortcutBinding, SoundTheme, TypingTool, VadBackend, APPLE_INTELLIGENCE_PROVIDER_ID,
+    ShortcutActivation, ShortcutBinding, SoundTheme, TypingTool, VadBackend,
+    APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
 use crate::LiveCaptionsTranscriptionManager;
@@ -369,7 +369,10 @@ pub fn suspend_all_shortcuts(app: &AppHandle) {
             .binding_for(settings.keyboard_implementation)
             .to_string();
         if let Err(e) = unregister_shortcut(app, binding) {
-            debug!("suspend_all_shortcuts: could not unregister '{}': {}", id, e);
+            debug!(
+                "suspend_all_shortcuts: could not unregister '{}': {}",
+                id, e
+            );
         }
     }
 }
@@ -674,9 +677,21 @@ fn initialize_handy_keys_with_rollback(app: &AppHandle) -> Result<bool, String> 
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_ptt_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+pub fn change_shortcut_activation_setting(
+    app: AppHandle,
+    activation: ShortcutActivation,
+) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
-    settings.push_to_talk = enabled;
+    settings.shortcut_activation = activation;
+    settings::write_settings_safe(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_hold_threshold_ms_setting(app: AppHandle, ms: u64) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.hold_threshold_ms = ms;
     settings::write_settings_safe(&app, settings);
     Ok(())
 }

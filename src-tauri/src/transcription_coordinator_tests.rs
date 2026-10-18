@@ -105,7 +105,8 @@ fn test_happy_path_idle_recording_processing_idle() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     // In toggle mode from Idle, core transitions to Recording and returns StartRecording
@@ -118,7 +119,8 @@ fn test_happy_path_idle_recording_processing_idle() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StopRecording { .. }));
@@ -142,7 +144,8 @@ fn test_cancel_during_recording() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Recording { .. }));
@@ -166,14 +169,16 @@ fn test_cancel_during_processing() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -205,7 +210,8 @@ fn test_finish_guard_race_no_spurious_idle_after_cancel() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -214,7 +220,8 @@ fn test_finish_guard_race_no_spurious_idle_after_cancel() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -245,14 +252,16 @@ fn test_processing_timeout_auto_resets_to_idle() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -279,14 +288,16 @@ fn test_processing_timeout_returns_expired_action() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -334,14 +345,16 @@ fn test_set_processing_with_binding() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -370,7 +383,8 @@ fn test_rapid_interleaving_no_panic_or_deadlock() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     }); // → Recording
 
@@ -382,7 +396,8 @@ fn test_rapid_interleaving_no_panic_or_deadlock() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     }); // → Recording again
 
@@ -390,7 +405,8 @@ fn test_rapid_interleaving_no_panic_or_deadlock() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     }); // → Processing
 
@@ -436,7 +452,8 @@ fn test_cancel_signal_resets_active_state() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(h.is_active());
@@ -459,7 +476,8 @@ fn test_push_to_talk_press_starts_recording() {
         binding_id: "transcribe".into(),
         hotkey_string: "F6".into(),
         is_pressed: true,
-        push_to_talk: true,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StartRecording { .. }));
@@ -470,7 +488,8 @@ fn test_push_to_talk_press_starts_recording() {
         binding_id: "transcribe".into(),
         hotkey_string: "F6".into(),
         is_pressed: false,
-        push_to_talk: true,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StopRecording { .. }));
@@ -488,7 +507,8 @@ fn test_debounce_ignores_rapid_presses() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StartRecording { .. }));
@@ -501,7 +521,8 @@ fn test_debounce_ignores_rapid_presses() {
             binding_id: "transcribe".into(),
             hotkey_string: "Cmd+Shift+S".into(),
             is_pressed: true,
-            push_to_talk: false,
+            activation: ShortcutActivation::Toggle,
+            hold_threshold: Duration::ZERO,
             external: false,
         },
         &h.active_use,
@@ -549,7 +570,8 @@ fn test_processing_finished_on_recording_is_noop() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Recording { .. }));
@@ -574,6 +596,7 @@ fn test_stage_is_active() {
         since: Instant::now(),
         silence_extension: Duration::ZERO,
         warned: false,
+        locked: false,
     };
     assert!(recording.is_active());
 
@@ -598,6 +621,7 @@ fn test_stage_to_app_state() {
         since: Instant::now(),
         silence_extension: Duration::ZERO,
         warned: false,
+        locked: false,
     };
     assert!(matches!(
         recording.to_app_state(7),
@@ -675,7 +699,8 @@ fn test_session_id_preserved_through_lifecycle() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -689,7 +714,8 @@ fn test_session_id_preserved_through_lifecycle() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     let processing_session = match h.state() {
@@ -732,14 +758,16 @@ fn test_recv_timeout_processing_returns_some() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -759,7 +787,8 @@ fn test_recv_timeout_recording_returns_some() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -835,14 +864,16 @@ fn test_processing_expired_after_timeout() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(!h.core.is_processing_expired());
@@ -863,14 +894,16 @@ fn test_set_processing_with_binding_resets_timer() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -901,7 +934,8 @@ fn test_recording_timeout_expires() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Recording { .. }));
@@ -996,7 +1030,8 @@ fn test_extend_recording_bumps_deadlines() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Recording { .. }));
@@ -1035,14 +1070,16 @@ fn test_extend_recording_ignored_when_not_recording() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -1064,14 +1101,16 @@ fn test_set_processing_with_binding_from_processing_resets_timer() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -1115,14 +1154,16 @@ fn test_set_processing_with_binding_after_processing_timeout_is_noop() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -1154,14 +1195,16 @@ fn test_processing_timeout_path_a_delegates_to_path_b() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -1206,14 +1249,16 @@ fn test_processing_timeout_drains_queued_set_processing_with_binding() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -1245,7 +1290,8 @@ fn test_extend_recording_rearms_warning() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -1275,7 +1321,8 @@ fn test_recv_timeout_accounts_for_silence_extension() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -1305,7 +1352,8 @@ fn test_hard_cap_extension_resets_when_leaving_recording() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::ExtendRecording { seconds: 300 });
@@ -1316,7 +1364,8 @@ fn test_hard_cap_extension_resets_when_leaving_recording() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -1339,7 +1388,8 @@ fn test_cross_binding_press_stops_with_owner_binding() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StartRecording { .. }));
@@ -1350,7 +1400,8 @@ fn test_cross_binding_press_stops_with_owner_binding() {
         binding_id: "transcribe_with_router".into(),
         hotkey_string: "Cmd+Shift+R".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     match action {
@@ -1394,7 +1445,8 @@ fn test_router_owner_stopped_by_other_binding() {
         binding_id: "transcribe_with_router".into(),
         hotkey_string: "Cmd+Shift+R".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StartRecording { .. }));
@@ -1405,7 +1457,8 @@ fn test_router_owner_stopped_by_other_binding() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     match action {
@@ -1447,7 +1500,8 @@ fn test_ptt_cross_binding_release_is_ignored() {
         binding_id: "transcribe".into(),
         hotkey_string: "F6".into(),
         is_pressed: true,
-        push_to_talk: true,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StartRecording { .. }));
@@ -1459,7 +1513,8 @@ fn test_ptt_cross_binding_release_is_ignored() {
             binding_id: "transcribe_with_post_process".into(),
             hotkey_string: "F7".into(),
             is_pressed: false,
-            push_to_talk: true,
+            activation: ShortcutActivation::PushToTalk,
+            hold_threshold: Duration::ZERO,
             external: false,
         },
         &h.active_use,
@@ -1487,7 +1542,8 @@ fn test_ptt_cross_binding_release_is_ignored() {
         binding_id: "transcribe".into(),
         hotkey_string: "F6".into(),
         is_pressed: false,
-        push_to_talk: true,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     match action {
@@ -1517,14 +1573,16 @@ fn test_press_during_processing_still_ignored() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     h.process(Command::Input {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(h.state(), AppState::Processing { .. }));
@@ -1534,7 +1592,8 @@ fn test_press_during_processing_still_ignored() {
         binding_id: "transcribe_with_router".into(),
         hotkey_string: "Cmd+Shift+R".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(
@@ -1559,21 +1618,57 @@ fn test_press_during_processing_still_ignored() {
 
 #[test]
 fn test_classify_busy_input_matrix() {
+    use ShortcutActivation as SA;
     // Toggle press: remember, and a second press forgets (parity).
     assert_eq!(
-        classify_busy_input(true, false, false),
+        classify_busy_input(SA::Toggle, true, None),
         BusyAction::Remember
     );
-    assert_eq!(classify_busy_input(true, false, true), BusyAction::Forget);
+    assert_eq!(
+        classify_busy_input(SA::Toggle, true, Some(Remembered::Locked)),
+        BusyAction::Forget
+    );
+    assert_eq!(
+        classify_busy_input(SA::Toggle, true, Some(Remembered::Held)),
+        BusyAction::Forget
+    );
     // Toggle release: always ignored.
-    assert_eq!(classify_busy_input(false, false, false), BusyAction::Ignore);
-    assert_eq!(classify_busy_input(false, false, true), BusyAction::Ignore);
-    // PTT press: remember (user is holding the key).
-    assert_eq!(classify_busy_input(true, true, false), BusyAction::Remember);
-    assert_eq!(classify_busy_input(true, true, true), BusyAction::Remember);
-    // PTT release: forget a remembered press (the tap is already over).
-    assert_eq!(classify_busy_input(false, true, true), BusyAction::Forget);
-    assert_eq!(classify_busy_input(false, true, false), BusyAction::Ignore);
+    assert_eq!(
+        classify_busy_input(SA::Toggle, false, None),
+        BusyAction::Ignore
+    );
+    // Hold modes, press: remember; a held key re-pressing is auto-repeat.
+    assert_eq!(
+        classify_busy_input(SA::PushToTalk, true, None),
+        BusyAction::Remember
+    );
+    assert_eq!(
+        classify_busy_input(SA::HoldOrToggle, true, None),
+        BusyAction::Remember
+    );
+    assert_eq!(
+        classify_busy_input(SA::PushToTalk, true, Some(Remembered::Held)),
+        BusyAction::Ignore
+    );
+    assert_eq!(
+        classify_busy_input(SA::HoldOrToggle, true, Some(Remembered::Held)),
+        BusyAction::Ignore
+    );
+    // A second press on a tap-locked pending session cancels it.
+    assert_eq!(
+        classify_busy_input(SA::HoldOrToggle, true, Some(Remembered::Locked)),
+        BusyAction::Forget
+    );
+    // Hold-mode releases: resolved by the caller against the pending press;
+    // the classifier ignores them.
+    assert_eq!(
+        classify_busy_input(SA::PushToTalk, false, None),
+        BusyAction::Ignore
+    );
+    assert_eq!(
+        classify_busy_input(SA::HoldOrToggle, false, Some(Remembered::Held)),
+        BusyAction::Ignore
+    );
 }
 
 /// Drive the harness from Idle into Processing (stop recorded).
@@ -1582,7 +1677,8 @@ fn enter_processing(h: &mut TestHarness<tauri::test::MockRuntime>) {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StartRecording { .. }));
@@ -1590,7 +1686,8 @@ fn enter_processing(h: &mut TestHarness<tauri::test::MockRuntime>) {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StopRecording { .. }));
@@ -1607,7 +1704,8 @@ fn test_busy_pipeline_remembers_press_and_drains_on_processing_finished() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::None));
@@ -1635,7 +1733,8 @@ fn test_second_toggle_press_during_busy_window_forgets() {
             binding_id: "transcribe".into(),
             hotkey_string: "Cmd+Shift+S".into(),
             is_pressed: true,
-            push_to_talk: false,
+            activation: ShortcutActivation::Toggle,
+            hold_threshold: Duration::ZERO,
             external: false,
         });
         assert!(matches!(action, StageAction::None));
@@ -1657,7 +1756,8 @@ fn test_ptt_press_busy_remember_and_release_forgets() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: true,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::None));
@@ -1667,7 +1767,8 @@ fn test_ptt_press_busy_remember_and_release_forgets() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: false,
-        push_to_talk: true,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::None));
@@ -1687,7 +1788,8 @@ fn test_cross_binding_input_ignored_while_press_pending() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
 
@@ -1696,7 +1798,8 @@ fn test_cross_binding_input_ignored_while_press_pending() {
         binding_id: "transcribe_with_router".into(),
         hotkey_string: "Cmd+Shift+R".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::None));
@@ -1728,7 +1831,8 @@ fn test_cancel_drops_pending_press() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     let _ = h.process(Command::Cancel {
@@ -1750,7 +1854,8 @@ fn test_processing_timeout_drops_pending_press() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     std::thread::sleep(Duration::from_millis(80));
@@ -1774,7 +1879,8 @@ fn test_external_trigger_bypasses_debounce() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(matches!(action, StageAction::StartRecording { .. }));
@@ -1785,7 +1891,8 @@ fn test_external_trigger_bypasses_debounce() {
         binding_id: "transcribe".into(),
         hotkey_string: "Cmd+Shift+S".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: false,
     });
     assert!(
@@ -1800,7 +1907,8 @@ fn test_external_trigger_bypasses_debounce() {
         binding_id: "transcribe".into(),
         hotkey_string: "SIGUSR2".into(),
         is_pressed: true,
-        push_to_talk: false,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
         external: true,
     });
     assert!(
@@ -1809,4 +1917,234 @@ fn test_external_trigger_bypasses_debounce() {
         action
     );
     assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+// ── Hold-or-toggle activation mode (upstream c62a5fcd) ──
+//
+// A hold (release at/after the threshold) stops the recording; a tap
+// (release before the threshold) locks the recording on until the next
+// press. ZERO threshold = always a hold; a huge threshold = always a tap.
+
+#[test]
+fn test_hold_or_toggle_hold_release_stops() {
+    let mut h = TestHarness::new();
+
+    // Press starts the recording (unlocked).
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO, // any hold counts
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // Release with a ZERO threshold = hold = stop.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_hold_or_toggle_tap_locks_then_next_press_stops() {
+    let mut h = TestHarness::new();
+
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10), // any quick release is a tap
+        external: false,
+    };
+    assert!(matches!(h.process(start), StageAction::StartRecording { .. }));
+
+    // Quick release = tap: recording stays on (locked), no action.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+    assert!(h.is_active());
+
+    // A later release is ignored (the locking release was consumed).
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // The next press stops the locked session.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_hold_or_toggle_press_while_held_is_ignored() {
+    let mut h = TestHarness::new();
+
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    };
+    assert!(matches!(h.process(start), StageAction::StartRecording { .. }));
+
+    // Auto-repeat press while the key is still held (unlocked): ignored.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+}
+
+#[test]
+fn test_toggle_press_stops_hold_started_recording() {
+    let mut h = TestHarness::new();
+
+    // Recording began under hold-or-toggle (unlocked).
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    };
+    assert!(matches!(h.process(start), StageAction::StartRecording { .. }));
+
+    // The setting changed to toggle mid-recording: a press must still stop
+    // the session — otherwise nothing but Escape could stop it.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_hold_or_toggle_busy_tap_drains_locked() {
+    let mut h = TestHarness::new();
+    enter_processing(&mut h);
+
+    // Press while busy → remembered, key believed held.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+
+    // Release before the threshold (a tap) while still busy: the drained
+    // session must start locked on.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+
+    // Drain → locked recording starts.
+    let action = h.process(Command::ProcessingFinished);
+    assert!(
+        matches!(action, StageAction::StartRecording { .. }),
+        "remembered tap must start recording after drain, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // The locked session ignores releases and stops on the next press.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+}
+
+#[test]
+fn test_hold_or_toggle_busy_hold_drops_on_release() {
+    let mut h = TestHarness::new();
+    enter_processing(&mut h);
+
+    // Press while busy → remembered.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO, // any release is a completed hold
+        external: false,
+    });
+
+    // Release while busy with a ZERO threshold = completed hold: nothing
+    // left to start.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    let action = h.process(Command::ProcessingFinished);
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
 }

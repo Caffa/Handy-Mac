@@ -1,5 +1,6 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
+use crate::settings::ShortcutActivation;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -134,7 +135,14 @@ enum Command {
         binding_id: String,
         hotkey_string: String,
         is_pressed: bool,
-        push_to_talk: bool,
+        /// How this binding's key events drive the recording (upstream
+        /// c62a5fcd). Keyboard sends the configured setting; external
+        /// triggers always send Toggle.
+        activation: ShortcutActivation,
+        /// Hold-or-toggle only: a hold at least this long stops the
+        /// recording on release; anything shorter is a tap that locks the
+        /// recording on. Push-to-talk resolves as if the threshold were zero.
+        hold_threshold: Duration,
         /// True for non-keyboard triggers (signals, CLI flags). External
         /// triggers are exempt from the keyboard debounce: each one is a
         /// deliberate edge from the user's own integration, and dropping it
@@ -168,6 +176,32 @@ enum Command {
 struct PendingPress {
     binding_id: String,
     hotkey_string: String,
+    /// The real key-down time, so a hold that straddles the drain is still
+    /// measured from when the user pressed, not from when recording began
+    /// (upstream c62a5fcd).
+    pressed_at: Instant,
+    /// The recording will start locked on when the pipeline drains: set from
+    /// the start for toggle, and for hold-or-toggle once the key came back up
+    /// within the threshold (a tap). An unlocked pending press is a key we
+    /// believe is still held.
+    locked: bool,
+}
+
+impl PendingPress {
+    fn remembered(&self) -> Remembered {
+        if self.locked {
+            Remembered::Locked
+        } else {
+            Remembered::Held
+        }
+    }
+}
+
+/// Whether a remembered press will start a locked (outlives-the-key) session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Remembered {
+    Locked,
+    Held,
 }
 
 /// What to do with an input that arrives while the pipeline is busy
@@ -180,24 +214,36 @@ enum BusyAction {
     /// Remember the press; start recording when the pipeline finishes.
     Remember,
     /// This input cancels a previously remembered press (toggle parity: two
-    /// presses during one busy window net to no-op; PTT: the key was already
-    /// released, so the remembered press must not fire).
+    /// presses during one busy window net to no-op; hold modes: a second
+    /// press on a tap-locked pending session cancels it).
     Forget,
 }
 
-fn classify_busy_input(is_pressed: bool, push_to_talk: bool, remembered: bool) -> BusyAction {
-    match (push_to_talk, is_pressed) {
+fn classify_busy_input(
+    activation: ShortcutActivation,
+    is_pressed: bool,
+    remembered: Option<Remembered>,
+) -> BusyAction {
+    use ShortcutActivation::*;
+    match (activation, is_pressed, remembered) {
         // Toggle: presses alternate remember/forget to preserve parity.
-        (false, true) if remembered => BusyAction::Forget,
-        (false, true) => BusyAction::Remember,
+        (Toggle, true, None) => BusyAction::Remember,
+        (Toggle, true, Some(_)) => BusyAction::Forget,
         // Toggle mode ignores releases.
-        (false, false) => BusyAction::Ignore,
-        // PTT: a press while busy means the user is holding the key — start as
-        // soon as the pipeline drains. A release while busy means the tap is
-        // already over; forget the remembered press (or ignore if none).
-        (true, true) => BusyAction::Remember,
-        (true, false) if remembered => BusyAction::Forget,
-        (true, false) => BusyAction::Ignore,
+        (Toggle, false, _) => BusyAction::Ignore,
+        // Hold modes: a press while busy means the user is holding the key —
+        // start as soon as the pipeline drains.
+        (PushToTalk | HoldOrToggle, true, None) => BusyAction::Remember,
+        // A second press on a tap-locked pending session cancels it.
+        (HoldOrToggle, true, Some(Remembered::Locked)) => BusyAction::Forget,
+        // Press while a held press is pending: auto-repeat — the key never
+        // went up, so there is nothing to cancel or re-remember. (A
+        // push-to-talk pending press is never locked, but be exhaustive.)
+        (PushToTalk | HoldOrToggle, true, Some(Remembered::Held)) => BusyAction::Ignore,
+        (PushToTalk, true, Some(Remembered::Locked)) => BusyAction::Ignore,
+        // Releases in hold modes are resolved against the pending press by
+        // the caller (tap → lock / hold → drop), or ignored if none.
+        (PushToTalk | HoldOrToggle, false, _) => BusyAction::Ignore,
     }
 }
 
@@ -214,6 +260,11 @@ enum Stage {
         /// Reset to false whenever the silence deadline slides (VAD or extend)
         /// so the warning re-arms for the new deadline.
         warned: bool,
+        /// The session outlives the key: a release does not stop it, the next
+        /// press does. Set from the start for toggle mode, and for
+        /// hold-or-toggle when a release within the hold threshold counts as
+        /// a tap that locks recording on. (upstream c62a5fcd)
+        locked: bool,
     },
     Processing {
         since: Instant,
@@ -363,6 +414,9 @@ impl CoordinatorCore {
             since: Instant::now(),
             silence_extension: Duration::ZERO,
             warned: false,
+            // A recovered session is managed by the recovery stop flow, not
+            // by hold semantics.
+            locked: false,
         });
         self.sync_state(active_use, current_state);
         true
@@ -486,7 +540,8 @@ impl CoordinatorCore {
                 binding_id,
                 hotkey_string,
                 is_pressed,
-                push_to_talk,
+                activation,
+                hold_threshold,
                 external,
             } => {
                 // Debounce rapid-fire press events (key repeat / double-tap).
@@ -526,13 +581,51 @@ impl CoordinatorCore {
                             return StageAction::None;
                         }
                     }
-                    let remembered = self.pending_press.is_some();
-                    match classify_busy_input(is_pressed, push_to_talk, remembered) {
+
+                    // Hold-mode releases resolve against the remembered press
+                    // immediately (fork divergence: upstream defers via a 50ms
+                    // RELEASE_GRACE to absorb X11 auto-repeat; macOS key-repeat
+                    // timing plus the fork's debounce cover the common cases
+                    // without the extra machinery). A completed hold has
+                    // nothing left to start; a tap locks the drained session on.
+                    if !is_pressed && activation != ShortcutActivation::Toggle {
+                        let mut drop_pending = false;
+                        if let Some(pending) = self.pending_press.as_mut() {
+                            if pending.binding_id == binding_id && !pending.locked {
+                                let held =
+                                    Instant::now().saturating_duration_since(pending.pressed_at);
+                                if activation == ShortcutActivation::PushToTalk
+                                    || held >= hold_threshold
+                                {
+                                    debug!(
+                                        "Hold completed before drain for '{}': dropping pending press",
+                                        binding_id
+                                    );
+                                    drop_pending = true;
+                                } else {
+                                    debug!(
+                                        "Tap before drain for '{}': drained session starts locked",
+                                        binding_id
+                                    );
+                                    pending.locked = true;
+                                }
+                            }
+                        }
+                        if drop_pending {
+                            self.pending_press = None;
+                        }
+                        return StageAction::None;
+                    }
+
+                    let remembered = self.pending_press.as_ref().map(|p| p.remembered());
+                    match classify_busy_input(activation, is_pressed, remembered) {
                         BusyAction::Remember => {
                             debug!("Remembering press for '{}': pipeline busy", binding_id);
                             self.pending_press = Some(PendingPress {
                                 binding_id,
                                 hotkey_string,
+                                pressed_at: Instant::now(),
+                                locked: activation == ShortcutActivation::Toggle,
                             });
                         }
                         BusyAction::Forget => {
@@ -546,104 +639,18 @@ impl CoordinatorCore {
                     return StageAction::None;
                 }
 
-                if push_to_talk {
-                    if is_pressed && matches!(self.stage, Stage::Idle) {
-                        self.transition_to(Stage::Recording {
-                            binding_id: binding_id.clone(),
-                            since: Instant::now(),
-                            silence_extension: Duration::ZERO,
-                            warned: false,
-                        });
-                        self.sync_state(active_use, current_state);
-                        StageAction::StartRecording {
-                            binding_id,
-                            hotkey_string,
-                        }
-                    } else if !is_pressed
-                        && matches!(
-                            &self.stage,
-                            Stage::Recording { binding_id: id, .. } if id == &binding_id
-                        )
-                    {
-                        info!(
-                            "Stop input received: stage={:?} recorder_is_recording={}",
-                            self.stage, recorder_is_recording
-                        );
-                        self.hard_cap_extension = Duration::ZERO;
-                        // Transition to Processing first so active_use stays true,
-                        // then tell the thread to call stop which may fire FinishGuard.
-                        self.transition_to(Stage::Processing {
-                            since: Instant::now(),
-                            binding_id: Some(binding_id.clone()),
-                        });
-                        self.sync_state(active_use, current_state);
-                        StageAction::StopRecording {
-                            binding_id,
-                            hotkey_string,
-                        }
-                    } else if !is_pressed
-                        && matches!(
-                            &self.stage,
-                            Stage::Recording { binding_id: id, .. } if id != &binding_id
-                        )
-                    {
-                        // Cross-binding PTT release while another binding owns
-                        // the active recording: ignore it so the owner's release
-                        // completes the session. Recovering here would rebind the
-                        // stage to the pressed binding and cause a stop_recording
-                        // binding mismatch (discarded audio, wedged recorder).
-                        if let Stage::Recording {
-                            binding_id: owner, ..
-                        } = &self.stage
-                        {
-                            debug!(
-                                "Ignoring cross-binding PTT release for '{}': owner '{}'",
-                                binding_id, owner
-                            );
-                        }
-                        StageAction::None
-                    } else if !is_pressed
-                        && self.try_recover_stop(
-                            binding_id.clone(),
-                            active_use,
-                            current_state,
-                            recorder_is_recording,
-                            app,
-                        )
-                    {
-                        info!(
-                            "Stop input received (PTT recovery): stage={:?} recorder_is_recording={}",
-                            self.stage, recorder_is_recording
-                        );
-                        self.hard_cap_extension = Duration::ZERO;
-                        // Push-to-talk release arrived while the recorder is still
-                        // active but the coordinator stage drifted (e.g. missed
-                        // release during sleep/wake). Force Recording and then
-                        // perform the normal stop transition.
-                        self.transition_to(Stage::Processing {
-                            since: Instant::now(),
-                            binding_id: Some(binding_id.clone()),
-                        });
-                        self.sync_state(active_use, current_state);
-                        StageAction::StopRecording {
-                            binding_id,
-                            hotkey_string,
-                        }
-                    } else {
-                        debug!(
-                            "Ignoring push-to-talk release for '{}': stage={:?}, pressed={}",
-                            binding_id, self.stage, is_pressed
-                        );
-                        StageAction::None
-                    }
-                } else if is_pressed {
+                if is_pressed {
                     match &self.stage {
                         Stage::Idle => {
+                            // Toggle never ends on a release: locked from the
+                            // start (upstream c62a5fcd).
+                            let locked = activation == ShortcutActivation::Toggle;
                             self.transition_to(Stage::Recording {
                                 binding_id: binding_id.clone(),
                                 since: Instant::now(),
                                 silence_extension: Duration::ZERO,
                                 warned: false,
+                                locked,
                             });
                             self.sync_state(active_use, current_state);
                             StageAction::StartRecording {
@@ -651,20 +658,36 @@ impl CoordinatorCore {
                                 hotkey_string,
                             }
                         }
-                        Stage::Recording { binding_id: id, .. } if id == &binding_id => {
-                            info!(
-                                "Stop input received: stage={:?} recorder_is_recording={}",
-                                self.stage, recorder_is_recording
-                            );
-                            self.hard_cap_extension = Duration::ZERO;
-                            self.transition_to(Stage::Processing {
-                                since: Instant::now(),
-                                binding_id: Some(binding_id.clone()),
-                            });
-                            self.sync_state(active_use, current_state);
-                            StageAction::StopRecording {
-                                binding_id,
-                                hotkey_string,
+                        Stage::Recording {
+                            binding_id: id,
+                            locked,
+                            ..
+                        } if id == &binding_id => {
+                            // A locked session ends on the next press. In toggle
+                            // mode every press ends it, even if the recording
+                            // began under a hold mode (the setting changed
+                            // mid-recording) — otherwise nothing but Escape
+                            // could stop it. An unlocked recording means the key
+                            // is still held (auto-repeat): a repeated press is
+                            // meaningless.
+                            if *locked || activation == ShortcutActivation::Toggle {
+                                info!(
+                                    "Stop input received: stage={:?} recorder_is_recording={}",
+                                    self.stage, recorder_is_recording
+                                );
+                                self.hard_cap_extension = Duration::ZERO;
+                                self.transition_to(Stage::Processing {
+                                    since: Instant::now(),
+                                    binding_id: Some(binding_id.clone()),
+                                });
+                                self.sync_state(active_use, current_state);
+                                StageAction::StopRecording {
+                                    binding_id,
+                                    hotkey_string,
+                                }
+                            } else {
+                                debug!("Ignoring press for '{}': key is held", binding_id);
+                                StageAction::None
                             }
                         }
                         Stage::Recording { binding_id: id, .. } => {
@@ -727,8 +750,111 @@ impl CoordinatorCore {
                             }
                         }
                     }
+                } else if activation != ShortcutActivation::Toggle {
+                    // Hold-mode release (push-to-talk or hold-or-toggle).
+                    match &self.stage {
+                        Stage::Recording {
+                            binding_id: id,
+                            since,
+                            silence_extension,
+                            warned,
+                            locked,
+                        } if id == &binding_id => {
+                            if *locked {
+                                // A tap-locked session outlives the key: the
+                                // release that locked it was already consumed;
+                                // later releases do nothing.
+                                debug!(
+                                    "Ignoring release for '{}': session is tap-locked",
+                                    binding_id
+                                );
+                                StageAction::None
+                            } else {
+                                let held = Instant::now().duration_since(*since);
+                                if activation == ShortcutActivation::PushToTalk
+                                    || held >= hold_threshold
+                                {
+                                    info!(
+                                        "Stop input received (hold release): stage={:?} recorder_is_recording={}",
+                                        self.stage, recorder_is_recording
+                                    );
+                                    self.hard_cap_extension = Duration::ZERO;
+                                    self.transition_to(Stage::Processing {
+                                        since: Instant::now(),
+                                        binding_id: Some(binding_id.clone()),
+                                    });
+                                    self.sync_state(active_use, current_state);
+                                    StageAction::StopRecording {
+                                        binding_id,
+                                        hotkey_string,
+                                    }
+                                } else {
+                                    // Tap: lock the recording on until the next
+                                    // press (upstream c62a5fcd).
+                                    info!(
+                                        "Tap detected for '{}' (held {:?} < {:?}): locking recording on",
+                                        binding_id, held, hold_threshold
+                                    );
+                                    let (since_c, se_c, warned_c) =
+                                        (*since, *silence_extension, *warned);
+                                    self.transition_to(Stage::Recording {
+                                        binding_id,
+                                        since: since_c,
+                                        silence_extension: se_c,
+                                        warned: warned_c,
+                                        locked: true,
+                                    });
+                                    StageAction::None
+                                }
+                            }
+                        }
+                        Stage::Recording { binding_id: id, .. } => {
+                            // Cross-binding hold release while another binding
+                            // owns the active recording: ignore it so the
+                            // owner's release completes the session (fork rule).
+                            debug!(
+                                "Ignoring cross-binding hold release for '{}': owner '{}'",
+                                binding_id, id
+                            );
+                            StageAction::None
+                        }
+                        _ => {
+                            // Drift recovery (fork): a hold-mode release
+                            // arrived while the recorder is still active but
+                            // the coordinator stage drifted (e.g. missed
+                            // release during sleep/wake).
+                            if self.try_recover_stop(
+                                binding_id.clone(),
+                                active_use,
+                                current_state,
+                                recorder_is_recording,
+                                app,
+                            ) {
+                                info!(
+                                    "Stop input received (hold recovery): stage={:?} recorder_is_recording={}",
+                                    self.stage, recorder_is_recording
+                                );
+                                self.hard_cap_extension = Duration::ZERO;
+                                self.transition_to(Stage::Processing {
+                                    since: Instant::now(),
+                                    binding_id: Some(binding_id.clone()),
+                                });
+                                self.sync_state(active_use, current_state);
+                                StageAction::StopRecording {
+                                    binding_id,
+                                    hotkey_string,
+                                }
+                            } else {
+                                debug!(
+                                    "Ignoring hold-mode release for '{}': stage={:?}, pressed={}",
+                                    binding_id, self.stage, is_pressed
+                                );
+                                StageAction::None
+                            }
+                        }
+                    }
                 } else {
-                    // Key release without push-to-talk: no-op
+                    // Toggle-mode release: no-op
                     StageAction::None
                 }
             }
@@ -782,7 +908,9 @@ impl CoordinatorCore {
                     // pipeline was busy, restoring toggle parity
                     // (upstream c6fa60da). The optimistic Recording transition
                     // mirrors the normal input path; the thread's start()
-                    // rolls it back if the recorder fails to begin.
+                    // rolls it back if the recorder fails to begin. `since`
+                    // uses the real press time so a hold straddling the drain
+                    // is measured from the actual key-down (upstream c62a5fcd).
                     if let Some(pending) = self.pending_press.take() {
                         debug!(
                             "Pipeline drained; starting remembered press for '{}'",
@@ -790,9 +918,10 @@ impl CoordinatorCore {
                         );
                         self.transition_to(Stage::Recording {
                             binding_id: pending.binding_id.clone(),
-                            since: Instant::now(),
+                            since: pending.pressed_at,
                             silence_extension: Duration::ZERO,
                             warned: false,
+                            locked: pending.locked,
                         });
                         self.sync_state(active_use, current_state);
                         return StageAction::StartRecording {
@@ -1063,6 +1192,7 @@ impl TranscriptionCoordinator {
                             binding_id,
                             silence_extension,
                             warned,
+                            locked,
                         } => {
                             let elapsed = since.elapsed();
 
@@ -1078,6 +1208,7 @@ impl TranscriptionCoordinator {
                             let mut warned_local = *warned;
                             let silence_extension_local = *silence_extension;
                             let binding_id_local = binding_id.clone();
+                            let locked_local = *locked;
                             if let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() {
                                 let voice_elapsed =
                                     Duration::from_millis(rm.last_voice_activity_ms());
@@ -1190,6 +1321,7 @@ impl TranscriptionCoordinator {
                                 since,
                                 silence_extension: silence_extension_local,
                                 warned: warned_local,
+                                locked: locked_local,
                             };
 
                             if effective_remaining == Duration::ZERO {
@@ -1513,23 +1645,25 @@ impl TranscriptionCoordinator {
         let _ = self.tx.send(Command::ExtendRecording { seconds });
     }
 
-    /// Send a keyboard/signal input event for a transcribe binding.
-    /// For signal-based toggles, use `is_pressed: true` and `push_to_talk: false`.
-    /// Keyboard inputs pass through the 30ms debounce; see `send_external_input`
-    /// for triggers that must bypass it.
+    /// Send a keyboard input event for a transcribe binding, tagged with the
+    /// configured activation mode and hold threshold (upstream c62a5fcd).
+    /// For signal-based toggles, use `send_external_input` — keyboard inputs
+    /// pass through the 30ms debounce; external triggers bypass it.
     pub fn send_input(
         &self,
         binding_id: &str,
         hotkey_string: &str,
         is_pressed: bool,
-        push_to_talk: bool,
+        activation: ShortcutActivation,
+        hold_threshold: Duration,
     ) {
         let send_start = Instant::now();
         let result = self.tx.send(Command::Input {
             binding_id: binding_id.to_string(),
             hotkey_string: hotkey_string.to_string(),
             is_pressed,
-            push_to_talk,
+            activation,
+            hold_threshold,
             external: false,
         });
         let dt = send_start.elapsed();
@@ -1560,7 +1694,8 @@ impl TranscriptionCoordinator {
                 binding_id: binding_id.to_string(),
                 hotkey_string: source.to_string(),
                 is_pressed: true,
-                push_to_talk: false,
+                activation: ShortcutActivation::Toggle,
+                hold_threshold: Duration::ZERO,
                 external: true,
             })
             .is_err()
@@ -1615,13 +1750,22 @@ fn start(
         // AppState::Recording carries the id of the session that is starting.
         let new_session = crate::overlay::next_overlay_session();
         *current_session = new_session;
+        // Preserve the hold state from the optimistic transition:
+        // `since` is the real press time (a press remembered while busy is
+        // measured from when the user pressed, upstream c62a5fcd) and
+        // `locked` records a tap-locked drain or a toggle-mode start.
+        let (since, locked) = match &*stage {
+            Stage::Recording { since, locked, .. } => (*since, *locked),
+            _ => (Instant::now(), false),
+        };
         set_stage(
             stage,
             Stage::Recording {
                 binding_id: binding_id.to_string(),
-                since: Instant::now(),
+                since,
                 silence_extension: Duration::ZERO,
                 warned: false,
+                locked,
             },
             new_session,
             active_use,
