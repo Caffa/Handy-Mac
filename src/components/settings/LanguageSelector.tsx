@@ -11,6 +11,16 @@ interface LanguageSelectorProps {
   supportedLanguages?: string[];
 }
 
+// Collapse a model's advertised code to the picker intent it satisfies: the
+// primary subtag with any BCP-47 region/script suffix dropped, plus the same
+// nb→no / fil→tl equivalences the backend's `canonical_language_code` applies.
+// Exact codes still match directly, so zh-Hans/zh-Hant intents are preserved.
+const LANGUAGE_ALIASES: Record<string, string> = { nb: "no", fil: "tl" };
+const intentForModelCode = (code: string): string => {
+  const base = code.split(/[-_]/)[0].toLowerCase();
+  return LANGUAGE_ALIASES[base] ?? base;
+};
+
 export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
   descriptionMode = "tooltip",
   grouped = false,
@@ -53,7 +63,11 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
       return LANGUAGES;
     return LANGUAGES.filter(
       (lang) =>
-        lang.value === "auto" || supportedLanguages.includes(lang.value),
+        lang.value === "auto" ||
+        supportedLanguages.some(
+          (code) =>
+            code === lang.value || intentForModelCode(code) === lang.value,
+        ),
     );
   }, [supportedLanguages]);
 

@@ -140,9 +140,18 @@ fn recognition_language(language: &str) -> &str {
 /// unchanged. Lets a bare intent (`en`) match a model that advertises full
 /// locales (`en-US`) without discarding the real code the engine needs.
 fn base_language(language: &str) -> &str {
-    match language.split_once('-') {
-        Some((base, _)) => base,
-        None => language,
+    language.split(&['-', '_'][..]).next().unwrap_or(language)
+}
+
+/// The stable user intent used to compare language codes across model
+/// families. Norwegian Bokmål (`nb`) maps to Norwegian (`no`), while Nynorsk
+/// (`nn`) remains distinct; Filipino (`fil`) maps to Tagalog (`tl`). This is
+/// only for matching: callers must return/pass the model's original code.
+pub(crate) fn canonical_language_code(language: &str) -> &str {
+    match base_language(language) {
+        "nb" => "no",
+        "fil" => "tl",
+        base => base,
     }
 }
 
@@ -288,10 +297,19 @@ pub fn effective_language(
     }
 
     if intent != "auto" {
-        if let Some(code) = supported_languages
+        // Prefer the same base code before considering an equivalence alias. If
+        // a future model advertises both `no` and `nb`, an explicit `nb` intent
+        // must select `nb`, regardless of capability-list order.
+        let exact_base_match = supported_languages
             .iter()
-            .find(|language| base_language(language) == base_language(intent))
-        {
+            .find(|language| base_language(language) == base_language(intent));
+        let equivalent_match = || {
+            supported_languages.iter().find(|language| {
+                canonical_language_code(language) == canonical_language_code(intent)
+            })
+        };
+
+        if let Some(code) = exact_base_match.or_else(equivalent_match) {
             if intent == "zh-Hans" || intent == "zh-Hant" {
                 return intent.to_string();
             }
@@ -2744,6 +2762,22 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_effective_language_preserves_intent_across_model_code_variants() {
+        assert_eq!(effective_language("no", &["nb".to_string()], true), "nb");
+        assert_eq!(effective_language("nb", &["no".to_string()], true), "no");
+        assert_eq!(effective_language("tl", &["fil".to_string()], true), "fil");
+        assert_eq!(effective_language("fil", &["tl".to_string()], true), "tl");
+    }
+
+    #[test]
+    fn test_effective_language_prefers_exact_norwegian_code() {
+        let languages = vec!["no".to_string(), "nb".to_string()];
+
+        assert_eq!(effective_language("nb", &languages, true), "nb");
+        assert_eq!(effective_language("no", &languages, true), "no");
+    }
 
     #[test]
     fn test_effective_language_accepts_chinese_script_intent_for_zh_capability() {
