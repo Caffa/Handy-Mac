@@ -20,7 +20,7 @@ use serde::Serialize;
 use specta::Type;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_autostart::ManagerExt;
+
 
 use conflicts::ConflictInfo;
 
@@ -772,12 +772,7 @@ pub fn change_autostart_setting(app: AppHandle, enabled: bool) -> Result<(), Str
     settings::write_settings_safe(&app, settings);
 
     // Apply the autostart setting immediately
-    let autostart_manager = app.autolaunch();
-    if enabled {
-        let _ = autostart_manager.enable();
-    } else {
-        let _ = autostart_manager.disable();
-    }
+    crate::autostart::apply_autostart(&app, enabled);
 
     // Notify frontend
     let _ = app.emit(
