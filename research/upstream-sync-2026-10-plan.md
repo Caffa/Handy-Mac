@@ -574,4 +574,21 @@ Phase 0 → (1 → 2 → 3 → 4 → 5)  low-risk runway
 9,5 ─→ 10 (overlay/live-captions/verify + closeout)
 ```
 Intra-phase must-afters: `00d25549`+`37a26fd6` ← `d001fcd9`; `5ec2276a` after secure_input; `b38987a9` ← `d001fcd9`; `c62a5fcd` ← `c6fa60da`; `dc5bdc9d` → `eea1f5f4`; `417dc6ac` ← `20a6685e`; `5197faf0` ← `cfcb6507` (FE shape).
+
+---
+
+## 9. P6 Deferred-Hunk Ledger (live tracking)
+
+These upstream commits contain transcription.rs hunks that cannot land until Phase 6 rewrites `managers/transcription.rs` onto the engine-supervisor client. The non-transcription hunks are applied in Phase 2; the transcription.rs-side wiring is recorded here so it is not lost.
+
+| Upstream SHA | Phase 2 non-transcription work | Deferred transcription.rs hunk | Notes |
+|---|---|---|---|
+| `29bd2c0d` | `lib.rs` — move compute-device reporting off startup path onto prewarm thread | `managers/transcription.rs` `report_compute_devices()` shape / threading | Re-wire `describe_compute_devices()` call site and any device-list command once transcription.rs is supervisor client |
+| `e4ae0d44` | `managers/model.rs` + FE ModelsSettings/modelStore — model-file-deletion recovery | `managers/transcription.rs` 46-line `loading_failed` recovery hunk | Fold into supervisor-client load-failure path |
+| `258899a2` | `actions/` + `utils.rs` — redact transcription content from logs | `managers/transcription.rs` hunk (log redaction) | Apply wherever transcription result text is logged in rewritten client |
+| `4cd49950` | `audio_toolkit/lang_id.rs`, `text.rs`, settings, FE FillerWordRemoval | `cpp_translation_task()`-adjacent lang_id text-fallback wiring | Wire `lang_id` fallback into language-param construction in client |
+| `6fa85061` | `managers/model.rs` + `LanguageSelector` constants | `cpp_translation_task()` language-coverage / 'no'-language guard | Add coverage guard to client-side language-param plumbing |
+| `0bb0428e` | `audio_toolkit/chinese_script.rs`, setting, FE selector | script-aware language-param handling in transcription.rs | Convert `ChineseScript` into language code / script hint in client run-options |
+
+*(Ledger updated during Phase 2; revisit before closing Phase 6.)*
 Order above holds under the default gate outcome (matrix row 1); rejected-gate reshuffles follow §3's closure matrix (e.g., D1=(c) → run Phase 7 directly after Phase 5 and skip 6→8→9 per rows 7/8).
