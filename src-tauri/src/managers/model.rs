@@ -1387,6 +1387,7 @@ impl ModelManager {
 
     fn update_download_status(&self) -> Result<()> {
         let mut models = self.available_models.lock().unwrap();
+        let mut vanished_models: Vec<String> = Vec::new();
 
         for model in models.values_mut() {
             if let ModelSource::HuggingFace { repo_id, revision } = &model.source {
@@ -1438,24 +1439,53 @@ impl ModelManager {
                     model.partial_size = 0;
                 }
             }
+
+            // Custom entries are discovered from files and have no download
+            // source. Once their file is gone, keeping the entry would offer a
+            // Download action that can never succeed.
+            if !model.is_downloaded
+                && !model.is_downloading
+                && model.is_custom
+                && Self::disappears_when_missing(model)
+            {
+                vanished_models.push(model.id.clone());
+            }
+        }
+
+        for id in vanished_models {
+            models.remove(&id);
         }
 
         Ok(())
     }
 
+    /// Entries discovered exclusively from disk should disappear with their
+    /// files. Catalog defaults remain so the UI can offer them for download.
+    fn disappears_when_missing(model: &ModelInfo) -> bool {
+        model.is_custom || matches!(model.source, ModelSource::Local)
+    }
+
+    fn selected_model_is_available(models: &HashMap<String, ModelInfo>, model_id: &str) -> bool {
+        models
+            .get(model_id)
+            .is_some_and(|model| model.is_downloaded)
+    }
+
     fn auto_select_model_if_needed(&self) -> Result<()> {
         let settings = get_settings(&self.app_handle);
 
-        // Clear stale selection: selected model is set but doesn't exist
-        // in available_models (e.g. deleted custom model file)
+        // A model cannot remain selected after its files disappear. Catalog
+        // entries stay in the registry so they can be downloaded again, so
+        // checking only whether the id exists is not sufficient.
         if !settings.selected_model.is_empty() {
-            let models = self.available_models.lock().unwrap();
-            let exists = models.contains_key(&settings.selected_model);
-            drop(models);
+            let is_available = {
+                let models = self.available_models.lock().unwrap();
+                Self::selected_model_is_available(&models, &settings.selected_model)
+            };
 
-            if !exists {
+            if !is_available {
                 info!(
-                    "Selected model '{}' not found in available models, clearing selection",
+                    "Selected model '{}' is not available on disk; clearing selection",
                     settings.selected_model
                 );
                 settings::patch_settings(&self.app_handle, |s| {

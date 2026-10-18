@@ -458,6 +458,13 @@ export const useModelStore = create<ModelsStore>()(
       );
 
       unlistenFns.push(
+        await listen("models-updated", () => {
+          get().loadModels();
+          get().loadCurrentModel();
+        }),
+      );
+
+      unlistenFns.push(
         await listen("model-state-changed", () => {
           get().loadModels();
           get().loadCurrentModel();
