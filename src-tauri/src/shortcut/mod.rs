@@ -12,7 +12,7 @@
 pub mod conflicts;
 mod handler;
 pub mod handy_keys;
-mod tauri_impl;
+pub mod tauri_impl;
 
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -64,6 +64,10 @@ pub fn init_shortcuts(app: &AppHandle) {
 
 /// Register the cancel shortcut (called when recording starts)
 pub fn register_cancel_shortcut(app: &AppHandle) {
+    // Track recording lifecycle independently of the current implementation so
+    // switching implementations mid-recording cannot leave stale fallback state.
+    crate::secure_input::register_cancel_fallback(app);
+
     let settings = get_settings(app);
     match settings.keyboard_implementation {
         KeyboardImplementation::Tauri => tauri_impl::register_cancel_shortcut(app),
@@ -73,6 +77,8 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
 
 /// Unregister the cancel shortcut (called when recording stops)
 pub fn unregister_cancel_shortcut(app: &AppHandle) {
+    crate::secure_input::unregister_cancel_fallback(app);
+
     let settings = get_settings(app);
     match settings.keyboard_implementation {
         KeyboardImplementation::Tauri => tauri_impl::unregister_cancel_shortcut(app),
@@ -209,6 +215,7 @@ pub fn change_binding(
     if id == "cancel" {
         let b = apply_cancel_binding_update(&mut settings, &id, binding.clone());
         settings::write_settings_safe(&app, settings);
+        crate::secure_input::reconcile_fallback(&app);
         return Ok(BindingResponse {
             success: true,
             binding: Some(b),
@@ -278,8 +285,9 @@ pub fn change_binding(
     // Update the binding in the settings
     settings.bindings.insert(id, updated_binding.clone());
 
-    // Save the settings
+    // Save the settings and synchronize any active Secure Input shadows.
     settings::write_settings_safe(&app, settings);
+    crate::secure_input::reconcile_fallback(&app);
 
     // Return the updated binding
     Ok(BindingResponse {
@@ -380,10 +388,17 @@ pub fn change_keyboard_implementation_setting(
     settings.keyboard_implementation = new_impl;
     settings::write_settings_safe(&app, settings);
 
+    // Carbon fallback registrations use the Tauri plugin. Remove them before
+    // registering the full Tauri implementation to avoid duplicate conflicts.
+    if new_impl == KeyboardImplementation::Tauri {
+        crate::secure_input::reconcile_fallback(&app);
+    }
+
     // Initialize new implementation if needed (HandyKeys needs state)
     if new_impl == KeyboardImplementation::HandyKeys {
         if initialize_handy_keys_with_rollback(&app)? {
-            // Shortcuts already registered during init
+            // Shortcuts already registered during init.
+            crate::secure_input::reconcile_fallback(&app);
             return Ok(ImplementationChangeResult {
                 success: true,
                 reset_bindings: vec![],
@@ -393,6 +408,7 @@ pub fn change_keyboard_implementation_setting(
 
     // Register all shortcuts with new implementation, resetting invalid ones
     let reset_bindings = register_all_shortcuts_for_implementation(&app, new_impl);
+    crate::secure_input::reconcile_fallback(&app);
 
     // Emit event to notify frontend of the change
     let _ = app.emit(
@@ -569,6 +585,7 @@ fn initialize_handy_keys_with_rollback(app: &AppHandle) -> Result<bool, String> 
         let mut settings = settings::get_settings_safe(app);
         settings.keyboard_implementation = KeyboardImplementation::Tauri;
         settings::write_settings_safe(app, settings);
+        crate::secure_input::reconcile_fallback(app);
         tauri_impl::init_shortcuts(app);
         return Err(format!(
             "Failed to initialize HandyKeys: {}. Reverted to Tauri.",
@@ -1087,6 +1104,7 @@ pub fn change_post_process_enabled_setting(app: AppHandle, enabled: bool) -> Res
         }
     }
 
+    crate::secure_input::reconcile_fallback(&app);
     Ok(())
 }
 

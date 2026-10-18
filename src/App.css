@@ -9,6 +9,11 @@
   --color-logo-stroke: #382731;
   --color-text-stroke: #f6f6f6;
   --color-mid-gray: #808080;
+  /* Semantic status colors. First used by SecureInputWarning; intended to
+     replace the ad-hoc yellow-500/red-500 usages over time so status styling
+     is themeable from one place. Values swap via --warning/--error below. */
+  --color-warning: var(--warning);
+  --color-error: var(--error);
 }
 
 :root {
@@ -38,6 +43,10 @@
     transparent 70%
   );
 
+  /* Semantic status colors (light) */
+  --warning: #d97706;
+  --error: #dc2626;
+
   /* Apply colors */
   color: var(--color-text);
   background-color: var(--color-background);
@@ -59,6 +68,10 @@
     --color-background: #2c2b29;
     --color-logo-primary: #f28cbb;
     --color-logo-stroke: #fad1ed;
+
+    /* Semantic status colors (dark) */
+    --warning: #fbbf24;
+    --error: #f87171;
   }
 }
 

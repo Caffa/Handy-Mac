@@ -22,6 +22,7 @@ mod logging;
 mod managers;
 mod overlay;
 pub mod portable;
+mod secure_input;
 mod session;
 pub mod settings;
 pub mod shortcut;
@@ -349,7 +350,12 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     let initial_theme = tray::get_current_theme(app_handle);
 
     // Choose the appropriate initial icon based on theme
-    let initial_icon_path = tray::get_icon_path(initial_theme, tray::TrayIconState::Idle);
+    let initial_icon_path =
+        tray::get_icon_path(initial_theme, tray::TrayIconState::Idle, false);
+
+    // Track the current tray state so the Secure Input monitor can re-render
+    // the icon (warning badge) without a recording-state transition.
+    app_handle.manage(tray::CurrentTrayIconState::new(tray::TrayIconState::Idle));
 
     let tray = TrayIconBuilder::new()
         .icon(
@@ -366,6 +372,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         .icon_as_template(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "settings" => {
+                show_main_window(app);
+            }
+            "secure_input_warning" => {
+                // Full explanation lives in the settings-window banner
                 show_main_window(app);
             }
             "check_updates" => {
@@ -690,6 +700,8 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_noise_suppression_level_setting,
             shortcut::handy_keys::start_handy_keys_recording,
             shortcut::handy_keys::stop_handy_keys_recording,
+            secure_input::get_secure_input_status,
+            secure_input::run_keyboard_diagnostic,
             trigger_update_check,
             show_main_window_command,
             commands::cancel_operation,
@@ -1033,6 +1045,11 @@ pub fn run(cli_args: CliArgs) {
             ));
 
             initialize_core_logic(&app_handle);
+
+            // Secure Input monitor (macOS): detects stuck secure input that
+            // silently blocks keyed shortcuts, warns the user, and activates
+            // the Carbon fallback. See secure_input.rs and upstream #1578.
+            secure_input::init(&app_handle);
 
             // Populate the overlay-enabled cache from initial settings so the
             // audio path (overlay::emit_levels, called ~24 Hz during recording)

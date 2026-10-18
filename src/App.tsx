@@ -10,6 +10,7 @@ import {
 import { ModelStateEvent, RecordingErrorEvent } from "./lib/types/events";
 import "./App.css";
 import AccessibilityPermissions from "./components/AccessibilityPermissions";
+import SecureInputWarning from "./components/SecureInputWarning";
 import Footer from "./components/footer";
 import Onboarding, { AccessibilityOnboarding } from "./components/onboarding";
 import {
@@ -344,6 +345,8 @@ function App() {
               "bg-background border border-mid-gray/20 rounded-lg shadow-lg px-4 py-3 flex items-center gap-3 text-sm",
             title: "font-medium",
             description: "text-mid-gray",
+            actionButton:
+              "px-2 py-1 text-xs font-medium rounded-lg border bg-mid-gray/10 border-mid-gray/20 hover:bg-background-ui/30 hover:border-logo-primary cursor-pointer whitespace-nowrap",
           },
         }}
       />
@@ -363,6 +366,7 @@ function App() {
               <ErrorBoundary section="Accessibility Permissions">
                 <AccessibilityPermissions />
               </ErrorBoundary>
+              <SecureInputWarning />
               <SettingsErrorBoundary section={currentSection}>
                 {renderSettingsContent(currentSection, setOnboardingPreview)}
               </SettingsErrorBoundary>

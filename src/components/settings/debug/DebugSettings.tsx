@@ -7,6 +7,7 @@ import { SettingsGroup } from "../../ui/SettingsGroup";
 import { SoundPicker } from "../SoundPicker";
 import { ClamshellMicrophoneSelector } from "../ClamshellMicrophoneSelector";
 import { UpdateChecksToggle } from "../UpdateChecksToggle";
+import { KeyboardDiagnostic } from "./KeyboardDiagnostic";
 import { UsbWatchdog } from "./UsbWatchdog";
 import { RepetitionSuppressionSettings } from "./RepetitionSuppressionSettings";
 import {
@@ -42,6 +43,7 @@ export const DebugSettings: React.FC<DebugSettingsProps> = ({
         />
         <PasteDelay descriptionMode="tooltip" grouped={true} />
         <ClamshellMicrophoneSelector descriptionMode="tooltip" grouped={true} />
+        <KeyboardDiagnostic />
         <UsbWatchdog descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
       <RepetitionSuppressionSettings />

@@ -50,8 +50,37 @@ pub fn get_current_theme(app: &AppHandle) -> AppTheme {
     }
 }
 
-/// Gets the appropriate icon path for the given theme and state
-pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
+/// Tracks the current tray icon state so `refresh_tray_icon` can re-render
+/// the icon without callers needing to know the state (used by the Secure
+/// Input monitor when the warning badge appears or disappears).
+#[derive(Debug)]
+pub struct CurrentTrayIconState(Mutex<TrayIconState>);
+
+impl CurrentTrayIconState {
+    pub fn new(initial: TrayIconState) -> Self {
+        Self(Mutex::new(initial))
+    }
+
+    pub fn get(&self) -> TrayIconState {
+        self.0.lock().clone()
+    }
+}
+
+/// Gets the appropriate icon path for the given theme and state.
+///
+/// `warning` overlays a badge on the idle icon while keyboard shortcuts are
+/// blocked (macOS Secure Input); recording/transcribing states keep their
+/// normal icons so in-flight activity stays recognizable.
+pub fn get_icon_path(theme: AppTheme, state: TrayIconState, warning: bool) -> &'static str {
+    if warning && state == TrayIconState::Idle {
+        return match theme {
+            AppTheme::Dark => "resources/tray_idle_warning.png",
+            AppTheme::Light => "resources/tray_idle_warning_dark.png",
+            // Linux never sets the warning flag (Secure Input is macOS-only),
+            // but fall back to the normal icon just in case.
+            AppTheme::Colored => "resources/handy.png",
+        };
+    }
     match (theme, state) {
         // Dark theme uses light icons
         (AppTheme::Dark, TrayIconState::Idle) => "resources/tray_idle.png",
@@ -76,12 +105,18 @@ pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
         // Acquire the global tray lock to prevent concurrent RefCell borrows
         let _guard = TRAY_LOCK.lock();
 
+        // Remember the state so refresh_tray_icon can re-render later.
+        if let Some(current) = app.try_state::<CurrentTrayIconState>() {
+            *current.0.lock() = icon.clone();
+        }
+
         let Some(tray) = app.try_state::<TrayIcon>() else {
             warn!("TrayIcon not available for icon change");
             return;
         };
         let theme = get_current_theme(app);
-        let icon_path = get_icon_path(theme, icon.clone());
+        let warning = crate::secure_input::tray_warning_active(app);
+        let icon_path = get_icon_path(theme, icon.clone(), warning);
 
         let resolved = app
             .path()
@@ -105,6 +140,16 @@ pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
 
 pub fn tray_tooltip() -> String {
     version_label()
+}
+
+/// Re-renders the tray icon + menu for the current state. Used by the Secure
+/// Input monitor so the warning badge/menu entry appear and disappear without
+/// a recording-state transition. No-op when the state was never tracked.
+pub fn refresh_tray_icon(app: &AppHandle) {
+    let current = app.try_state::<CurrentTrayIconState>().map(|s| s.get());
+    if let Some(state) = current {
+        change_tray_icon(app, state);
+    }
 }
 
 fn version_label() -> String {
@@ -327,9 +372,32 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
         warn!("TrayIcon not available");
         return;
     };
+
+    // Secure Input warning entry (macOS): clicking opens the settings window
+    // where the full warning banner explains the situation. Locales that
+    // haven't translated the key yet get the English string rather than a
+    // blank menu item (build.rs emits "" for missing keys).
+    let mut tooltip = version_label;
+    if crate::secure_input::tray_warning_active(app) {
+        let mut label = strings.secure_input_warning.clone();
+        if label.is_empty() {
+            label = get_tray_translations(Some("en".to_string())).secure_input_warning;
+        }
+        if let Ok(warning_item) =
+            MenuItem::with_id(app, "secure_input_warning", &label, true, None::<&str>)
+        {
+            // Both layouts start with [version, separator, ...]; slot the
+            // warning in right below the version line so it's the first
+            // actionable thing seen.
+            let _ = menu.insert(&warning_item, 2);
+            let _ = menu.insert(&PredefinedMenuItem::separator(app).unwrap(), 3);
+            tooltip = format!("{} — {}", tooltip, label);
+        }
+    }
+
     let _ = tray.set_menu(Some(menu));
     let _ = tray.set_icon_as_template(true);
-    let _ = tray.set_tooltip(Some(version_label));
+    let _ = tray.set_tooltip(Some(tooltip));
 }
 
 /// Public function to update tray menu. Acquires the global TRAY_LOCK to prevent
