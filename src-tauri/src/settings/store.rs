@@ -698,36 +698,15 @@ pub fn get_bindings<R: Runtime>(app: &AppHandle<R>) -> HashMap<String, ShortcutB
     settings.bindings
 }
 
-pub fn get_stored_binding<R: Runtime>(app: &AppHandle<R>, id: &str) -> ShortcutBinding {
-    let bindings = get_bindings(app);
-
-    if let Some(binding) = bindings.get(id) {
-        return binding.clone();
-    }
-
-    warn!(
-        "Binding '{}' not found in current settings, falling back to defaults",
-        id
-    );
-    let default_settings = get_default_settings();
-
-    if let Some(default_binding) = default_settings.bindings.get(id) {
-        return default_binding.clone();
-    }
-
-    warn!(
-        "Binding '{}' not found in defaults either, creating fallback binding",
-        id
-    );
-    ShortcutBinding {
-        id: id.to_string(),
-        name: id.to_string(),
-        description: format!("{} shortcut", id),
-        default_binding: String::new(),
-        current_binding: String::new(),
-        tauri_binding: String::new(),
-        handy_keys_binding: String::new(),
-    }
+/// Look up a stored binding by id. Returns an error for unknown ids so the
+/// reset path rejects them instead of silently fabricating a binding
+/// (upstream a6eed754).
+pub fn get_stored_binding(settings: &AppSettings, id: &str) -> Result<ShortcutBinding, String> {
+    settings
+        .bindings
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("Binding with id '{}' not found", id))
 }
 
 pub fn get_history_limit(app: &AppHandle) -> usize {
@@ -841,6 +820,30 @@ impl SettingsWriter {
 #[cfg(test)]
 #[allow(unused_imports)]
 mod tests {
+    use super::get_stored_binding;
+    use crate::settings::defaults::get_default_settings;
+
+    #[test]
+    fn stored_binding_returns_the_requested_binding() {
+        let settings = get_default_settings();
+
+        let result = get_stored_binding(&settings, "transcribe");
+
+        assert_eq!(result.unwrap().id, "transcribe");
+    }
+
+    #[test]
+    fn unknown_stored_binding_returns_an_error() {
+        let settings = get_default_settings();
+
+        let result = get_stored_binding(&settings, "unknown");
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Binding with id 'unknown' not found"
+        );
+    }
+
     use super::*;
 
     #[test]
