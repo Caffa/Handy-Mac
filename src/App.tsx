@@ -51,6 +51,17 @@ function App() {
   );
   const hasCompletedPostOnboardingInit = useRef(false);
   const settingsScrollRef = useRef<HTMLDivElement>(null);
+  const isShowingOnboarding =
+    onboardingStep === "accessibility" || onboardingStep === "model";
+
+  // Classic scrollbars consume layout space. Reserve a matching gutter on the
+  // opposite edge while onboarding is visible so its content stays centered in
+  // the physical window. Overlay scrollbars ignore scrollbar-gutter.
+  useLayoutEffect(() => {
+    const attribute = "data-onboarding-active";
+    document.documentElement.toggleAttribute(attribute, isShowingOnboarding);
+    return () => document.documentElement.removeAttribute(attribute);
+  }, [isShowingOnboarding]);
 
   useEffect(() => {
     checkOnboardingStatus();
