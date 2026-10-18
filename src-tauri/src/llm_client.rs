@@ -380,6 +380,19 @@ pub async fn send_chat_completion_with_schema(
     json_schema: Option<Value>,
     disable_reasoning: bool,
 ) -> Result<Option<String>, String> {
+    // The schema path below speaks only OpenAI Chat Completions and would POST
+    // OpenAI-shaped JSON with Anthropic auth headers if an Anthropic-format
+    // provider ever reached it (e.g. a custom provider with
+    // `supports_structured_output` set). Fail loudly so callers fall back to
+    // the legacy path, which routes Anthropic providers natively.
+    if provider.api_format == PostProcessApiFormat::Anthropic {
+        return Err(
+            "Structured output is not supported for the Anthropic API format; \
+             use the legacy request path instead"
+                .to_string(),
+        );
+    }
+
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
