@@ -532,68 +532,6 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Register the cancel shortcut (called when recording starts)
-/// FIXED: Changed from async to synchronous registration to prevent race condition
-/// where the user presses the hotkey before async registration completes.
-pub fn register_cancel_shortcut(app: &AppHandle) {
-    // Disabled on Linux due to instability
-    #[cfg(target_os = "linux")]
-    {
-        let _ = app;
-        return;
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let settings = get_settings(app);
-        if let Some(cancel_binding) = settings.bindings.get("cancel").cloned() {
-            let mut active_binding = cancel_binding;
-            active_binding.current_binding = active_binding
-                .binding_for(KeyboardImplementation::HandyKeys)
-                .to_string();
-            if let Some(state) = app.try_state::<HandyKeysState>() {
-                if let Err(e) = state.register(&active_binding) {
-                    error!("Failed to register cancel shortcut: {}", e);
-                } else {
-                    debug!(
-                        "Cancel shortcut registered synchronously: {}",
-                        active_binding.current_binding
-                    );
-                }
-            } else {
-                warn!("HandyKeysState not available for cancel shortcut registration");
-            }
-        }
-    }
-}
-
-/// Unregister the cancel shortcut (called when recording stops)
-/// FIXED: Changed from async to synchronous unregistration for consistency with registration.
-pub fn unregister_cancel_shortcut(app: &AppHandle) {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = app;
-        return;
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let settings = get_settings(app);
-        if let Some(cancel_binding) = settings.bindings.get("cancel").cloned() {
-            let mut active_binding = cancel_binding;
-            active_binding.current_binding = active_binding
-                .binding_for(KeyboardImplementation::HandyKeys)
-                .to_string();
-            if let Some(state) = app.try_state::<HandyKeysState>() {
-                let _ = state.unregister(&active_binding);
-                debug!("Cancel shortcut unregistered synchronously");
-            } else {
-                warn!("HandyKeysState not available for cancel shortcut unregistration");
-            }
-        }
-    }
-}
-
 /// Register a shortcut
 pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
     let state = app

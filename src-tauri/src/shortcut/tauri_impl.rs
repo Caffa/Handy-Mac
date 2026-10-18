@@ -8,7 +8,6 @@ use tauri::AppHandle;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[cfg(not(target_os = "linux"))]
-use crate::settings::get_settings_safe;
 use crate::settings::{self, KeyboardImplementation, ShortcutBinding};
 
 use super::handler::handle_shortcut_event;
@@ -167,61 +166,6 @@ pub fn unregister_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<
     })?;
 
     Ok(())
-}
-
-/// Register the cancel shortcut (called when recording starts)
-pub fn register_cancel_shortcut(app: &AppHandle) {
-    // Cancel shortcut is disabled on Linux due to instability with dynamic shortcut registration
-    #[cfg(target_os = "linux")]
-    {
-        let _ = app;
-        return;
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let app_clone = app.clone();
-        let settings = get_settings_safe(&app_clone);
-        let keyboard_implementation = settings.keyboard_implementation;
-        tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = settings.bindings.get("cancel").cloned() {
-                let mut active_binding = cancel_binding;
-                active_binding.current_binding = active_binding
-                    .binding_for(keyboard_implementation)
-                    .to_string();
-                if let Err(e) = register_shortcut(&app_clone, active_binding) {
-                    error!("Failed to register cancel shortcut: {}", e);
-                }
-            }
-        });
-    }
-}
-
-/// Unregister the cancel shortcut (called when recording stops)
-pub fn unregister_cancel_shortcut(app: &AppHandle) {
-    // Cancel shortcut is disabled on Linux due to instability with dynamic shortcut registration
-    #[cfg(target_os = "linux")]
-    {
-        let _ = app;
-        return;
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let app_clone = app.clone();
-        let settings = get_settings_safe(&app_clone);
-        let keyboard_implementation = settings.keyboard_implementation;
-        tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = settings.bindings.get("cancel").cloned() {
-                let mut active_binding = cancel_binding;
-                active_binding.current_binding = active_binding
-                    .binding_for(keyboard_implementation)
-                    .to_string();
-                // We ignore errors here as it might already be unregistered
-                let _ = unregister_shortcut(&app_clone, active_binding);
-            }
-        });
-    }
 }
 
 #[cfg(test)]
