@@ -88,7 +88,7 @@ pub use transcription_coordinator::TranscriptionCoordinator;
 
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Listener, Manager};
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
 use crate::settings::get_settings_safe;
