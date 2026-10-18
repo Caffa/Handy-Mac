@@ -610,6 +610,14 @@ These upstream commits contain transcription.rs hunks that cannot land until Pha
 
 *(Ledger updated during Phase 2; revisit before closing Phase 6.)*
 
+### P5 close-out addendum (2026-10-19)
+
+Phases 3–5 complete (tags `sync-2026-10-p3-done` @ `aa55a46d`, `-p4-done` @ `5804f3a2`, `-p5-done` @ tag created at close). No new P6 deferred hunks arose: none of the Phase 3–5 rows contain transcription.rs hunks. Row tables and per-commit notes live in `UPSTREAM_SYNC.md` (Phase 3/4/5 Commit Notes).
+
+**Carry-forward for Phase 6 (P6 re-skin must preserve):** the Phase 5 coordinator additions are now load-bearing — `PendingPress` (busy-window remember/forget + cross-binding rule), `Stage::Recording.locked` (tap-locked hold-or-toggle sessions; drain starts at the real press time via `PendingPress.pressed_at`, and `start()` preserves `since`/`locked` from the optimistic transition), `send_external_input` debounce exemption (signal_handle.rs), and the shortcut activation plumbing (`Command::Input{activation, hold_threshold}`). If Phase 6 touches `transcription_coordinator.rs` / the supervisor client wiring, these semantics must survive the re-skin, along with the fork's `Stage` machine, VAD sliding deadlines, and `transcription_coordinator_tests.rs` (58 tests incl. the 14 new busy-window/hold-or-toggle ones).
+
+**Documented divergences (deliberate, not deferrals):** c6fa60da — ProcessingTimeout drops the pending press; upstream's OVERLAY_SHOW_GENERATION skipped (fork's OVERLAY_SESSION + is_active_use guards are stronger). c62a5fcd — upstream's 50ms RELEASE_GRACE pending-release machinery (X11 auto-repeat, #1539) not ported; immediate release resolution instead. D5 — REGRESSION-TEST-REQUIRED manual macOS sleep/wake + hotkey pass still open (see D5 EXECUTION NOTE in §3).
+
 ### P2 close-out addendum (2026-10-18)
 
 Remaining Phase 2 rows finished this session, with fork commits: `4cd49950` partial → `28119924` (+ `91ee3aee`, `598c0504`), `6fa85061` partial → `8addac74`, `0bb0428e` partial → `c1a6ccc9`, `d55ea7ef`+`0e503672` → **S** (fork already at/above: `TranscribeAcceleratorSetting::Gpu` maps to `Backend::Auto` + stable `transcribe_gpu_device` identity; upstream's gpu→auto migration would be a no-op; catalog/build.rs merge content skipped by fork policy), `cf49ab35` → `cceadc15` (query-only main-thread hop; whole-body hop rejected — it would deadlock the fork's oneshot position confirmation). Also fixed a test-cfg break left by the `14ae9c6b` commit (`PostProcessProvider` test initializer missing `api_format`, in `llm_client.rs` `provider()`). Rows the orchestrator flagged as possibly-P2 (`53db4cb6`, `496a80cc`, `7c31572d`, `37a26fd6`, `5ec2276a`) are Phase 3/Phase 4 rows in this plan and were not actioned here.
