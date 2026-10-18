@@ -136,6 +136,21 @@ pub struct LLMPrompt {
 
 // ── PostProcessProvider ──
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PostProcessApiFormat {
+    /// OpenAI-compatible `/chat/completions` format (default).
+    OpenAiCompatible,
+    /// Native Anthropic `/v1/messages` format.
+    Anthropic,
+}
+
+impl Default for PostProcessApiFormat {
+    fn default() -> Self {
+        PostProcessApiFormat::OpenAiCompatible
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct PostProcessProvider {
     pub id: String,
@@ -147,6 +162,8 @@ pub struct PostProcessProvider {
     pub models_endpoint: Option<String>,
     #[serde(default)]
     pub supports_structured_output: bool,
+    #[serde(default)]
+    pub api_format: PostProcessApiFormat,
 }
 
 // ── OverlayPosition ──
@@ -851,6 +868,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAiCompatible,
         },
         PostProcessProvider {
             id: "zai".to_string(),
@@ -859,6 +877,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAiCompatible,
         },
         PostProcessProvider {
             id: "openrouter".to_string(),
@@ -867,6 +886,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAiCompatible,
         },
         PostProcessProvider {
             id: "anthropic".to_string(),
@@ -875,6 +895,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            api_format: PostProcessApiFormat::Anthropic,
         },
         PostProcessProvider {
             id: "groq".to_string(),
@@ -883,6 +904,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            api_format: PostProcessApiFormat::OpenAiCompatible,
         },
         PostProcessProvider {
             id: "cerebras".to_string(),
@@ -891,6 +913,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAiCompatible,
         },
     ];
 
@@ -903,6 +926,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: None,
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAiCompatible,
         });
     }
 
@@ -913,6 +937,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: false,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: true,
+        api_format: PostProcessApiFormat::OpenAiCompatible,
     });
 
     providers.push(PostProcessProvider {
@@ -922,6 +947,7 @@ pub(crate) fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: true,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: false,
+        api_format: PostProcessApiFormat::OpenAiCompatible,
     });
 
     providers

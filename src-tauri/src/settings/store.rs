@@ -138,6 +138,17 @@ pub(crate) fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                     existing.supports_structured_output = provider.supports_structured_output;
                     changed = true;
                 }
+                // Sync the API format for built-in providers so older settings that
+                // pre-date PostProcessApiFormat adopt the correct native format.
+                // The custom provider is user-editable, so its format is left alone.
+                if existing.api_format != provider.api_format && existing.id != "custom" {
+                    debug!(
+                        "Updating api_format for provider '{}' from {:?} to {:?}",
+                        provider.id, existing.api_format, provider.api_format
+                    );
+                    existing.api_format = provider.api_format;
+                    changed = true;
+                }
             }
             None => {
                 settings.post_process_providers.push(provider.clone());
