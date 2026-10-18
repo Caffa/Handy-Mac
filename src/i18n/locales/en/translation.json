@@ -638,6 +638,7 @@
       "search": "Search history...",
       "noResults": "No matching transcriptions found",
       "copyToClipboard": "Copy transcription to clipboard",
+      "copyError": "Failed to copy transcription to clipboard.",
       "save": "Save transcription",
       "unsave": "Remove from saved",
       "delete": "Delete entry",

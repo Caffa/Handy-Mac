@@ -34,6 +34,7 @@ import Badge from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
 import { RetryQueue } from "./RetryQueue";
+import { copyToClipboard } from "./clipboard";
 
 const IconButton: React.FC<{
   onClick: () => void;
@@ -251,14 +252,6 @@ export const HistorySettings: React.FC = () => {
     }
   };
 
-  const copyToClipboard = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (error) {
-      console.error("Failed to copy to clipboard:", error);
-    }
-  };
-
   const deleteAudioEntry = async (id: number) => {
     // Optimistically remove
     setEntries((prev) => prev.filter((e) => e.id !== id));
@@ -432,7 +425,7 @@ export const HistorySettings: React.FC = () => {
 interface HistoryEntryProps {
   entry: HistoryEntry;
   onToggleSaved: () => void;
-  onCopyText: () => void;
+  onCopyText: () => Promise<boolean>;
   deleteAudio: (id: number) => Promise<void>;
   retryTranscription: (id: number) => Promise<void>;
   onUpdateMetadata: (
@@ -507,12 +500,17 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
     };
   }, [audioMode, entry.file_name, entry.file_name_vad, osType]);
 
-  const handleCopyText = () => {
+  const handleCopyText = async () => {
     if (!hasTranscription) {
       return;
     }
 
-    onCopyText();
+    const copied = await onCopyText();
+    if (!copied) {
+      toast.error(t("settings.history.copyError"));
+      return;
+    }
+
     setShowCopied(true);
     setTimeout(() => setShowCopied(false), 2000);
   };
