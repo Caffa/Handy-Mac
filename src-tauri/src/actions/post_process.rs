@@ -16,6 +16,19 @@ pub fn strip_invisible_chars(s: &str) -> String {
     s.replace(['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'], "")
 }
 
+/// Strip a leading `<think>...</think>` block. Some endpoints can't disable
+/// reasoning, and some local servers put the reasoning text into `content`
+/// instead of a separate field — without this the user would get the model's
+/// chain of thought pasted along with the cleaned transcription.
+fn strip_think_block(s: &str) -> &str {
+    if let Some(rest) = s.trim_start().strip_prefix("<think>") {
+        if let Some(end) = rest.find("</think>") {
+            return rest[end + "</think>".len()..].trim_start();
+        }
+    }
+    s
+}
+
 /// Build a system prompt from the user's prompt template.
 /// Removes `${output}` placeholder since the transcription is sent as the user message.
 fn build_system_prompt(prompt_template: &str) -> String {
@@ -99,21 +112,10 @@ pub async fn post_process_transcription(
         .cloned()
         .unwrap_or_default();
 
-    // Disable reasoning for providers where post-processing rarely benefits from it.
-    // - custom: top-level reasoning_effort (works for local OpenAI-compat servers)
-    // - openrouter: nested reasoning object; exclude:true also keeps reasoning text
-    //   out of the response so it can't pollute structured-output JSON parsing
-    let (reasoning_effort, reasoning) = match provider.id.as_str() {
-        "custom" => (Some("none".to_string()), None),
-        "openrouter" => (
-            None,
-            Some(crate::llm_client::ReasoningConfig {
-                effort: Some("none".to_string()),
-                exclude: Some(true),
-            }),
-        ),
-        _ => (None, None),
-    };
+    // Disable reasoning/thinking for all post-processing requests. The llm_client
+    // layer knows how to phrase the request for each endpoint and will retry once
+    // if the endpoint rejects the reasoning-disable fields.
+    let disable_reasoning = true;
 
     if provider.supports_structured_output {
         debug!("Using structured outputs for provider '{}'", provider.id);
@@ -185,14 +187,16 @@ pub async fn post_process_transcription(
             user_content,
             Some(system_prompt),
             Some(json_schema),
-            reasoning_effort.clone(),
-            reasoning.clone(),
+            disable_reasoning,
         )
         .await
         {
             Ok(Some(content)) => {
+                // Some endpoints return reasoning text inside content even when we asked them
+                // not to; strip it before JSON parsing so it doesn't break the response.
+                let content = strip_think_block(&content);
                 // Parse the JSON response to extract the transcription field
-                match serde_json::from_str::<serde_json::Value>(&content) {
+                match serde_json::from_str::<serde_json::Value>(content) {
                     Ok(json) => {
                         if let Some(transcription_value) =
                             json.get(TRANSCRIPTION_FIELD).and_then(|t| t.as_str())
@@ -206,7 +210,7 @@ pub async fn post_process_transcription(
                             return Some(result);
                         } else {
                             error!("Structured output response missing 'transcription' field");
-                            return Some(strip_invisible_chars(&content));
+                            return Some(strip_invisible_chars(content));
                         }
                     }
                     Err(e) => {
@@ -214,7 +218,7 @@ pub async fn post_process_transcription(
                             "Failed to parse structured output JSON: {}. Returning raw content.",
                             e
                         );
-                        return Some(strip_invisible_chars(&content));
+                        return Some(strip_invisible_chars(content));
                     }
                 }
             }
@@ -241,13 +245,12 @@ pub async fn post_process_transcription(
         api_key,
         &model,
         processed_prompt,
-        reasoning_effort,
-        reasoning,
+        disable_reasoning,
     )
     .await
     {
         Ok(Some(content)) => {
-            let content = strip_invisible_chars(&content);
+            let content = strip_invisible_chars(strip_think_block(&content));
             debug!(
                 "LLM post-processing succeeded for provider '{}'. Output length: {} chars",
                 provider.id,
@@ -357,5 +360,41 @@ pub async fn process_transcription_output(
         final_text,
         post_processed_text,
         post_process_prompt,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{strip_invisible_chars, strip_think_block};
+
+    #[test]
+    fn leading_think_block_is_stripped() {
+        assert_eq!(
+            strip_think_block("<think>pondering...</think>Cleaned text."),
+            "Cleaned text."
+        );
+        assert_eq!(
+            strip_think_block("  \n<think>multi\nline</think>\n  Cleaned text."),
+            "Cleaned text."
+        );
+    }
+
+    #[test]
+    fn content_without_think_block_is_unchanged() {
+        assert_eq!(strip_think_block("Cleaned text."), "Cleaned text.");
+        assert_eq!(
+            strip_think_block("Mentions <think> mid-sentence."),
+            "Mentions <think> mid-sentence."
+        );
+        // Unclosed block: leave untouched rather than guess
+        assert_eq!(
+            strip_think_block("<think>never closed"),
+            "<think>never closed"
+        );
+    }
+
+    #[test]
+    fn invisible_chars_are_removed() {
+        assert_eq!(strip_invisible_chars("a\u{200B}b\u{FEFF}c"), "abc");
     }
 }
