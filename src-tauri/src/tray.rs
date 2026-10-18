@@ -97,7 +97,7 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState, warning: bool) -> &'
     }
 }
 
-pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
+pub fn set_tray_state(app: &AppHandle, icon: TrayIconState) {
     // Wrap in catch_unwind so any unexpected panic in tray operations
     // doesn't crash the app. The cancel button calls this, and a crash
     // here would leave the recording stuck with no way to recover.
@@ -156,7 +156,7 @@ pub fn tray_tooltip() -> String {
 pub fn refresh_tray_icon(app: &AppHandle) {
     let current = app.try_state::<CurrentTrayIconState>().map(|s| s.get());
     if let Some(state) = current {
-        change_tray_icon(app, state);
+        set_tray_state(app, state);
     }
 }
 
@@ -169,7 +169,7 @@ fn version_label() -> String {
 }
 
 /// Internal implementation that updates the tray menu without acquiring the lock.
-/// Called from within lock-holding functions like change_tray_icon.
+/// Called from within lock-holding functions like set_tray_state.
 ///
 /// This rebuild is best-effort: it uses non-blocking reads for backend locks
 /// (transcription engine, available models). If those locks are currently held

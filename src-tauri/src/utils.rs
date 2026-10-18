@@ -149,10 +149,10 @@ pub fn cancel_current_operation(app: &AppHandle) {
     {
         let t = std::time::Instant::now();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            change_tray_icon(app, crate::tray::TrayIconState::Idle);
+            set_tray_state(app, crate::tray::TrayIconState::Idle);
         }));
         info!(
-            "[CANCEL-TIMING] step 7 (change_tray_icon) took {:?}",
+            "[CANCEL-TIMING] step 7 (set_tray_state) took {:?}",
             t.elapsed()
         );
     }

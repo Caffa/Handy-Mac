@@ -255,7 +255,7 @@ fn test_processing_timeout_auto_resets_to_idle() {
 // ── Test 5b: ProcessingTimeout returns ProcessingTimeoutExpired action ──
 // Guards against the regression where the refactor routed ProcessingTimeout
 // through process_command() returning StageAction::None, which caused the
-// thread loop to skip hide_recording_overlay() + change_tray_icon(Idle).
+// thread loop to skip hide_recording_overlay() + set_tray_state(Idle).
 // The thread loop MUST see ProcessingTimeoutExpired to dispatch those side
 // effects; this test locks that contract down.
 

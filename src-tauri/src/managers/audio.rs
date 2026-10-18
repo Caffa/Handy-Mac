@@ -859,7 +859,7 @@ impl AudioRecordingManager {
                         // silently recover in the background without showing the visualizer.
                         if was_recording {
                             utils::show_usb_cycling_overlay(&app_handle);
-                            crate::tray::change_tray_icon(
+                            crate::tray::set_tray_state(
                                 &app_handle,
                                 crate::tray::TrayIconState::Recording,
                             );
@@ -886,12 +886,12 @@ impl AudioRecordingManager {
                                 utils::hide_recording_overlay(&app_handle);
                             }
 
-                            crate::tray::change_tray_icon(
+                            crate::tray::set_tray_state(
                                 &app_handle,
                                 crate::tray::TrayIconState::Idle,
                             );
                         } else {
-                            crate::tray::change_tray_icon(
+                            crate::tray::set_tray_state(
                                 &app_handle,
                                 crate::tray::TrayIconState::Idle,
                             );
@@ -1743,7 +1743,7 @@ impl AudioRecordingManager {
             // the USB watchdog triggers a power cycle).
             if is_always_on {
                 utils::show_usb_cycling_overlay(&self.app_handle);
-                crate::tray::change_tray_icon(
+                crate::tray::set_tray_state(
                     &self.app_handle,
                     crate::tray::TrayIconState::Recording,
                 );
@@ -1764,7 +1764,7 @@ impl AudioRecordingManager {
                 // Clean up UI state on failure
                 if is_always_on {
                     utils::hide_recording_overlay(&self.app_handle);
-                    crate::tray::change_tray_icon(
+                    crate::tray::set_tray_state(
                         &self.app_handle,
                         crate::tray::TrayIconState::Idle,
                     );
@@ -1781,7 +1781,7 @@ impl AudioRecordingManager {
                 // (TranscribeAction::start) will show the recording overlay
                 // which seamlessly transitions from USB-cycling to recording.
                 // Only reset the tray icon; the overlay will be replaced.
-                crate::tray::change_tray_icon(&self.app_handle, crate::tray::TrayIconState::Idle);
+                crate::tray::set_tray_state(&self.app_handle, crate::tray::TrayIconState::Idle);
             }
         }
 

@@ -15,7 +15,7 @@ use crate::session::SessionTracker;
 use crate::settings::get_settings;
 use crate::shortcut;
 use crate::streaming_cancel_flag::StreamingCancelFlag;
-use crate::tray::{change_tray_icon, TrayIconState};
+use crate::tray::{set_tray_state, TrayIconState};
 use crate::utils::{
     self, show_processing_overlay_with_mode, show_recording_overlay_with_mode,
     show_transcribing_overlay_with_mode,
@@ -142,7 +142,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         });
 
         let binding_id = binding_id.to_string();
-        change_tray_icon(app, TrayIconState::Recording);
+        set_tray_state(app, TrayIconState::Recording);
         show_recording_overlay_with_mode(app, OverlayMode::Router);
 
         // Recording start logic — identical to TranscribeAction
@@ -187,7 +187,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             shortcut::register_cancel_shortcut(app);
         } else {
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
                 let error_type = if is_microphone_access_denied(&err) {
                     "microphone_permission_denied"
@@ -245,7 +245,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
             warn!("AudioRecordingManager not available, cannot stop router recording");
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             return;
         };
         let rm = Arc::clone(&rm);
@@ -254,14 +254,14 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop router transcription");
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             return;
         };
         let tm = Arc::clone(&tm);
         let Some(hm) = app.try_state::<Arc<HistoryManager>>() else {
             warn!("HistoryManager not available, cannot save router recording");
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             return;
         };
         let hm = Arc::clone(&hm);
@@ -299,7 +299,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         tracker.fail_session(s, "No audio samples from recording stop");
                     }
                     utils::hide_recording_overlay(&ah);
-                    change_tray_icon(&ah, TrayIconState::Idle);
+                    set_tray_state(&ah, TrayIconState::Idle);
                     return;
                 }
 
@@ -428,7 +428,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             send_macos_notification("Handy Router", "No speech detected");
 
                             utils::hide_recording_overlay(&ah);
-                            change_tray_icon(&ah, TrayIconState::Idle);
+                            set_tray_state(&ah, TrayIconState::Idle);
 
                             if let (Some(ref s), Some(tracker)) =
                                 (&sid, ah.try_state::<Arc<SessionTracker>>())
@@ -736,7 +736,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                     std::thread::spawn(move || {
                                         std::thread::sleep(Duration::from_secs(5));
                                         utils::hide_recording_overlay(&app_delayed);
-                                        change_tray_icon(&app_delayed, TrayIconState::Idle);
+                                        set_tray_state(&app_delayed, TrayIconState::Idle);
                                     });
                                 }
 
@@ -769,11 +769,11 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 let _ = ah.run_on_main_thread(move || {
                                     let _ = utils::paste(transcription_text, ah_for_paste.clone());
                                     utils::hide_recording_overlay(&ah_for_paste);
-                                    change_tray_icon(&ah_for_paste, TrayIconState::Idle);
+                                    set_tray_state(&ah_for_paste, TrayIconState::Idle);
                                 });
                             } else {
                                 utils::hide_recording_overlay(&ah);
-                                change_tray_icon(&ah, TrayIconState::Idle);
+                                set_tray_state(&ah, TrayIconState::Idle);
                             }
                         }
                     }
@@ -869,7 +869,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         );
 
                         utils::hide_recording_overlay(&ah);
-                        change_tray_icon(&ah, TrayIconState::Idle);
+                        set_tray_state(&ah, TrayIconState::Idle);
 
                         let router_model_id = {
                             let settings = get_settings(&ah);
@@ -891,9 +891,9 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                 }
 
                 utils::hide_recording_overlay(&ah);
-                change_tray_icon(&ah, TrayIconState::Idle);
+                set_tray_state(&ah, TrayIconState::Idle);
                 utils::hide_recording_overlay(&ah);
-                change_tray_icon(&ah, TrayIconState::Idle);
+                set_tray_state(&ah, TrayIconState::Idle);
             }
         });
 
@@ -903,7 +903,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         // from stopping and the visualizer from eventually hiding.
         // ── KEY DIFFERENCE from TranscribeAction ──
         // Show routing-specific overlay during transcription + routing
-        change_tray_icon(app, TrayIconState::Transcribing);
+        set_tray_state(app, TrayIconState::Transcribing);
         show_transcribing_overlay_with_mode(app, OverlayMode::Router);
 
         // Unmute in a detached thread so a stuck osascript/System Events cannot block

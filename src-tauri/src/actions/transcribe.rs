@@ -15,7 +15,7 @@ use crate::session::SessionTracker;
 use crate::settings::get_settings;
 use crate::shortcut;
 use crate::streaming_cancel_flag::StreamingCancelFlag;
-use crate::tray::{change_tray_icon, TrayIconState};
+use crate::tray::{set_tray_state, TrayIconState};
 use crate::utils::{
     self, show_processing_overlay, show_recording_overlay, show_transcribing_overlay,
 };
@@ -180,7 +180,7 @@ impl super::ShortcutAction for TranscribeAction {
         }
 
         let binding_id = binding_id.to_string();
-        change_tray_icon(app, TrayIconState::Recording);
+        set_tray_state(app, TrayIconState::Recording);
         show_recording_overlay(app);
 
         // Get the microphone mode to determine audio feedback timing
@@ -236,7 +236,7 @@ impl super::ShortcutAction for TranscribeAction {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
                 let error_type = if is_microphone_access_denied(&err) {
                     "microphone_permission_denied"
@@ -301,7 +301,7 @@ impl super::ShortcutAction for TranscribeAction {
         let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
             warn!("AudioRecordingManager not available, cannot stop recording");
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             return;
         };
         let rm = Arc::clone(&rm);
@@ -310,7 +310,7 @@ impl super::ShortcutAction for TranscribeAction {
         let Some(tm) = app.try_state::<Arc<Mutex<TranscriptionManager>>>() else {
             warn!("TranscriptionManager not available, cannot stop transcription");
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             return;
         };
         let tm = Arc::clone(&tm);
@@ -320,7 +320,7 @@ impl super::ShortcutAction for TranscribeAction {
         let Some(hm) = app.try_state::<Arc<HistoryManager>>() else {
             warn!("HistoryManager not available, cannot save recording");
             utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
+            set_tray_state(app, TrayIconState::Idle);
             return;
         };
         let hm = Arc::clone(&hm);
@@ -335,7 +335,7 @@ impl super::ShortcutAction for TranscribeAction {
 
         // CRITICAL: Spawn the recording-stop work IMMEDIATELY, before any UI/feedback
         // call that might synchronously block (e.g. AppleScript mute, overlay JS).
-        // Previously, change_tray_icon / show_transcribing_overlay / remove_mute /
+        // Previously, set_tray_state / show_transcribing_overlay / remove_mute /
         // play_feedback_sound ran before the spawn, and when any of them hung after
         // sleep/wake, the stop recording task never started and the visualizer stayed
         // open forever. The UI/feedback updates below are fire-and-forget and must not
@@ -407,7 +407,7 @@ impl super::ShortcutAction for TranscribeAction {
                 if processed_samples.is_empty() {
                     warn!("[STOP-DIAGNOSTIC] Recording produced no audio samples; hiding overlay");
                     utils::hide_recording_overlay(&ah);
-                    change_tray_icon(&ah, TrayIconState::Idle);
+                    set_tray_state(&ah, TrayIconState::Idle);
                 } else {
                     info!(
                         "[STOP-DIAGNOSTIC] Recording has {} processed / {} raw samples; continuing transcription pipeline",
@@ -575,7 +575,7 @@ impl super::ShortcutAction for TranscribeAction {
                                     }
                                 }
                                 utils::hide_recording_overlay(&ah);
-                                change_tray_icon(&ah, TrayIconState::Idle);
+                                set_tray_state(&ah, TrayIconState::Idle);
                             } else {
                                 let ah_clone = ah.clone();
                                 let paste_time = Instant::now();
@@ -620,7 +620,7 @@ impl super::ShortcutAction for TranscribeAction {
                                         }
                                     }
                                     utils::hide_recording_overlay(&ah_clone);
-                                    change_tray_icon(&ah_clone, TrayIconState::Idle);
+                                    set_tray_state(&ah_clone, TrayIconState::Idle);
                                 });
 
                                 match result {
@@ -630,7 +630,7 @@ impl super::ShortcutAction for TranscribeAction {
                                     Err(e) => {
                                         error!("Failed to run paste on main thread: {:?}", e);
                                         utils::hide_recording_overlay(&ah);
-                                        change_tray_icon(&ah, TrayIconState::Idle);
+                                        set_tray_state(&ah, TrayIconState::Idle);
                                     }
                                 }
                             }
@@ -731,7 +731,7 @@ impl super::ShortcutAction for TranscribeAction {
                             }
 
                             utils::hide_recording_overlay(&ah);
-                            change_tray_icon(&ah, TrayIconState::Idle);
+                            set_tray_state(&ah, TrayIconState::Idle);
 
                             // Play the failure/dismissal sound so the user hears
                             // that the transcription did not complete. We reuse the
@@ -785,7 +785,7 @@ impl super::ShortcutAction for TranscribeAction {
                     tracker.fail_session(s, "No audio samples from recording stop");
                 }
                 utils::hide_recording_overlay(&ah);
-                change_tray_icon(&ah, TrayIconState::Idle);
+                set_tray_state(&ah, TrayIconState::Idle);
 
                 // If no samples were captured, make sure the live captions
                 // stream is cancelled rather than left dangling.
@@ -821,7 +821,7 @@ impl super::ShortcutAction for TranscribeAction {
         // They are best-effort: if any of them hangs (e.g. AppleScript mute after
         // sleep/wake, or overlay JS evaluation), it must not prevent the recording
         // from stopping and the visualizer from eventually hiding.
-        change_tray_icon(app, TrayIconState::Transcribing);
+        set_tray_state(app, TrayIconState::Transcribing);
         show_transcribing_overlay(app);
 
         // Unmute in a detached thread so a stuck osascript/System Events cannot block

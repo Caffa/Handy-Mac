@@ -217,7 +217,7 @@ enum StageAction {
     },
     /// Processing timeout fired — the thread must hide the overlay and reset
     /// the tray icon to Idle. Mirrors the pre-refactor ProcessingTimeout arm
-    /// which called `hide_recording_overlay()` + `change_tray_icon(Idle)`.
+    /// which called `hide_recording_overlay()` + `set_tray_state(Idle)`.
     ProcessingTimeoutExpired,
 }
 
@@ -989,7 +989,7 @@ impl TranscriptionCoordinator {
                                 // cancels the emergency backup, so don't duplicate
                                 // that work here.
                                 crate::utils::hide_recording_overlay(&app);
-                                crate::utils::change_tray_icon(
+                                crate::utils::set_tray_state(
                                     &app,
                                     crate::utils::TrayIconState::Idle,
                                 );
@@ -1081,7 +1081,7 @@ impl TranscriptionCoordinator {
                                 // cancels the emergency backup, so don't duplicate
                                 // that work here.
                                 crate::utils::hide_recording_overlay(&app);
-                                crate::utils::change_tray_icon(
+                                crate::utils::set_tray_state(
                                     &app,
                                     crate::utils::TrayIconState::Idle,
                                 );
@@ -1237,7 +1237,7 @@ impl TranscriptionCoordinator {
                             // process_command, but the overlay window and tray
                             // icon side effects must run on the thread loop.
                             crate::utils::hide_recording_overlay(&app);
-                            crate::utils::change_tray_icon(&app, crate::utils::TrayIconState::Idle);
+                            crate::utils::set_tray_state(&app, crate::utils::TrayIconState::Idle);
                         }
                         StageAction::None => {}
                     }
@@ -1256,7 +1256,7 @@ impl TranscriptionCoordinator {
                     error!("Recovering: resetting state to Idle and continuing");
 
                     // Wrap ALL recovery work in catch_unwind so a secondary panic
-                    // (e.g. in change_tray_icon) doesn't kill the coordinator thread.
+                    // (e.g. in set_tray_state) doesn't kill the coordinator thread.
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         // Reset audio recorder if it's stuck in Recording state.
                         // This is the key fix for "stop doesn't work after a panic" —
@@ -1269,7 +1269,7 @@ impl TranscriptionCoordinator {
                             }
                         }
                         crate::utils::hide_recording_overlay(&app);
-                        crate::utils::change_tray_icon(&app, crate::utils::TrayIconState::Idle);
+                        crate::utils::set_tray_state(&app, crate::utils::TrayIconState::Idle);
                     }));
 
                     active_use_clone.store(false, Ordering::SeqCst);
