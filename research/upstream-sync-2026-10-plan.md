@@ -610,6 +610,75 @@ These upstream commits contain transcription.rs hunks that cannot land until Pha
 
 *(Ledger updated during Phase 2; revisit before closing Phase 6.)*
 
+### P7 inventory (2026-10-20, STEP 1 — written before any code)
+
+Fork doomed files inventoried in full: `audio_toolkit/audio/recorder.rs` (1914 ln, fork-only,
+inline tests), `audio_toolkit/audio/resampler.rs` (287 ln), `audio_toolkit/bin/cli.rs` (357 ln,
+dead code — `[[bin]]` already commented out in Cargo.toml). Upstream copies (1046/351/371) were
+NOT used as content source. handy-recorder 0.1.0 source read from the crates.io tarball
+(6.5k ln): engine.rs (3-thread device/delivery/notify + watchdog + rtrb ring), delivery.rs
+(command-drain-before-drain loop, pause-ack stop, finish_tail), sink.rs trait, error.rs
+(ErrorKind taxonomy), device.rs (InputDevice{id,name,occurrence,backend,is_default,
+id_is_stable,channels,is_monitor}), backend/cpal.
+
+Classification key: **(a) upstream-fixed** (crate/upstream commit covers it), **(b) must
+re-port** (fork custom, ported onto the new path), **(c) obsolete**.
+
+#### Fork recorder.rs behaviors
+
+| # | Fork behavior (symbol) | Class | Disposition on new path |
+|---|---|---|---|
+| 1 | `9e3b7f65` command drain at TOP of loop; `apply_start()` before first chunk | (a) | delivery.rs checks `DeliveryCmd` before every bounded drain; `begin()` processes already-queued ring audio; `slot` mutex serializes rapid Stop→Start |
+| 2 | `9e3b7f65` `pending_stop` deferral (Stop waits for in-flight chunk; finalized even when stream dead; cleared on rapid Stop→Start) | (a) | engine `stop()`: pause-ack → drain-all → `finish_tail()` inside one call; `slot` state machine rejects double-stop; start() after failure rebuilds (manager retry loop) |
+| 3 | `ddffa435` NS-off full preroll slice emission (first-word fix) | (b) | sink.rs: `VadFrame::Speech(emitted) => out.extend(emitted)` — upstream's CaptureSink already appends the full emitted slice; **verified identical to fork's no-NS branch** |
+| 4 | `ddffa435` NS-on branch appends current ORIGINAL frame (emitted slice is denoised, unmappable) | (b) | sink.rs gains `noise_suppressor: Option<Arc<Mutex<NoiseSuppressor>>>`; VAD sees denoised chunk, out/on_audio get original chunk — port of `handle_frame` |
+| 5 | `df216832` tail audio (stop-flag block forwarded before EOS) | (a) | engine stop(): boundary block + pause-ack + drain_all + resampler finish_tail |
+| 6 | `d54c88eb` rt-safe callback | (a) | crate callback only writes rtrb ring (transport.rs) |
+| 7 | `db003f38` idle level-meter skip | (a)/S | idle chunks discarded by crate; sink exists only during (standing) recordings |
+| 8 | `b4453a29` cpal work off main thread | (a) | crate device thread + `OpenTimedOut` handling |
+| 9 | `549cbde3` readiness handle | (a) | sink `ready` channel (first chunk) + `EndReason` |
+| 10 | `a4348beb` stream recovery | (a) | crate watchdog (NoAudio 10s / Stalled 5s) → failure handler → `OpenMicrophone::needs_reopen` + manager rebuild (fork's liveness monitor kept on top) |
+| 11 | NS runs BEFORE VAD; VAD sees denoised; originals kept for output | (b) | = row 4 (NoiseSuppressor into sink) |
+| 12 | Smart-stop volume-aware trailing buffer (`extra_recording_buffer_ms`; SILENCE_RMS_MULTIPLIER 3.0, SILENCE_THRESHOLD_MS 500, MIN_BUFFER_MS 200, NOISE_ALPHA 0.05, DEFAULT_NOISE_FLOOR 0.005; state stays Recording during window; Stop cancels it) | (b) | re-expressed manager-side: stop_recording runs the trailing window while the recording keeps running (engine ring absorbs hiccups); sink publishes per-chunk RMS + VAD-noise-frame noise-floor EMA into shared capture state; constants move to managers/audio.rs |
+| 13 | Noise-floor EMA from VAD-Noise frames (not during smart-stop window) | (b) | sink: Noise classification updates shared EMA; smart-stop window flag suppresses |
+| 14 | Always-on pre-buffer (`with_pre_buffer_ms`, rolling raw 16 kHz buffer while idle, prepended raw at Start, VAD reset) | (b) | **standing-recording armed sink**: in always-on+prebuffer mode the manager keeps one recording active whose sink maintains the rolling buffer; hotkey press "arms" it via shared control (drain rolling → raw+out, VAD reset); hotkey release → stop() → re-arm a fresh standing sink. pre_recording_buffer_ms is opt-in (default 0) |
+| 15 | `StreamRouter` per-frame feed — ALL resampled frames, pre-NS/pre-VAD, even when not recording | (b) | sink gains `on_raw_frame` pre-VAD callback (upstream feeds router post-VAD speech only — fork's live-captions streaming needs contiguous audio; keep fork seam) |
+| 16 | 2.5s batch streaming callback (live captions fallback when no dedicated model; gates: streaming_enabled flag, ≥3 speech frames, 2.5s interval, router-not-active, cancel flag, close-generation guards; TM try_lock_for(2s)) | (b) | manager-side accumulator fed by sink `on_audio` (post-VAD emitted slices); same gates; `set_streaming_enabled` recreate-free toggle preserved |
+| 17 | `last_voice_activity_ms` stamp (elapsed ms on VAD-speech frames) | (b) | sink stamps shared atomic on every Speech emission |
+| 18 | max_level tracking (RMS·1e6 atomic; dead-mic detection `NO_AUDIO_THRESHOLD 0.001` → USB watchdog) | (b) | sink computes per-chunk RMS into shared atomic (all frames while recording) |
+| 19 | emergency_save hooks (start_recording at Start; update_samples every 5s; complete_recording at stop; cancel_recording in manager) | (b) | sink holds `Option<Arc<EmergencyBackup>>`: start on construction/arm, 5s-throttled update on delivery thread; manager completes after stop returns samples (backup now covers the drain window — strictly better); cancel path unchanged |
+| 20 | `is_stream_alive(3s)` + 500ms grace (liveness monitor + try_start_recording) | (b) | sink stamps shared `last_chunk_ms` per chunk; manager keeps exact fork logic (opened_at grace + timeout) |
+| 21 | `needs_reopen` (stream_error flag / worker finished) | (a) | `OpenMicrophone::needs_reopen` (per-recorder `failed` flag; handler can't mark a replacement) |
+| 22 | `device_name()` (device-change detection in try_start_recording) | (a) | `recorder.info().device.name` |
+| 23 | `preferred_input_channel_count` (commands/audio.rs) | (a) | `InputDevice.channels` (None→1 on ALSA) |
+| 24 | error classifiers `is_microphone_access_denied` / `is_no_input_device_error` + actions mapping | (a) | upstream `recording_error_type()` via `ErrorKind::{PermissionDenied→microphone_permission_denied, DeviceUnavailable→no_input_device}`; string fns deleted with recorder.rs |
+| 25 | teardown barrier (EndOfStream wait before stream drop; CoreAudio heap corruption) | (a) | crate device-thread teardown + pause-ack |
+| 26 | `FrameResampler` (rubato FFT, reset-between-recordings fixes, delay-line drain) | (a) | crate's internal FrameResampler (rubato 5.0), `resampler.reset()` at each `begin()` |
+| 27 | `get_preferred_config` (native rate, F32>I16>I32 preference) | (a) | crate opens device at OS format and resamples; format preference is crate-internal |
+| 28 | visualizer (window scaled to device rate) | (b, minor) | upstream's 16 kHz window-512 visualizer in sink (fork's device-rate scaling meaningless at fixed 16 kHz output) |
+| 29 | inline error-classification tests | (a) | replaced by manager `recording_error_type` tests + crate suite |
+| 30 | resampler.rs unit tests (reset/no-crosstalk) | (a) | crate tests cover its resampler; fork tests die with the file |
+| 31 | bin/cli.rs (RecorderMode always/on-demand demo) | (c) | dead code; delete |
+
+#### handy-recorder 0.1 coverage of in-range recorder commits
+`df216832` tail audio, `a4348beb` recovery, `d54c88eb` rt-safe, `db003f38` idle-skip,
+`b4453a29` async open, `549cbde3` readiness, `9e3b7f65` command-loop semantics: **all inside
+the crate** (verified against engine.rs/delivery.rs/transport.rs/watchdog.rs source, rows
+above). `ddffa435` preroll: upstream sink.rs carries the no-NS half; the NS-on half + NS
+pipeline are fork-only → re-port. `12f02e2a` channel selection: `Channels::Only(n)` +
+`open_microphone_on_channel` InvalidChannel fallback. `c89b7bf3` default-mic fallback: device
+`None` + `MicrophoneResolution` fallback logic (upstream managers/audio.rs).
+
+#### Deliberate deviations (recorded, not regressions)
+1. Level events in always-on mode without pre-buffer: only during recordings (fork emitted
+   continuously while the stream was open). Overlay is hidden when idle → not consumed.
+   With pre-buffer enabled the standing sink restores continuous levels.
+2. Batch streaming callback re-invocation during mid-recording silence: fork re-sent the same
+   buffer every 2.5s even with no new speech; new path accumulates per emitted speech frame,
+   so an unchanged buffer is not re-sent (same final text; fewer redundant transcriptions).
+3. Sink panics now end the recording with `EndReason::SinkPanicked` (audio before the panic
+   kept) instead of poisoning a shared worker — strictly better containment.
+
 ### P6 close-out addendum (2026-10-20)
 
 Phase 6 complete (D1 full adopt, matrix row 1): fork commits `1e85e476` (Cargo 0.3.1 + serde + libc),
