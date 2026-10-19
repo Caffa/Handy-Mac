@@ -306,6 +306,15 @@ const RecordingOverlay: React.FC = () => {
   };
 
   // ─── Render ────────────────────────────────────────────────────────────
+  // Upstream 16caad7a: render nothing while hidden. The backend hides the
+  // NSPanel via orderOut when Idle, but the WebView kept its DOM (and CSS
+  // animations) alive underneath; rendering null while hidden avoids stale
+  // painted content resurfacing after monitor/DPI changes. All hooks above
+  // still run (listeners stay registered), only the DOM output is dropped.
+  // Router results still display: isVisible already includes the
+  // routerResult fallback for the FinishGuard race.
+  if (!isVisible) return null;
+
   // During router result display, hide the pill — only show the status message cards.
   const showPill = isVisible && !routerResult;
 

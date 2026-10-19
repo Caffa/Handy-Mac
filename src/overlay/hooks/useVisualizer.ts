@@ -82,9 +82,29 @@ export function useVisualizer(
   const decayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const micDeadTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Keep a ref in sync so the mic-level listener (registered once with []
+  // deps) can drop events while the overlay is hidden — upstream 16caad7a:
+  // avoid processing level updates (and the smoothing state updates + log
+  // spam they cause) when nothing is rendering them.
+  const isVisibleRef = useRef(isVisible);
+  useEffect(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
+
   // Decay timer: if we haven't received mic-level data for LEVEL_TIMEOUT_MS,
   // smoothly fade the bars toward zero so the overlay doesn't freeze.
+  // Gate the interval on visibility — while hidden there is nothing to
+  // animate, and running it would re-render the hidden WebView ~16x/sec
+  // (upstream 16caad7a: stop rendering animations while hidden).
   useEffect(() => {
+    if (!isVisible) {
+      if (decayTimerRef.current) {
+        clearInterval(decayTimerRef.current);
+        decayTimerRef.current = null;
+      }
+      return;
+    }
+
     decayTimerRef.current = setInterval(() => {
       const elapsed = Date.now() - lastLevelTimeRef.current;
       if (elapsed > LEVEL_TIMEOUT_MS) {
@@ -99,9 +119,10 @@ export function useVisualizer(
     return () => {
       if (decayTimerRef.current) {
         clearInterval(decayTimerRef.current);
+        decayTimerRef.current = null;
       }
     };
-  }, []);
+  }, [isVisible, lastLevelTimeRef]);
 
   // "Mic dead" detection: warn if recording but no audio for >1s
   useEffect(() => {
@@ -180,6 +201,12 @@ export function useVisualizer(
 
     const setup = async () => {
       unlistenLevel = await listen<number[]>("mic-level", (event) => {
+        // Upstream 16caad7a: drop level events while hidden. No rendering
+        // benefit, and the smoothing + console work is pure overhead while
+        // the overlay is hidden. The ref is kept in sync by the effect above.
+        if (!isVisibleRef.current) {
+          return;
+        }
         lastLevelTimeRef.current = Date.now();
         const newLevels = event.payload as number[];
 
