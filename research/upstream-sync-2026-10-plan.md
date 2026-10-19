@@ -642,6 +642,13 @@ Run all after Phase 10 (and spot-run after each arc phase):
    - Updater tray item still works against fork's vendored plugin
 5. **No fork regression on** version scheme (stays 0.12.x), `HANDY_DISABLE_UPDATER`/portable gating, dangerous-skip-verify.
 
+**Close-out addendum (2026-10-20):** post-cycle review caught one BLOCKER —
+`stop_recording` re-locked the state mutex while the match-scrutinee guard was
+still alive (parking_lot is non-reentrant), deadlocking every dictation stop;
+fixed in `e4e4acfd` (outer guard released before the Stopping re-lock, racing
+transitions re-checked and bailed). Item 4's **real-dictation manual pass
+remains REQUIRED** before release.
+
 ---
 
 ## 7. Post-Sync Documentation
