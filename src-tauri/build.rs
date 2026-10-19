@@ -4,6 +4,13 @@ fn main() {
 
     generate_tray_translations();
 
+    // CPAL (handy-recorder's and rodio's) links two CoreAudio functions that
+    // only exist on macOS 14.2+. Weak-link the framework so Handy still
+    // launches on older macOS (minimumSystemVersion is 10.15).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-weak_framework,CoreAudio");
+    }
+
     tauri_build::build()
 }
 

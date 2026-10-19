@@ -1,5 +1,5 @@
 use crate::audio_feedback;
-use crate::audio_toolkit::audio::{list_input_devices, list_output_devices, AudioRecorder};
+use crate::audio_toolkit::audio::list_output_devices;
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
@@ -227,8 +227,8 @@ pub fn get_microphone_mode(app: AppHandle) -> Result<bool, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn get_available_microphones() -> Result<Vec<AudioDevice>, String> {
-    let devices =
-        list_input_devices().map_err(|e| format!("Failed to list audio devices: {}", e))?;
+    let devices = handy_recorder::list_input_devices()
+        .map_err(|e| format!("Failed to list audio devices: {}", e))?;
 
     let mut result = vec![AudioDevice {
         index: "default".to_string(),
@@ -236,11 +236,17 @@ pub fn get_available_microphones() -> Result<Vec<AudioDevice>, String> {
         is_default: true,
     }];
 
-    result.extend(devices.into_iter().map(|d| AudioDevice {
-        index: d.index,
-        name: d.name,
-        is_default: false, // The explicit default is handled separately
-    }));
+    // PulseAudio monitor sources record a speaker's output, not a microphone.
+    result.extend(
+        devices
+            .into_iter()
+            .filter(|d| !d.is_monitor)
+            .map(|d| AudioDevice {
+                index: d.id,
+                name: d.name,
+                is_default: false, // The explicit default is handled separately
+            }),
+    );
 
     Ok(result)
 }
@@ -367,26 +373,19 @@ pub fn is_recording(app: AppHandle) -> Result<bool, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_microphone_channels(device_name: String) -> Result<u16, String> {
-    // cpal device enumeration and config queries can stall, so keep them off
-    // the webview/main run loop.
+    // Device enumeration can stall, so keep it off the webview/main run loop.
     tauri::async_runtime::spawn_blocking(move || {
-        use cpal::traits::HostTrait;
-
+        let devices = handy_recorder::list_input_devices()
+            .map_err(|e| format!("Failed to list audio devices: {e}"))?;
         let device = if device_name.eq_ignore_ascii_case("default") {
-            crate::audio_toolkit::get_cpal_host().default_input_device()
+            devices.into_iter().find(|device| device.is_default)
         } else {
-            list_input_devices()
-                .map_err(|e| format!("Failed to list audio devices: {e}"))?
+            devices
                 .into_iter()
                 .find(|device| device.name == device_name)
-                .map(|device| device.device)
         };
-
-        match device {
-            Some(device) => AudioRecorder::preferred_input_channel_count(&device)
-                .map_err(|e| format!("Failed to get microphone config: {e}")),
-            None => Ok(1),
-        }
+        // `channels` is unknown only on ALSA, where reading it opens the device.
+        Ok(device.and_then(|device| device.channels).unwrap_or(1))
     })
     .await
     .map_err(|e| format!("audio task join failed: {e}"))?
@@ -395,7 +394,7 @@ pub async fn get_microphone_channels(device_name: String) -> Result<u16, String>
 #[tauri::command]
 #[specta::specta]
 pub async fn set_selected_channel(app: AppHandle, channel: Option<u16>) -> Result<(), String> {
-    // Restarting cpal can block, so keep it off the webview/main run loop. Apply
+    // Restarting capture can block, so keep it off the webview/main run loop. Apply
     // the runtime change before persisting it so a rejected active-recording
     // change does not become effective on the next launch.
     let manager = app.state::<Arc<AudioRecordingManager>>().inner().clone();
@@ -541,8 +540,8 @@ pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
         return Err("A recording is already in progress".to_string());
     }
 
-    rm.try_start_recording(PRONUNCIATION_BINDING_ID)
-        .map_err(|e| format!("Failed to start pronunciation recording: {}", e))?;
+    rm.try_start_recording(PRONUNCIATION_BINDING_ID, crate::audio_toolkit::VadPolicy::Offline)
+        .map_err(|e| format!("Failed to start pronunciation recording: {e:#}"))?;
 
     info!("Pronunciation recording started");
     Ok(())

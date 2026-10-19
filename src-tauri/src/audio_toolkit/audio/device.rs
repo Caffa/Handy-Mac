@@ -1,50 +1,38 @@
-use cpal::traits::{DeviceTrait, HostTrait};
+use rodio::cpal::{
+    self,
+    traits::{DeviceTrait, HostTrait},
+};
 
-pub struct CpalDeviceInfo {
+/// An output device for feedback sounds. Microphones are listed by
+/// `handy_recorder::list_input_devices`.
+pub struct OutputDeviceInfo {
     pub index: String,
     pub name: String,
     pub is_default: bool,
-    pub device: cpal::Device,
 }
 
-pub fn list_input_devices() -> Result<Vec<CpalDeviceInfo>, Box<dyn std::error::Error>> {
-    let host = crate::audio_toolkit::get_cpal_host();
-    let default_name = host.default_input_device().and_then(|d| d.name().ok());
-
-    let mut out = Vec::<CpalDeviceInfo>::new();
-
-    for (index, device) in host.input_devices()?.enumerate() {
-        let name = device.name().unwrap_or_else(|_| "Unknown".into());
-
-        let is_default = Some(name.clone()) == default_name;
-
-        out.push(CpalDeviceInfo {
-            index: index.to_string(),
-            name,
-            is_default,
-            device,
-        });
-    }
-
-    Ok(out)
+/// The name feedback sounds match `selected_output_device` against.
+pub fn output_device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_owned())
 }
 
-pub fn list_output_devices() -> Result<Vec<CpalDeviceInfo>, Box<dyn std::error::Error>> {
+pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>, Box<dyn std::error::Error>> {
     let host = crate::audio_toolkit::get_cpal_host();
-    let default_name = host.default_output_device().and_then(|d| d.name().ok());
+    let default_name = host
+        .default_output_device()
+        .and_then(|d| output_device_name(&d));
 
-    let mut out = Vec::<CpalDeviceInfo>::new();
+    let mut out = Vec::<OutputDeviceInfo>::new();
 
     for (index, device) in host.output_devices()?.enumerate() {
-        let name = device.name().unwrap_or_else(|_| "Unknown".into());
+        let name = output_device_name(&device).unwrap_or_else(|| "Unknown".into());
 
         let is_default = Some(name.clone()) == default_name;
 
-        out.push(CpalDeviceInfo {
+        out.push(OutputDeviceInfo {
             index: index.to_string(),
             name,
             is_default,
-            device,
         });
     }
 
@@ -130,7 +118,7 @@ pub fn is_bluetooth_audio_active(selected_output: Option<&str>) -> bool {
 
     // Fall back to checking the system default output device
     if let Some(default_device) = host.default_output_device() {
-        if let Ok(name) = default_device.name() {
+        if let Some(name) = output_device_name(&default_device) {
             if is_bluetooth_output_device(&name) {
                 log::debug!(
                     "Bluetooth default output device detected: '{}', will keep mic stream alive",

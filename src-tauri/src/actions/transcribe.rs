@@ -3,7 +3,8 @@
 // feedback, WAV saving, error handling, and retry queue integration.
 
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
-use crate::audio_toolkit::{is_microphone_access_denied, is_no_input_device_error};
+use crate::audio_toolkit::VadPolicy;
+use crate::managers::audio::recording_error_type;
 use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
 use crate::managers::audio::AudioRecordingManager;
@@ -188,7 +189,7 @@ impl super::ShortcutAction for TranscribeAction {
         let is_always_on = settings.always_on_microphone;
         debug!("Microphone mode - always_on: {}", is_always_on);
 
-        let mut recording_error: Option<String> = None;
+        let mut recording_error: Option<anyhow::Error> = None;
         if is_always_on {
             // Always-on mode: Play audio feedback immediately, then apply mute after sound finishes
             debug!("Always-on mode: Playing audio feedback immediately");
@@ -201,29 +202,65 @@ impl super::ShortcutAction for TranscribeAction {
                 rm_clone.apply_mute();
             });
 
-            if let Err(e) = rm.try_start_recording(&binding_id) {
-                debug!("Recording failed: {}", e);
-                recording_error = Some(e);
+            match rm.try_start_recording(&binding_id, VadPolicy::Offline) {
+                Ok(readiness) => {
+                    // The chime is a readiness cue: it follows the first real
+                    // microphone chunk rather than a fixed delay (upstream).
+                    let generation = readiness.generation();
+                    let app_clone = app.clone();
+                    let rm_clone = Arc::clone(&rm);
+                    std::thread::spawn(move || {
+                        if !readiness.wait() {
+                            debug!("Microphone readiness wait ended without receiving samples");
+                            return;
+                        }
+                        if !rm_clone.is_recording_readiness_current(generation) {
+                            debug!("Microphone became ready for an inactive recording");
+                            return;
+                        }
+                        debug!("Microphone is receiving samples; recording is ready");
+                        play_feedback_sound_blocking(&app_clone, SoundType::Start);
+                        if rm_clone.is_recording_readiness_current(generation) {
+                            rm_clone.apply_mute();
+                        }
+                    });
+                }
+                Err(e) => {
+                    debug!("Recording failed: {e:#}");
+                    recording_error = Some(e);
+                }
             }
         } else {
             // On-demand mode: Start recording first, then play audio feedback, then apply mute
             debug!("On-demand mode: Starting recording first, then audio feedback");
             let recording_start_time = Instant::now();
-            match rm.try_start_recording(&binding_id) {
-                Ok(()) => {
-                    debug!("Recording started in {:?}", recording_start_time.elapsed());
-                    // Small delay to ensure microphone stream is active
+            match rm.try_start_recording(&binding_id, VadPolicy::Offline) {
+                Ok(readiness) => {
+                    debug!(
+                        "Recording requested in {:?}; waiting for first microphone samples",
+                        recording_start_time.elapsed()
+                    );
+                    let generation = readiness.generation();
                     let app_clone = app.clone();
                     let rm_clone = Arc::clone(&rm);
                     std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        debug!("Handling delayed audio feedback/mute sequence");
+                        if !readiness.wait() {
+                            debug!("Microphone readiness wait ended without receiving samples");
+                            return;
+                        }
+                        if !rm_clone.is_recording_readiness_current(generation) {
+                            debug!("Microphone became ready for an inactive recording");
+                            return;
+                        }
+                        debug!("Microphone is receiving samples; recording is ready");
                         play_feedback_sound_blocking(&app_clone, SoundType::Start);
-                        rm_clone.apply_mute();
+                        if rm_clone.is_recording_readiness_current(generation) {
+                            rm_clone.apply_mute();
+                        }
                     });
                 }
                 Err(e) => {
-                    debug!("Failed to start recording: {}", e);
+                    debug!("Failed to start recording: {e:#}");
                     recording_error = Some(e);
                 }
             }
@@ -238,34 +275,29 @@ impl super::ShortcutAction for TranscribeAction {
             utils::hide_recording_overlay(app);
             set_tray_state(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
-                let error_type = if is_microphone_access_denied(&err) {
-                    "microphone_permission_denied"
-                } else if is_no_input_device_error(&err) {
-                    "no_input_device"
-                } else {
-                    "unknown"
-                };
+
 
                 // ── Structured event: recording failed ──
                 if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
                     if let Some(sid) = tracker.current_session_id() {
-                        tracker.fail_session(&sid, &err);
+                        tracker.fail_session(&sid, &format!("{err:#}"));
                     }
                 }
 
                 let _ = app.emit(
                     "recording-error",
                     RecordingErrorEvent {
-                        error_type: error_type.to_string(),
-                        detail: Some(err.clone()),
+                        error_type: recording_error_type(&err).to_string(),
+                        detail: Some(format!("{err:#}")),
                     },
                 );
 
                 // Emit a recoverable error for the error dialog system
+                let error_type = recording_error_type(&err);
                 crate::error_events::emit_audio_device_error(
                     app,
                     error_type,
-                    &err,
+                    &format!("{err:#}"),
                     error_type == "microphone_permission_denied",
                 );
             }

@@ -9,10 +9,9 @@ pub mod utils;
 pub mod vad;
 
 pub use audio::{
-    is_bluetooth_audio_active, is_bluetooth_output_device, is_microphone_access_denied,
-    is_no_input_device_error, list_input_devices, list_output_devices, read_wav_samples,
-    save_wav_file, validate_audio, validate_wav_file, verify_wav_file, AudioRecorder,
-    AudioValidationResult, CpalDeviceInfo,
+    is_bluetooth_audio_active, is_bluetooth_output_device, list_output_devices, output_device_name,
+    read_wav_samples, save_wav_file, validate_audio, validate_wav_file, verify_wav_file,
+    CaptureControl, CaptureSink, CaptureSinkConfig, CaptureVad, OutputDeviceInfo, VadPolicy,
 };
 pub use lang_id::detect_output_language;
 pub use noise_suppression::{NoiseSuppressor, NOISE_SUPPRESSION_FRAME_SIZE};
