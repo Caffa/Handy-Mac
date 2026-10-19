@@ -358,6 +358,10 @@
         "veryRelaxed": "非常宽松",
         "placeholder": "选择灵敏度..."
       },
+      "longFormChunking": {
+        "title": "长音频分段",
+        "description": "在转录前按停顿处将长录音分段，通常可以提升转录效果。"
+      },
       "liveCaptions": {
         "label": "实时字幕",
         "description": "在录制期间在音量条下方显示实时字幕。使用额外的 CPU。"

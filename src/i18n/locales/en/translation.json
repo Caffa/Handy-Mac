@@ -525,6 +525,10 @@
           "strong": "More sensitive"
         }
       },
+      "longFormChunking": {
+        "title": "Long Audio Chunking",
+        "description": "Splits long recordings at pauses before transcribing, which typically improves transcription performance."
+      },
       "liveCaptions": {
         "label": "Live Captions",
         "description": "Show live captions below the volume bars during recording. Uses additional CPU.",

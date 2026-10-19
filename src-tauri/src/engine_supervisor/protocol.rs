@@ -157,6 +157,9 @@ pub struct LoadedInfo {
     /// without it warn on every run and rely on the client's fuzzy
     /// post-correction instead.
     pub supports_vocabulary: bool,
+    /// Whether the model handles audio longer than its native window in one
+    /// run (whisper today); other models' long audio is chunked by Handy.
+    pub supports_long_form: bool,
 }
 
 /// Encode one frame. Refuses a section the reader would refuse, so an

@@ -1,5 +1,6 @@
 pub mod accent_map;
 pub mod audio;
+pub mod chunking;
 pub mod constants;
 pub mod lang_id;
 pub mod noise_suppression;
@@ -24,4 +25,4 @@ pub use text::{
     OutputLanguageEvidence,
 };
 pub use utils::get_cpal_host;
-pub use vad::{trim_trailing_silence, SileroVad, VoiceActivityDetector};
+pub use vad::{trim_trailing_silence, EarshotVad, SileroVad, SpeechScorer, VoiceActivityDetector};

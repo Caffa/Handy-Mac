@@ -524,6 +524,14 @@ async changeVadBackendSetting(backend: VadBackend) : Promise<Result<null, string
     else return { status: "error", error: e  as any };
 }
 },
+async changeLongFormChunkingSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_long_form_chunking_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async setModelVadSensitivity(modelId: string, sensitivity: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_model_vad_sensitivity", { modelId, sensitivity }) };
@@ -1585,7 +1593,12 @@ transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; pre_r
 /**
  * Experimental detector implementation. Silero remains the stable default.
  */
-vad_backend?: VadBackend }
+vad_backend?: VadBackend; 
+/**
+ * Decode long audio in chunks cut at pauses, for models whose accuracy
+ * degrades on long audio.
+ */
+long_form_chunking?: boolean }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; gpu_devices: GpuDeviceOption[] }

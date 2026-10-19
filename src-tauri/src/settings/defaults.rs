@@ -165,5 +165,6 @@ pub fn get_default_settings() -> AppSettings {
         noise_suppression_enabled: false,
         noise_suppression_level: NoiseSuppressionLevel::default(),
         vad_backend: VadBackend::default(),
+        long_form_chunking: true,
     }
 }

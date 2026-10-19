@@ -702,6 +702,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::get_available_accelerators,
             shortcut::change_vad_sensitivity_setting,
             shortcut::change_vad_backend_setting,
+            shortcut::change_long_form_chunking_setting,
             shortcut::set_model_vad_sensitivity,
             shortcut::change_live_captions_enabled_setting,
             shortcut::change_live_captions_model_setting,

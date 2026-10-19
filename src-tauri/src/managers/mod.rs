@@ -5,4 +5,5 @@ pub mod model;
 pub mod model_capabilities;
 pub mod retry_worker;
 pub mod transcription;
+pub mod transcription_policy;
 pub mod transcription_retry;

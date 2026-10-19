@@ -1,7 +1,7 @@
 use crate::audio_toolkit::{
     is_bluetooth_audio_active, list_output_devices,
     vad::{frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_ONSET_MS, VAD_PREFILL_MS},
-    CaptureControl, CaptureSink, CaptureSinkConfig, CaptureVad, SileroVad, VadPolicy,
+    CaptureControl, CaptureSink, CaptureSinkConfig, CaptureVad, SileroVad, SpeechScorer, VadPolicy,
     VoiceActivityDetector,
 };
 use crate::errors::AppError;
@@ -362,20 +362,19 @@ pub fn recording_error_type(error: &anyhow::Error) -> &'static str {
 
 /* ──────────────────────────────────────────────────────────────── */
 
-/// Builds the capture VAD from the current settings. The fork's user-facing
-/// VAD sensitivity setting is expressed in legacy Silero-v4 30 ms frame units
-/// (15-35); it is converted to milliseconds first so the hangover keeps its
-/// meaning across frame geometries (Silero v6.2 = 32 ms frames) and scales
-/// correctly for either backend.
-fn create_capture_vad(
+/// A fresh detector for `backend`, without Handy's smoothing: what a
+/// recording's VAD wraps, and what scores audio for long-form chunking, so
+/// every path uses the selected backend. The fork's per-backend threshold
+/// logic is kept: Silero follows the user's VAD sensitivity setting, Earshot
+/// keeps its fixed experimental threshold.
+pub fn create_detector(
     backend: VadBackend,
     app_handle: &tauri::AppHandle,
-) -> Result<CaptureVad, anyhow::Error> {
+) -> Result<Box<dyn SpeechScorer>, anyhow::Error> {
     let settings = get_settings(app_handle);
     let vad_threshold = settings.vad_sensitivity.threshold();
-    let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
 
-    let detector: Box<dyn VoiceActivityDetector> = match backend {
+    Ok(match backend {
         VadBackend::Silero => {
             let vad_path = app_handle
                 .path()
@@ -398,7 +397,22 @@ fn create_capture_vad(
             EarshotVad::new(EARSHOT_VAD_THRESHOLD)
                 .map_err(|e| anyhow::anyhow!("Failed to create EarshotVad: {e}"))?,
         ),
-    };
+    })
+}
+
+/// Builds the capture VAD from the current settings. The fork's user-facing
+/// VAD sensitivity setting is expressed in legacy Silero-v4 30 ms frame units
+/// (15-35); it is converted to milliseconds first so the hangover keeps its
+/// meaning across frame geometries (Silero v6.2 = 32 ms frames) and scales
+/// correctly for either backend.
+fn create_capture_vad(
+    backend: VadBackend,
+    app_handle: &tauri::AppHandle,
+) -> Result<CaptureVad, anyhow::Error> {
+    let settings = get_settings(app_handle);
+    let vad_hangover_frames = settings.vad_sensitivity.hangover_frames();
+
+    let detector: Box<dyn VoiceActivityDetector> = create_detector(backend, app_handle)?;
 
     // Earshot uses 16 ms frames while Silero v6.2 uses 32 ms. Convert the
     // existing time-based capture profile to each detector's frame size so

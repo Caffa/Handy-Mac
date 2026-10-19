@@ -760,6 +760,10 @@ pub struct AppSettings {
     /// Experimental detector implementation. Silero remains the stable default.
     #[serde(default)]
     pub vad_backend: VadBackend,
+    /// Decode long audio in chunks cut at pauses, for models whose accuracy
+    /// degrades on long audio.
+    #[serde(default = "default_long_form_chunking")]
+    pub long_form_chunking: bool,
 }
 
 impl Default for AppSettings {
@@ -883,6 +887,10 @@ pub(crate) fn default_post_process_enabled() -> bool {
 }
 
 pub(crate) fn default_filler_word_removal_enabled() -> bool {
+    true
+}
+
+pub(crate) fn default_long_form_chunking() -> bool {
     true
 }
 

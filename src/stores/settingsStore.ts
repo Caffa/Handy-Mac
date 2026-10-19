@@ -224,6 +224,8 @@ const settingUpdaters: {
   vad_sensitivity: (value) =>
     commands.changeVadSensitivitySetting(value as string),
   vad_backend: (value) => commands.changeVadBackendSetting(value as VadBackend),
+  long_form_chunking: (value) =>
+    commands.changeLongFormChunkingSetting(value as boolean),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
   overlay_scale: (value) => commands.changeOverlayScaleSetting(value as number),

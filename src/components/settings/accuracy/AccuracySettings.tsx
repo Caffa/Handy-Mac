@@ -11,6 +11,7 @@ import { AdvancedCustomWords } from "../AdvancedCustomWords";
 import { WordReplacements } from "../WordReplacements";
 import { VadSensitivity } from "../VadSensitivity";
 import { LiveCaptions } from "../LiveCaptions";
+import { LongFormChunking } from "../LongFormChunking";
 import { ConvertUsToBritish } from "../ConvertUsToBritish";
 import { ConvertNumberWordsToDigits } from "../ConvertNumberWordsToDigits";
 import { TranslateToEnglish } from "../TranslateToEnglish";
@@ -42,6 +43,7 @@ export const AccuracySettings: React.FC = () => {
 
       <SettingsGroup title={t("settings.accuracy.groups.voiceDetection")}>
         <VadSensitivity descriptionMode="tooltip" grouped />
+        <LongFormChunking descriptionMode="tooltip" grouped />
         <NoiseSuppression />
         <LiveCaptions descriptionMode="tooltip" grouped />
       </SettingsGroup>

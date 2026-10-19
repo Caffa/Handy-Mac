@@ -1,16 +1,19 @@
 use crate::audio_toolkit::{
+    chunking::{join_transcripts, Chunker},
     detect_output_language, process_transcription_text, OutputLanguageEvidence,
 };
 use crate::chinese_script::{convert_chinese_script, ChineseVariety};
 use crate::engine_supervisor::{
-    DeviceInfo, DeviceSelector, EngineError, EngineSupervisor, LoadSpec, LoadedInfo,
+    CancelMark, DeviceInfo, DeviceSelector, EngineError, EngineSupervisor, LoadSpec, LoadedInfo,
     StreamProgress, Unloading,
 };
 use crate::errors::{AppError, AppResult};
-use crate::managers::audio::AudioRecordingManager;
+use crate::managers::audio::{create_detector, AudioRecordingManager};
 use crate::managers::model::ModelManager;
+use crate::managers::transcription_policy::{batch_decode, BatchDecode, ModelTraits};
 use crate::settings::{
     get_settings, AppSettings, ChineseScript, ModelUnloadTimeout, TranscribeAcceleratorSetting,
+    VadBackend,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -24,7 +27,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
-use transcribe_cpp::{Backend, RunOptions, StreamOptions, Task};
+use transcribe_cpp::{Backend, RunOptions, StreamOptions, Task, Transcript};
 
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -1535,6 +1538,11 @@ impl TranscriptionManager {
         audio: Vec<f32>,
         _guard: TranscribingGuard,
     ) -> AppResult<TranscriptionOutput> {
+        // A cancel from here on — during the model-load wait, between the
+        // chunks of a long recording, or inside any run — stops every run of
+        // this transcription.
+        let mark = self.engine.cancel_mark();
+
         // Update last activity timestamp
         self.touch_activity();
 
@@ -1623,6 +1631,7 @@ impl TranscriptionManager {
         // which recovers from its own crashes and hangs.
         let info = self.engine.loaded().ok_or(AppError::ModelNotLoaded)?;
         let run = self.transcribe_cpp(
+            mark,
             info,
             audio,
             &settings,
@@ -1686,11 +1695,11 @@ impl TranscriptionManager {
     }
 
     /// transcribe-cpp: the model runs in the engine's worker process, which
-    /// recovers from crashes and hangs itself. The loaded model's live
-    /// capabilities (cheap GGUF-metadata reads) are the source of truth, not
-    /// the ModelManager copy; translate is gated on what the model advertises.
+    /// recovers from crashes and hangs itself. Long audio is decoded in
+    /// chunks cut at pauses, unless the model handles it in one run.
     fn transcribe_cpp(
         &self,
+        mark: CancelMark,
         info: LoadedInfo,
         audio: Vec<f32>,
         settings: &AppSettings,
@@ -1698,7 +1707,7 @@ impl TranscriptionManager {
         active_model: &str,
     ) -> AppResult<RunOutcome> {
         let model_supports_translate = info.capabilities.supports_translate;
-        let languages = info.capabilities.languages;
+        let languages = info.capabilities.languages.clone();
 
         let vocabulary = vocabulary_for_model(info.supports_vocabulary, &settings.custom_words);
         let custom_words_prompted = !vocabulary.is_empty();
@@ -1737,36 +1746,56 @@ impl TranscriptionManager {
             run_options.vocabulary.len()
         );
 
-        let transcript = match self.engine.transcribe(audio, run_options) {
-            Ok(transcript) => transcript,
-            Err(EngineError::Cancelled) => {
-                return Err(AppError::Transcription {
-                    message: "Transcription was cancelled".to_string(),
-                    source: anyhow::anyhow!("transcription cancelled"),
-                });
-            }
-            Err(e) => {
-                // The supervisor already retried a lost worker once (on CPU if
-                // the GPU was at fault). A remaining failure means the model
-                // could not be run at all; keep UI state in step if the engine
-                // gave up on it, and surface the error.
-                self.forget_model_if_engine_dropped(active_model, &e.to_string());
-                return Err(AppError::Transcription {
-                    message: format!("transcribe-cpp transcription failed: {}", e),
-                    source: anyhow::anyhow!("transcribe-cpp transcription failed: {}", e),
-                });
+        // `mark` covers every chunk, so a cancel between two stops the rest.
+        // A failed chunk fails the whole transcription.
+        let transcripts = match batch_decode(ModelTraits::of(&info), settings.long_form_chunking) {
+            BatchDecode::Chunked => ChunkedDecode::decode_clip(
+                self,
+                mark,
+                run_options,
+                audio,
+                active_model,
+                settings.vad_backend,
+            )
+            .map_err(engine_cancel_error)?,
+            BatchDecode::Whole => {
+                vec![self
+                    .run_batch(mark, audio, &run_options, active_model)
+                    .map_err(engine_cancel_error)?]
             }
         };
+        let (text, model_detected_language) = join_chunks(transcripts);
+
         Ok(RunOutcome {
-            text: transcript.text,
+            text,
             languages,
             applied_language_hint,
             output_was_translated,
             // Whisper's audio-based LID (auto mode only; `None` when a
             // language hint was passed).
-            model_detected_language: transcript.language,
+            model_detected_language,
             custom_words_prompted,
         })
+    }
+
+    /// One batch run of a transcription that began at `mark`, so a cancel
+    /// since then stops it. Keeps the idle watcher from unloading the model
+    /// between the runs of a chunked transcription.
+    fn run_batch(
+        &self,
+        mark: CancelMark,
+        pcm: Vec<f32>,
+        run_options: &RunOptions,
+        active_model: &str,
+    ) -> Result<Transcript, EngineError> {
+        self.touch_activity();
+        self.engine
+            .transcribe_since(mark, pcm, run_options.clone())
+            .inspect_err(|e| {
+                if !matches!(e, EngineError::Cancelled) {
+                    self.forget_model_if_engine_dropped(active_model, &e.to_string());
+                }
+            })
     }
 
     /// Run a full transcription synchronously and return only the text.
@@ -1776,6 +1805,180 @@ impl TranscriptionManager {
             Ok(output) => Ok(output.text),
             Err(e) => Err(anyhow::anyhow!("Benchmark transcription failed: {e}")),
         }
+    }
+}
+
+/// Cuts audio at pauses as it arrives and decodes each chunk once its cut is
+/// certain, so a recording has only its last chunk left when it stops.
+/// Fork re-skin of upstream's `transcription/chunked.rs`: it decodes through
+/// the fork's `run_batch` (run-plan + translation-task semantics per chunk),
+/// and a cancel maps to both the fork's `StreamingCancelFlag` (checked
+/// between chunks) and the supervisor's `CancelMark` (checked inside each
+/// run by the engine).
+struct ChunkedDecode<'a> {
+    tm: &'a TranscriptionManager,
+    /// Every chunk's run stops with one cancel.
+    mark: CancelMark,
+    run_options: RunOptions,
+    model_id: String,
+    chunker: Chunker,
+    transcripts: Vec<Transcript>,
+    /// The first run that failed or was cancelled; nothing more is decoded
+    /// after it.
+    failure: Option<EngineError>,
+}
+
+impl<'a> ChunkedDecode<'a> {
+    fn new(
+        tm: &'a TranscriptionManager,
+        mark: CancelMark,
+        run_options: RunOptions,
+        model_id: &str,
+        backend: VadBackend,
+    ) -> Self {
+        // The VAD is only loaded if the audio turns out long enough to cut.
+        let app_handle = tm.app_handle.clone();
+        Self {
+            tm,
+            mark,
+            run_options,
+            model_id: model_id.to_string(),
+            chunker: Chunker::new(Box::new(move || create_detector(backend, &app_handle))),
+            transcripts: Vec::new(),
+            failure: None,
+        }
+    }
+
+    /// A whole clip's chunks, decoded in order.
+    fn decode_clip(
+        tm: &'a TranscriptionManager,
+        mark: CancelMark,
+        run_options: RunOptions,
+        audio: Vec<f32>,
+        model_id: &str,
+        backend: VadBackend,
+    ) -> Result<Vec<Transcript>, EngineError> {
+        let mut decode = Self::new(tm, mark, run_options, model_id, backend);
+        decode.push(audio);
+        decode.finish()
+    }
+
+    /// Samples pushed so far.
+    fn samples(&self) -> usize {
+        self.chunker.samples()
+    }
+
+    /// Chunks decoded so far.
+    fn decoded(&self) -> usize {
+        self.transcripts.len()
+    }
+
+    /// Whether a failure already ended the decode; [`finish`](Self::finish)
+    /// reports it.
+    fn failed(&self) -> bool {
+        self.failure.is_some()
+    }
+
+    /// Adds audio, decoding each chunk it makes certain.
+    fn push(&mut self, pcm: Vec<f32>) {
+        if self.failure.is_some() {
+            return;
+        }
+        let chunks = self.chunker.push(pcm);
+        self.decode(chunks);
+    }
+
+    /// Decodes what is left. Every chunk's transcript in order, or the run
+    /// that failed or was cancelled.
+    fn finish(mut self) -> Result<Vec<Transcript>, EngineError> {
+        if self.failure.is_none() {
+            let chunks = self.chunker.finish();
+            self.decode(chunks);
+        }
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
+        if self.transcripts.len() > 1 {
+            info!(
+                "Decoded {:.1}s of audio in {} chunks",
+                self.samples() as f64 / 16_000.0,
+                self.transcripts.len()
+            );
+        }
+        Ok(self.transcripts)
+    }
+
+    fn decode(&mut self, chunks: Vec<Vec<f32>>) {
+        for chunk in chunks {
+            if self.failure.is_some() {
+                return;
+            }
+            // The fork's streaming-cancel flag: an explicit user cancel sets
+            // it and cancels the engine; between chunks it stops the rest
+            // before another run is queued.
+            if self.tm.is_streaming_cancelled() {
+                self.failure = Some(EngineError::Cancelled);
+                return;
+            }
+            let audio_secs = chunk.len() as f64 / 16_000.0;
+            let started = Instant::now();
+            match self
+                .tm
+                .run_batch(self.mark, chunk, &self.run_options, &self.model_id)
+            {
+                Ok(transcript) => {
+                    self.transcripts.push(transcript);
+                    // Real-time factor: audio seconds decoded per second of
+                    // wall clock. Floored so a near-instant decode reports a
+                    // large factor instead of infinity.
+                    let elapsed_secs = started.elapsed().as_secs_f64().max(1e-6);
+                    info!(
+                        "Decoded long-form chunk {} ({:.1}s of audio) in {:.2}s ({:.0}x real time)",
+                        self.transcripts.len(),
+                        audio_secs,
+                        elapsed_secs,
+                        audio_secs / elapsed_secs
+                    );
+                }
+                Err(e) => {
+                    info!("Chunk decoding stopped: {}", e);
+                    self.failure = Some(e);
+                }
+            }
+        }
+    }
+}
+
+/// One transcription's text from its chunks, in order, and the model's
+/// detected language (Whisper's audio-based LID, auto mode only; `None` when
+/// a language hint was passed). Chunks that disagree leave it unknown. A
+/// single transcript passes through untouched.
+fn join_chunks(transcripts: Vec<Transcript>) -> (String, Option<String>) {
+    let mut detected = transcripts.iter().map(|t| t.language.clone());
+    let language = detected
+        .next()
+        .flatten()
+        .filter(|first| detected.all(|language| language.as_ref() == Some(first)));
+    let text = match <[Transcript; 1]>::try_from(transcripts) {
+        Ok([one]) => one.text,
+        Err(many) => join_transcripts(&many.iter().map(|t| t.text.as_str()).collect::<Vec<_>>()),
+    };
+    (text, language)
+}
+
+/// A batch run's error mapped for the caller: a cancel stays recognisable as
+/// one (the stop action surfaces it instead of starting a fallback run), and
+/// any other failure carries the engine's message.
+fn engine_cancel_error(e: EngineError) -> AppError {
+    match e {
+        EngineError::Cancelled => AppError::Transcription {
+            message: "Transcription was cancelled".to_string(),
+            source: anyhow::anyhow!("transcription cancelled"),
+        },
+        e => AppError::Transcription {
+            message: format!("transcribe-cpp transcription failed: {}", e),
+            source: anyhow::anyhow!("transcribe-cpp transcription failed: {}", e),
+        },
     }
 }
 

@@ -1795,6 +1795,15 @@ pub fn change_live_captions_enabled_setting(app: AppHandle, enabled: bool) -> Re
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_long_form_chunking_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings_safe(&app);
+    settings.long_form_chunking = enabled;
+    settings::write_settings_safe(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_live_captions_model_setting(app: AppHandle, model_id: String) -> Result<(), String> {
     let mut settings = settings::get_settings_safe(&app);
     settings.live_captions_model = model_id.clone();
