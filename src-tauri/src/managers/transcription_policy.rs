@@ -28,6 +28,7 @@ impl ModelTraits {
 }
 
 /// How a recording is decoded while it is still going.
+#[allow(dead_code)] // no live-path caller yet (recorded deviation from P9); plan may wire it later
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveDecode {
     /// The model decodes the audio as it arrives.
@@ -52,6 +53,7 @@ pub enum BatchDecode {
 
 /// Streaming wins: a streaming model handles long audio itself. Otherwise
 /// long audio is chunked unless the model keeps its accuracy on it.
+#[allow(dead_code)] // no live-path caller yet (recorded deviation from P9); plan may wire it later
 pub fn live_decode(model: ModelTraits, long_form_chunking: bool) -> LiveDecode {
     if model.streaming {
         LiveDecode::Stream

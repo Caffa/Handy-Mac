@@ -1869,12 +1869,14 @@ impl<'a> ChunkedDecode<'a> {
     }
 
     /// Chunks decoded so far.
+    #[allow(dead_code)] // progress accessor; reserved for the live decode path the plan may wire
     fn decoded(&self) -> usize {
         self.transcripts.len()
     }
 
     /// Whether a failure already ended the decode; [`finish`](Self::finish)
     /// reports it.
+    #[allow(dead_code)] // progress accessor; reserved for the live decode path the plan may wire
     fn failed(&self) -> bool {
         self.failure.is_some()
     }
