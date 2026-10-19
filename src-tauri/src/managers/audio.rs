@@ -2051,14 +2051,39 @@ impl AudioRecordingManager {
                 // Calculate recording duration for USB watchdog checks
                 let recording_duration = start_time.elapsed().as_secs_f32();
 
+                // Release the outer guard BEFORE the Stopping re-lock below:
+                // parking_lot::Mutex is non-reentrant, so re-locking while the
+                // match-scrutinee guard is still alive deadlocks every stop
+                // (try_start_recording / cancel / is_recording_effective all
+                // wedge behind it, leaving the mic stream stranded).
+                drop(state);
+
                 // Transition to Stopping: try_start_recording() must reject new
                 // recordings while the smart-stop trailing window captures
                 // trailing audio, and the lock-free mirror keeps that cheap.
+                // The guard was released above, so another thread may have
+                // changed the state between our snapshot and this re-lock:
+                // re-verify it still describes our recording, and treat a
+                // racing transition (cancel, second stop) like the mismatch
+                // arms — bail without touching the new state.
                 {
                     let mut state = self.state.lock();
-                    self.set_state(&mut state, RecordingState::Stopping);
+                    match *state {
+                        RecordingState::Recording {
+                            binding_id: ref active,
+                            ..
+                        } if active == binding_id => {
+                            self.set_state(&mut state, RecordingState::Stopping);
+                        }
+                        ref raced => {
+                            warn!(
+                                "stop_recording for '{}' raced a state change (now {:?}); not returning audio",
+                                binding_id, raced
+                            );
+                            return None;
+                        }
+                    }
                 }
-                drop(state);
 
                 let settings = get_settings(&self.app_handle);
 
