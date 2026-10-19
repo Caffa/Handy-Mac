@@ -7292,6 +7292,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f06368bb32251b5e93ceb8cae2d6ba9adff6a51693c7ce108449e65522b05c6"
 dependencies = [
  "log",
+ "serde",
  "thiserror 2.0.18",
  "transcribe-cpp-sys",
 ]
