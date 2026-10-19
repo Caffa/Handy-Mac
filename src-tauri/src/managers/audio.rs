@@ -363,9 +363,10 @@ pub fn recording_error_type(error: &anyhow::Error) -> &'static str {
 /* ──────────────────────────────────────────────────────────────── */
 
 /// Builds the capture VAD from the current settings. The fork's user-facing
-/// VAD sensitivity setting is expressed in Silero 30ms frame units (15-35);
-/// it is converted to milliseconds first so the hangover scales correctly for
-/// either backend.
+/// VAD sensitivity setting is expressed in legacy Silero-v4 30 ms frame units
+/// (15-35); it is converted to milliseconds first so the hangover keeps its
+/// meaning across frame geometries (Silero v6.2 = 32 ms frames) and scales
+/// correctly for either backend.
 fn create_capture_vad(
     backend: VadBackend,
     app_handle: &tauri::AppHandle,
@@ -379,7 +380,7 @@ fn create_capture_vad(
             let vad_path = app_handle
                 .path()
                 .resolve(
-                    "resources/models/silero_vad_v4.onnx",
+                    "resources/models/silero-vad-v6.2-F32.gguf",
                     tauri::path::BaseDirectory::Resource,
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {e}"))?;
@@ -399,11 +400,13 @@ fn create_capture_vad(
         ),
     };
 
-    // Earshot uses 16 ms frames while Silero uses 30 ms. Convert the existing
-    // time-based capture profile to each detector's frame size so selecting a
-    // backend does not shorten pre-roll, onset, or post-speech audio.
+    // Earshot uses 16 ms frames while Silero v6.2 uses 32 ms. Convert the
+    // existing time-based capture profile to each detector's frame size so
+    // selecting a backend does not shorten pre-roll, onset, or post-speech
+    // audio.
     let frame_samples = detector.frame_samples();
     let prefill_frames = frames_for_duration_ms(VAD_PREFILL_MS, frame_samples);
+    // The setting's hangover unit is the legacy Silero-v4 30 ms frame.
     let hangover_ms = vad_hangover_frames as u64 * 30;
     let offline_hangover_frames = frames_for_duration_ms(hangover_ms, frame_samples);
     let onset_frames = frames_for_duration_ms(VAD_ONSET_MS, frame_samples);

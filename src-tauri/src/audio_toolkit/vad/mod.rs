@@ -85,10 +85,11 @@ mod tests {
 
     #[test]
     fn duration_profiles_preserve_silero_timings() {
-        assert_eq!(frames_for_duration_ms(VAD_PREFILL_MS, 480), 15);
-        assert_eq!(frames_for_duration_ms(VAD_OFFLINE_HANGOVER_MS, 480), 15);
-        assert_eq!(frames_for_duration_ms(VAD_STREAMING_HANGOVER_MS, 480), 55);
-        assert_eq!(frames_for_duration_ms(VAD_ONSET_MS, 480), 2);
+        // Silero v6.2 (transcribe.cpp GGUF): 512-sample frames = 32 ms.
+        assert_eq!(frames_for_duration_ms(VAD_PREFILL_MS, 512), 15);
+        assert_eq!(frames_for_duration_ms(VAD_OFFLINE_HANGOVER_MS, 512), 15);
+        assert_eq!(frames_for_duration_ms(VAD_STREAMING_HANGOVER_MS, 512), 52);
+        assert_eq!(frames_for_duration_ms(VAD_ONSET_MS, 512), 2);
     }
 
     #[test]
@@ -102,9 +103,10 @@ mod tests {
 
 /// Trim trailing silence from audio samples using Silero VAD.
 ///
-/// Runs Silero VAD forward through the audio in 30ms frames, tracks the last
-/// frame classified as speech, then truncates the audio after that point
-/// (plus a small hangover pad to avoid clipping final consonants).
+/// Runs Silero VAD forward through the audio in the model's frame size
+/// (512 samples = 32 ms for Silero v6.2), tracks the last frame classified as
+/// speech, then truncates the audio after that point (plus a small hangover
+/// pad to avoid clipping final consonants).
 ///
 /// Also preserves a small buffer of leading silence before the first speech
 /// to avoid clipping the beginning of short sentences.
@@ -114,14 +116,10 @@ mod tests {
 pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> Vec<f32> {
     use crate::audio_toolkit::constants;
 
-    const FRAME_MS: u32 = 30;
-    const FRAME_SAMPLES: usize =
-        (constants::WHISPER_SAMPLE_RATE as usize * FRAME_MS as usize) / 1000;
     // Keep 300ms of audio after the last detected speech frame
     // to avoid clipping final consonants/tails of words (increased from 150ms
     // to fix short sentence clipping)
-    const HANGOVER_FRAMES: usize = 10;
-    const HANGOVER_SAMPLES: usize = HANGOVER_FRAMES * FRAME_SAMPLES;
+    const HANGOVER_MS: u64 = 300;
     // Keep 200ms of audio before the first detected speech frame
     // to avoid clipping the beginning of short sentences.
     // Increased from 100ms (3 frames) to 200ms (7 frames) to provide more
@@ -130,12 +128,7 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
     // and the first syllable may be quieter than the detection threshold.
     // A 200ms buffer ensures we capture the full first word even if VAD
     // triggers partway through it.
-    const LEADING_BUFFER_FRAMES: usize = 7;
-    const LEADING_BUFFER_SAMPLES: usize = LEADING_BUFFER_FRAMES * FRAME_SAMPLES;
-
-    if audio.len() < FRAME_SAMPLES {
-        return audio.to_vec();
-    }
+    const LEADING_BUFFER_MS: u64 = 200;
 
     let mut vad = match SileroVad::new(vad_path, threshold) {
         Ok(v) => v,
@@ -148,14 +141,30 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
         }
     };
 
+    // Frame geometry comes from the loaded model (512 samples = 32 ms for
+    // Silero v6.2) so this stays correct across model swaps.
+    let frame_samples = vad.frame_samples();
+    let hangover_samples = crate::audio_toolkit::vad::frames_for_duration_ms(
+        HANGOVER_MS,
+        frame_samples,
+    ) * frame_samples;
+    let leading_buffer_samples = crate::audio_toolkit::vad::frames_for_duration_ms(
+        LEADING_BUFFER_MS,
+        frame_samples,
+    ) * frame_samples;
+
+    if audio.len() < frame_samples {
+        return audio.to_vec();
+    }
+
     // Scan forward through the audio, tracking first and last speech frames.
-    let total_frames = audio.len() / FRAME_SAMPLES;
+    let total_frames = audio.len() / frame_samples;
     let mut first_speech_frame_start: Option<usize> = None;
     let mut last_speech_frame_end: usize = 0;
 
     for frame_idx in 0..total_frames {
-        let start = frame_idx * FRAME_SAMPLES;
-        let end = start + FRAME_SAMPLES;
+        let start = frame_idx * frame_samples;
+        let end = start + frame_samples;
         let frame = &audio[start..end];
 
         match vad.push_frame(frame) {
@@ -181,12 +190,12 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
 
     // Calculate the start point with leading buffer to preserve beginning of speech
     let trimmed_start = match first_speech_frame_start {
-        Some(first_start) => first_start.saturating_sub(LEADING_BUFFER_SAMPLES),
+        Some(first_start) => first_start.saturating_sub(leading_buffer_samples),
         None => 0,
     };
 
     // Pad the cut point with a small hangover to avoid clipping
-    let trimmed_len = (last_speech_frame_end + HANGOVER_SAMPLES).min(audio.len());
+    let trimmed_len = (last_speech_frame_end + hangover_samples).min(audio.len());
 
     if trimmed_len >= audio.len() && trimmed_start == 0 {
         // Nothing to trim

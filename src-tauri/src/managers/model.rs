@@ -2481,11 +2481,11 @@ impl ModelManager {
         Ok(())
     }
 
-    /// Verify the Silero VAD model (silero_vad_v4.onnx) integrity at startup.
+    /// Verify the Silero VAD model (silero-vad-v6.2-F32.gguf) integrity at startup.
     fn verify_vad_integrity(&self, app_handle: &AppHandle) {
         const VAD_EXPECTED_SHA256: &str =
-            "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28";
-        const VAD_FILENAME: &str = "silero_vad_v4.onnx";
+            "0d871a800c420fdd5d1b17a3aea4296d1c39608f0ff4a9295eb76457eb1c88e6";
+        const VAD_FILENAME: &str = "silero-vad-v6.2-F32.gguf";
 
         let vad_path = match app_handle.path().resolve(
             format!("resources/models/{}", VAD_FILENAME),
