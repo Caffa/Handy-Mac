@@ -888,3 +888,66 @@ Phases 3–5 complete (tags `sync-2026-10-p3-done` @ `aa55a46d`, `-p4-done` @ `5
 
 Remaining Phase 2 rows finished this session, with fork commits: `4cd49950` partial → `28119924` (+ `91ee3aee`, `598c0504`), `6fa85061` partial → `8addac74`, `0bb0428e` partial → `c1a6ccc9`, `d55ea7ef`+`0e503672` → **S** (fork already at/above: `TranscribeAcceleratorSetting::Gpu` maps to `Backend::Auto` + stable `transcribe_gpu_device` identity; upstream's gpu→auto migration would be a no-op; catalog/build.rs merge content skipped by fork policy), `cf49ab35` → `cceadc15` (query-only main-thread hop; whole-body hop rejected — it would deadlock the fork's oneshot position confirmation). Also fixed a test-cfg break left by the `14ae9c6b` commit (`PostProcessProvider` test initializer missing `api_format`, in `llm_client.rs` `provider()`). Rows the orchestrator flagged as possibly-P2 (`53db4cb6`, `496a80cc`, `7c31572d`, `37a26fd6`, `5ec2276a`) are Phase 3/Phase 4 rows in this plan and were not actioned here.
 Order above holds under the default gate outcome (matrix row 1); rejected-gate reshuffles follow §3's closure matrix (e.g., D1=(c) → run Phase 7 directly after Phase 5 and skip 6→8→9 per rows 7/8).
+### P10 close-out addendum (2026-10-20)
+
+Phase 10 complete. Fork commits: `11ab3411` (16caad7a — overlay stops
+rendering/animating while hidden), `ecd7eef8` (20a6685e + 417dc6ac —
+Loading-model state in overlay). Verify/skip rows resolved below; no other
+P10 rows required code.
+
+| Upstream SHA | Title | Outcome | Evidence |
+|---|---|---|---|
+| `16caad7a` | stop rendering overlay animations while hidden (#1445) | ✅ Applied `11ab3411` | Early `if (!isVisible) return null` in `RecordingOverlay` (after all hooks — listeners stay registered); `useVisualizer` decay interval gated on visibility (previously re-rendered the hidden WebView ~16x/sec forever) + mic-level handler early-returns via `isVisibleRef`. NSPanel invariants untouched (`set_ignores_mouse_events` always-called, `work_area`, `OVERLAY_SESSION`). |
+| `b50b52a8` | appearance setting reaches overlay + macOS title bar (#1659) | ⏭️ S — not applicable | **The fork has no appearance/theme setting**: no `Theme` enum, no `change_theme_setting`, no `data-theme` mechanism, no `theme.css`; only `sound_theme` (feedback sounds) and tray `AppTheme` (derived from the *system* theme). Upstream's premise (setting exists but doesn't reach the overlay) has no fork counterpart; porting would mean inventing a Light/Dark/System feature — out of sync scope. Overlay palette is hardcoded by design (dark pill, light captions box). Revisit if a theme setting is ever added. |
+| `20a6685e` | show "Loading model…" instead of stuck "Transcribing..." (#2227) | ✅ Applied `ecd7eef8` | Fork already emits `model-state-changed` (`loading_started`/`loading_completed`/`loading_failed`/`unloaded`) from `load_model_with_device`; new `useModelLoadIndicator` hook consumes them per fork's hook architecture. Only completed/failed end a load (`unloaded` arrives from idle watcher/slot watchdog mid-load). Processing pill shows `overlay.loadingModel` while a load is in flight (`transcribe_internal` waits on it at stop). |
+| `417dc6ac` | loading notice in Live preview after 2s | ✅ Applied `ecd7eef8` | `modelLoadSlow` arms after 2s of loading; while Recording with no text yet, the live-captions panel opens with a "Loading model…" notice (`LiveCaptionsBox` new optional `notice` prop + pulsing muted CSS). Warm loads never flash it; i18n en/zh/zh-TW. Upstream's panel-open latch not needed in the fork (notice→text transitions keep the same component mounted; fork's box is ephemeral by design). |
+| `57324065` | duplicate history rows during live updates (#2256) | ⏭️ S — verified not applicable | Verified: fork emits `HistoryUpdate::Added` from exactly one place (`managers/history.rs`, end of successful `save_entry*`), and all save callers are post-final (`actions/transcribe.rs` after transcription+post-processing, `actions/router.rs` same). No live/streaming path creates history rows, so the double-insert condition upstream fixed cannot occur. (Cosmetic hardening note: the fork's `HistorySettings` "added" handler prepends without same-id filtering — unnecessary today since Added fires exactly once per save.) |
+| `86616891` | update checker overlay fix | ⏭️ S — already present | Fork's `UpdateChecker.tsx` portable dialog already uses the fixed tokens (`bg-background`, `border-mid-gray/20`). |
+| `76736d5a` | portable installer dialog | ⏭️ S — policy (per plan §4) | Windows-portable installer UI; no macOS code path. |
+| `5a7c0eac` | tauri bump + Mac dock fixes | ⏭️ S — pre-range (per plan) | Out of `cdbc2239..9e57a0d7`; fork's `544f28d2` work_area tracking covers its substance. |
+
+**Final gate (cycle):** `cargo check --all-targets` ✓ (0 errors) ·
+`cargo test --lib` **555 passed / 4 documented pre-existing failures**
+(3× history schema + 1 conflicts machine-specific) / 19 ignored ·
+`bun run build` ✓ · tsc + eslint + prettier clean on all P10-touched files ·
+`cargo fmt --check`: **pre-existing drift across 42 sites, present at
+`pre-sync-0.12.2` too** — P10 touched no Rust files; cleanup left as an
+optional chore (`cargo fmt` run before the next release build).
+
+## Sync 2026-10 cycle: COMPLETE
+
+All phases P0–P10 done on branch `sync/upstream-2026-10`. Range
+`cdbc2239..9e57a0d7` (161 commits): 61 APPLY all landed, 13 PORTED,
+5 SKIP-superseded, 76 SKIP-policy, 6 VERIFY all resolved (d55ea7ef S,
+e8c73ba7 S, f6fac42e S per D6, 86616891 S already-present, 57324065 S
+verified-not-applicable, 0e503672 bundled). Tags: `pre-sync-0.12.2`,
+`sync-2026-10-p1-done` … `-p10-done`, final `sync-2026-10-complete`.
+Registry finalized in `Handy-Fork/UPSTREAM_SYNC.md` (2026-10-20).
+
+**REGRESSION-TEST-REQUIRED (manual mic/OS, consolidated across the cycle):**
+1. **D5 handy-keys 0.3.4:** macOS sleep/wake + recording-hotkey pass (stuck
+   keys on wake, rapid start/stop, cancel spam, Secure-Input fallback).
+2. **P7 preroll:** first word intact with noise suppression OFF (raw-vs-vad
+   A/B); NS-on sanity; rapid stop→start; device hot-unplug recovery.
+3. **P9 long-form:** 5+ min recording with setting on (chunk cut in logs,
+   cancel-all mid-run); 30 s recording (no chunking); toggle off.
+4. **P9 vocabulary:** custom words honored on a whisper-class GGUF without
+   double fuzzy-correction; non-vocabulary model keeps fuzzy correction.
+5. **P8 migration flow:** simulated old ONNX install → migration UI shows;
+   fresh-install onboarding downloads a default GGUF.
+6. **P10 loading indicator:** cold start (quit → relaunch → dictate
+   immediately) shows "Loading model…" in pill post-stop and in the live
+   preview after ~2s; warm second dictation does not flash it; overlay
+   hidden state renders nothing (check Activity→Window rendering or a
+   monitor unplug/replug for stale-content resurfacing).
+7. **General:** live captions stream + finalize; USB unplug/replug recovery;
+   paste to standard app/Finder/browser + image-only clipboard; SKE warning
+   + fallback cancel.
+
+**Residual / optional (not blocking):** `cargo fmt` drift (42 sites,
+pre-existing); `5a7c0eac` residual dock-position diff vs fork `544f28d2`
+(low priority); `cdf5028b` sidebar refactor deferred (reassess later);
+`3cbbe582` pre-range FYI ('Direct' paste-method label may linger in
+en/translation.json — harmless); D4 paste_tx full port deferred
+(concealment markers idea noted); upstream's OVERLAY_SHOW_GENERATION and
+50ms RELEASE_GRACE deliberately not ported (fork guards are stronger).
