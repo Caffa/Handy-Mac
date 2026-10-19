@@ -679,6 +679,50 @@ pipeline are fork-only → re-port. `12f02e2a` channel selection: `Channels::Onl
 3. Sink panics now end the recording with `EndReason::SinkPanicked` (audio before the panic
    kept) instead of poisoning a shared worker — strictly better containment.
 
+### P7 close-out addendum (2026-10-20)
+
+Phase 7 complete (D2 adopt+re-port, single upstream row `a42131d2` landed as 4 fork commits):
+`538a05c0` (STEP 1 inventory, written before code), `1f03472b` (the capture swap), `9d783219`
+(test-target repair — also closes the P6 follow-up about parakeet/proptest not compiling),
+`230dc995` (preroll acceptance tests). Tag `sync-2026-10-p7-done`. Registry rows with the full
+re-port/disposition tables live in `UPSTREAM_SYNC.md` (Phase 7 Commit Notes).
+
+Gate: `cargo check --all-targets` ✓ · `cargo test --lib` **544 passed / same 4 documented
+pre-existing failures** (3× history schema, 1× conflicts machine-specific) · `bun run build` ✓ ·
+integration: `capture_sink_preroll` 3 ✓, `parakeet_thresholds` 3 ✓, `proptest_audio` 15 ✓.
+
+**Acceptance evidence (D2 proof, NS off):** the `transcribe_wav` harness cannot drive the
+capture path (it feeds a WAV straight to the engine) and no GGUF model remains locally, so per
+the plan's fallback the proof is sink-level: (a) scripted-VAD tests prove the full VAD-emitted
+slice — including withheld pre-onset frames — opens the recording (ddffa435 mechanics) and the
+NS-on branch keeps the current-original-frame behavior; (b) the env-gated `real_vad_preroll_slice`
+test runs REAL Silero v4 + production SmoothedVad over real user recordings: recording opens
+**420 ms / 420 ms / 210 ms before** the standalone detector's first voiced frame across 3/3
+recordings — real leading preroll slices, first word intact. Manual mic pass: REGRESSION-TEST-REQUIRED.
+
+**Unexpected finding during the swap (recorded, resolved):** fork `cpal = "0.16"` cannot coexist
+with handy-recorder's handy-cpal (cpal 0.18.2) — cargo `links = "alsa"` conflict — so the planned
+interim "dep + unwired sink" checkpoint was impossible; the whole arc landed as one coherent
+commit instead (the plan's own fallback for this case).
+
+**Carry-forward for Phase 8 (VAD GGUF + ONNX removal) and Phase 10 (overlay/live-captions
+reconciliation):**
+- `CaptureVad`/`VadSlot` are detector-agnostic (`Box<dyn VoiceActivityDetector>`); P8's backend
+  swap touches only `create_capture_vad` in managers/audio.rs. The fork's user-facing VAD
+  sensitivity setting (Silero-frame units → ms conversion) lives there too — preserve it in the
+  P8 migration (upstream hardcodes 0.3/0.5 thresholds; the fork's setting must win).
+- The standing capture (`refresh_standing_capture`) is the new home of idle-audio consumption:
+  pre-hotkey buffer AND the 2.5s batch-captions fallback keep running while idle in always-on/BT
+  mode. P10's overlay work should treat "standing" as the idle state (levels flow while standing;
+  overlay is hidden when idle so this is not consumed today — recorded deviation #1).
+- `set_streaming_enabled` is recreate-free (AtomicBool in `CaptureControl`) and now also
+  starts/stops the standing capture; shortcut's live-captions toggle path is unchanged.
+- try_start_recording now returns `RecordingReadiness` (upstream shape) and actions spawn
+  readiness waiters; the fork's stale-Recording-state recovery and cancel escape hatch are kept.
+- `RecordingState::Stopping` was added (upstream parity) — the smart-stop window runs under it;
+  `is_recording()` reads the `recording_active` atomic mirror (never the state mutex) — b4453a29's
+  lock-free concern finally fully addressed on the fork side.
+
 ### P6 close-out addendum (2026-10-20)
 
 Phase 6 complete (D1 full adopt, matrix row 1): fork commits `1e85e476` (Cargo 0.3.1 + serde + libc),
