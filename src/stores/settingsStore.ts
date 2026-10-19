@@ -8,7 +8,6 @@ import type {
   AudioDevice,
   PostProcessApiFormat,
   TranscribeAcceleratorSetting,
-  OrtAcceleratorSetting,
   ShortcutActivation,
   ShortcutBinding,
   WordReplacement,
@@ -210,8 +209,6 @@ const settingUpdaters: {
     commands.changeTranscribeAcceleratorSetting(
       value as TranscribeAcceleratorSetting,
     ),
-  ort_accelerator: (value) =>
-    commands.changeOrtAcceleratorSetting(value as OrtAcceleratorSetting),
   transcribe_gpu_device: (value) =>
     commands.changeTranscribeGpuDevice(value as string | null),
   extra_recording_buffer_ms: (value) =>

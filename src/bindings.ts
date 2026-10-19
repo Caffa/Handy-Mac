@@ -484,14 +484,6 @@ async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetti
     else return { status: "error", error: e  as any };
 }
 },
-async changeOrtAcceleratorSetting(accelerator: OrtAcceleratorSetting) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("change_ort_accelerator_setting", { accelerator }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async changeTranscribeGpuDevice(device: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_transcribe_gpu_device", { device }) };
@@ -768,6 +760,17 @@ async getAvailableModels() : Promise<Result<ModelInfo[], string>> {
 async getModelInfo(modelId: string) : Promise<Result<ModelInfo | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_model_info", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getRetiredModels() : Promise<RetiredModel[]> {
+    return await TAURI_INVOKE("get_retired_models");
+},
+async deleteRetiredModel(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_retired_model", { modelId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1572,7 +1575,7 @@ word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTim
  * rewrites `selected_language` is not adopted — the fork's picker still
  * exposes those intents).
  */
-chinese_script?: ChineseScript; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; 
+chinese_script?: ChineseScript; transcribe_accelerator?: TranscribeAcceleratorSetting; 
 /**
  * Stable transcribe.cpp device selector. This is derived from the backend's
  * `device_id` when available (or its name for backends such as Metal),
@@ -1585,7 +1588,7 @@ transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; pre_r
 vad_backend?: VadBackend }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
-export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
+export type AvailableAccelerators = { transcribe: string[]; gpu_devices: GpuDeviceOption[] }
 /**
  * A model that failed during benchmarking (could not load or could not transcribe).
  */
@@ -1714,19 +1717,17 @@ removed_output: string[];
  * Current list of all output device names.
  */
 current_output: string[] }
-export type EngineType = 
-/**
- * Any GGML/GGUF model loaded through transcribe-cpp (Whisper, Parakeet,
- * Voxtral, Qwen3-ASR, Nemotron, …). The architecture is auto-detected from
- * the file, so this one variant covers the whole transcribe-cpp family.
- */
-"TranscribeCpp" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type ErrorRecord = { timestamp_ms: number; event_type: string; message: string; session_id: string | null }
 export type ExperimentGroup = { id: number; recording_id: number; original_transcript: string; ground_truth: string | null; speech_speed: string; recording_quality: string; created_at: number; is_complete: boolean; notes: string | null }
 /**
  * Result of generating variants for an experiment
  */
 export type GeneratedVariant = { model_id: string; parameters: string; transcription_text: string }
+/**
+ * transcribe-cpp's backend is chosen at model-load time from
+ * [`select_transcribe_backend`], so changing the accelerator only needs a
+ * model reload (see `reload_model_on_next_use`).
+ */
 export type GpuDeviceOption = { id: string; name: string; total_vram_mb: number }
 export type HealthReport = { app_version: string; platform: string; uptime_secs: number; total_sessions: number; successful_sessions: number; failed_sessions: number; avg_transcription_ms: number; p95_transcription_ms: number; model_load_times: ModelLoadStat[]; recent_errors: ErrorRecord[]; usb_watchdog_cycles: number; device_changes: number; current_mic: string; current_model: string; log_level: string }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; model_id: string | null; routed: boolean; 
@@ -1780,7 +1781,7 @@ export type LLMPrompt = { id: string; name: string; prompt: string }
 export type LogEntry = { timestamp: string; level: string; event_type: string; session_id: string | null; raw_json: string }
 export type LogFilter = { event_type: string | null; session_id: string | null; level: string | null; limit: number | null }
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error"
-export type ModelInfo = { id: string; name: string; description: string; filename: string; source: ModelSource; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; is_directory: boolean; engine_type: EngineType; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean; supports_streaming: boolean; supports_language_detection: boolean; dynamic_score: BenchmarkScore | null }
+export type ModelInfo = { id: string; name: string; description: string; filename: string; source: ModelSource; size_mb: number; is_downloaded: boolean; is_downloading: boolean; partial_size: number; accuracy_score: number; speed_score: number; supports_translation: boolean; is_recommended: boolean; supported_languages: string[]; supports_language_selection: boolean; is_custom: boolean; supports_streaming: boolean; supports_language_detection: boolean; dynamic_score: BenchmarkScore | null }
 export type ModelLoadStat = { model_id: string; avg_load_ms: number; load_count: number }
 export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null }
 /**
@@ -1809,7 +1810,6 @@ sha256: string | null } } |
 "Local"
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
 export type NoiseSuppressionLevel = "low" | "medium" | "high"
-export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
 export type OverlayScreenTarget = "cursor" | "side_screen"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
@@ -1856,6 +1856,10 @@ transcription: string;
  */
 matches_canonical: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
+/**
+ * A retired ONNX model found on disk.
+ */
+export type RetiredModel = { id: string; name: string; size_mb: number; replacement_repo: string }
 /**
  * Represents a pending transcription retry.
  * Contains all information needed to re-attempt transcription.

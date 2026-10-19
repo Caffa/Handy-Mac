@@ -25,7 +25,6 @@ interface ModelsStore {
   currentModel: string;
   downloadingModels: Record<string, true>;
   verifyingModels: Record<string, true>;
-  extractingModels: Record<string, true>;
   downloadProgress: Record<string, DownloadProgress>;
   downloadStats: Record<string, DownloadStats>;
   loading: boolean;
@@ -46,7 +45,6 @@ interface ModelsStore {
   getModelInfo: (modelId: string) => ModelInfo | undefined;
   isModelDownloading: (modelId: string) => boolean;
   isModelVerifying: (modelId: string) => boolean;
-  isModelExtracting: (modelId: string) => boolean;
   getDownloadProgress: (modelId: string) => DownloadProgress | undefined;
 
   // Internal setters
@@ -68,7 +66,6 @@ export const useModelStore = create<ModelsStore>()(
     currentModel: "",
     downloadingModels: {},
     verifyingModels: {},
-    extractingModels: {},
     downloadProgress: {},
     downloadStats: {},
     loading: true,
@@ -269,10 +266,6 @@ export const useModelStore = create<ModelsStore>()(
       return modelId in get().verifyingModels;
     },
 
-    isModelExtracting: (modelId: string) => {
-      return modelId in get().extractingModels;
-    },
-
     getDownloadProgress: (modelId: string) => {
       return get().downloadProgress[modelId];
     },
@@ -396,44 +389,6 @@ export const useModelStore = create<ModelsStore>()(
             }),
           );
         }),
-      );
-
-      unlistenFns.push(
-        await listen<string>("model-extraction-started", (event) => {
-          const modelId = event.payload;
-          set(
-            produce((state) => {
-              state.extractingModels[modelId] = true;
-            }),
-          );
-        }),
-      );
-
-      unlistenFns.push(
-        await listen<string>("model-extraction-completed", (event) => {
-          const modelId = event.payload;
-          set(
-            produce((state) => {
-              delete state.extractingModels[modelId];
-            }),
-          );
-          get().loadModels();
-        }),
-      );
-
-      unlistenFns.push(
-        await listen<{ model_id: string; error: string }>(
-          "model-extraction-failed",
-          (event) => {
-            const modelId = event.payload.model_id;
-            set(
-              produce((state) => {
-                delete state.extractingModels[modelId];
-                state.error = `Failed to extract model: ${event.payload.error}`;
-              }),
-            );
-          },
-        ),
       );
 
       unlistenFns.push(

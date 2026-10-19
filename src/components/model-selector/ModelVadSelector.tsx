@@ -18,25 +18,18 @@ const VALID_SENSITIVITIES: VadSensitivity[] = [
   "very_quick",
 ];
 
-const getEngineDefault = (
-  engineType: ModelInfo["engine_type"],
-): VadSensitivity => {
-  switch (engineType) {
-    case "Parakeet":
-      return "very_relaxed";
-    default:
-      return "balanced";
-  }
-};
+// The engine type is gone from ModelInfo (every model loads through
+// transcribe-cpp now); the Parakeet architecture is recognized by name, in
+// step with the backend's `VadSensitivity::default_for_model`. Both the
+// retired ONNX ids and the catalog GGUF ids carry it.
+const isParakeetModel = (model: ModelInfo): boolean =>
+  model.id.toLowerCase().includes("parakeet");
 
-const getEngineLabelKey = (engineType: ModelInfo["engine_type"]): string => {
-  switch (engineType) {
-    case "Parakeet":
-      return "Parakeet";
-    default:
-      return "Whisper";
-  }
-};
+const getEngineDefault = (model: ModelInfo): VadSensitivity =>
+  isParakeetModel(model) ? "very_relaxed" : "balanced";
+
+const getEngineLabelKey = (model: ModelInfo): string =>
+  isParakeetModel(model) ? "Parakeet" : "Whisper";
 
 const getSensitivityLabelKey = (value: VadSensitivity): string => {
   switch (value) {
@@ -64,7 +57,7 @@ export const ModelVadSelector: React.FC<ModelVadSelectorProps> = ({
 
   const overrides = settings?.per_model_vad_sensitivity ?? {};
   const savedValue = overrides[model.id];
-  const effectiveValue = savedValue ?? getEngineDefault(model.engine_type);
+  const effectiveValue = savedValue ?? getEngineDefault(model);
   const isOverridden = savedValue !== undefined;
 
   const options: DropdownOption[] = useMemo(
@@ -93,7 +86,7 @@ export const ModelVadSelector: React.FC<ModelVadSelectorProps> = ({
       title={
         isOverridden
           ? t("modelSelector.vadSensitivity.default", {
-              engine: getEngineLabelKey(model.engine_type),
+              engine: getEngineLabelKey(model),
             })
           : undefined
       }

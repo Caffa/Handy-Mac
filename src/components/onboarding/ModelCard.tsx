@@ -37,7 +37,6 @@ export type ModelCardStatus =
   | "downloadable"
   | "downloading"
   | "verifying"
-  | "extracting"
   | "switching"
   | "active"
   | "available";
@@ -326,16 +325,6 @@ const ModelCard: React.FC<ModelCardProps> = ({
           </div>
           <p className="text-xs text-text/50 mt-1">
             {t("modelSelector.verifyingGeneric")}
-          </p>
-        </div>
-      )}
-      {status === "extracting" && (
-        <div className="w-full mt-3">
-          <div className="w-full h-1.5 bg-mid-gray/20 rounded-full overflow-hidden">
-            <div className="h-full bg-logo-primary rounded-full animate-pulse w-full" />
-          </div>
-          <p className="text-xs text-text/50 mt-1">
-            {t("modelSelector.extractingGeneric")}
           </p>
         </div>
       )}

@@ -9,7 +9,6 @@ import ModelCard from "./ModelCard";
 import HandyTextLogo from "../icons/HandyTextLogo";
 import { Button } from "../ui/Button";
 import { useModelStore } from "../../stores/modelStore";
-import { isRetiredModel } from "./retiredModels";
 
 interface OnboardingProps {
   onModelSelected: () => void;
@@ -31,7 +30,6 @@ const Onboarding: React.FC<OnboardingProps> = ({
     selectModel,
     downloadingModels,
     verifyingModels,
-    extractingModels,
     downloadProgress,
     downloadStats,
   } = useModelStore();
@@ -80,7 +78,7 @@ const Onboarding: React.FC<OnboardingProps> = ({
     };
   }, [selectedModelId]);
 
-  // Watch for the selected model to finish downloading + verifying + extracting
+  // Watch for the selected model to finish downloading + verifying
   useEffect(() => {
     // Debug previews are inert: never switch the user's active model. Guarded
     // here as well as in the handlers because this is where the backend call
@@ -92,14 +90,8 @@ const Onboarding: React.FC<OnboardingProps> = ({
     const model = models.find((m) => m.id === selectedModelId);
     const stillDownloading = selectedModelId in downloadingModels;
     const stillVerifying = selectedModelId in verifyingModels;
-    const stillExtracting = selectedModelId in extractingModels;
 
-    if (
-      model?.is_downloaded &&
-      !stillDownloading &&
-      !stillVerifying &&
-      !stillExtracting
-    ) {
+    if (model?.is_downloaded && !stillDownloading && !stillVerifying) {
       // Model is ready — select it and transition
       selectModel(selectedModelId).then((success) => {
         if (success) {
@@ -115,7 +107,6 @@ const Onboarding: React.FC<OnboardingProps> = ({
     models,
     downloadingModels,
     verifyingModels,
-    extractingModels,
     selectModel,
     onModelSelected,
     preview,
@@ -148,7 +139,6 @@ const Onboarding: React.FC<OnboardingProps> = ({
   };
 
   const getModelStatus = (modelId: string): ModelCardStatus => {
-    if (modelId in extractingModels) return "extracting";
     if (modelId in verifyingModels) return "verifying";
     if (modelId in downloadingModels) return "downloading";
     return "downloadable";
@@ -185,10 +175,8 @@ const Onboarding: React.FC<OnboardingProps> = ({
 
       <div className="max-w-[600px] w-full mx-auto text-center flex-1 flex flex-col min-h-0">
         <div className="flex flex-col gap-4 pb-6">
-          {/* Retired (ONNX) models can't run, so never offer them as a pick. */}
           {models
             .filter((m: ModelInfo) => !m.is_downloaded)
-            .filter((m: ModelInfo) => !isRetiredModel(m.id))
             .filter((model: ModelInfo) => model.is_recommended)
             .map((model: ModelInfo) => (
               <ModelCard
@@ -207,7 +195,6 @@ const Onboarding: React.FC<OnboardingProps> = ({
 
           {models
             .filter((m: ModelInfo) => !m.is_downloaded)
-            .filter((m: ModelInfo) => !isRetiredModel(m.id))
             .filter((model: ModelInfo) => !model.is_recommended)
             .sort(
               (a: ModelInfo, b: ModelInfo) =>
