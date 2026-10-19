@@ -30,5 +30,7 @@ export {
 
 export { useVisualizer } from "./useVisualizer";
 export { useLiveCaptions } from "./useLiveCaptions";
+export { useModelLoadIndicator } from "./useModelLoadIndicator";
+export type { UseModelLoadIndicatorReturn } from "./useModelLoadIndicator";
 export { useRouterPreview } from "./useRouterPreview";
 export { useUSBRecovery } from "./useUSBRecovery";

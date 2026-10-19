@@ -32,6 +32,7 @@ import { useOverlaySharedState } from "./hooks/useOverlayState";
 import { useAppState } from "./hooks/useAppState";
 import { useVisualizer } from "./hooks/useVisualizer";
 import { useLiveCaptions } from "./hooks/useLiveCaptions";
+import { useModelLoadIndicator } from "./hooks/useModelLoadIndicator";
 import { useRouterPreview } from "./hooks/useRouterPreview";
 import { useUSBRecovery } from "./hooks/useUSBRecovery";
 import { useRecordingTimeoutWarning } from "./hooks/useRecordingTimeoutWarning";
@@ -219,6 +220,12 @@ const RecordingOverlay: React.FC = () => {
     setStreamingSegments,
   });
 
+  // ─── Model load indicator (upstream 20a6685e + 417dc6ac) ───────────────
+  // Recording kicks the model load in the background; label the wait as
+  // loading instead of a stuck "Transcribing..." (post-stop) or an empty
+  // live preview (during recording, after the load runs >2s).
+  const { modelLoading, modelLoadSlow } = useModelLoadIndicator();
+
   // ─── Router preview (confirmation, editing, result) ───────────────────
   const {
     handleTranscriptionClick,
@@ -354,12 +361,18 @@ const RecordingOverlay: React.FC = () => {
               backendState.appState.state === "Recording" && (
                 <VisualizerBars levels={levels} isRouter={isRouter} />
               )}
-            {/* Processing state: "Filing..." for router, "Processing..." for normal */}
+            {/* Processing state: "Filing..." for router, "Loading model..."/
+                "Processing..." for normal. Post-stop, any in-flight load IS
+                the wait (upstream 20a6685e), so switch the label immediately. */}
             {state === "processing" && (
               <div
                 className={`transcribing-text${isRouter ? " routing-text" : ""}`}
               >
-                {isRouter ? t("overlay.filing") : t("overlay.processing")}
+                {isRouter
+                  ? t("overlay.filing")
+                  : modelLoading
+                    ? t("overlay.loadingModel")
+                    : t("overlay.processing")}
               </div>
             )}
             {state === "usb-cycling" && (
@@ -403,13 +416,16 @@ const RecordingOverlay: React.FC = () => {
           suppress the mic warning. Previously, lowAudioWarning (triggered
           during 2+ second speech pauses) would kill captions even though
           transcription was still producing text.
-          Hide when router result is showing — the handler cards replace them. */}
+          Hide when router result is showing — the handler cards replace them.
+          Upstream 417dc6ac: while recording with no text yet, a slow model
+          load (>2s) opens the panel with a "Loading model..." notice, so
+          speech that isn't transcribing yet doesn't look ignored. Warm loads
+          never flash it. */}
       {isVisible &&
         backendState.appState.state === "Recording" &&
         liveCaptionsEnabled &&
-        streamingText &&
-        streamingText.trim() &&
-        !routerResult && (
+        !routerResult &&
+        (streamingText?.trim() ? (
           <LiveCaptionsBox
             text={streamingText}
             direction={direction}
@@ -417,7 +433,16 @@ const RecordingOverlay: React.FC = () => {
             isRouter={isRouter}
             streaming={streaming}
           />
-        )}
+        ) : (
+          modelLoadSlow && (
+            <LiveCaptionsBox
+              notice={t("overlay.loadingModel")}
+              direction={direction}
+              overlayScale={overlayScale}
+              isRouter={isRouter}
+            />
+          )
+        ))}
 
       {/* Router result display / transcription preview */}
       {isRouter &&

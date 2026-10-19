@@ -11,11 +11,15 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 
 interface LiveCaptionsBoxProps {
-  text: string;
+  /** Transcribed text; omitted when the box shows a loading notice. */
+  text?: string;
   direction: "ltr" | "rtl";
   overlayScale: number;
   isRouter: boolean;
   streaming?: boolean;
+  /** Optional notice (e.g. "Loading model...") rendered in place of text
+   *  while the model is still loading and no transcription has arrived. */
+  notice?: string;
 }
 
 export function LiveCaptionsBox({
@@ -24,6 +28,7 @@ export function LiveCaptionsBox({
   overlayScale,
   isRouter,
   streaming = false,
+  notice,
 }: LiveCaptionsBoxProps) {
   const { t } = useTranslation();
 
@@ -45,7 +50,7 @@ export function LiveCaptionsBox({
           <span className="live-captions-label">{t("overlay.live")}</span>
         </span>
       )}
-      {text}
+      {notice ? <span className="live-captions-loading">{notice}</span> : text}
     </div>
   );
 }

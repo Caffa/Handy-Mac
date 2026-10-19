@@ -201,6 +201,15 @@
   opacity: 1;
 }
 
+/* "Loading model..." notice inside the live-captions panel while a cold
+   model load is still running (upstream 417dc6ac). Muted + pulsing so it
+   reads as progress, not as transcribed text. */
+.live-captions-loading {
+  color: #8a8a8a;
+  font-style: italic;
+  animation: transcribing-pulse 1.5s infinite ease-in-out;
+}
+
 .transcribing-text {
   color: white;
   font-size: 12px;

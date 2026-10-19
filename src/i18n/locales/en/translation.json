@@ -1044,6 +1044,7 @@
   "overlay": {
     "transcribing": "Transcribing...",
     "processing": "Processing...",
+    "loadingModel": "Loading model...",
     "usbCycling": "USB cycling…",
     "usbResolving": "Locating USB device…",
     "usbCyclingPort": "Power cycling port…",
