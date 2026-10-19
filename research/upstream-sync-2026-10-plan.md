@@ -679,7 +679,55 @@ pipeline are fork-only → re-port. `12f02e2a` channel selection: `Channels::Onl
 3. Sink panics now end the recording with `EndReason::SinkPanicked` (audio before the panic
    kept) instead of poisoning a shared worker — strictly better containment.
 
-### P7 close-out addendum (2026-10-20)
+### P8 close-out addendum (2026-10-20)
+
+Phase 8 complete (D1 × D3 adopt, matrix row 1; all three upstream rows landed):
+`0c964395` (3985508a — GGUF VAD) and `b4887c7c` (cfcb6507 — migration UI) by
+the prior builder session (re-verified faithful this session: Silero
+512/32 ms geometry through `frames_for_duration_ms`, VadSensitivity setting
+supremacy, i18n en+zh+zh-TW, 11-id FE map = upstream), then the `5197faf0`
+one-way door completed this session as `1b0d8887` (BE removal) +
+`426f4af9` (FE rework) + `2ad27ae4` (vendor/resources sweep). Tag
+`sync-2026-10-p8-done`. Registry rows + retired-mapping note in
+`UPSTREAM_SYNC.md` (Phase 8 Commit Notes).
+
+Gate: `cargo check --all-targets` ✓ (0 errors) · `cargo test --lib` **544
+passed / same 4 documented pre-existing failures** · integration:
+`capture_sink_preroll` 3 ✓, `parakeet_thresholds` 3 ✓, `proptest_audio` 15 ✓,
+`proptest_serde` 16 ✓ · `bun run build` ✓ · scoped eslint ✓ · fmt/clippy no
+new noise vs HEAD.
+
+**Unexpected finding (recorded, resolved):** `tests/proptest_serde.rs` was
+already broken at HEAD — the P2 rename `WhisperAcceleratorSetting` →
+`TranscribeAcceleratorSetting` never landed in that file, so the
+`--all-targets` gate could not have been green since P2's rename landed
+(later gates evidently checked the lib target only). Repaired inside the
+removal commit. Also: the `3985508a` port had left `silero_vad_v4.onnx`
+behind in the bundle (upstream replaced the file); deleted in `2ad27ae4`.
+
+**Fork adaptations recorded (deliberate, not deferrals):** upstream's
+`Whisper Acceleration` → `transcribe` i18n key rename not adopted (fork keeps
+its `whisper` key; text reworded to upstream's generic wording). The Parakeet
+`VeryRelaxed` per-engine VAD default (fork-only, engine-keyed) re-homed onto
+a model-id match BE-side + FE-side instead of dying with `EngineType`. The
+3 s leading-silence pad (fork-only, was `EngineType::TranscribeCpp`-gated)
+now gates on registry membership. Upstream's build.yml ORT-install steps and
+rust-cache key bump are GH-CI-only and don't exist in the fork's ci/test
+workflows (the mock-swap `sed '/^transcribe-rs/d'` lines become harmless
+no-ops; mock comment updated).
+
+**Carry-forward for Phase 9 (vocabulary API `4150a4a8` + long-form chunking
+`9e57a0d7`):** custom words currently reach only whisper-family models (the
+kind-tagged run extension; `model_is_whisper` gates the fuzzy-correction
+skip). P9 must generalize via the vocabulary API and reconcile with the
+fork's FE custom-words UI + the `post_process_transcription_text` gate.
+Long-form chunking composes VAD inside transcribe-cpp — must not double-chunk
+with the fork's sink-level VAD preroll (P7) or the silence-pad; verify the
+fork's `RETIRED_ONNX_MODELS`-era single-model supervisor (per-manager worker
+slots) still matches upstream's assumptions. Manual-mic REGRESSION-TEST-
+REQUIRED items for P8 live in the registry's Phase 8 Commit Notes.
+
+
 
 Phase 7 complete (D2 adopt+re-port, single upstream row `a42131d2` landed as 4 fork commits):
 `538a05c0` (STEP 1 inventory, written before code), `1f03472b` (the capture swap), `9d783219`

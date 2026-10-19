@@ -6,9 +6,9 @@
 use handy_app_lib::audio_toolkit::SpellingDictionary;
 use handy_app_lib::settings::{
     AutoSubmitKey, ClipboardHandling, KeyboardImplementation, ModelUnloadTimeout,
-    NoiseSuppressionLevel, OrtAcceleratorSetting, OverlayPosition, OverlayScreenTarget,
-    PasteMethod, RecordingRetentionPeriod, SoundTheme, TypingTool, VadSensitivity,
-    WhisperAcceleratorSetting, WordCorrectionMode,
+    NoiseSuppressionLevel, OverlayPosition, OverlayScreenTarget, PasteMethod,
+    RecordingRetentionPeriod, SoundTheme, TranscribeAcceleratorSetting, TypingTool, VadSensitivity,
+    WordCorrectionMode,
 };
 use proptest::prelude::*;
 
@@ -141,21 +141,11 @@ fn typing_tool() -> impl Strategy<Value = TypingTool> {
     ]
 }
 
-fn whisper_accelerator_setting() -> impl Strategy<Value = WhisperAcceleratorSetting> {
+fn transcribe_accelerator_setting() -> impl Strategy<Value = TranscribeAcceleratorSetting> {
     prop_oneof![
-        Just(WhisperAcceleratorSetting::Auto),
-        Just(WhisperAcceleratorSetting::Cpu),
-        Just(WhisperAcceleratorSetting::Gpu),
-    ]
-}
-
-fn ort_accelerator_setting() -> impl Strategy<Value = OrtAcceleratorSetting> {
-    prop_oneof![
-        Just(OrtAcceleratorSetting::Auto),
-        Just(OrtAcceleratorSetting::Cpu),
-        Just(OrtAcceleratorSetting::Cuda),
-        Just(OrtAcceleratorSetting::DirectMl),
-        Just(OrtAcceleratorSetting::Rocm),
+        Just(TranscribeAcceleratorSetting::Auto),
+        Just(TranscribeAcceleratorSetting::Cpu),
+        Just(TranscribeAcceleratorSetting::Gpu),
     ]
 }
 
@@ -268,16 +258,11 @@ proptest! {
     }
 
     #[test]
-    fn proptest_serde_roundtrip_whisper_accelerator_setting(v in whisper_accelerator_setting()) {
+    fn proptest_serde_roundtrip_transcribe_accelerator_setting(
+        v in transcribe_accelerator_setting(),
+    ) {
         let json = serde_json::to_string(&v).unwrap();
-        let back: WhisperAcceleratorSetting = serde_json::from_str(&json).unwrap();
-        prop_assert_eq!(back, v);
-    }
-
-    #[test]
-    fn proptest_serde_roundtrip_ort_accelerator_setting(v in ort_accelerator_setting()) {
-        let json = serde_json::to_string(&v).unwrap();
-        let back: OrtAcceleratorSetting = serde_json::from_str(&json).unwrap();
+        let back: TranscribeAcceleratorSetting = serde_json::from_str(&json).unwrap();
         prop_assert_eq!(back, v);
     }
 
