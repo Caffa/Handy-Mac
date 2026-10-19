@@ -1538,11 +1538,10 @@ pub fn change_show_tray_icon_setting(app: AppHandle, enabled: bool) -> Result<()
     Ok(())
 }
 
-/// Save accelerator settings, re-apply globals, and unload the model so it
-/// reloads with the new backend on next transcription.
+/// Save accelerator settings and unload the model so it reloads with the new
+/// backend on next transcription.
 fn apply_and_reload_accelerator(app: &AppHandle, s: settings::AppSettings) {
     settings::write_settings_safe(app, s);
-    crate::managers::transcription::apply_accelerator_settings(app);
 
     let Some(tm) = app.try_state::<std::sync::Arc<parking_lot::Mutex<crate::managers::transcription::TranscriptionManager>>>() else {
         log::warn!("TranscriptionManager not initialized, skipping model unload after accelerator change");
@@ -1572,18 +1571,6 @@ pub fn change_transcribe_accelerator_setting(
         tm.lock()
             .retry_transcribe_gpu("the transcribe.cpp accelerator setting changed");
     }
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn change_ort_accelerator_setting(
-    app: AppHandle,
-    accelerator: settings::OrtAcceleratorSetting,
-) -> Result<(), String> {
-    let mut s = settings::get_settings_safe(&app);
-    s.ort_accelerator = accelerator;
-    apply_and_reload_accelerator(&app, s);
     Ok(())
 }
 

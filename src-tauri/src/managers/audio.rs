@@ -6,7 +6,7 @@ use crate::audio_toolkit::{
 };
 use crate::errors::AppError;
 use crate::helpers::clamshell;
-use crate::managers::model::{EngineType, ModelManager};
+use crate::managers::model::ModelManager;
 use crate::portable;
 use crate::settings::{get_settings, write_settings, AppSettings, VadBackend};
 use crate::streaming_cancel_flag::StreamingCancelFlag;
@@ -2186,39 +2186,30 @@ impl AudioRecordingManager {
 
                 // Pad short audio with silence at the BEGINNING to reduce Whisper
                 // hallucinations and prevent clipping of the first words.
-                // This pad is applied only when the selected model loads through
-                // EngineType::TranscribeCpp (the GGUF/GGML path). ONNX engines
-                // are excluded entirely.
+                // Every model now loads through transcribe-cpp (the GGUF/GGML
+                // path) since the ONNX engines were retired, so the pad applies
+                // to any selected model known to the registry; an unknown model
+                // keeps unpadded audio, as before.
                 let s_len = processed_samples.len();
                 let min_samples = WHISPER_SAMPLE_RATE * 3; // 3 seconds minimum
-                let engine_type = self
+                let is_whisper_family = self
                     .app_handle
                     .try_state::<Arc<ModelManager>>()
                     .and_then(|mm| mm.get_model_info(&settings.selected_model))
-                    .map(|info| info.engine_type);
-                let is_whisper_family = match engine_type {
-                    Some(EngineType::TranscribeCpp) => {
+                    .map(|info| {
                         debug!(
-                            "Applying 3s leading silence pad for TranscribeCpp engine (selected_model={})",
-                            settings.selected_model
+                            "Applying 3s leading silence pad for transcribe-cpp model '{}' (selected_model={})",
+                            info.name, settings.selected_model
                         );
                         true
-                    }
-                    Some(other) => {
-                        debug!(
-                            "Skipping 3s leading silence pad for non-Whisper engine {:?} (selected_model={})",
-                            other, settings.selected_model
-                        );
-                        false
-                    }
-                    None => {
+                    })
+                    .unwrap_or_else(|| {
                         debug!(
                             "No model info for '{}'; skipping 3s leading silence pad",
                             settings.selected_model
                         );
                         false
-                    }
-                };
+                    });
                 let padded_processed = if is_whisper_family && s_len > 0 && s_len < min_samples {
                     let needed_silence = min_samples - s_len;
                     debug!(

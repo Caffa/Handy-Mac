@@ -1,6 +1,6 @@
 use crate::managers::history::HistoryManager;
 use crate::managers::model::{
-    BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager,
+    BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager, RetiredModel,
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings_safe, write_settings_safe, ModelUnloadTimeout};
@@ -15,6 +15,24 @@ pub async fn get_available_models(
     model_manager: State<'_, Arc<ModelManager>>,
 ) -> Result<Vec<ModelInfo>, String> {
     Ok(model_manager.get_available_models())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_retired_models(model_manager: State<'_, Arc<ModelManager>>) -> Vec<RetiredModel> {
+    model_manager.get_retired_models()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_retired_model(
+    model_manager: State<'_, Arc<ModelManager>>,
+    model_id: String,
+) -> Result<(), String> {
+    model_manager.delete_retired_model(&model_id).map_err(|e| {
+        error!("Retired model delete failed for {}: {}", model_id, e);
+        e.to_string()
+    })
 }
 
 #[tauri::command]

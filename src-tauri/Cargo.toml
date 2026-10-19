@@ -69,15 +69,11 @@ natural = "0.5.0"
 regex = "1"
 chrono = "0.4"
 rusqlite = { version = "0.37", features = ["bundled"] }
-tar = "0.4.44"
-flate2 = "1.0"
 sha2 = "0.10"
 libc = "0.2"
-# Whisper-family models run through transcribe-cpp (GGUF/ggml, native backends);
-# transcribe-rs is now ONNX-only (Parakeet, Moonshine, SenseVoice, GigaAM,
-# Canary, Cohere). Per-platform backend features are added in the target tables
-# (Cargo unifies features, so `serde` here applies to every platform).
-transcribe-rs = { version = "0.3.8", features = ["onnx"] }
+# Every model runs through transcribe-cpp (GGUF/ggml, native backends).
+# Per-platform backend features are added in the target tables (Cargo unifies
+# features, so `serde` here applies to every platform).
 transcribe-cpp = { version = "0.4.0", default-features = false, features = [
   "serde",
 ] }

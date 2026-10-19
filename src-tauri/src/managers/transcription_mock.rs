@@ -1,7 +1,6 @@
 // CI-only mock TranscriptionManager - avoids whisper/Vulkan/transcribe-cpp deps.
 // This file is copied over transcription.rs by the "Use mock TranscriptionManager
-// (CI only)" steps in .github/workflows/ci.yml and test.yml, which also delete
-// the `transcribe-rs` dependency from Cargo.toml.
+// (CI only)" steps in .github/workflows/ci.yml and test.yml.
 //
 // It mirrors the public surface of the real engine-supervisor client in
 // transcription.rs (plan §6: "keep the mock compiling"). Stub bodies are enough

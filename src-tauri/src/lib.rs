@@ -283,9 +283,6 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     ));
     let retry_worker = Arc::new(Mutex::new(RetryWorker::new().with_interval(10)));
 
-    // Apply accelerator preferences before any model loads
-    managers::transcription::apply_accelerator_settings(app_handle);
-
     // Add managers to Tauri's managed state
     app_handle.manage(recording_manager.clone());
     app_handle.manage(recording_manager.usb_watchdog.clone());
@@ -701,7 +698,6 @@ pub fn run(cli_args: CliArgs) {
             shortcut::get_keyboard_implementation,
             shortcut::change_show_tray_icon_setting,
             shortcut::change_transcribe_accelerator_setting,
-            shortcut::change_ort_accelerator_setting,
             shortcut::change_transcribe_gpu_device,
             shortcut::get_available_accelerators,
             shortcut::change_vad_sensitivity_setting,
@@ -734,6 +730,8 @@ pub fn run(cli_args: CliArgs) {
             commands::initialize_shortcuts,
             commands::models::get_available_models,
             commands::models::get_model_info,
+            commands::models::get_retired_models,
+            commands::models::delete_retired_model,
             commands::models::download_model,
             commands::models::delete_model,
             commands::models::cancel_download,

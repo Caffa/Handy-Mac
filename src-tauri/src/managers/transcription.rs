@@ -8,10 +8,9 @@ use crate::engine_supervisor::{
 };
 use crate::errors::{AppError, AppResult};
 use crate::managers::audio::AudioRecordingManager;
-use crate::managers::model::{EngineType, ModelManager};
+use crate::managers::model::ModelManager;
 use crate::settings::{
-    get_settings, AppSettings, ChineseScript, ModelUnloadTimeout, OrtAcceleratorSetting,
-    TranscribeAcceleratorSetting,
+    get_settings, AppSettings, ChineseScript, ModelUnloadTimeout, TranscribeAcceleratorSetting,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -19,35 +18,15 @@ use parking_lot::{Condvar as ParkingLotCondvar, Mutex as ParkingLotMutex};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
 use transcribe_cpp::{Backend, RunExtension, RunOptions, StreamOptions, Task, WhisperRunOptions};
-use transcribe_rs::{
-    onnx::{
-        canary::CanaryModel,
-        cohere::CohereModel,
-        gigaam::GigaAMModel,
-        moonshine::{MoonshineModel, MoonshineVariant, StreamingModel},
-        parakeet::{ParakeetModel, ParakeetParams, TimestampGranularity},
-        sense_voice::{SenseVoiceModel, SenseVoiceParams},
-        Quantization,
-    },
-    SpeechModel, TranscribeOptions,
-};
 
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Number of consecutive non-panic engine failures before we treat the
-/// loaded engine as wedged and force a full reload. The panic path already
-/// drops the engine on the first panic; this threshold lets a single transient
-/// error recover without an expensive reload. Applies to the in-process ONNX
-/// engines; the transcribe-cpp worker recovers from its own crashes and hangs
-/// inside the [`EngineSupervisor`].
-const ENGINE_HEALTH_RELOAD_THRESHOLD: u32 = 2;
 
 /// Maximum time a caller will wait for an in-progress transcription to finish
 /// before declaring the slot busy. The watchdog below is independent and much
@@ -253,21 +232,6 @@ impl StreamRouter {
     }
 }
 
-/// In-process ONNX engines (transcribe-rs). transcribe-cpp models (whisper
-/// family, parakeet, custom .bin/.gguf) live in the [`EngineSupervisor`]'s
-/// worker process instead, so a native crash or hang there cannot take the
-/// app down. The ONNX engines stay in-process until the ONNX retirement
-/// phase removes them.
-enum OnnxEngine {
-    Parakeet(ParakeetModel),
-    Moonshine(MoonshineModel),
-    MoonshineStreaming(StreamingModel),
-    SenseVoice(SenseVoiceModel),
-    GigaAM(GigaAMModel),
-    Canary(CanaryModel),
-    Cohere(CohereModel),
-}
-
 /// RAII guard that clears the `is_loading` flag and notifies waiters on drop.
 /// Ensures the loading flag is always reset, even on early returns or panics.
 /// If a pending model request was queued while the load was in progress, the
@@ -356,8 +320,6 @@ pub struct TranscriptionManager {
     /// The transcribe-cpp engine: owns the worker process, its model, and
     /// recovery from crashes and hangs. Cheap to clone.
     engine: EngineSupervisor,
-    /// The loaded ONNX engine, if the current model is an ONNX one.
-    onnx: Arc<Mutex<Option<OnnxEngine>>>,
     model_manager: Arc<ModelManager>,
     app_handle: AppHandle,
     current_model_id: Arc<Mutex<Option<String>>>,
@@ -395,11 +357,6 @@ pub struct TranscriptionManager {
     is_transcribing_since: Arc<ParkingLotMutex<Option<Instant>>>,
     transcribing_condvar: Arc<ParkingLotCondvar>,
     cancel_streaming: Arc<AtomicBool>,
-    /// Consecutive non-panic engine failures. Reaches
-    /// ENGINE_HEALTH_RELOAD_THRESHOLD -> engine is dropped so the next
-    /// initiate_model_load_for actually reloads instead of reusing a wedged
-    /// session. Reset to 0 on any successful transcription or explicit unload.
-    consecutive_engine_failures: Arc<AtomicU32>,
     /// Shared by every clone of this manager, so `Drop` can tell the last
     /// clone apart from the transient clones held by spawned threads (the
     /// watcher thread keeps one alive). Replaces the old engine-Arc
@@ -413,7 +370,6 @@ impl TranscriptionManager {
             // No GPU access at all on an emulated x64 host: every worker is
             // started CPU-only, so no GPU driver is ever loaded in it.
             engine: EngineSupervisor::new(!transcribe_gpu_disabled_for_host()),
-            onnx: Arc::new(Mutex::new(None)),
             model_manager,
             app_handle: app_handle.clone(),
             current_model_id: Arc::new(Mutex::new(None)),
@@ -432,7 +388,6 @@ impl TranscriptionManager {
             is_transcribing_since: Arc::new(ParkingLotMutex::new(None)),
             transcribing_condvar: Arc::new(ParkingLotCondvar::new()),
             cancel_streaming: Arc::new(AtomicBool::new(false)),
-            consecutive_engine_failures: Arc::new(AtomicU32::new(0)),
             clone_token: Arc::new(()),
         };
 
@@ -514,41 +469,19 @@ impl TranscriptionManager {
         Ok(manager)
     }
 
-    /// Lock the ONNX engine mutex, recovering from poison if a previous transcription panicked.
-    fn lock_onnx(&self) -> MutexGuard<'_, Option<OnnxEngine>> {
-        self.onnx.lock().unwrap_or_else(|poisoned| {
-            warn!("Engine mutex was poisoned by a previous panic, recovering");
-            poisoned.into_inner()
-        })
-    }
-
     pub fn is_model_loaded(&self) -> bool {
         // A transcribe-cpp model stays loaded (in its worker) while it is
         // busy, so a batch run or stream in progress never reads as
-        // "unloaded". The same holds for an in-process ONNX engine, which
-        // lives directly under the `onnx` mutex and is taken out only to be
-        // replaced or unloaded.
-        self.engine.loaded().is_some() || self.lock_onnx().is_some()
+        // "unloaded".
+        self.engine.loaded().is_some()
     }
 
-    /// Best-effort variant of [`is_model_loaded`] that never blocks waiting for
-    /// the engine mutex. Used by the tray menu rebuild, which runs on the main
-    /// thread and must not freeze the UI if a background streaming or
-    /// transcription thread currently holds the engine lock.
+    /// Best-effort variant of [`is_model_loaded`] that never blocks. Used by
+    /// the tray menu rebuild, which runs on the main thread and must not
+    /// freeze the UI. `engine.loaded()` is a worker snapshot, so this is
+    /// already non-blocking.
     pub fn try_is_model_loaded(&self) -> bool {
-        match self.onnx.try_lock() {
-            Ok(guard) => guard.is_some() || self.engine.loaded().is_some(),
-            Err(std::sync::TryLockError::Poisoned(e)) => {
-                warn!("Engine mutex was poisoned by a previous panic, recovering");
-                e.into_inner().is_some() || self.engine.loaded().is_some()
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                // Contended case: fall back to the supervisor snapshot. If a
-                // transcribe-cpp model is loaded it is loaded regardless of the
-                // ONNX mutex; otherwise report false rather than block.
-                self.engine.loaded().is_some()
-            }
-        }
+        self.is_model_loaded()
     }
 
     pub fn is_model_loading(&self) -> bool {
@@ -579,8 +512,7 @@ impl TranscriptionManager {
 
     /// An explicit transcribe.cpp accelerator or GPU device change is the
     /// user's way of trying the GPU again: forget every GPU failure so far,
-    /// so the next load may use (and list) the GPU. The ONNX accelerator does
-    /// not affect this.
+    /// so the next load may use (and list) the GPU.
     pub fn retry_transcribe_gpu(&self, reason: &str) {
         self.engine.retry_gpu(reason);
     }
@@ -659,11 +591,8 @@ impl TranscriptionManager {
     /// it. Only the worker's exit is left to wait for.
     fn begin_unload(&self) -> Unloading {
         let unloading = self.engine.unload();
-        // Dropping an ONNX engine frees its resources.
-        *self.lock_onnx() = None;
         // Any explicit unload resets the engine-health failure counter so a
         // manual retry or model switch starts from a clean slate.
-        self.consecutive_engine_failures.store(0, Ordering::Release);
         {
             let mut current_model = self.current_model_id.lock().unwrap();
             *current_model = None;
@@ -749,9 +678,7 @@ impl TranscriptionManager {
             // A slot held this long means the engine call is wedged (e.g.
             // GPU context loss, never-returning callback). Clear the cached
             // model so the next transcription actually reloads a fresh engine
-            // instead of reusing the wedged one. Reset the failure counter as
-            // well; the reload itself starts a clean health record.
-            self.consecutive_engine_failures.store(0, Ordering::Release);
+            // instead of reusing the wedged one.
             {
                 let mut current_model = self
                     .current_model_id
@@ -800,8 +727,6 @@ impl TranscriptionManager {
         model_id: &str,
         device_index: Option<usize>,
     ) -> Result<()> {
-        apply_accelerator_settings(&self.app_handle);
-
         let load_start = std::time::Instant::now();
         debug!("Starting to load model: {}", model_id);
 
@@ -825,8 +750,8 @@ impl TranscriptionManager {
             .get_model_info(model_id)
             .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
         debug!(
-            "[LOAD-TRACE] got model_info for {}, engine_type={:?}",
-            model_id, model_info.engine_type
+            "[LOAD-TRACE] got model_info for {} ({})",
+            model_id, model_info.name
         );
 
         // Every failure after loading starts must emit a terminal event so the
@@ -857,179 +782,94 @@ impl TranscriptionManager {
 
         // Drop the current engine BEFORE building the new one so the previous
         // model is freed first — avoids holding two models at once (peak memory
-        // on large GGUFs). A transcribe-cpp load replaces its worker the same
-        // way. Clear the id too: if the new load fails, status should read "no
-        // loaded model", not the dropped engine.
-        *self.lock_onnx() = None;
-        if !matches!(model_info.engine_type, EngineType::TranscribeCpp) {
-            self.engine.unload().wait();
-        }
+        // on large GGUFs). Clear the id too: if the new load fails, status
+        // should read "no loaded model", not the dropped engine.
         {
             let mut current_model = self.current_model_id.lock().unwrap();
             *current_model = None;
         }
+        debug!("[LOAD-TRACE] old engine dropped, loading via supervisor for {}", model_id);
+
+        // The backend is chosen at load time (transcribe-cpp has no
+        // runtime global). With an explicit `device_index` (the
+        // --device-index flag) hard-select that registered device;
+        // otherwise re-read the persisted accelerator preference (so an
+        // accelerator change marked for reload takes effect here). The
+        // worker resolves the selector to a device handle, and rejects
+        // an index that isn't a loadable device.
+        let (backend, device) = match device_index {
+            Some(index) => (Backend::Auto, DeviceSelector::Index(index)),
+            None => {
+                let settings = get_settings(&self.app_handle);
+                let accelerator = settings.transcribe_accelerator;
+                match resolve_gpu_device(
+                    accelerator,
+                    settings.transcribe_gpu_device.as_deref(),
+                ) {
+                    // Backend::Auto accepts an exact GPU device.
+                    Some(key) => (Backend::Auto, DeviceSelector::Key(key)),
+                    // Without a valid exact device, backend selection
+                    // handles the retired generic GPU state and host
+                    // CPU guard.
+                    None => (select_transcribe_backend(accelerator), DeviceSelector::Auto),
+                }
+            }
+        };
+        let requested_device = format!("{:?}", device);
         debug!(
-            "[LOAD-TRACE] old engine dropped, entering engine_type match for {}",
+            "[LOAD-TRACE] backend resolved: {:?}, requested_device='{}'",
+            backend, requested_device
+        );
+        // Log transcribe-cpp version for debugging load failures
+        let tc_version = transcribe_cpp::version();
+        info!(
+            "Loading model '{}' via transcribe-cpp (runtime={}, backend={:?}, requested_device='{}')",
+            model_id, tc_version, backend, requested_device
+        );
+        let info = self
+            .engine
+            .load(LoadSpec {
+                path: model_path.clone(),
+                backend,
+                device,
+            })
+            .map_err(|e| {
+                let error_msg = format!("Failed to load model {}: {}", model_id, e);
+                emit_loading_failed(&error_msg);
+                anyhow::anyhow!(error_msg)
+            })?;
+        // Reconcile the registry's advertised capabilities with the
+        // loaded model's real ones (GGUF metadata) so badges/gating
+        // reflect runtime truth, not the pre-download probe. The
+        // load-completed event below triggers the frontend refresh.
+        let caps = &info.capabilities;
+        self.model_manager.set_runtime_capabilities(
+            model_id,
+            caps.supports_streaming,
+            caps.supports_translate,
+            caps.supports_language_detect,
+            caps.languages.clone(),
+        );
+        // The bound backend may differ from the request (e.g. CPU
+        // fallback under Auto or after a GPU crash); log what loaded.
+        info!(
+            "Loaded transcribe-cpp model '{}' (requested {:?}, requested device {}, \
+             bound backend '{}', bound device '{}', supports_streaming={}, \
+             supports_translate={}, supports_language_detect={})",
+            model_id,
+            backend,
+            requested_device,
+            info.backend,
+            info.device,
+            caps.supports_streaming,
+            caps.supports_translate,
+            caps.supports_language_detect
+        );
+        info!(
+            "Successfully loaded model '{}' via transcribe-cpp",
             model_id
         );
 
-        // Create appropriate engine based on model type
-        let loaded_onnx = match model_info.engine_type {
-            EngineType::TranscribeCpp => {
-                // The backend is chosen at load time (transcribe-cpp has no
-                // runtime global). With an explicit `device_index` (the
-                // --device-index flag) hard-select that registered device;
-                // otherwise re-read the persisted accelerator preference (so an
-                // accelerator change marked for reload takes effect here). The
-                // worker resolves the selector to a device handle, and rejects
-                // an index that isn't a loadable device.
-                let (backend, device) = match device_index {
-                    Some(index) => (Backend::Auto, DeviceSelector::Index(index)),
-                    None => {
-                        let settings = get_settings(&self.app_handle);
-                        let accelerator = settings.transcribe_accelerator;
-                        match resolve_gpu_device(
-                            accelerator,
-                            settings.transcribe_gpu_device.as_deref(),
-                        ) {
-                            // Backend::Auto accepts an exact GPU device.
-                            Some(key) => (Backend::Auto, DeviceSelector::Key(key)),
-                            // Without a valid exact device, backend selection
-                            // handles the retired generic GPU state and host
-                            // CPU guard.
-                            None => (select_transcribe_backend(accelerator), DeviceSelector::Auto),
-                        }
-                    }
-                };
-                let requested_device = format!("{:?}", device);
-                debug!(
-                    "[LOAD-TRACE] backend resolved: {:?}, requested_device='{}'",
-                    backend, requested_device
-                );
-                // Log transcribe-cpp version for debugging load failures
-                let tc_version = transcribe_cpp::version();
-                info!(
-                    "Loading model '{}' via transcribe-cpp (runtime={}, backend={:?}, requested_device='{}')",
-                    model_id, tc_version, backend, requested_device
-                );
-                let info = self
-                    .engine
-                    .load(LoadSpec {
-                        path: model_path.clone(),
-                        backend,
-                        device,
-                    })
-                    .map_err(|e| {
-                        let error_msg = format!("Failed to load model {}: {}", model_id, e);
-                        emit_loading_failed(&error_msg);
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                // Reconcile the registry's advertised capabilities with the
-                // loaded model's real ones (GGUF metadata) so badges/gating
-                // reflect runtime truth, not the pre-download probe. The
-                // load-completed event below triggers the frontend refresh.
-                let caps = &info.capabilities;
-                self.model_manager.set_runtime_capabilities(
-                    model_id,
-                    caps.supports_streaming,
-                    caps.supports_translate,
-                    caps.supports_language_detect,
-                    caps.languages.clone(),
-                );
-                // The bound backend may differ from the request (e.g. CPU
-                // fallback under Auto or after a GPU crash); log what loaded.
-                info!(
-                    "Loaded transcribe-cpp model '{}' (requested {:?}, requested device {}, \
-                     bound backend '{}', bound device '{}', supports_streaming={}, \
-                     supports_translate={}, supports_language_detect={})",
-                    model_id,
-                    backend,
-                    requested_device,
-                    info.backend,
-                    info.device,
-                    caps.supports_streaming,
-                    caps.supports_translate,
-                    caps.supports_language_detect
-                );
-                info!(
-                    "Successfully loaded model '{}' via transcribe-cpp",
-                    model_id
-                );
-                None
-            }
-            EngineType::Parakeet => {
-                let engine =
-                    ParakeetModel::load(&model_path, &Quantization::Int8).map_err(|e| {
-                        let error_msg =
-                            format!("Failed to load parakeet model {}: {}", model_id, e);
-                        emit_loading_failed(&error_msg);
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                Some(OnnxEngine::Parakeet(engine))
-            }
-            EngineType::Moonshine => {
-                let engine = MoonshineModel::load(
-                    &model_path,
-                    MoonshineVariant::Base,
-                    &Quantization::default(),
-                )
-                .map_err(|e| {
-                    let error_msg = format!("Failed to load moonshine model {}: {}", model_id, e);
-                    emit_loading_failed(&error_msg);
-                    anyhow::anyhow!(error_msg)
-                })?;
-                Some(OnnxEngine::Moonshine(engine))
-            }
-            EngineType::MoonshineStreaming => {
-                let engine = StreamingModel::load(&model_path, 0, &Quantization::default())
-                    .map_err(|e| {
-                        let error_msg = format!(
-                            "Failed to load moonshine streaming model {}: {}",
-                            model_id, e
-                        );
-                        emit_loading_failed(&error_msg);
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                Some(OnnxEngine::MoonshineStreaming(engine))
-            }
-            EngineType::SenseVoice => {
-                let engine =
-                    SenseVoiceModel::load(&model_path, &Quantization::Int8).map_err(|e| {
-                        let error_msg =
-                            format!("Failed to load SenseVoice model {}: {}", model_id, e);
-                        emit_loading_failed(&error_msg);
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                Some(OnnxEngine::SenseVoice(engine))
-            }
-            EngineType::GigaAM => {
-                let engine = GigaAMModel::load(&model_path, &Quantization::Int8).map_err(|e| {
-                    let error_msg = format!("Failed to load gigaam model {}: {}", model_id, e);
-                    emit_loading_failed(&error_msg);
-                    anyhow::anyhow!(error_msg)
-                })?;
-                Some(OnnxEngine::GigaAM(engine))
-            }
-            EngineType::Canary => {
-                let engine = CanaryModel::load(&model_path, &Quantization::Int8).map_err(|e| {
-                    let error_msg = format!("Failed to load canary model {}: {}", model_id, e);
-                    emit_loading_failed(&error_msg);
-                    anyhow::anyhow!(error_msg)
-                })?;
-                Some(OnnxEngine::Canary(engine))
-            }
-            EngineType::Cohere => {
-                let engine = CohereModel::load(&model_path, &Quantization::Int8).map_err(|e| {
-                    let error_msg = format!("Failed to load cohere model {}: {}", model_id, e);
-                    emit_loading_failed(&error_msg);
-                    anyhow::anyhow!(error_msg)
-                })?;
-                Some(OnnxEngine::Cohere(engine))
-            }
-        };
-
-        // Update the current engine and model ID
-        *self.lock_onnx() = loaded_onnx;
         {
             let mut current_model = self.current_model_id.lock().unwrap();
             *current_model = Some(model_id.to_string());
@@ -1055,10 +895,6 @@ impl TranscriptionManager {
             model_id,
             load_duration.as_millis()
         );
-
-        // A successful load gives us a fresh engine, so reset the failure
-        // counter before this engine goes into the pool.
-        self.consecutive_engine_failures.store(0, Ordering::Release);
 
         Ok(())
     }
@@ -1151,13 +987,9 @@ impl TranscriptionManager {
     /// The compute backend the currently-loaded engine is bound to, for
     /// diagnostics (e.g. confirming a GPU load actually bound a GPU rather
     /// than falling back to CPU/auto). transcribe-cpp (whisper-family) reports
-    /// its real backend string; ONNX engines report "onnx"; `None` when no
-    /// model is loaded.
+    /// its real backend string; `None` when no model is loaded.
     pub fn current_backend(&self) -> Option<String> {
-        if let Some(info) = self.engine.loaded() {
-            return Some(info.backend);
-        }
-        self.lock_onnx().as_ref().map(|_| "onnx".to_string())
+        self.engine.loaded().map(|info| info.backend)
     }
 
     /// Whether a live streaming run is currently in flight.
@@ -1277,9 +1109,9 @@ impl TranscriptionManager {
 
         let model_id = self.get_current_model().unwrap_or_default();
 
-        // Only transcribe-cpp models expose streaming; ONNX engines fall back to
-        // batch. The loaded model (not the ModelManager copy) is the source of
-        // truth for run-path capabilities.
+        // Only a loaded transcribe-cpp model can stream. The loaded model (not
+        // the ModelManager copy) is the source of truth for run-path
+        // capabilities.
         let Some(info) = self.engine.loaded() else {
             info!(
                 "Live preview: model '{}' is not a loaded transcribe-cpp model; \
@@ -1783,14 +1615,15 @@ impl TranscriptionManager {
             audio_len as f64 / 16_000.0
         );
         // The transcribe-cpp model runs in the supervisor's worker process,
-        // which recovers from its own crashes and hangs; the ONNX engines run
-        // in-process and keep the fork's catch_unwind + engine-health handling.
-        let run = match self.engine.loaded() {
-            Some(info) => {
-                self.transcribe_cpp(info, audio, &settings, &validated_language, &active_model)?
-            }
-            None => self.transcribe_onnx(&audio, &settings, &validated_language, &active_model)?,
-        };
+        // which recovers from its own crashes and hangs.
+        let info = self.engine.loaded().ok_or(AppError::ModelNotLoaded)?;
+        let run = self.transcribe_cpp(
+            info,
+            audio,
+            &settings,
+            &validated_language,
+            &active_model,
+        )?;
 
         let output_language = with_model_detected_language(
             resolve_output_language_evidence(
@@ -1806,8 +1639,7 @@ impl TranscriptionManager {
         // Apply word correction if custom words are configured — UNLESS the
         // words were already handed to the model as an initial prompt (whisper
         // family). We don't pass a prompt to non-whisper models (it requires the
-        // whisper-kind run extension), so they still get fuzzy correction here,
-        // same as the ONNX engines.
+        // whisper-kind run extension), so they still get fuzzy correction here.
         let filtered_result = post_process_transcription_text(
             run.text,
             &settings,
@@ -1921,11 +1753,7 @@ impl TranscriptionManager {
         );
 
         let transcript = match self.engine.transcribe(audio, run_options) {
-            Ok(transcript) => {
-                // Healthy path: reset the failure counter.
-                self.consecutive_engine_failures.store(0, Ordering::Release);
-                transcript
-            }
+            Ok(transcript) => transcript,
             Err(EngineError::Cancelled) => {
                 return Err(AppError::Transcription {
                     message: "Transcription was cancelled".to_string(),
@@ -1954,247 +1782,6 @@ impl TranscriptionManager {
             model_detected_language: transcript.language,
             model_is_whisper,
         })
-    }
-
-    /// In-process ONNX engines.
-    fn transcribe_onnx(
-        &self,
-        audio: &[f32],
-        settings: &AppSettings,
-        validated_language: &str,
-        active_model: &str,
-    ) -> AppResult<RunOutcome> {
-        let engine_start = Instant::now();
-        let languages = self
-            .model_manager
-            .get_model_info(active_model)
-            .map(|info| info.supported_languages)
-            .unwrap_or_default();
-        let mut output_was_translated = false;
-        let mut applied_language_hint: Option<String> = None;
-
-        // Take the engine out so we own it during transcription. If the
-        // engine panics, we simply don't put it back (effectively unloading
-        // it) instead of poisoning the mutex. No lock is held during the
-        // engine call.
-        let mut engine = match self.lock_onnx().take() {
-            Some(e) => e,
-            None => {
-                return Err(AppError::ModelNotLoaded);
-            }
-        };
-
-        // We use catch_unwind to prevent engine panics from poisoning the
-        // mutex, which would make the app hang indefinitely on subsequent
-        // operations.
-        let transcribe_result = catch_unwind(AssertUnwindSafe(|| -> Result<String> {
-            match &mut engine {
-                OnnxEngine::Parakeet(parakeet_engine) => {
-                    let params = ParakeetParams {
-                        timestamp_granularity: Some(TimestampGranularity::Segment),
-                        ..Default::default()
-                    };
-                    parakeet_engine
-                        .transcribe_with(audio, &params)
-                        .map(|r| r.text)
-                        .map_err(|e| anyhow::anyhow!("Parakeet transcription failed: {}", e))
-                }
-                OnnxEngine::Moonshine(moonshine_engine) => moonshine_engine
-                    .transcribe(audio, &TranscribeOptions::default())
-                    .map(|r| r.text)
-                    .map_err(|e| anyhow::anyhow!("Moonshine transcription failed: {}", e)),
-                OnnxEngine::MoonshineStreaming(streaming_engine) => streaming_engine
-                    .transcribe(audio, &TranscribeOptions::default())
-                    .map(|r| r.text)
-                    .map_err(|e| {
-                        anyhow::anyhow!("Moonshine streaming transcription failed: {}", e)
-                    }),
-                OnnxEngine::SenseVoice(sense_voice_engine) => {
-                    let language = match normalize_cjk_language(validated_language) {
-                        "zh" => Some("zh".to_string()),
-                        "en" => Some("en".to_string()),
-                        "ja" => Some("ja".to_string()),
-                        "ko" => Some("ko".to_string()),
-                        "yue" => Some("yue".to_string()),
-                        _ => None,
-                    };
-                    applied_language_hint = language.clone();
-                    let params = SenseVoiceParams {
-                        language,
-                        use_itn: Some(true),
-                    };
-                    sense_voice_engine
-                        .transcribe_with(audio, &params)
-                        .map(|r| r.text)
-                        .map_err(|e| anyhow::anyhow!("SenseVoice transcription failed: {}", e))
-                }
-                OnnxEngine::GigaAM(gigaam_engine) => gigaam_engine
-                    .transcribe(audio, &TranscribeOptions::default())
-                    .map(|r| r.text)
-                    .map_err(|e| anyhow::anyhow!("GigaAM transcription failed: {}", e)),
-                OnnxEngine::Canary(canary_engine) => {
-                    output_was_translated = settings.translate_to_english;
-                    let lang = if validated_language == "auto" {
-                        None
-                    } else {
-                        Some(validated_language.to_string())
-                    };
-                    applied_language_hint = lang.clone();
-                    let options = TranscribeOptions {
-                        language: lang,
-                        translate: settings.translate_to_english,
-                        ..Default::default()
-                    };
-                    canary_engine
-                        .transcribe(audio, &options)
-                        .map(|r| r.text)
-                        .map_err(|e| anyhow::anyhow!("Canary transcription failed: {}", e))
-                }
-                OnnxEngine::Cohere(cohere_engine) => {
-                    let lang = if validated_language == "auto" {
-                        None
-                    } else {
-                        Some(normalize_cjk_language(validated_language).to_string())
-                    };
-                    applied_language_hint = lang.clone();
-                    let options = TranscribeOptions {
-                        language: lang,
-                        ..Default::default()
-                    };
-                    cohere_engine
-                        .transcribe(audio, &options)
-                        .map(|r| r.text)
-                        .map_err(|e| anyhow::anyhow!("Cohere transcription failed: {}", e))
-                }
-            }
-        }));
-
-        let text = match transcribe_result {
-            Ok(Ok(text)) => {
-                // Healthy path: reset failure counter and return engine to the pool.
-                self.consecutive_engine_failures.store(0, Ordering::Release);
-                self.return_onnx_engine(engine, active_model);
-                text
-            }
-            Ok(Err(inner_err)) => {
-                // Non-panic engine error. The engine object is still alive but may
-                // be wedged (e.g. ONNX Runtime context lost after sleep). Decide
-                // whether to keep retrying with it or force a reload based on
-                // consecutive failure count.
-                let failures = self
-                    .consecutive_engine_failures
-                    .fetch_add(1, Ordering::AcqRel)
-                    + 1;
-                if failures >= ENGINE_HEALTH_RELOAD_THRESHOLD {
-                    warn!(
-                        "Engine returned error {} time(s); treating as wedged and forcing reload on next attempt (last error: {})",
-                        failures, inner_err
-                    );
-                    // Drop the wedged engine here (do NOT return it). Clear
-                    // current_model_id so is_model_loaded() returns false and the
-                    // next initiate_model_load_for actually reloads.
-                    drop(engine);
-                    {
-                        let mut current_model = self
-                            .current_model_id
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        *current_model = None;
-                    }
-                    let _ = self.app_handle.emit(
-                        "model-state-changed",
-                        ModelStateEvent {
-                            event_type: "unloaded".to_string(),
-                            model_id: None,
-                            model_name: None,
-                            error: Some(format!(
-                                "Engine failed {} times; forcing reload: {}",
-                                failures, inner_err
-                            )),
-                        },
-                    );
-                    let message = format!(
-                        "Transcription failed (engine marked wedged after {} consecutive errors): {}",
-                        failures, inner_err
-                    );
-                    return Err(AppError::Transcription {
-                        message,
-                        source: inner_err,
-                    });
-                }
-                // Below threshold: keep the engine, return it, and surface the
-                // error so the caller can retry.
-                self.return_onnx_engine(engine, active_model);
-                return Err(AppError::Transcription {
-                    message: format!("Transcription failed: {}", inner_err),
-                    source: inner_err,
-                });
-            }
-            Err(panic_payload) => {
-                // Engine panicked — drop it and clear state. Also reset the
-                // failure counter so a fresh load after a panic starts clean.
-                self.consecutive_engine_failures.store(0, Ordering::Release);
-                // Engine panicked — do NOT put it back (it's in an unknown state).
-                // The engine is dropped here, effectively unloading it.
-                let panic_msg = panic_payload_message(panic_payload.as_ref());
-                error!(
-                    "[ENGINE-PANIC] Transcription engine panicked after {:?}: {}. Model has been unloaded.",
-                    engine_start.elapsed(),
-                    panic_msg
-                );
-
-                // Clear the model ID so it will be reloaded on next attempt
-                {
-                    let mut current_model = self
-                        .current_model_id
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    *current_model = None;
-                }
-
-                let _ = self.app_handle.emit(
-                    "model-state-changed",
-                    ModelStateEvent {
-                        event_type: "unloaded".to_string(),
-                        model_id: None,
-                        model_name: None,
-                        error: Some(format!("Engine panicked: {}", panic_msg)),
-                    },
-                );
-
-                return Err(AppError::Transcription {
-                    message: format!(
-                        "Transcription engine panicked: {}. The model has been unloaded and will reload on next attempt.",
-                        panic_msg
-                    ),
-                    source: anyhow::anyhow!("Engine panic during transcription"),
-                });
-            }
-        };
-        Ok(RunOutcome {
-            text,
-            languages,
-            applied_language_hint,
-            output_was_translated,
-            model_detected_language: None,
-            model_is_whisper: false,
-        })
-    }
-
-    /// Return the taken ONNX engine to the mutex, unless the model was switched
-    /// or unloaded during transcription (in which case the stale engine is dropped).
-    fn return_onnx_engine(&self, engine: OnnxEngine, expected_model_id: &str) {
-        let still_current =
-            self.current_model_id.lock().unwrap().as_deref() == Some(expected_model_id);
-        if still_current {
-            *self.lock_onnx() = Some(engine);
-        } else {
-            info!(
-                "Model changed/unloaded during transcription; dropping stale engine (was '{}')",
-                expected_model_id
-            );
-            // `engine` drops here, freeing its resources.
-        }
     }
 
     /// Run a full transcription synchronously and return only the text.
@@ -2628,10 +2215,9 @@ fn transcribe_cpp_run_plan(
 /// Decide a transcribe-cpp run's task + translation target from settings.
 ///
 /// "Translate to English" only fires where the model advertises translation.
-/// Unlike transcribe-rs (which forces the target to English itself when its
-/// `translate` flag is set), transcribe-cpp requires an explicit
-/// `target_language`: a null target defaults to the *source*, so a non-English
-/// source silently becomes e.g. es→es and Canary rejects the unadvertised pair.
+/// transcribe-cpp requires an explicit `target_language`: a null target
+/// defaults to the *source*, so a non-English source silently becomes e.g.
+/// es→es and Canary rejects the unadvertised pair.
 /// An English source is skipped entirely — en→en is not a real translation, and
 /// it's reachable by default since auto-detect-less models coerce intent to "en".
 ///
@@ -2737,32 +2323,9 @@ fn resolve_gpu_device(
     gpu_device.map(str::to_string)
 }
 
-/// Apply the user's ORT accelerator preference to the transcribe-rs global.
-/// Called on startup and before loading a model.
-///
-/// The transcribe.cpp (whisper-family) backend is no longer set here: it is
-/// chosen at model-load time from [`select_transcribe_backend`], so changing the
-/// accelerator only needs a model reload (see `reload_model_on_next_use`).
-pub fn apply_accelerator_settings(app: &tauri::AppHandle) {
-    use transcribe_rs::accel;
-
-    let settings = get_settings(app);
-
-    info!(
-        "transcribe.cpp accelerator preference: {:?} (applied on next model load)",
-        settings.transcribe_accelerator
-    );
-
-    let ort_pref = match settings.ort_accelerator {
-        OrtAcceleratorSetting::Auto => accel::OrtAccelerator::Auto,
-        OrtAcceleratorSetting::Cpu => accel::OrtAccelerator::CpuOnly,
-        OrtAcceleratorSetting::Cuda => accel::OrtAccelerator::Cuda,
-        OrtAcceleratorSetting::DirectMl => accel::OrtAccelerator::DirectMl,
-        OrtAcceleratorSetting::Rocm => accel::OrtAccelerator::Rocm,
-    };
-    accel::set_ort_accelerator(ort_pref);
-    info!("ORT accelerator set to: {}", ort_pref);
-}
+/// transcribe-cpp's backend is chosen at model-load time from
+/// [`select_transcribe_backend`], so changing the accelerator only needs a
+/// model reload (see `reload_model_on_next_use`).
 
 #[derive(Serialize, Clone, Debug, Type)]
 pub struct GpuDeviceOption {
@@ -2823,7 +2386,6 @@ fn gpu_device_options(engine: &EngineSupervisor) -> Vec<GpuDeviceOption> {
 #[derive(Serialize, Clone, Debug, Type)]
 pub struct AvailableAccelerators {
     pub transcribe: Vec<String>,
-    pub ort: Vec<String>,
     pub gpu_devices: Vec<GpuDeviceOption>,
 }
 
@@ -2836,18 +2398,10 @@ pub fn get_available_accelerators(tm: &TranscriptionManager) -> AvailableAcceler
 /// see [`report_compute_devices_on`] for why the caller may want the detached
 /// form.
 pub fn get_available_accelerators_on(engine: &EngineSupervisor) -> AvailableAccelerators {
-    use transcribe_rs::accel::OrtAccelerator;
-
-    let ort_options: Vec<String> = OrtAccelerator::available()
-        .into_iter()
-        .map(|a| a.to_string())
-        .collect();
-
     let transcribe_options = available_transcribe_accelerators(transcribe_gpu_disabled_for_host());
 
     AvailableAccelerators {
         transcribe: transcribe_options,
-        ort: ort_options,
         gpu_devices: gpu_device_options(engine),
     }
 }

@@ -410,10 +410,18 @@ impl VadSensitivity {
         }
 
         match model_manager.get_model_info(model_id) {
-            Some(model_info) => match model_info.engine_type {
-                crate::managers::model::EngineType::Parakeet => VadSensitivity::VeryRelaxed,
-                _ => VadSensitivity::Balanced,
-            },
+            Some(model_info) => {
+                // The Parakeet architecture wants the most audio context it can
+                // get, so it keeps the relaxed default the retired ONNX engine
+                // had. Both the retired ids ("parakeet-tdt-0.6b-v2") and the
+                // catalog GGUF ids ("handy-computer/parakeet-tdt-0.6b-v2-gguf/…")
+                // carry the name.
+                if model_info.id.to_ascii_lowercase().contains("parakeet") {
+                    VadSensitivity::VeryRelaxed
+                } else {
+                    VadSensitivity::Balanced
+                }
+            }
             None => settings.vad_sensitivity,
         }
     }
@@ -498,25 +506,6 @@ pub enum TranscribeAcceleratorSetting {
     Auto,
     Cpu,
     Gpu,
-}
-
-// ── OrtAcceleratorSetting ──
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
-#[serde(rename_all = "snake_case")]
-pub enum OrtAcceleratorSetting {
-    Auto,
-    Cpu,
-    Cuda,
-    #[serde(rename = "directml")]
-    DirectMl,
-    Rocm,
-}
-
-impl Default for OrtAcceleratorSetting {
-    fn default() -> Self {
-        OrtAcceleratorSetting::Auto
-    }
 }
 
 // ── VadBackend ──
@@ -728,8 +717,6 @@ pub struct AppSettings {
     pub chinese_script: ChineseScript,
     #[serde(default)]
     pub transcribe_accelerator: TranscribeAcceleratorSetting,
-    #[serde(default)]
-    pub ort_accelerator: OrtAcceleratorSetting,
     /// Stable transcribe.cpp device selector. This is derived from the backend's
     /// `device_id` when available (or its name for backends such as Metal),
     /// never from the process-local device registry index.

@@ -147,7 +147,6 @@ pub fn get_default_settings() -> AppSettings {
         custom_filler_words: None,
         chinese_script: default_chinese_script(),
         transcribe_accelerator: TranscribeAcceleratorSetting::default(),
-        ort_accelerator: OrtAcceleratorSetting::default(),
         transcribe_gpu_device: default_transcribe_gpu_device(),
         extra_recording_buffer_ms: 0,
         pre_recording_buffer_ms: 0,
