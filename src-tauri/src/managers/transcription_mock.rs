@@ -242,11 +242,6 @@ pub fn apply_accelerator_settings(_app: &tauri::AppHandle) {}
 /// No-op in CI mock (detached-handle variant).
 pub fn report_compute_devices_on(_engine: &EngineSupervisor) {}
 
-/// Report compute devices for the manager's engine.
-pub fn report_compute_devices(tm: &TranscriptionManager) {
-    report_compute_devices_on(&tm.engine);
-}
-
 /// Returns empty lists in CI mock (detached-handle variant).
 pub fn get_available_accelerators_on(_engine: &EngineSupervisor) -> AvailableAccelerators {
     AvailableAccelerators {

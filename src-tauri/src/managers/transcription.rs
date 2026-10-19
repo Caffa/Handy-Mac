@@ -525,8 +525,9 @@ impl TranscriptionManager {
     pub fn is_model_loaded(&self) -> bool {
         // A transcribe-cpp model stays loaded (in its worker) while it is
         // busy, so a batch run or stream in progress never reads as
-        // "unloaded". The same holds for an ONNX engine leased out to a
-        // transcription via the lease counter below.
+        // "unloaded". The same holds for an in-process ONNX engine, which
+        // lives directly under the `onnx` mutex and is taken out only to be
+        // replaced or unloaded.
         self.engine.loaded().is_some() || self.lock_onnx().is_some()
     }
 
@@ -2674,14 +2675,19 @@ fn drain_until_finalize(rx: mpsc::Receiver<StreamCmd>) {
 /// library and compiles it when the system shader cache does not hold it yet
 /// (the first launch after an install or update), so the app calls this from
 /// a background thread instead of its startup path.
-pub fn report_compute_devices(tm: &TranscriptionManager) {
+/// Log the transcribe-cpp worker's compute devices once at startup (lib.rs
+/// prewarm thread). Takes a detached [`EngineSupervisor`] handle so the caller
+/// does not hold the `TranscriptionManager` mutex while the probe runs: the
+/// probe is served by the worker process and can block up to the cold-start
+/// hello timeout.
+pub fn report_compute_devices_on(engine: &EngineSupervisor) {
     if transcribe_gpu_disabled_for_host() {
         warn!(
             "Windows x64 build is running under emulation on an ARM64 host; \
              disabling transcribe.cpp GPU acceleration and using CPU"
         );
     }
-    match transcribe_compute_devices(&tm.engine) {
+    match transcribe_compute_devices(engine) {
         Ok(devices) => info!(
             "transcribe-cpp initialized with {} compute device(s): [{}]",
             devices.len(),
@@ -2823,6 +2829,13 @@ pub struct AvailableAccelerators {
 
 /// Return the accelerators available to this process on its current host.
 pub fn get_available_accelerators(tm: &TranscriptionManager) -> AvailableAccelerators {
+    get_available_accelerators_on(&tm.engine)
+}
+
+/// [`get_available_accelerators`] on a detached [`EngineSupervisor`] handle —
+/// see [`report_compute_devices_on`] for why the caller may want the detached
+/// form.
+pub fn get_available_accelerators_on(engine: &EngineSupervisor) -> AvailableAccelerators {
     use transcribe_rs::accel::OrtAccelerator;
 
     let ort_options: Vec<String> = OrtAccelerator::available()
@@ -2835,7 +2848,7 @@ pub fn get_available_accelerators(tm: &TranscriptionManager) -> AvailableAcceler
     AvailableAccelerators {
         transcribe: transcribe_options,
         ort: ort_options,
-        gpu_devices: gpu_device_options(&tm.engine),
+        gpu_devices: gpu_device_options(engine),
     }
 }
 

@@ -1091,9 +1091,21 @@ pub fn run(cli_args: CliArgs) {
             // can't see it).
             let devices_app_handle = app_handle.clone();
             std::thread::spawn(move || {
-                let tm = devices_app_handle.state::<Arc<Mutex<TranscriptionManager>>>();
-                crate::managers::transcription::report_compute_devices(&tm.lock());
-                let _ = crate::managers::transcription::get_available_accelerators(&tm.lock());
+                // Detach the supervisor handle under a brief lock, then drop
+                // the manager guard before probing: the probes are served by
+                // the transcription worker and can block for as long as the
+                // cold-start hello timeout (e.g. the first Metal shader
+                // compile). Holding the manager mutex through them would make
+                // the stop→transcribe path time out with TranscriptionBusy.
+                let engine = {
+                    let tm = devices_app_handle.state::<Arc<Mutex<TranscriptionManager>>>();
+                    // Bound to a local so the manager guard drops before `tm`
+                    // (a trailing temporary would drop after it).
+                    let supervisor = tm.lock().engine_supervisor();
+                    supervisor
+                };
+                crate::managers::transcription::report_compute_devices_on(&engine);
+                let _ = crate::managers::transcription::get_available_accelerators_on(&engine);
             });
 
             // Pre-warm the ASR model on a background thread so it's ready when
