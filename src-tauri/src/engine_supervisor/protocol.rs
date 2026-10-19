@@ -153,6 +153,10 @@ pub struct LoadedInfo {
     pub on_gpu: bool,
     pub capabilities: Capabilities,
     pub supports_initial_prompt: bool,
+    /// Whether `RunOptions::vocabulary` is formatted for this model. Models
+    /// without it warn on every run and rely on the client's fuzzy
+    /// post-correction instead.
+    pub supports_vocabulary: bool,
 }
 
 /// Encode one frame. Refuses a section the reader would refuse, so an

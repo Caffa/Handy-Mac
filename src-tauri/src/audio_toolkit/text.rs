@@ -1133,23 +1133,6 @@ pub fn normalize_transcription_output(text: &str) -> String {
     normalized.trim().to_string()
 }
 
-/// Legacy single-entry wrapper retained while the transcription manager still
-/// passes the app language as filler evidence.
-///
-/// Filler removal uses [`OutputLanguageEvidence::UserSelected`] for the given
-/// language code and is always enabled; the Phase 6 transcription rewrite
-/// replaces this with the full output-language evidence chain and the
-/// `filler_word_removal_enabled` master toggle.
-pub fn filter_transcription_output(
-    text: &str,
-    lang: &str,
-    custom_filler_words: &Option<Vec<String>>,
-) -> String {
-    let language = OutputLanguageEvidence::UserSelected(lang.to_string());
-    let filtered = remove_filler_words(text, &language, custom_filler_words, true);
-    normalize_transcription_output(&filtered)
-}
-
 /// Converts US English spelling to British English.
 ///
 /// Uses the DWYL dictionary by default (curated, human-verified, ~180 common pairs).
@@ -1629,7 +1612,9 @@ pub fn process_transcription_text(
     advanced_custom_words: &[CustomWord],
     word_replacements: &[WordReplacement],
     word_correction_threshold: f64,
-    is_whisper: bool,
+    // True when the custom words already reached the model (vocabulary slot /
+    // initial prompt), so fuzzy correction must not re-apply them.
+    custom_words_prompted: bool,
     output_language: &OutputLanguageEvidence,
     app_language: &str,
     custom_filler_words: &Option<Vec<String>>,
@@ -1646,17 +1631,18 @@ pub fn process_transcription_text(
     let text = replace_unk_with_accent_recovery(&text);
 
     // Step 1: Word correction.
-    // Determine whether custom words exist (for skipping Whisper models that already
-    // received initial_prompt hints) and apply the appropriate correction mode.
+    // Determine whether custom words exist (for skipping models that already
+    // received them as vocabulary / prompt hints) and apply the appropriate
+    // correction mode.
     let has_words = !custom_words.is_empty() || !advanced_custom_words.is_empty();
 
-    // Replacement mode always applies, even for Whisper.
-    // WordBias/Pronunciation only apply for non-Whisper models.
+    // Replacement mode always applies, even when the model was prompted.
+    // WordBias/Pronunciation only apply for models that were not prompted.
     let mut result = match word_correction_mode {
         WordCorrectionMode::Replacement if !word_replacements.is_empty() => {
             apply_word_replacements(&text, word_replacements)
         }
-        _ if has_words && !is_whisper => match word_correction_mode {
+        _ if has_words && !custom_words_prompted => match word_correction_mode {
             WordCorrectionMode::WordBias => {
                 apply_custom_words(&text, custom_words, word_correction_threshold)
             }
@@ -1708,6 +1694,20 @@ pub fn process_transcription_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test-local stand-in for the deleted `filter_transcription_output`
+    /// wrapper (its last production callers left with the Phase 6 evidence
+    /// chain): filler removal with always-on deletion under UserSelected
+    /// evidence, then the shared normalization passes.
+    fn filter_transcription_output(
+        text: &str,
+        lang: &str,
+        custom_filler_words: &Option<Vec<String>>,
+    ) -> String {
+        let language = OutputLanguageEvidence::UserSelected(lang.to_string());
+        let filtered = remove_filler_words(text, &language, custom_filler_words, true);
+        normalize_transcription_output(&filtered)
+    }
 
     #[test]
     fn test_apply_custom_words_exact_match() {
