@@ -120,6 +120,25 @@ pub fn cancel_current_operation(app: &AppHandle) {
             t.elapsed()
         );
     }
+    // 4b. Stop engine work in the transcription worker (a batch run or stream
+    // finalize). The supervisor kills the worker, so the running transcription
+    // returns promptly and frees the is_transcribing slot instead of finishing
+    // into the void. Lock-free: the supervisors bypass their queue, and we
+    // never touch the TranscriptionManager mutex (a running transcription may
+    // hold it for seconds). The live captions manager is included: a finalize
+    // cancelled here is surfaced as cancelled, never as a batch fallback.
+    {
+        let t = std::time::Instant::now();
+        if let Some(handles) = app.try_state::<crate::TranscriptionEngineHandles>() {
+            handles.main.cancel();
+            handles.live.cancel();
+            info!("Engine work cancelled via supervisors");
+        }
+        info!(
+            "[CANCEL-TIMING] step 4b (engine cancel) took {:?}",
+            t.elapsed()
+        );
+    }
     {
         let t = std::time::Instant::now();
         if let Some(cancel_signal) = app.try_state::<CancelSignal>() {

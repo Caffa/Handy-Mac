@@ -5,14 +5,14 @@ use clap::Parser;
 use handy_app_lib::CliArgs;
 
 fn main() {
-    let cli_args = CliArgs::parse();
-
     // Transcription worker: runs transcribe.cpp in isolation and never touches
     // Tauri, the CLI, or single-instance handling. Checked before CLI parsing
     // so the worker flag never has to be a CliArgs variant.
     if handy_app_lib::engine_supervisor::is_worker_invocation() {
         std::process::exit(handy_app_lib::engine_supervisor::run_worker());
     }
+
+    let cli_args = CliArgs::parse();
 
     #[cfg(target_os = "linux")]
     {

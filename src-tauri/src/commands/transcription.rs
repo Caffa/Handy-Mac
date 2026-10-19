@@ -51,9 +51,14 @@ pub fn get_model_load_status(
 pub fn unload_model_manually(
     transcription_manager: State<'_, Arc<Mutex<TranscriptionManager>>>,
 ) -> Result<(), String> {
+    // Request the unload without waiting for the transcription worker to
+    // exit, so the command never blocks behind a transcription in progress
+    // (the model reads as unloaded at once; the worker shuts down in the
+    // background). A short bounded lock just to reach the manager: the
+    // request itself is lock-light.
     let tm = transcription_manager
         .try_lock_for(Duration::from_secs(5))
         .ok_or("Transcription manager is busy (lock timeout after 5s)")?;
-    tm.unload_model()
-        .map_err(|e| format!("Failed to unload model: {}", e))
+    tm.request_unload();
+    Ok(())
 }

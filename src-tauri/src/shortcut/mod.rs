@@ -1549,9 +1549,10 @@ fn apply_and_reload_accelerator(app: &AppHandle, s: settings::AppSettings) {
         return;
     };
     if tm.lock().is_model_loaded() {
-        if let Err(e) = tm.lock().unload_model() {
-            log::warn!("Failed to unload model after accelerator change: {e}");
-        }
+        // Request the unload without waiting for the transcription worker to
+        // exit, so the settings command never blocks behind a transcription.
+        // The next model use loads fresh with the new accelerator.
+        tm.lock().request_unload();
     }
 }
 
@@ -1564,6 +1565,13 @@ pub fn change_transcribe_accelerator_setting(
     let mut s = settings::get_settings_safe(&app);
     s.transcribe_accelerator = accelerator;
     apply_and_reload_accelerator(&app, s);
+    // An explicit accelerator change is the user's way of trying the GPU
+    // again: forget any earlier GPU failure so the next load may use (and
+    // list) the GPU.
+    if let Some(tm) = app.try_state::<std::sync::Arc<parking_lot::Mutex<crate::managers::transcription::TranscriptionManager>>>() {
+        tm.lock()
+            .retry_transcribe_gpu("the transcribe.cpp accelerator setting changed");
+    }
     Ok(())
 }
 
@@ -1585,6 +1593,13 @@ pub fn change_transcribe_gpu_device(app: AppHandle, device: Option<String>) -> R
     let mut s = settings::get_settings_safe(&app);
     s.transcribe_gpu_device = device;
     apply_and_reload_accelerator(&app, s);
+    // An explicit GPU device change is the user's way of trying the GPU
+    // again: forget any earlier GPU failure so the next load may use (and
+    // list) the GPU.
+    if let Some(tm) = app.try_state::<std::sync::Arc<parking_lot::Mutex<crate::managers::transcription::TranscriptionManager>>>() {
+        tm.lock()
+            .retry_transcribe_gpu("the transcribe.cpp GPU device setting changed");
+    }
     Ok(())
 }
 
@@ -1597,10 +1612,17 @@ pub fn change_transcribe_gpu_device(app: AppHandle, device: Option<String>) -> R
 #[tauri::command]
 #[specta::specta]
 pub async fn get_available_accelerators(
+    app: AppHandle,
 ) -> Result<crate::managers::transcription::AvailableAccelerators, String> {
-    tauri::async_runtime::spawn_blocking(crate::managers::transcription::get_available_accelerators)
-        .await
-        .map_err(|e| format!("get_available_accelerators task failed: {}", e))
+    tauri::async_runtime::spawn_blocking(move || {
+        let tm = app.state::<std::sync::Arc<
+            parking_lot::Mutex<crate::managers::transcription::TranscriptionManager>,
+        >>();
+        let tm = tm.lock();
+        crate::managers::transcription::get_available_accelerators(&tm)
+    })
+    .await
+    .map_err(|e| format!("get_available_accelerators task failed: {}", e))
 }
 
 /// Parse a string into a `VadSensitivity` enum value.

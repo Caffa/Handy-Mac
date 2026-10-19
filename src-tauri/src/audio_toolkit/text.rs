@@ -1608,7 +1608,11 @@ fn replace_unk_with_accent_recovery(text: &str) -> String {
 /// * `advanced_custom_words` - Custom words with pronunciations for `Pronunciation` mode
 /// * `word_replacements` - Exact word replacements for `Replacement` mode
 /// * `word_correction_threshold` - Similarity threshold for fuzzy matching (0.0–1.0)
-/// * `app_language` - Language code for filler word selection (e.g., "en", "pt-BR")
+/// * `output_language` - Evidence for the language of the output text; gates
+///   built-in filler removal (fails closed on `Unknown`). Replaces the old
+///   `UserSelected(app_language)` stand-in.
+/// * `app_language` - UI language fallback for the number-words-to-digits gate
+///   when the output language is unknown
 /// * `custom_filler_words` - Optional user-provided filler word list overriding language defaults
 /// * `filler_word_removal_enabled` - Master toggle for filler-word removal (built-in and custom)
 /// * `convert_us_to_british` - Whether to apply US→British spelling conversion
@@ -1626,6 +1630,7 @@ pub fn process_transcription_text(
     word_replacements: &[WordReplacement],
     word_correction_threshold: f64,
     is_whisper: bool,
+    output_language: &OutputLanguageEvidence,
     app_language: &str,
     custom_filler_words: &Option<Vec<String>>,
     filler_word_removal_enabled: bool,
@@ -1666,13 +1671,12 @@ pub fn process_transcription_text(
     // Step 2: Filler word removal and stutter cleanup.
     // Filler deletion is gated by the master toggle; the remaining cleanup
     // passes (fragment dedup, stutter collapse, whitespace) always run.
-    // The evidence chain is the user's app language for now — model-detected
-    // and text-detected (lang_id) evidence is wired in the Phase 6
-    // transcription rewrite (upstream 4cd49950 deferred hunks).
-    let language = OutputLanguageEvidence::UserSelected(app_language.to_string());
+    // The evidence chain is resolved by the transcription client (model
+    // detected / user-selected / text-detected); `Unknown` fails closed:
+    // built-in gated fillers are skipped rather than applied speculatively.
     let filtered = remove_filler_words(
         &result,
-        &language,
+        output_language,
         custom_filler_words,
         filler_word_removal_enabled,
     );
@@ -1691,9 +1695,11 @@ pub fn process_transcription_text(
 
     // Step 5: Convert number words to digits (after repetition suppression so
     // repeated digit words like "zero zero zero" are not collapsed before they
-    // can be converted).
+    // can be converted). Gated on the output language when known, with the UI
+    // language as the fallback for unknown output.
     if convert_number_words_to_digits {
-        result = convert_number_words_to_digits_impl(&result, app_language);
+        let number_language = output_language.language().unwrap_or(app_language);
+        result = convert_number_words_to_digits_impl(&result, number_language);
     }
 
     result

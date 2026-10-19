@@ -71,6 +71,13 @@ use tauri::image::Image;
 /// separately while still exposing the same inner manager API via `.0`.
 pub struct LiveCaptionsTranscriptionManager(pub Arc<Mutex<TranscriptionManager>>);
 
+/// The transcription engine supervisors (main + live captions manager), for
+/// lock-free cancellation of engine work. See the cancel path in `utils.rs`.
+pub struct TranscriptionEngineHandles {
+    pub main: crate::engine_supervisor::EngineSupervisor,
+    pub live: crate::engine_supervisor::EngineSupervisor,
+}
+
 /// Wrapper type for the live captions streaming cancel flag.
 ///
 /// The main transcription path and the live captions streaming path must be
@@ -219,12 +226,9 @@ fn should_force_show_permissions_window(app: &AppHandle) -> bool {
 }
 
 fn initialize_core_logic(app_handle: &AppHandle) {
-    // Pre-initialize the transcribe-cpp backend (Metal/Vulkan context, GPU
-    // device enumeration, etc.) so the first transcription doesn't pay the
-    // full cold-start cost. This is a no-op on platforms where the backend is
-    // demand-initialized.
-    crate::managers::transcription::init_transcribe_backend();
-    crate::managers::transcription::report_compute_devices();
+    // Note: transcribe.cpp native code no longer initializes in the app
+    // process — it runs in the transcription worker (see engine_supervisor),
+    // which registers backends and lists devices on demand.
 
     // Note: Enigo (keyboard/mouse simulation) is NOT initialized here.
     // The frontend is responsible for calling the `initialize_enigo` command
@@ -314,6 +318,16 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(LiveCaptionsTranscriptionManager(
         live_captions_transcription_manager.clone(),
     ));
+    // Engine supervisor handles, stored so the cancel path can stop engine
+    // work (a batch run or stream work in the transcription worker) without
+    // acquiring the TranscriptionManager mutex — which the running
+    // transcription itself may hold for its whole duration.
+    app_handle.manage(TranscriptionEngineHandles {
+        main: transcription_manager.lock().engine_supervisor(),
+        live: live_captions_transcription_manager
+            .lock()
+            .engine_supervisor(),
+    });
     app_handle.manage(history_manager.clone());
     app_handle.manage(retry_queue.clone());
     app_handle.manage(retry_worker.clone());
@@ -400,20 +414,19 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                     log::warn!("No model is currently loaded.");
                     return;
                 }
-                match tm.unload_model() {
-                    Ok(()) => log::info!("Model unloaded via tray."),
-                    Err(e) => log::error!("Failed to unload model via tray: {}", e),
-                }
+                // Request the unload without waiting for the transcription
+                // worker to exit, so the tray handler never blocks behind a
+                // transcription in progress. The model reads as unloaded at
+                // once; the worker shuts down in the background.
+                tm.request_unload();
+                log::info!("Model unloaded via tray.");
                 // Also unload the live captions model so VRAM is released
                 // when the user explicitly requests unload.
                 if let Some(live_tm) = app.try_state::<LiveCaptionsTranscriptionManager>() {
                     let live = live_tm.0.lock();
                     if live.is_model_loaded() {
-                        if let Err(e) = live.unload_model() {
-                            log::error!("Failed to unload live captions model via tray: {}", e);
-                        } else {
-                            log::info!("Live captions model unloaded via tray.");
-                        }
+                        live.request_unload();
+                        log::info!("Live captions model unloaded via tray.");
                     }
                 }
             }
@@ -1063,19 +1076,24 @@ pub fn run(cli_args: CliArgs) {
                 );
             }
 
-            // Pre-warm GPU/accelerator enumeration on a background thread.
-            // The first device listing opens the GPU, which on macOS loads ggml's
-            // Metal library and compiles it when the system shader cache does not
-            // have it yet, so it stays off the startup path.
-            // get_available_accelerators then enumerates execution providers and
-            // transcribe-cpp compute devices; without this the cost is paid
-            // synchronously the first time the user opens the Advanced settings
-            // page (which calls the get_available_accelerators command), causing
-            // a UI freeze. Result is cached in a OnceLock inside the transcription
-            // manager.
-            std::thread::spawn(|| {
-                crate::managers::transcription::report_compute_devices();
-                let _ = crate::managers::transcription::get_available_accelerators();
+            // Pre-warm accelerator/device enumeration on a background thread.
+            // The first device listing opens the GPU, which on macOS loads
+            // ggml's Metal library and compiles it when the system shader
+            // cache does not have it yet, so it stays off the startup path —
+            // and thanks to the transcription worker, out of the app process
+            // entirely. get_available_accelerators then enumerates ORT
+            // execution providers and transcribe-cpp compute devices; without
+            // this the cost is paid synchronously the first time the user
+            // opens the Advanced settings page (which calls the
+            // get_available_accelerators command), causing a UI freeze. The
+            // device list is kept by the transcription engine and refreshed by
+            // every worker it starts that may use the GPU (CPU-only workers
+            // can't see it).
+            let devices_app_handle = app_handle.clone();
+            std::thread::spawn(move || {
+                let tm = devices_app_handle.state::<Arc<Mutex<TranscriptionManager>>>();
+                crate::managers::transcription::report_compute_devices(&tm.lock());
+                let _ = crate::managers::transcription::get_available_accelerators(&tm.lock());
             });
 
             // Pre-warm the ASR model on a background thread so it's ready when

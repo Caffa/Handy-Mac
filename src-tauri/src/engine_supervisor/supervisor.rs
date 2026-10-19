@@ -1064,7 +1064,8 @@ struct Control {
 
 impl Control {
     fn send(&self, frame: Vec<u8>) -> bool {
-        self.stdin.lock()
+        self.stdin
+            .lock()
             .as_ref()
             .is_some_and(|stdin| stdin.send(frame).is_ok())
     }
@@ -1279,7 +1280,8 @@ impl Worker {
     /// Recent raw native output (worker log lines are excluded; they were
     /// already re-logged).
     fn native_tail(&self) -> Vec<String> {
-        self.stderr_tail.lock()
+        self.stderr_tail
+            .lock()
             .iter()
             .filter(|line| !line.starts_with(LOG_LINE_PREFIX))
             .cloned()
@@ -1530,6 +1532,62 @@ mod tests {
         }
     }
 
+    /// Live feeds across the process boundary produce progress events, and
+    /// the text they carry matches what finalize returns (the fork's
+    /// per-frame feed path: partial/stream events must still flow).
+    #[test]
+    #[ignore]
+    fn stream_feeds_produce_progress_events() {
+        let pcm = test_pcm();
+        set_fault(None, false);
+        let engine = EngineSupervisor::new(true);
+        let info = engine.load(spec()).unwrap();
+        println!(
+            "loaded: arch='{}' backend='{}' supports_streaming={}",
+            info.arch, info.backend, info.capabilities.supports_streaming
+        );
+        assert!(
+            info.capabilities.supports_streaming,
+            "test model must support streaming"
+        );
+        let progress_events = Arc::new(AtomicU64::new(0));
+        let text_events = Arc::new(AtomicU64::new(0));
+        let stream = engine
+            .start_stream(RunOptions::default(), StreamOptions::default(), {
+                let progress_events = Arc::clone(&progress_events);
+                let text_events = Arc::clone(&text_events);
+                move |progress: StreamProgress| {
+                    progress_events.fetch_add(1, Ordering::SeqCst);
+                    if progress.text.is_some() {
+                        text_events.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+            .unwrap();
+        feed_paced(&stream, &pcm);
+        let fed = progress_events.load(Ordering::SeqCst);
+        let with_text = text_events.load(Ordering::SeqCst);
+        let finalized = stream
+            .finalize(false)
+            .unwrap()
+            .expect("stream produced a result");
+        assert!(fed > 0, "no feed updates crossed the process boundary");
+        assert!(
+            with_text > 0,
+            "no partial text events crossed the process boundary"
+        );
+        assert!(
+            !finalized.text.full.trim().is_empty(),
+            "finalized text is empty: {:?}",
+            finalized.text
+        );
+        println!(
+            "streamed {fed} feed updates ({with_text} with partial text); final: '{}'",
+            finalized.text.full.trim()
+        );
+        set_fault(None, false);
+    }
+
     fn stream_all(
         engine: &EngineSupervisor,
         pcm: &[f32],
@@ -1545,7 +1603,10 @@ mod tests {
     /// after it, however fast the model is.
     fn wait_in_flight(engine: &EngineSupervisor, what: &str) {
         let started = Instant::now();
-        while !engine.shared.in_flight.lock()
+        while !engine
+            .shared
+            .in_flight
+            .lock()
             .as_ref()
             .is_some_and(|call| call.what == what)
         {

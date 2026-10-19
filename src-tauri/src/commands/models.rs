@@ -72,10 +72,17 @@ pub async fn delete_model(
     // If deleting the active model, unload it and clear the setting
     let settings = get_settings_safe(&app_handle);
     if settings.selected_model == model_id {
-        transcription_manager
-            .lock()
-            .unload_model()
-            .map_err(|e| format!("Failed to unload model: {}", e))?;
+        // Waits for the transcription worker to exit (behind any transcription
+        // in progress) before the file is deleted, so keep it off the async
+        // workers via spawn_blocking.
+        let tm_state = Arc::clone(&transcription_manager);
+        tauri::async_runtime::spawn_blocking(move || {
+            let tm = tm_state.lock();
+            tm.unload_model()
+        })
+        .await
+        .map_err(|e| format!("Failed to unload model: {}", e))?
+        .map_err(|e| format!("Failed to unload model: {}", e))?;
 
         let mut settings = get_settings_safe(&app_handle);
         settings.selected_model = String::new();
