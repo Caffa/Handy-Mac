@@ -283,6 +283,86 @@ The fork already adopted an upstream-first strategy (UPSTREAM_SYNC.md, July 2026
 **Rollback:** `9e57a0d7` reverts cleanly to Phase-8 tag if needed; setting defaults on, rollback = flip default until fix.
 **Risk:** MEDIUM–HIGH (feature-correctness; fork's post-correction interplay is the subtle part). **Effort:** 3–5 blocks.
 
+### P9 close-out addendum (2026-10-20)
+
+Phase 9 complete (D1 × D3 adopt, matrix row 1; both upstream rows landed):
+`e258bcd4` (4150a4a8 — vocabulary API) and `12ba2482` (9e57a0d7 — long-form
+chunking). Tag `sync-2026-10-p9-done`. Registry rows + adaptation notes in
+`UPSTREAM_SYNC.md` (Phase 9 Commit Notes).
+
+Gate: `cargo check --all-targets` ✓ (0 errors) · `cargo test --lib` **555
+passed / same 4 documented pre-existing failures** (3× history schema + 1
+conflicts machine-specific) · 19 ignored (+2 env-gated new: Silero piecewise
+score equivalence, supervisor cancel-between-runs) · `capture_sink_preroll` 3 ✓,
+`parakeet_thresholds` 3 ✓, `proptest_audio` 15 ✓, `proptest_serde` 16 ✓ ·
+`bun run build` ✓ · scoped eslint ✓ · CI mock swap (`cp transcription_mock.rs
+transcription.rs` + all-targets check) compiles clean.
+
+**Vocabulary flow (4150a4a8):** `LoadedInfo.supports_vocabulary` =
+`model.supports(Feature::Vocabulary)` through the protocol; `vocabulary_for_model()`
+gates `settings.custom_words` into `RunOptions.vocabulary` in BOTH the batch
+(`transcribe_cpp`) and streaming (`run_stream_worker`) run constructions.
+`custom_words_prompted` (replacing `model_is_whisper` on `RunOutcome`, and the
+hard-coded `false` on `FinalizedStreamText`) drives the fuzzy-correction skip:
+skipped exactly when vocabulary was sent, in both paths. Non-vocabulary models
+warn-and-skip on the engine side and keep the fork's n-gram post-correction as
+the fallback; `process_transcription_text`'s gate param renamed to
+`custom_words_prompted` (same skip semantics). P2 ordering kept: script
+conversion still precedes custom-word handling inside
+`post_process_transcription_text`.
+
+**Ledger disposition:** the re-deferred `filter_transcription_output` wrapper
+deletion is RESOLVED. Verified its last production callers were already gone
+with the P6 evidence-chain rewrite (only the barrel re-export + text.rs unit
+tests remained, zero non-text.rs callers); deleted fn + re-export, tests keep
+a `#[cfg(test)]`-local stand-in of the same signature.
+
+**Chunking re-skin (9e57a0d7):** `audio_toolkit/chunking.rs` ported greenfield
+(Chunker, Silero-default thresholds, lookahead-committed live cuts, uncut-on-
+VAD-failure degrade, CJK-aware `join_transcripts`; 7-test suite). Policy =
+`managers/transcription_policy.rs` — upstream's `transcription/policy.rs` as a
+**sibling file**, because a `pub mod policy` inside `transcription.rs` would
+vanish under the CI mock swap (which `cp`s the mock over the whole file) and
+break `actions`' imports; `batch_decode`/`live_decode` + `ModelTraits::of`
+support `supports_long_form` (Feature::LongForm on LoadedInfo). The ChunkedDecode
+driver sits inside `transcription.rs` (needs TM internals): chunks decode via
+the fork's `run_batch` (run-plan/translation-task semantics per chunk, idle
+watchdog fed between runs), transcripts joined in order with language
+agreement; cancel = supervisor `CancelMark`/`transcribe_since` (taken at the
+top of `transcribe_internal`, so the model-load wait is covered too) PLUS the
+fork's `StreamingCancelFlag` checked between chunks; a failed chunk fails the
+whole transcription (no partial-paste). All `transcribe()`/`transcribe_with_hook()`
+callers (stop action, history re-transcribe, retry queue, experiments, router)
+get chunking for free; 40 s-or-less audio never loads a VAD.
+
+**Deliberate deviations (recorded, not regressions):** ① no LIVE chunked
+decode during recording — the fork's live decode is StreamRouter-based and
+dedicated to the live-captions model (playbook: fork WINS); chunking engages
+in the batch path at stop, so chunk decode latency is after stop instead of
+during recording (output-equal). `live_decode` is ported + unit-tested for
+parity/future wiring. ② `live.rs` not ported (its remaining substance is the
+live-chunked decode above; the fork's StreamSession/StreamPerf machinery is
+kept as-is). ③ FE placement: `LongFormChunking.tsx` in Accuracy → Voice
+Detection (fork's SECTIONS_CONFIG; upstream used Advanced). ④ Upstream's
+cli.rs `--transcribe-file` doc hunk N/A (fork has no such flag). ⑤ Setting
+doc-comment drops upstream's `vad_enabled` cross-reference (fork has no
+`vad_enabled`).
+
+**Double-chunking / emergency_save checks (carry-forward items from P8):**
+the fork's sink VAD preroll + silence-pad act capture-side before samples
+reach transcription, so the Chunker (40 s+ gate) cannot double-cut;
+`emergency_save.rs` hooks live only in the capture sink (pre-stop) and the
+recording WAV is persisted by the normal stop path before chunked decoding —
+chunk-append points need no emergency wiring. The 60 s
+`TRANSCRIBING_SLOT_FORCE_RELEASE_AFTER` watchdog exposure for a multi-minute
+chunked decode is unchanged from today's long single-run batches (waiter-side
+force-release only; noted, not addressed).
+
+**REGRESSION-TEST-REQUIRED (manual mic, no local GGUF speech model for E2E):**
+5+ min recording with the setting on (chunk cut sanity in logs, cancel-all
+mid-run), 30 s recording (chunker must not fire), toggle off (single run),
+streaming custom-words smoke.
+
 ---
 
 ### Phase 10 — Overlay/live-captions reconciliation + closeout (4 APPLY + 1 VERIFY + pre-range note + docs)
@@ -604,7 +684,7 @@ These upstream commits contain transcription.rs hunks that cannot land until Pha
 | `29bd2c0d` | `lib.rs` — move compute-device reporting off startup path onto prewarm thread (APPLIED NOW; transcription.rs hunk was a pure function extraction needed by the lib.rs call) | `managers/transcription.rs` `report_compute_devices()` shape / threading | Function extracted and called from startup + prewarm thread; no further P6 work required for this commit. **P6 close-out (2026-10-20):** confirmed — the lib.rs prewarm now calls the manager-based supervisor probe; nothing further needed. **P6 follow-up (`debbb66a`, 2026-10-20):** prewarm now calls the detached-handle `report_compute_devices_on(&EngineSupervisor)` under a brief lock instead — the TM mutex is no longer held across the worker probe (stop→transcribe TranscriptionBusy risk); the manager-based wrapper was removed as callerless. |
 | `e4ae0d44` | `managers/model.rs` + FE ModelsSettings/modelStore — model-file-deletion recovery | `managers/transcription.rs` 46-line `loading_failed` recovery hunk | **APPLIED in P6 (`4c946fb0`):** supervisor-client load-failure path recovers via `forget_model_if_engine_dropped` (worker-gone detection keeps model-id/UI in step and emits `unloaded`); `loading_failed` emits kept in `load_model_with_device`. |
 | `258899a2` | `actions/` + `utils.rs` — redact transcription content from logs | `managers/transcription.rs` hunk (log redaction) | **APPLIED in P6 (`4c946fb0`):** the rewritten client's result log line goes through `crate::utils::redact_text`. |
-| `4cd49950` | `audio_toolkit/lang_id.rs`, `text.rs`, settings, FE FillerWordRemoval | `cpp_translation_task()`-adjacent lang_id text-fallback wiring | **P2 close-out (2026-10-18):** setting + two-tier filler logic + `OutputLanguageEvidence` + `detect_output_language` all landed (fork commit `28119924`; 8ef8dd43 `91ee3aee`, eb49dc02 `598c0504` on top). Master toggle IS wired end-to-end via `process_transcription_text(…, filler_word_removal_enabled, …)`. **APPLIED in P6 (`4c946fb0`):** real evidence chain built in the client — `resolve_output_language_evidence` + `with_model_detected_language` (Whisper audio LID via `Transcript.language`) + `TextDetected` fallback via `detect_output_language`; `process_transcription_text` now takes `&OutputLanguageEvidence` (number-words gate falls back to UI language only when evidence is Unknown). **Re-deferred:** deleting the legacy `filter_transcription_output` wrapper (text.rs) — still referenced by 4 text.rs unit tests; cosmetic follow-up, no behavior impact. |
+| `4cd49950` | `audio_toolkit/lang_id.rs`, `text.rs`, settings, FE FillerWordRemoval | `cpp_translation_task()`-adjacent lang_id text-fallback wiring | **P2 close-out (2026-10-18):** setting + two-tier filler logic + `OutputLanguageEvidence` + `detect_output_language` all landed (fork commit `28119924`; 8ef8dd43 `91ee3aee`, eb49dc02 `598c0504` on top). Master toggle IS wired end-to-end via `process_transcription_text(…, filler_word_removal_enabled, …)`. **APPLIED in P6 (`4c946fb0`):** real evidence chain built in the client — `resolve_output_language_evidence` + `with_model_detected_language` (Whisper audio LID via `Transcript.language`) + `TextDetected` fallback via `detect_output_language`; `process_transcription_text` now takes `&OutputLanguageEvidence` (number-words gate falls back to UI language only when evidence is Unknown). **Re-deferred:** deleting the legacy `filter_transcription_output` wrapper (text.rs) — still referenced by 4 text.rs unit tests; cosmetic follow-up, no behavior impact. **RESOLVED in P9 (`e258bcd4`):** wrapper + barrel re-export deleted (last production callers left with the P6 rewrite; re-verified zero non-text.rs callers); unit tests keep a `#[cfg(test)]`-local stand-in. |
 | `6fa85061` | `managers/model.rs` + `LanguageSelector` constants | `cpp_translation_task()` language-coverage / 'no'-language guard | **P2 close-out (2026-10-18):** `canonical_language_code` + exact-base-preference in `effective_language` + tests landed (fork `8addac74`); FE picker matches base codes + aliases. **APPLIED in P6 (`4c946fb0`):** the transcription.rs-side guard is `canonical_language_code` comparison inside `resolve_output_language_evidence` (the 'no'→'nb' alias case, unit-tested). |
 | `0bb0428e` | `audio_toolkit/chinese_script.rs`, setting, FE selector | script-aware language-param handling in transcription.rs | **P2 close-out (2026-10-18):** module + `ChineseScript` setting + FE selector landed (fork `c1a6ccc9`); conversion enforcement wired through the fork's `actions/post_process.rs::maybe_convert_chinese_variant` (explicit script wins, legacy zh-Hans/zh-Hant intents remain fallback, non-Chinese recognition language never converted — fail-closed). Upstream's `selected_language`→`zh`+script migration NOT adopted (fork's picker still exposes those intents; bare `zh` absent from fork's `LANGUAGES`). **APPLIED in P6 (`4c946fb0`):** `PreviewScript` live-preview conversion while streaming; Chinese-script conversion ordered before custom-word correction in the batch/stream post-processing; the transcription text path now keys off output-language evidence instead of the recognition language. **Re-deferred:** migrating `actions/post_process.rs::maybe_convert_chinese_variant` onto the evidence signal — after the transcription-path conversion it is a no-op safety net (nothing double-converts); optional follow-up. Fork tray_i18n hunk skipped (never had the hant/hans logic). |
 
