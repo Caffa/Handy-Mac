@@ -2546,6 +2546,60 @@ impl AudioRecordingManager {
     const STREAM_LIVENESS_TIMEOUT_MS: u64 = 3000;
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A recorder error, without touching a device: the request is rejected
+    /// before one is opened.
+    fn recorder_error() -> handy_recorder::Error {
+        let config = RecorderConfig {
+            sample_rate: Some(0),
+            ..RecorderConfig::speech()
+        };
+        match Recorder::<CaptureSink>::open(config) {
+            Err(error) => error,
+            Ok(_) => panic!("a 0 Hz output rate should be rejected"),
+        }
+    }
+
+    #[test]
+    fn recorder_errors_are_classified_through_added_context() {
+        let error = recorder_error();
+        assert_eq!(error.kind(), ErrorKind::UnsupportedFormat);
+
+        let wrapped = anyhow::Error::new(error).context("Failed to start recorder");
+        assert_eq!(
+            wrapped
+                .downcast_ref::<handy_recorder::Error>()
+                .map(handy_recorder::Error::kind),
+            Some(ErrorKind::UnsupportedFormat)
+        );
+        assert_eq!(recording_error_type(&wrapped), "unknown");
+    }
+
+    #[test]
+    fn errors_from_outside_the_recorder_are_unknown() {
+        assert_eq!(
+            recording_error_type(&anyhow::anyhow!("Already recording")),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn microphone_config_maps_the_selected_channel() {
+        let all = microphone_config(None, None, 480);
+        assert_eq!(all.channels, Channels::MixToMono);
+        assert_eq!(all.sample_rate, Some(16_000));
+        assert_eq!(all.frames_per_chunk, Some(480));
+
+        let second = microphone_config(Some("id".into()), Some(1), 256);
+        assert_eq!(second.channels, Channels::Only(1));
+        assert_eq!(second.device.as_deref(), Some("id"));
+        assert_eq!(second.frames_per_chunk, Some(256));
+    }
+}
+
 impl Drop for AudioRecordingManager {
     fn drop(&mut self) {
         info!("AudioRecordingManager dropping — stopping background threads");
