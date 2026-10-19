@@ -114,6 +114,18 @@
       "loadModels": "Failed to load available models",
       "selectModel": "Failed to select model. Please try again."
     },
+    "migration": {
+      "title": "Your models need an update",
+      "description": "Handy now uses a newer kind of model. Download the new version to keep transcribing. Old versions will be removed.",
+      "replaces": "Replaces {{name}}",
+      "oldFormat": "Old format",
+      "failed": "Download failed",
+      "retry": "Try again",
+      "chooseAnother": "Choose a different model",
+      "download": "Download models ({{size}})",
+      "continue": "Continue",
+      "timeRemaining": "{{time}} remaining"
+    },
     "permissions": {
       "title": "Permissions Required",
       "description": "Handy needs a couple of permissions to work properly.",
@@ -253,6 +265,13 @@
     "models": {
       "title": "Transcription Models",
       "description": "Select a transcription model or download additional models. Different models offer varying levels of accuracy and speed.",
+      "retiredNotice": {
+        "title": "Old models no longer work with Handy",
+        "description": "They're taking up {{size}} on your computer.",
+        "delete": "Delete models",
+        "deleted": "Deleted old models",
+        "deleteFailed": "Some old models couldn't be deleted. Check the log for details."
+      },
       "yourModels": "Downloaded Models",
       "availableModels": "Available to Download",
       "downloaded": "Downloaded",
@@ -1001,6 +1020,7 @@
     "off": "Off",
     "yes": "Yes",
     "no": "No",
+    "back": "Back",
     "noOptionsFound": "No options found"
   },
   "accessibility": {

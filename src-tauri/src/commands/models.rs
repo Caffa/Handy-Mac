@@ -4,7 +4,7 @@ use crate::managers::model::{
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings_safe, write_settings_safe, ModelUnloadTimeout};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -89,9 +89,11 @@ pub async fn delete_model(
         write_settings_safe(&app_handle, settings);
     }
 
-    model_manager
-        .delete_model(&model_id)
-        .map_err(|e| e.to_string())
+    model_manager.delete_model(&model_id).map_err(|e| {
+        // The UI only shows a generic failure toast, so the cause has to be logged.
+        error!("Model delete failed for {}: {}", model_id, e);
+        e.to_string()
+    })
 }
 
 /// Shared logic for switching the active model, used by both the Tauri command

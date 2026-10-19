@@ -110,6 +110,18 @@
       "loadModels": "无法加载可用模型",
       "downloadModel": "模型下载失败: {{error}}"
     },
+    "migration": {
+      "title": "您的模型需要更新",
+      "description": "Handy 现在使用一种更新的模型类型。请下载新版本以继续转录。旧版本将被移除。",
+      "replaces": "替代 {{name}}",
+      "oldFormat": "旧格式",
+      "failed": "下载失败",
+      "retry": "重试",
+      "chooseAnother": "选择其他模型",
+      "download": "下载模型（{{size}}）",
+      "continue": "继续",
+      "timeRemaining": "剩余 {{time}}"
+    },
     "permissions": {
       "title": "需要权限",
       "description": "Handy 需要一些权限才能正常工作。",
@@ -183,6 +195,13 @@
         "streaming": "筛选支持实时转录的模型"
       },
       "noModelsMatch": "没有符合此筛选条件的模型。",
+      "retiredNotice": {
+        "title": "旧模型已无法在 Handy 中使用",
+        "description": "它们占用了您电脑上 {{size}} 的空间。",
+        "delete": "删除模型",
+        "deleted": "已删除旧模型",
+        "deleteFailed": "部分旧模型无法删除。请查看日志以了解详情。"
+      },
       "yourModels": "已下载的模型",
       "availableModels": "可供下载"
     },
@@ -681,7 +700,8 @@
     "off": "关",
     "yes": "是",
     "no": "否",
-    "noOptionsFound": "未找到选项"
+    "noOptionsFound": "未找到选项",
+    "back": "返回"
   },
   "accessibility": {
     "permissionsRequired": "需要辅助功能权限",

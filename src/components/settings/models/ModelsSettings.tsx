@@ -14,6 +14,7 @@ import {
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
 import { useModelStore } from "@/stores/modelStore";
+import RetiredModelsNotice from "./RetiredModelsNotice";
 import { LANGUAGES } from "@/lib/constants/languages.ts";
 import { commands } from "@/bindings";
 import type { BenchmarkModelFailure, ModelInfo } from "@/bindings";
@@ -390,6 +391,7 @@ export const ModelsSettings: React.FC = () => {
           </p>
         )}
       </div>
+      <RetiredModelsNotice />
       <div className="space-y-6">
         {/* Downloaded Models Section — header always visible so filter stays accessible */}
         <div className="space-y-3">
