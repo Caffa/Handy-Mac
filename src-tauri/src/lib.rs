@@ -10,6 +10,7 @@ pub mod cli;
 mod clipboard;
 mod commands;
 mod emergency_save;
+pub mod engine_supervisor;
 pub mod error_events;
 pub mod errors;
 mod focus;
