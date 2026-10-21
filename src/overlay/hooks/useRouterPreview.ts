@@ -23,7 +23,7 @@ import { commands } from "@/bindings";
 import type { OverlayState, RouterResultEvent } from "./useOverlayState";
 
 /// Countdown timer for routing confirmation (in milliseconds)
-const ROUTING_COUNTDOWN_MS = 4500;
+const ROUTING_COUNTDOWN_MS = 2000;
 
 /// Time to display router result before auto-hiding
 const ROUTER_RESULT_DISPLAY_MS = 10_000;

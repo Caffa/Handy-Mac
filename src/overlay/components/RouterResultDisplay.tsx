@@ -53,7 +53,7 @@ function getHandlerIcon(handlerName: string): string {
 }
 
 /// Countdown timer for routing confirmation (in milliseconds)
-const ROUTING_COUNTDOWN_MS = 4500;
+const ROUTING_COUNTDOWN_MS = 2000;
 
 interface RouterResultDisplayProps {
   routerResult: RouterResultEvent | null;

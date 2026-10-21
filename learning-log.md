@@ -1,5 +1,22 @@
 # Handy-Fork Learning Log
 
+## Router Confirmation Countdown Too Slow (2026-10-21)
+
+### Problem
+
+- The transcribe-with-router confirmation overlay felt slow because it auto-sent every router route after a fixed 4.5-second delay.
+
+### Root Cause
+
+- `ROUTING_COUNTDOWN_MS` was hardcoded to `4500` ms in both `src/overlay/hooks/useRouterPreview.ts` and `src/overlay/components/RouterResultDisplay.tsx` (progress bar denominator), so every route waited 4.5 seconds before sending.
+
+### Fix
+
+- Shortened `ROUTING_COUNTDOWN_MS` from `4500` to `2000` in:
+  - `src/overlay/hooks/useRouterPreview.ts`
+  - `src/overlay/components/RouterResultDisplay.tsx`
+- The countdown UI string (`overlay.confirming` / "Sending in") and timer display already derive seconds from the live `countdown` state, so no i18n hardcoded values needed changing.
+
 ## USB Watchdog Wake Recovery: zombie AlwaysOn stream silently skipped wake cycle (2026-10-21)
 
 ### Problem
