@@ -1128,6 +1128,10 @@ pub fn run(cli_args: CliArgs) {
                 retry_worker.lock().start(app_handle.clone());
             }
 
+            // Schedule a startup sweep to verify pending journal entries from previous runs
+            // or races where an open Obsidian note clobbered an external append.
+            crate::actions::router::schedule_startup_pending_entry_verify(&app_handle);
+
             // Install uhubctl if missing (macOS only, via Homebrew) so the
             // USB watchdog can recover dead USB audio devices automatically.
             #[cfg(target_os = "macos")]

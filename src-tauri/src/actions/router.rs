@@ -4,9 +4,9 @@
 
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
 use crate::audio_toolkit::VadPolicy;
-use crate::managers::audio::recording_error_type;
 use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
+use crate::managers::audio::recording_error_type;
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
 use crate::managers::transcription::{TranscriptionManager, TRANSCRIBING_SLOT_WAIT_TIMEOUT};
@@ -26,7 +26,7 @@ use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -228,7 +228,6 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
             utils::hide_recording_overlay(app);
             set_tray_state(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
-
                 if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
                     if let Some(sid) = tracker.current_session_id() {
                         tracker.fail_session(&sid, &format!("{err:#}"));
@@ -310,7 +309,8 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         // call that might synchronously block (e.g. AppleScript mute, overlay JS).
         // See the matching comment in TranscribeAction::stop for full rationale.
         tauri::async_runtime::spawn(async move {
-            let mut finish_guard = Some(super::transcribe::FinishGuard(ah.clone(), Arc::clone(&tm)));
+            let mut finish_guard =
+                Some(super::transcribe::FinishGuard(ah.clone(), Arc::clone(&tm)));
             debug!(
                 "Starting async router task for binding: {}",
                 binding_id_spawn
@@ -645,9 +645,13 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                         }
 
                                         // Save routing result to history entry
+                                        let mut existing_routing_json_for_verify: Option<String> =
+                                            None;
                                         if let Some((ref hm, entry_id)) = hm_for_router {
                                             let routing_json = serde_json::to_string(&handler_data)
                                                 .unwrap_or_else(|_| "[]".to_string());
+                                            existing_routing_json_for_verify =
+                                                Some(routing_json.clone());
                                             if let Err(e) = hm
                                                 .update_routing_result(entry_id, Some(routing_json))
                                             {
@@ -672,6 +676,17 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                             format!("Route: {}", summary_text)
                                         };
                                         send_macos_notification("Handy Router", &notification_text);
+
+                                        // Schedule delayed verification of pending diary entries
+                                        // in case Obsidian clobbered an external append.
+                                        if any_success {
+                                            run_pending_entry_verify(
+                                                router_script.clone(),
+                                                env_file.clone(),
+                                                hm_for_router.clone(),
+                                                existing_routing_json_for_verify.clone(),
+                                            );
+                                        }
 
                                         // NOTE: Overlay hide is now handled AFTER notify_processing_finished()
                                         // below, with a 5-second delay so the user can see the result.
@@ -957,23 +972,15 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
 const ROUTER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Run boss_router.py as a subprocess and return the parsed output.
-/// Returns (summary_string, handler_data_vec) on success, or an error String.
-fn run_router_subprocess(
-    router_script: &str,
-    transcription_text: &str,
-    datetime_str: &str,
-    env_file: Option<&str>,
-) -> Result<(Option<String>, Vec<RouterHandlerData>), String> {
+const ROUTER_VERIFY_DELAY: Duration = Duration::from_secs(60);
+const STARTUP_VERIFY_DELAY: Duration = Duration::from_secs(30);
+static ROUTER_VERIFY_INFLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Build the base router subprocess command with python bin, PATH prefix, env file, and cwd.
+fn build_router_command(router_script: &str, env_file: Option<&str>) -> Command {
     let python_bin = "/Users/caffae/miniforge3/bin/python3";
     let mut cmd = Command::new(python_bin);
-    cmd.arg(router_script)
-        .arg("--text")
-        .arg(transcription_text)
-        .arg("--datetime")
-        .arg(datetime_str)
-        .arg("--json")
-        .arg("--handy");
+    cmd.arg(router_script);
 
     let current_path = std::env::var("PATH").unwrap_or_default();
     cmd.env(
@@ -1014,6 +1021,14 @@ fn run_router_subprocess(
         cmd.current_dir(parent);
     }
 
+    cmd
+}
+
+/// Spawn a child process with piped stdout/stderr, drain both streams, and wait
+/// up to `ROUTER_SUBPROCESS_TIMEOUT`. On timeout the child is killed and waited on.
+/// Returns `(stdout, stderr)` on success; on failure returns an error string
+/// including stderr contents when available.
+fn spawn_and_wait_with_drain(cmd: &mut Command) -> Result<(String, String), String> {
     debug!("Running router command: {:?}", cmd);
 
     let mut child = cmd
@@ -1068,12 +1083,206 @@ fn run_router_subprocess(
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&stdout_buf);
+    let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
+    Ok((stdout, stderr))
+}
+
+/// Run boss_router.py as a subprocess and return the parsed output.
+/// Returns (summary_string, handler_data_vec) on success, or an error String.
+fn run_router_subprocess(
+    router_script: &str,
+    transcription_text: &str,
+    datetime_str: &str,
+    env_file: Option<&str>,
+) -> Result<(Option<String>, Vec<RouterHandlerData>), String> {
+    let mut cmd = build_router_command(router_script, env_file);
+    cmd.arg("--text")
+        .arg(transcription_text)
+        .arg("--datetime")
+        .arg(datetime_str)
+        .arg("--json")
+        .arg("--handy");
+
+    let (stdout, _stderr) = spawn_and_wait_with_drain(&mut cmd)?;
     let (handler_summary, handler_data) = match parse_router_json_output(&stdout) {
         Some(output) => (Some(output.summary), output.handler_data),
         None => (None, Vec::new()),
     };
     Ok((handler_summary, handler_data))
+}
+
+/// Run the router in pending-entry verification mode.
+/// Returns the subprocess stdout on success, or an error String.
+fn run_router_verify(router_script: &str, env_file: Option<&str>) -> Result<String, String> {
+    let mut cmd = build_router_command(router_script, env_file);
+    cmd.arg("--verify-pending").arg("--json");
+
+    let (stdout, stderr) = spawn_and_wait_with_drain(&mut cmd)?;
+    if !stderr.is_empty() {
+        let preview: String = stderr.chars().take(500).collect();
+        debug!("router verify stderr (first 500 chars): {}", preview);
+    }
+    Ok(stdout)
+}
+
+/// Try to claim the single-flight verify slot. Returns `true` if acquired.
+fn try_begin_verify() -> bool {
+    ROUTER_VERIFY_INFLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+fn end_verify() {
+    ROUTER_VERIFY_INFLIGHT.store(false, Ordering::SeqCst);
+}
+
+/// Ensures `end_verify()` runs when the guard drops, covering every exit path.
+struct VerifyInFlightGuard;
+
+impl Drop for VerifyInFlightGuard {
+    fn drop(&mut self) {
+        end_verify();
+    }
+}
+
+/// Merge new verification handler rows into an existing routing_result JSON string.
+/// Only rows with status "🔁" (re-added) or "❌" (failed) are appended; "✅"
+/// delivered rows are deliberately dropped to avoid history noise.
+fn append_verify_rows_to_routing_result(
+    existing_json: Option<&str>,
+    new_handler_data: &[RouterHandlerData],
+) -> String {
+    let mut existing: Vec<RouterHandlerData> = existing_json
+        .and_then(|s| serde_json::from_str::<Vec<RouterHandlerData>>(s).ok())
+        .unwrap_or_default();
+
+    for row in new_handler_data {
+        if row.status == "🔁" || row.status == "❌" {
+            existing.push(row.clone());
+        }
+    }
+
+    serde_json::to_string(&existing).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Body of the delayed pending-entry verification thread. Claims the single-
+/// flight slot, spawns one inner thread that sleeps for `ROUTER_VERIFY_DELAY`,
+/// runs the router in verify mode, and surfaces any re-added/failed rows in
+/// history and macOS notifications.
+fn verify_thread_body(
+    router_script: String,
+    env_file: Option<String>,
+    hm_and_entry: Option<(Arc<HistoryManager>, i64)>,
+    existing_routing_json: Option<String>,
+) {
+    if !try_begin_verify() {
+        debug!("verify already in flight, skipping");
+        return;
+    }
+    let guard = VerifyInFlightGuard;
+
+    std::thread::spawn(move || {
+        let _guard = guard;
+
+        std::thread::sleep(ROUTER_VERIFY_DELAY);
+
+        match run_router_verify(&router_script, env_file.as_deref()) {
+            Err(e) => {
+                error!("Pending-entry verification failed: {}", e);
+            }
+            Ok(stdout) => {
+                let Some(output) = parse_router_json_output(&stdout) else {
+                    debug!("no verified pending entries");
+                    return;
+                };
+
+                if output.handler_data.is_empty() {
+                    debug!("no verified pending entries");
+                    return;
+                }
+
+                let any_readded = output.handler_data.iter().any(|d| d.status == "🔁");
+                let any_failed = output.handler_data.iter().any(|d| d.status == "❌");
+
+                if any_readded || any_failed {
+                    if let (Some((ref hm, entry_id)), Some(ref existing)) =
+                        (&hm_and_entry, &existing_routing_json)
+                    {
+                        let merged = append_verify_rows_to_routing_result(
+                            Some(existing.as_str()),
+                            &output.handler_data,
+                        );
+                        if let Err(e) = hm.update_routing_result(*entry_id, Some(merged)) {
+                            error!(
+                                "Failed to update routing result with verification rows: {}",
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    debug!(
+                        "All {} pending handlers delivered; skipping routing-result DB write",
+                        output.handler_data.len()
+                    );
+                }
+
+                if any_readded {
+                    send_macos_notification(
+                        "Handy Router",
+                        "Journal entry re-added after conflict",
+                    );
+                }
+                if any_failed {
+                    send_macos_notification("Handy Router", "Journal verify failed — see history");
+                }
+                if !any_readded && !any_failed {
+                    debug!("All pending journal entries verified as delivered");
+                }
+
+                let summary = output
+                    .handler_data
+                    .iter()
+                    .map(|d| format!("{} {}", d.status, d.handler))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                info!("Pending-entry verification completed: {}", summary);
+            }
+        }
+    });
+}
+
+/// Spawn a non-blocking pending-entry verification for a recent routing.
+fn run_pending_entry_verify(
+    router_script: String,
+    env_file: Option<String>,
+    hm_and_entry: Option<(Arc<HistoryManager>, i64)>,
+    existing_routing_json: Option<String>,
+) {
+    // The caller (router result thread) is already backgrounded; verify_thread_body
+    // returns immediately after spawning the single sleeping/verify thread.
+    verify_thread_body(
+        router_script,
+        env_file,
+        hm_and_entry,
+        existing_routing_json,
+    );
+}
+
+/// Schedule a one-time startup sweep to verify any pending entries from
+/// previous runs or races. Runs after `STARTUP_VERIFY_DELAY`.
+pub(crate) fn schedule_startup_pending_entry_verify(app: &AppHandle) {
+    let settings = get_settings(app);
+    let Some(router_script) = settings.router_script_path.clone() else {
+        debug!("No router_script_path configured; skipping startup pending-entry verification");
+        return;
+    };
+    let env_file = settings.router_env_file.clone();
+
+    std::thread::spawn(move || {
+        std::thread::sleep(STARTUP_VERIFY_DELAY);
+        verify_thread_body(router_script, env_file, None, None);
+    });
 }
 
 /// Parsed output returned by the boss_router subprocess.
@@ -1160,5 +1369,111 @@ fn send_macos_notification(title: &str, message: &str) {
     {
         Ok(_) => debug!("macOS notification sent: {} - {}", title, message),
         Err(e) => warn!("Failed to send macOS notification: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_verify_mode_output() {
+        let stdout = "Checking pending entries...\n{\"handlers\": [{\"status\": \"🔁\", \"handler\": \"Daily\", \"classification\": \"diary_entry_verify\", \"file_path\": \"/path/to/note.md\"}, {\"status\": \"❌\", \"handler\": \"Daily\", \"classification\": \"diary_entry_verify\", \"file_path\": \"/path/to/note2.md\"}]}";
+        let output = parse_router_json_output(stdout).expect("should parse verify output");
+        assert_eq!(output.handler_data.len(), 2);
+        assert_eq!(output.handler_data[0].classification, "diary_entry_verify");
+        assert_eq!(output.handler_data[0].status, "🔁");
+        assert!(output.handler_data[0].file_path.is_some());
+        assert_eq!(output.handler_data[1].status, "❌");
+        assert!(output.summary.contains("🔁"));
+        assert!(output.summary.contains("❌"));
+    }
+
+    #[test]
+    fn test_parse_verify_mode_empty() {
+        let stdout = "log line\n{\"handlers\": []}";
+        assert!(parse_router_json_output(stdout).is_none());
+    }
+
+    #[test]
+    fn test_parse_verify_mode_noise() {
+        let stdout = "log line 1\nanother log\n{\"handlers\": [{\"status\": \"✅\", \"handler\": \"Daily\", \"classification\": \"diary_entry_verify\", \"file_path\": \"/path/to/note.md\"}]}";
+        let output = parse_router_json_output(stdout).expect("should parse despite noise");
+        assert_eq!(output.handler_data.len(), 1);
+        assert_eq!(output.handler_data[0].classification, "diary_entry_verify");
+    }
+
+    #[test]
+    fn test_append_verify_rows_preserves_existing() {
+        let existing = r#"[{"status": "✅", "handler": "Daily", "classification": "diary_entry", "file_path": "/path/to/note.md"}]"#;
+        let new_rows = vec![
+            RouterHandlerData {
+                status: "✅".to_string(),
+                handler: "Daily".to_string(),
+                classification: "diary_entry_verify".to_string(),
+                file_path: Some("/path/to/note.md".to_string()),
+            },
+            RouterHandlerData {
+                status: "🔁".to_string(),
+                handler: "Daily".to_string(),
+                classification: "diary_entry_verify".to_string(),
+                file_path: Some("/path/to/note.md".to_string()),
+            },
+            RouterHandlerData {
+                status: "❌".to_string(),
+                handler: "Daily".to_string(),
+                classification: "diary_entry_verify".to_string(),
+                file_path: Some("/path/to/note2.md".to_string()),
+            },
+        ];
+        let merged = append_verify_rows_to_routing_result(Some(existing), &new_rows);
+        let parsed: Vec<RouterHandlerData> = serde_json::from_str(&merged).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].classification, "diary_entry");
+        assert_eq!(parsed[1].status, "🔁");
+        assert_eq!(parsed[2].status, "❌");
+    }
+
+    #[test]
+    fn test_append_verify_rows_none_input() {
+        let new_rows = vec![RouterHandlerData {
+            status: "🔁".to_string(),
+            handler: "Daily".to_string(),
+            classification: "diary_entry_verify".to_string(),
+            file_path: Some("/path/to/note.md".to_string()),
+        }];
+        let merged = append_verify_rows_to_routing_result(None, &new_rows);
+        let parsed: Vec<RouterHandlerData> = serde_json::from_str(&merged).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].status, "🔁");
+    }
+
+    #[test]
+    fn test_append_verify_rows_unparseable() {
+        let new_rows = vec![RouterHandlerData {
+            status: "🔁".to_string(),
+            handler: "Daily".to_string(),
+            classification: "diary_entry_verify".to_string(),
+            file_path: Some("/path/to/note.md".to_string()),
+        }];
+        let merged = append_verify_rows_to_routing_result(Some("garbage"), &new_rows);
+        let parsed: Vec<RouterHandlerData> = serde_json::from_str(&merged).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].status, "🔁");
+    }
+
+    #[test]
+    fn test_append_verify_rows_all_delivered() {
+        let existing = r#"[{"status": "✅", "handler": "Daily", "classification": "diary_entry", "file_path": "/path/to/note.md"}]"#;
+        let new_rows = vec![RouterHandlerData {
+            status: "✅".to_string(),
+            handler: "Daily".to_string(),
+            classification: "diary_entry_verify".to_string(),
+            file_path: Some("/path/to/note.md".to_string()),
+        }];
+        let merged = append_verify_rows_to_routing_result(Some(existing), &new_rows);
+        let parsed: Vec<RouterHandlerData> = serde_json::from_str(&merged).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].classification, "diary_entry");
     }
 }
