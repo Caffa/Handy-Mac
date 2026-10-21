@@ -1594,7 +1594,7 @@ impl AudioRecordingManager {
 
         let channel = *self.selected_channel.lock();
         let open_started = Instant::now();
-        let microphone = match open_microphone_on_channel(
+        let open_result = match open_microphone_on_channel(
             resolution.device.clone(),
             channel,
             frames_per_chunk,
@@ -1609,7 +1609,41 @@ impl AudioRecordingManager {
                 open_microphone_on_channel(resolution.device.clone(), channel, frames_per_chunk)
             }
             result => result,
-        }?;
+        };
+
+        // Diagnostics only: selected mic disappeared and we silently fell back
+        // to the default. Do NOT count this as an open failure — a later
+        // successful recording resets the counter, and direct-cycling on
+        // fallback would over-cycle during dock/clamshell transitions.
+        if let Some(ref unavailable_name) = resolution.unavailable_selected_microphone {
+            if settings.usb_watchdog_enabled && !settings.usb_watchdog_device_name.is_empty() {
+                warn!(
+                    "Selected microphone '{}' is missing; watchdog enabled for '{}', falling back to default mic without cycling",
+                    unavailable_name,
+                    settings.usb_watchdog_device_name
+                );
+            }
+        }
+
+        let microphone = match open_result {
+            Ok(m) => m,
+            Err(e) => {
+                // Count this as a mic-open failure for the USB watchdog threshold.
+                let cycled = self.usb_watchdog.on_mic_open_failed();
+                if cycled {
+                    warn!("USB watchdog power-cycled hub after mic open failure; retrying once");
+                    self.invalidate_device_cache();
+                    resolution = self.resolve_microphone_device(&settings);
+                    open_microphone_on_channel(
+                        resolution.device.clone(),
+                        channel,
+                        frames_per_chunk,
+                    )?
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
         debug!(
             "mic stream breakdown: device_resolve={:?} vad_ensure={:?} open={:?}",
             resolve_elapsed,
@@ -2546,9 +2580,15 @@ impl AudioRecordingManager {
         Ok(())
     }
 
-    /// Check if the microphone stream is currently open and alive.
+    /// Diagnostic snapshot of the microphone stream.
     /// Returns (is_open, is_alive).
-    /// This is useful for diagnostics and recovery checks.
+    ///
+    /// This is **not** a wake-recovery authority: an idle always-on stream may
+    /// report `is_alive=true` because the handy-recorder crate only marks a
+    /// stream failed when callbacks stop while a sink is running. Wake recovery
+    /// therefore cycles the USB hub unconditionally after confirming device
+    /// presence, not based on this value.
+    #[allow(dead_code)]
     pub fn check_stream_health(&self) -> (bool, bool) {
         let is_open = *self.is_open.lock();
         if !is_open {

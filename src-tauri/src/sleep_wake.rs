@@ -25,6 +25,11 @@ use std::time::Instant;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
+const WAKE_DEVICE_WAIT_SECS: u64 = 10;
+#[cfg(target_os = "macos")]
+const WAKE_DEVICE_POLL_MS: u64 = 1000;
+
 /// Start listening for macOS wake-from-sleep events.
 ///
 /// On macOS this installs both an `NSWorkspaceDidWakeNotification` observer
@@ -270,7 +275,7 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
     }
 
     info!(
-        "Triggering post-wake recovery for device '{}' (will check stream health then cycle USB if needed)",
+        "Triggering post-wake USB recovery for device '{}' (wait for re-enumeration, then cycle unconditionally if idle)",
         device_name
     );
 
@@ -281,40 +286,70 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
 
     let ah = app_handle.clone();
     std::thread::spawn(move || {
-        // Reduced from 5s to 2s - macOS USB re-enumeration is fast on most systems.
-        // If the device isn't ready in 2s, the watchdog power cycle will handle it.
+        // Give macOS USB services a moment to resume before polling.
         std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Wait for the device to re-appear in the USB tree. Post-wake
+        // re-enumeration can lag, and force_power_cycle's resolve_device gives
+        // up on the first miss, so we poll before deciding the device is absent.
+        let mut device_seen = false;
+        for waited_secs in 0..WAKE_DEVICE_WAIT_SECS {
+            if crate::usb_watchdog::device_present_in_usb_tree(&device_name) {
+                device_seen = true;
+                info!(
+                    "Wake recovery: device '{}' re-appeared in USB tree after {}s",
+                    device_name, waited_secs
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(WAKE_DEVICE_POLL_MS));
+        }
+
+        // Guard: a recording may have started while we were waiting. Do not
+        // power-cycle the USB hub underneath an active transcription.
+        let app_state = ah
+            .try_state::<crate::TranscriptionCoordinator>()
+            .map(|c| c.get_state());
+        let busy = !matches!(
+            app_state,
+            Some(crate::transcription_coordinator::AppState::Idle { .. }) | None
+        );
+        if busy {
+            warn!(
+                "Wake recovery: skipping USB power cycle, app is busy: {:?}",
+                app_state
+            );
+            return;
+        }
 
         let recording_manager =
             ah.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>();
 
         match recording_manager {
             Some(rm) => {
-                // Check stream health using the public method
-                let (is_open, is_alive) = rm.check_stream_health();
-
-                if !is_open {
-                    info!("Wake recovery: stream not open, will open on next recording");
-                    // Stream not open (OnDemand mode or closed), skip cycle
-                    // The stream will be opened fresh on next recording attempt
-                    return;
-                }
-
-                if is_alive {
-                    info!("Wake recovery: stream is alive, no USB cycle needed");
-                    return;
-                }
-
-                warn!("Wake recovery: stream is dead (zombie), triggering USB power cycle");
                 let wd = &rm.usb_watchdog;
-                info!("Starting post-wake USB power cycle sequence");
-                // force_power_cycle already handles restart_microphone_if_needed
-                if !wd.force_power_cycle() {
-                    warn!("Post-wake USB power cycle was skipped (already cycling or cooldown active)");
+                if device_seen {
+                    warn!("Wake recovery: triggering post-wake USB power cycle");
+                    info!("Wake recovery: starting post-wake USB power cycle sequence");
+                    // force_power_cycle already handles restart_microphone_if_needed
+                    if !wd.force_power_cycle() {
+                        warn!("Wake recovery: post-wake USB power cycle was skipped (already cycling or cooldown active)");
+                    }
+                } else {
+                    warn!(
+                        "Wake recovery: device '{}' did not re-appear within {}s; skipping USB power cycle",
+                        device_name, WAKE_DEVICE_WAIT_SECS
+                    );
+                    let app_handle_for_event = (*ah).clone();
+                    crate::usb_watchdog::emit_cycle_event_with_handle(
+                        &Some(app_handle_for_event),
+                        "usb-power-cycle-failed",
+                        "device absent after wake wait",
+                    );
                 }
             }
             None => {
-                error!("Audio recording manager state not found on wake!");
+                error!("Wake recovery: audio recording manager state not found");
             }
         }
     });

@@ -624,6 +624,11 @@ pub fn list_usb_devices() -> Vec<UsbDevice> {
     list_usb_devices_inner()
 }
 
+/// True if the named device is currently visible in the USB tree (uhubctl).
+pub fn device_present_in_usb_tree(name: &str) -> bool {
+    resolve_device(name).is_some()
+}
+
 fn list_usb_devices_inner() -> Vec<UsbDevice> {
     let bin = match uhubctl_bin() {
         Some(b) => b,
