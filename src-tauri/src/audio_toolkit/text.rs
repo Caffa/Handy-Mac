@@ -1256,14 +1256,17 @@ fn convert_number_words_to_digits_impl(text: &str, app_language: &str) -> String
         // A run converts when it is either:
         //   - a single hyphenated compound token (e.g. "twenty-five"), or
         //   - spans 2+ tokens (e.g. "zero zero four"), or
-        //   - contains a scale word or "point" (e.g. "one hundred", "three point five").
+        //   - contains a scale word (e.g. "one hundred").
+        // Note: "point" is deliberately excluded here. A bare "point" must stay
+        // a word; multi-token runs containing "point" (e.g. "three point five")
+        // convert via the run-length >= 2 rule above.
         let should_convert = if run.len() == 1 {
             let single = &run[0];
             single.cores.len() > 1
                 || single
                     .cores
                     .iter()
-                    .any(|c| scale_or_point_word_set_contains(c.as_str()))
+                    .any(|c| scale_word_set_contains(c.as_str()))
         } else {
             true
         };
@@ -1344,14 +1347,19 @@ const NUMBER_WORDS: &[&str] = &[
 ];
 
 /// Subset of number words that force conversion even in a single-token run.
-const SCALE_OR_POINT_WORDS: &[&str] = &["hundred", "thousand", "million", "billion", "point"];
+///
+/// These are scale words (hundred, thousand, million, billion). "point" is
+/// intentionally omitted: a lone "point" should remain a word, and
+/// multi-token decimal phrases such as "three point five" convert via the
+/// run-length >= 2 rule in `convert_number_words_to_digits_impl`.
+const SCALE_WORDS: &[&str] = &["hundred", "thousand", "million", "billion"];
 
 fn number_word_set_contains(word: &str) -> bool {
     NUMBER_WORDS.contains(&word)
 }
 
-fn scale_or_point_word_set_contains(word: &str) -> bool {
-    SCALE_OR_POINT_WORDS.contains(&word)
+fn scale_word_set_contains(word: &str) -> bool {
+    SCALE_WORDS.contains(&word)
 }
 
 /// Converts a flat sequence of number-word cores into a digit string.
@@ -3320,6 +3328,16 @@ mod tests {
         assert_eq!(
             convert_number_words_to_digits("three point five", "en"),
             "3.5"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_bare_point_unchanged() {
+        assert_eq!(convert_number_words_to_digits("point", "en"), "point");
+        assert_eq!(convert_number_words_to_digits("Point.", "en"), "Point.");
+        assert_eq!(
+            convert_number_words_to_digits("a talking point", "en"),
+            "a talking point"
         );
     }
 
