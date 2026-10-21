@@ -1,5 +1,42 @@
 # Handy-Fork Learning Log
 
+## USB Watchdog Wake Recovery: zombie AlwaysOn stream silently skipped wake cycle (2026-10-21)
+
+### Problem
+
+- With `always_on: true` and the USB watchdog configured (RØDE VideoMic NTG), macOS wake-from-sleep did **not** trigger a USB power cycle
+- The mic stream stayed zombie: open according to Handy, but not delivering audio
+- The next dictation would either capture silence or fail to start until the app was restarted
+
+### Root Causes
+
+1. **`on_system_wake()` trusted `AudioRecordingManager::check_stream_health()`** to decide whether to cycle. For an idle always-on stream (no active recording sink), the handy-recorder crate never marks the stream failed — its `NoAudio` / `Stalled` watchdog only fires when callbacks stop while a sink is running. An idle post-wake stream therefore reports `(is_open=true, is_alive=true)`, so the cycle was skipped.
+
+2. **`UsbWatchdog::on_mic_open_failed()` had no callers on the mic-open failure path**. `start_microphone_stream()` propagated open errors with `?` without counting them toward the watchdog threshold, and `start_liveness_monitor()` logged restart failures but never called `on_mic_open_failed()`.
+
+### Fixes
+
+1. **Added `device_present_in_usb_tree()`** in `src-tauri/src/usb_watchdog.rs` as a non-retriable snapshot of whether the configured device is currently visible to `uhubctl`.
+
+2. **Rewrote the wake-recovery thread in `src-tauri/src/sleep_wake.rs`**:
+   - Polls `device_present_in_usb_tree()` every 1s for up to 10s to wait for post-wake USB re-enumeration.
+   - Re-checks `AppState` immediately before cycling; if a recording started during the wait, the cycle is skipped.
+   - Cycles the USB hub unconditionally when the device is seen (no longer consults `check_stream_health`).
+   - Emits `usb-power-cycle-failed` with reason `device absent after wake wait` if the device never re-appears.
+
+3. **Updated `check_stream_health()` doc comment** to state explicitly that it is a diagnostic snapshot only, not a wake-recovery authority.
+
+4. **Made `start_microphone_stream()` count open failures** in `src-tauri/src/managers/audio.rs`:
+   - Calls `usb_watchdog.on_mic_open_failed()` once after the built-in cache-miss retry also fails.
+   - If the watchdog returns `true` (a blocking power cycle completed), invalidates the device cache, re-resolves the mic, and tries to open one final time.
+   - Added a diagnostics-only `warn!` when the selected mic is missing and the watchdog is enabled, but deliberately does **not** count the fallback as an open failure.
+
+5. **Made `start_liveness_monitor()` count restart failures** in both the invariant self-heal branch and the main dead-stream restart branch by calling `usb_watchdog.on_mic_open_failed()` after each failed `start_microphone_stream()`.
+
+### Key Insight
+
+An idle-stream "alive" verdict is **meaningless** at the crate boundary because detectability requires a running sink. Wake recovery must therefore be unconditional (cycle after confirming device presence and verifying the app is idle), not gated on a health check that cannot see the failure it is trying to prevent.
+
 ## USB Watchdog Power-Cycle Bug (2026-04-28)
 
 ### Problem
