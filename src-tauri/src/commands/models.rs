@@ -3,7 +3,7 @@ use crate::managers::model::{
     BenchmarkModelFailure, BenchmarkResult, BenchmarkScore, ModelInfo, ModelManager, RetiredModel,
 };
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
-use crate::settings::{get_settings_safe, write_settings_safe, ModelUnloadTimeout};
+use crate::settings::{get_settings_safe, ModelUnloadTimeout};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -102,9 +102,9 @@ pub async fn delete_model(
         .map_err(|e| format!("Failed to unload model: {}", e))?
         .map_err(|e| format!("Failed to unload model: {}", e))?;
 
-        let mut settings = get_settings_safe(&app_handle);
-        settings.selected_model = String::new();
-        write_settings_safe(&app_handle, settings);
+        crate::settings::patch_settings(&app_handle, |s| {
+            s.selected_model = String::new();
+        });
     }
 
     model_manager.delete_model(&model_id).map_err(|e| {
@@ -150,28 +150,26 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     let settings = get_settings_safe(app);
     let unload_timeout = settings.model_unload_timeout;
     let old_model = settings.selected_model.clone();
+    let supported_languages = model_info.supported_languages.clone();
 
-    let mut settings = settings;
-    settings.selected_model = model_id.to_string();
+    crate::settings::patch_settings(app, |s| {
+        s.selected_model = model_id.to_string();
 
-    // Reset language to auto if the new model doesn't support the currently selected language.
-    // This prevents stale language settings from causing errors (e.g. Canary receiving zh-Hans)
-    // and stops downstream processing (e.g. OpenCC) from running on an irrelevant language.
-    if settings.selected_language != "auto"
-        && !model_info.supported_languages.is_empty()
-        && !model_info
-            .supported_languages
-            .contains(&settings.selected_language)
-    {
-        log::info!(
-            "Resetting language from '{}' to 'auto' (not supported by {})",
-            settings.selected_language,
-            model_id
-        );
-        settings.selected_language = "auto".to_string();
-    }
-
-    write_settings_safe(app, settings);
+        // Reset language to auto if the new model doesn't support the currently selected language.
+        // This prevents stale language settings from causing errors (e.g. Canary receiving zh-Hans)
+        // and stops downstream processing (e.g. OpenCC) from running on an irrelevant language.
+        if s.selected_language != "auto"
+            && !supported_languages.is_empty()
+            && !supported_languages.contains(&s.selected_language)
+        {
+            log::info!(
+                "Resetting language from '{}' to 'auto' (not supported by {})",
+                s.selected_language,
+                model_id
+            );
+            s.selected_language = "auto".to_string();
+        }
+    });
 
     // Atomically claim the loading slot — prevents concurrent model loads
     // from tray double-clicks or overlapping commands. The guard resets the
@@ -240,9 +238,9 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     // waiting on the loading condvar) needed the same Mutex.
     let tm_clone = transcription_manager.lock().clone();
     if let Err(e) = tm_clone.load_model(model_id) {
-        let mut settings = get_settings_safe(app);
-        settings.selected_model = old_model;
-        write_settings_safe(app, settings);
+        crate::settings::patch_settings(app, |s| {
+            s.selected_model = old_model.clone();
+        });
         return Err(e.to_string());
     }
 

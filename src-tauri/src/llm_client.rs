@@ -156,7 +156,9 @@ struct AnthropicMessagesResponse {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum AnthropicContentBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// Thinking and any other non-text blocks
     #[serde(other)]
     Other,
@@ -564,11 +566,13 @@ async fn send_anthropic_message(
 
     let status = response.status();
     if !status.is_success() {
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|e| report_reqwest_error("Failed to read Anthropic error response", &e));
-        return Err(format!("Anthropic request failed ({}): {}", status, error_text));
+        let error_text = response.text().await.unwrap_or_else(|e| {
+            report_reqwest_error("Failed to read Anthropic error response", &e)
+        });
+        return Err(format!(
+            "Anthropic request failed ({}): {}",
+            status, error_text
+        ));
     }
 
     let parsed: AnthropicMessagesResponse = response

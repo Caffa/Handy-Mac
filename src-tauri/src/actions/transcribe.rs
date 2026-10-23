@@ -4,9 +4,9 @@
 
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
 use crate::audio_toolkit::VadPolicy;
-use crate::managers::audio::recording_error_type;
 use crate::errors::AppError;
 use crate::logging::{self, AppEvent, SessionId};
+use crate::managers::audio::recording_error_type;
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
 use crate::managers::model::ModelManager;
@@ -59,7 +59,9 @@ impl Drop for FinishGuard {
     fn drop(&mut self) {
         // Unload the model immediately so a recording that produced no audio
         // (or was cancelled early) does not keep the model resident.
-        self.1.lock().maybe_unload_immediately("transcription session");
+        self.1
+            .lock()
+            .maybe_unload_immediately("transcription session");
         let has_coordinator = self.0.try_state::<TranscriptionCoordinator>().is_some();
         info!(
             "[FINISH-GUARD] drop firing — requesting Processing→Idle reset (coordinator handle: {})",
@@ -275,8 +277,6 @@ impl super::ShortcutAction for TranscribeAction {
             utils::hide_recording_overlay(app);
             set_tray_state(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
-
-
                 // ── Structured event: recording failed ──
                 if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
                     if let Some(sid) = tracker.current_session_id() {
@@ -624,6 +624,7 @@ impl super::ShortcutAction for TranscribeAction {
                                                 "Text pasted successfully in {:?}",
                                                 paste_time.elapsed()
                                             );
+                                            info!("[PASTE-FLOW] paste() returned Ok on main thread; finishing session");
                                             // ── Structured event: paste succeeded, finish session ──
                                             if let (Some(ref s), Some(tracker)) =
                                                 (&sid, ah_clone.try_state::<Arc<SessionTracker>>())
@@ -632,10 +633,12 @@ impl super::ShortcutAction for TranscribeAction {
                                                     s,
                                                     paste_time.elapsed().as_millis() as u64,
                                                 );
+                                                info!("[PASTE-FLOW] finish_session done (PasteSucceeded emitted)");
                                             }
                                         }
                                         Err(e) => {
                                             error!("Failed to paste transcription (clipboard fallback also failed): {}", e);
+                                            info!("[PASTE-FLOW] paste() returned Err on main thread; failing session");
 
                                             // ── Structured event: paste failed ──
                                             if let (Some(ref s), Some(tracker)) =
@@ -645,14 +648,18 @@ impl super::ShortcutAction for TranscribeAction {
                                                     s,
                                                     &format!("Paste failed: {}", e),
                                                 );
+                                                info!("[PASTE-FLOW] fail_session done (PasteFailed emitted)");
                                             }
 
                                             // Both paste and clipboard fallback failed.
                                             let _ = ah_clone.emit("paste-error", ());
                                         }
                                     }
+                                    info!("[PASTE-FLOW] hiding recording overlay");
                                     utils::hide_recording_overlay(&ah_clone);
+                                    info!("[PASTE-FLOW] resetting tray to Idle");
                                     set_tray_state(&ah_clone, TrayIconState::Idle);
+                                    info!("[PASTE-FLOW] paste closure complete (overlay hidden, tray Idle)");
                                 });
 
                                 match result {

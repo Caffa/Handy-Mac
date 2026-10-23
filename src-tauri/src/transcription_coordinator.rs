@@ -1122,7 +1122,11 @@ impl TranscriptionCoordinator {
         // Emit initial Idle state
         emit_app_state(&app, &AppState::Idle { session_id: 0 });
 
-        thread::spawn(move || {
+        // Named thread: sample/spindump showed the wedged coordinator only as
+        // an anonymous parked thread. The name makes future stacks readable.
+        thread::Builder::new()
+            .name("transcription-coordinator".into())
+            .spawn(move || {
             let mut core = CoordinatorCore::new_production();
             let mut should_exit = false;
             // Monotonic session id for the current recording/processing session.
@@ -1557,7 +1561,8 @@ impl TranscriptionCoordinator {
                     break;
                 }
             }
-        });
+        })
+        .expect("spawn coordinator");
 
         Self {
             tx,

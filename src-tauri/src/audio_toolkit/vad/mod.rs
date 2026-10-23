@@ -163,14 +163,12 @@ pub fn trim_trailing_silence(audio: &[f32], vad_path: &str, threshold: f32) -> V
     // Frame geometry comes from the loaded model (512 samples = 32 ms for
     // Silero v6.2) so this stays correct across model swaps.
     let frame_samples = vad.frame_samples();
-    let hangover_samples = crate::audio_toolkit::vad::frames_for_duration_ms(
-        HANGOVER_MS,
-        frame_samples,
-    ) * frame_samples;
-    let leading_buffer_samples = crate::audio_toolkit::vad::frames_for_duration_ms(
-        LEADING_BUFFER_MS,
-        frame_samples,
-    ) * frame_samples;
+    let hangover_samples =
+        crate::audio_toolkit::vad::frames_for_duration_ms(HANGOVER_MS, frame_samples)
+            * frame_samples;
+    let leading_buffer_samples =
+        crate::audio_toolkit::vad::frames_for_duration_ms(LEADING_BUFFER_MS, frame_samples)
+            * frame_samples;
 
     if audio.len() < frame_samples {
         return audio.to_vec();

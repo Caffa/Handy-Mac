@@ -227,10 +227,8 @@ fn analyze_parakeet_thresholds() {
 
     if quiet_count > 0 {
         println!("\n--- Summary of Quiet Recordings with Adaptive Thresholds ---");
-        let quiet_analyses: Vec<&RecordingAnalysis> = analyses
-            .iter()
-            .filter(|a| a.metrics.is_quiet())
-            .collect();
+        let quiet_analyses: Vec<&RecordingAnalysis> =
+            analyses.iter().filter(|a| a.metrics.is_quiet()).collect();
         for a in &quiet_analyses {
             let snr = a.metrics.estimated_snr_db;
             let threshold_note = adaptive_threshold_note(snr);
@@ -388,17 +386,20 @@ fn compute_audio_quality_synthetic_thresholds() {
     assert!(
         !loud.is_quiet(),
         "Loud audio should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)",
-        loud.peak_dbfs, loud.estimated_snr_db
+        loud.peak_dbfs,
+        loud.estimated_snr_db
     );
     assert!(
         !medium.is_quiet(),
         "Medium audio should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)",
-        medium.peak_dbfs, medium.estimated_snr_db
+        medium.peak_dbfs,
+        medium.estimated_snr_db
     );
     assert!(
         !borderline.is_quiet(),
         "Borderline audio (peak≈-22 dBFS) should NOT be flagged (peak={:.1} dBFS, snr={:.1} dB)",
-        borderline.peak_dbfs, borderline.estimated_snr_db
+        borderline.peak_dbfs,
+        borderline.estimated_snr_db
     );
 
     // Quiet and very quiet audio SHOULD be flagged (peak < -25 dBFS)

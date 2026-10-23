@@ -17,6 +17,24 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 /// This mutex serializes all tray operations to prevent the race condition.
 static TRAY_LOCK: once_cell::sync::Lazy<Mutex<()>> = once_cell::sync::Lazy::new(|| Mutex::new(()));
 
+/// Fire-and-forget dispatch of a tray operation to the main thread.
+///
+/// Every tray entry point must go through this: Tauri's tray icon/menu APIs
+/// internally do `run_item_main_thread!` (dispatch to the main thread + a
+/// *blocking* `rx.recv()`), so calling them from a background thread parks the
+/// caller until the main loop drains the request. If the main thread is wedged,
+/// every background caller wedges with it while holding `TRAY_LOCK` and the
+/// coordinator thread stops dequeuing commands (see
+/// `research/main-thread-hang-tray-lock-wedge-2026-10-23.md`). Dispatching
+/// fire-and-forget keeps every caller park-free; ordering between tray ops is
+/// preserved because they all drain from the same main-thread queue.
+fn dispatch_tray_op<F: FnOnce() + Send + 'static>(app: &AppHandle, label: &str, op: F) {
+    match app.run_on_main_thread(op) {
+        Ok(()) => debug!("dispatched {label}"),
+        Err(e) => error!("Failed to dispatch {label} to main thread: {}", e),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrayIconState {
     Idle,
@@ -98,52 +116,67 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState, warning: bool) -> &'
 }
 
 pub fn set_tray_state(app: &AppHandle, icon: TrayIconState) {
-    // Wrap in catch_unwind so any unexpected panic in tray operations
-    // doesn't crash the app. The cancel button calls this, and a crash
-    // here would leave the recording stuck with no way to recover.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Acquire the global tray lock to prevent concurrent RefCell borrows
-        let _guard = TRAY_LOCK.lock();
+    // Synchronously remember the state FIRST so a transition is never lost
+    // (refresh_tray_icon reads it back, and a failed dispatch must not drop
+    // e.g. Recording → Idle). This is a plain parking_lot mutex around an
+    // enum clone — no main-thread hop involved.
+    if let Some(current) = app.try_state::<CurrentTrayIconState>() {
+        *current.0.lock() = icon.clone();
+    }
 
-        // Remember the state so refresh_tray_icon can re-render later.
-        if let Some(current) = app.try_state::<CurrentTrayIconState>() {
-            *current.0.lock() = icon.clone();
-        }
+    dispatch_tray_op(app, "set_tray_state", {
+        let app = app.clone();
+        move || {
+            // Wrap in catch_unwind so any unexpected panic in tray operations
+            // doesn't crash the app. The cancel button calls this, and a crash
+            // here would leave the recording stuck with no way to recover.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // Lock must never span a main-thread hop; RefCell safety comes
+                // from main-thread serialization (this closure IS on the main
+                // thread). try_lock so even a future off-main holder can never
+                // wedge the main thread — the same guard pattern as
+                // try_update_tray_menu.
+                let Some(_guard) = TRAY_LOCK.try_lock() else {
+                    warn!("TRAY_LOCK already held; skipping best-effort tray icon update");
+                    return;
+                };
 
-        let Some(tray) = app.try_state::<TrayIcon>() else {
-            warn!("TrayIcon not available for icon change");
-            return;
-        };
-        let theme = get_current_theme(app);
-        let warning = crate::secure_input::tray_warning_active(app);
-        let icon_path = get_icon_path(theme, icon.clone(), warning);
+                let Some(tray) = app.try_state::<TrayIcon>() else {
+                    warn!("TrayIcon not available for icon change");
+                    return;
+                };
+                let theme = get_current_theme(&app);
+                let warning = crate::secure_input::tray_warning_active(&app);
+                let icon_path = get_icon_path(theme, icon.clone(), warning);
 
-        let resolved = app
-            .path()
-            .resolve(icon_path, tauri::path::BaseDirectory::Resource);
-        match resolved {
-            Ok(path) => match Image::from_path(&path) {
-                Ok(img) => {
-                    // Keep the template flag in lockstep with the icon. Upstream
-                    // 37a26fd6 uses tauri 2.11's atomic set_icon_with_as_template;
-                    // the fork's lockfile pins tauri 2.10.2 which lacks it, so
-                    // the two calls stay adjacent (template is re-asserted on
-                    // every icon refresh).
-                    if let Err(e) = tray.set_icon(Some(img)) {
-                        error!("Failed to set tray icon: {}", e);
-                    }
+                let resolved = app
+                    .path()
+                    .resolve(icon_path, tauri::path::BaseDirectory::Resource);
+                match resolved {
+                    Ok(path) => match Image::from_path(&path) {
+                        Ok(img) => {
+                            // Keep the template flag in lockstep with the icon. Upstream
+                            // 37a26fd6 uses tauri 2.11's atomic set_icon_with_as_template;
+                            // the fork's lockfile pins tauri 2.10.2 which lacks it, so
+                            // the two calls stay adjacent (template is re-asserted on
+                            // every icon refresh).
+                            if let Err(e) = tray.set_icon(Some(img)) {
+                                error!("Failed to set tray icon: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Failed to load tray icon image: {}", e),
+                    },
+                    Err(e) => error!("Failed to resolve tray icon path: {}", e),
                 }
-                Err(e) => error!("Failed to load tray icon image: {}", e),
-            },
-            Err(e) => error!("Failed to resolve tray icon path: {}", e),
-        }
-        if let Err(e) = tray.set_icon_as_template(true) {
-            error!("Failed to set tray icon as template: {}", e);
-        }
+                if let Err(e) = tray.set_icon_as_template(true) {
+                    error!("Failed to set tray icon as template: {}", e);
+                }
 
-        // Update menu based on state (internal version that doesn't re-acquire lock)
-        update_tray_menu_internal(app, &icon, None);
-    }));
+                // Update menu based on state (internal version that doesn't re-acquire lock)
+                update_tray_menu_internal(&app, &icon, None);
+            }));
+        }
+    });
 }
 
 pub fn tray_tooltip() -> String {
@@ -410,13 +443,23 @@ fn update_tray_menu_internal(app: &AppHandle, state: &TrayIconState, locale: Opt
 /// Public function to update tray menu. Acquires the global TRAY_LOCK to prevent
 /// concurrent RefCell borrows that would cause panics.
 pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
-    // Wrap in catch_unwind so any unexpected panic in menu operations
-    // doesn't crash the app. Defense-in-depth with the individual match/return
-    // error handling in update_tray_menu_internal.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = TRAY_LOCK.lock();
-        update_tray_menu_internal(app, state, locale);
-    }));
+    dispatch_tray_op(app, "update_tray_menu", {
+        let app = app.clone();
+        let state = state.clone();
+        let locale = locale.map(str::to_string);
+        move || {
+            // Wrap in catch_unwind so any unexpected panic in menu operations
+            // doesn't crash the app. Defense-in-depth with the individual match/return
+            // error handling in update_tray_menu_internal.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(_guard) = TRAY_LOCK.try_lock() else {
+                    debug!("TRAY_LOCK already held; skipping tray menu update");
+                    return;
+                };
+                update_tray_menu_internal(&app, &state, locale.as_deref());
+            }));
+        }
+    });
 }
 
 /// Best-effort variant of [`update_tray_menu`] that skips the rebuild if the
@@ -425,13 +468,20 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
 /// succession and waiting on an in-progress rebuild could deadlock with backend
 /// locks held by the same thread.
 pub fn try_update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Some(_guard) = TRAY_LOCK.try_lock() else {
-            debug!("TRAY_LOCK already held; skipping best-effort tray menu update");
-            return;
-        };
-        update_tray_menu_internal(app, state, locale);
-    }));
+    dispatch_tray_op(app, "try_update_tray_menu", {
+        let app = app.clone();
+        let state = state.clone();
+        let locale = locale.map(str::to_string);
+        move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(_guard) = TRAY_LOCK.try_lock() else {
+                    debug!("TRAY_LOCK already held; skipping best-effort tray menu update");
+                    return;
+                };
+                update_tray_menu_internal(&app, &state, locale.as_deref());
+            }));
+        }
+    });
 }
 
 fn last_transcript_text(entry: &HistoryEntry) -> &str {
@@ -442,18 +492,27 @@ fn last_transcript_text(entry: &HistoryEntry) -> &str {
 }
 
 pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
-    // Acquire the global tray lock to prevent concurrent RefCell borrows
-    let _guard = TRAY_LOCK.lock();
+    dispatch_tray_op(app, "set_tray_visibility", {
+        let app = app.clone();
+        move || {
+            // try_lock so a contended tray lock can never wedge the main
+            // thread (same guard pattern as try_update_tray_menu).
+            let Some(_guard) = TRAY_LOCK.try_lock() else {
+                warn!("TRAY_LOCK already held; skipping best-effort tray visibility update");
+                return;
+            };
 
-    let Some(tray) = app.try_state::<TrayIcon>() else {
-        warn!("TrayIcon not available");
-        return;
-    };
-    if let Err(e) = tray.set_visible(visible) {
-        error!("Failed to set tray visibility: {}", e);
-    } else {
-        info!("Tray visibility set to: {}", visible);
-    }
+            let Some(tray) = app.try_state::<TrayIcon>() else {
+                warn!("TrayIcon not available");
+                return;
+            };
+            if let Err(e) = tray.set_visible(visible) {
+                error!("Failed to set tray visibility: {}", e);
+            } else {
+                info!("Tray visibility set to: {}", visible);
+            }
+        }
+    });
 }
 
 pub fn copy_last_transcript(app: &AppHandle) {

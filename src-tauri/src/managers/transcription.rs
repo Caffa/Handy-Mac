@@ -793,7 +793,10 @@ impl TranscriptionManager {
             let mut current_model = self.current_model_id.lock().unwrap();
             *current_model = None;
         }
-        debug!("[LOAD-TRACE] old engine dropped, loading via supervisor for {}", model_id);
+        debug!(
+            "[LOAD-TRACE] old engine dropped, loading via supervisor for {}",
+            model_id
+        );
 
         // The backend is chosen at load time (transcribe-cpp has no
         // runtime global). With an explicit `device_index` (the
@@ -807,10 +810,7 @@ impl TranscriptionManager {
             None => {
                 let settings = get_settings(&self.app_handle);
                 let accelerator = settings.transcribe_accelerator;
-                match resolve_gpu_device(
-                    accelerator,
-                    settings.transcribe_gpu_device.as_deref(),
-                ) {
+                match resolve_gpu_device(accelerator, settings.transcribe_gpu_device.as_deref()) {
                     // Backend::Auto accepts an exact GPU device.
                     Some(key) => (Backend::Auto, DeviceSelector::Key(key)),
                     // Without a valid exact device, backend selection

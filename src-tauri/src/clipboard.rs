@@ -3,16 +3,28 @@ use crate::input::{self, EnigoState};
 use crate::settings::TypingTool;
 use crate::settings::{get_settings, AutoSubmitKey, ClipboardHandling, PasteMethod};
 use enigo::{Direction, Enigo, Key, Keyboard};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+
+/// Paste-session generation counter. Bumped at the start of every
+/// `prepare_clipboard_for_paste`, so a new dictation session invalidates any
+/// still-pending paste-verifier from a previous session: the verifier re-reads
+/// this immediately before restoring and skips if the epoch moved on (its
+/// restore could otherwise straddle the next session's clipboard publish and
+/// make that session paste the ORIGINAL content). Lock-free by design —
+/// Relaxed ordering suffices because the only contract is "eventually
+/// observed", not "synchronously ordered with the clipboard writes".
+static CLIPBOARD_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// Original clipboard contents saved before a clipboard paste, for later
 /// restoration. Text takes priority; an image is only captured when the
 /// clipboard held no text, so the common text path costs exactly what it
 /// did before (reading an image decodes the full bitmap).
+#[derive(Clone)]
 struct SavedClipboard {
     text: Option<String>,
     image: Option<tauri::image::Image<'static>>,
@@ -100,6 +112,16 @@ mod macos_ax {
 
     // AXError codes
     pub const KAX_ERROR_SUCCESS: i32 = 0;
+    /// kAXErrorCannotComplete — with AXUIElementSetMessagingTimeout in place,
+    /// this is what a HUNG target app returns (the AX message timed out).
+    /// It means the app is unresponsive, NOT that an attribute is missing,
+    /// so it must not be treated as "terminal-like app, paste landed".
+    pub const KAX_ERROR_CANNOT_COMPLETE: i32 = -25204;
+    /// kAXErrorAttributeUnsupported — the element genuinely does not support
+    /// the attribute (many terminal apps don't expose AXValue).
+    pub const KAX_ERROR_ATTRIBUTE_UNSUPPORTED: i32 = -25205;
+    /// kAXErrorNoValue — the attribute exists but has no value.
+    pub const KAX_ERROR_NO_VALUE: i32 = -25212;
 
     // CoreFoundation encoding
     pub const K_CFSTRING_ENCODING_UTF8: u32 = 0x08000100;
@@ -131,6 +153,16 @@ mod macos_ax {
     #[link(kind = "framework", name = "ApplicationServices")]
     extern "C" {
         pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+        // Bounds the round-trip time of AX messages sent to `element`'s
+        // process (seconds, f32 per HIServices). Without this,
+        // AXUIElementCopyAttributeValue against a hung target app blocks the
+        // calling thread FOREVER — observed live: the macOS main thread parked
+        // permanently inside the paste closure and wedged the whole app (see
+        // research/main-thread-hang-tray-lock-wedge-2026-10-23.md).
+        pub fn AXUIElementSetMessagingTimeout(
+            element: AXUIElementRef,
+            inTimeoutSeconds: f32,
+        ) -> AXError;
         pub fn AXUIElementCopyAttributeValue(
             element: AXUIElementRef,
             // `attribute` is a CFStringRef (a CoreFoundation object pointer), NOT
@@ -222,6 +254,11 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSWorkspace;
 
+    // Per-element AX messaging timeout. 1.0s is generous for a healthy app;
+    // a hung target app now degrades (verification fails → conservative
+    // keep-on-clipboard) instead of parking the caller forever.
+    const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
+
     autoreleasepool(|_| {
         let workspace = NSWorkspace::sharedWorkspace();
         let Some(app) = workspace.frontmostApplication() else {
@@ -235,6 +272,10 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
         // This works at the window-server level, independent of whether
         // our panel is click-through.
         let ax_app: AXUIElementRef = unsafe { AXUIElementCreateApplication(pid) };
+
+        // Bound AX messages against the target app process — without this an
+        // unbounded AXUIElementCopyAttributeValue can park this thread forever.
+        let _ = unsafe { AXUIElementSetMessagingTimeout(ax_app, AX_MESSAGING_TIMEOUT_SECS) };
 
         // Build the AX attribute name CFStrings at runtime. Modern macOS SDKs
         // no longer export linkable globals for these (they are CFSTR macros
@@ -264,6 +305,11 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
 
         let focused_element: AXUIElementRef = focused_element_ptr as AXUIElementRef;
 
+        // The focused element lives in the (possibly hung) target process too —
+        // bound it with the same messaging timeout.
+        let _ =
+            unsafe { AXUIElementSetMessagingTimeout(focused_element, AX_MESSAGING_TIMEOUT_SECS) };
+
         // Get the AXValue of the focused element
         let mut value_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let value_result = unsafe {
@@ -271,13 +317,6 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
         };
 
         if value_result != KAX_ERROR_SUCCESS {
-            // Element has no AXValue — might be a non-text field (terminal, etc.)
-            // In this case, we can't verify, so assume the paste landed since
-            // many terminal apps don't expose AXValue.
-            info!(
-                "Paste verification: focused element has no AXValue (error={}) — assuming paste succeeded (terminal-like app)",
-                value_result
-            );
             unsafe {
                 // Release the focused element (Create-rule +1 reference)
                 macos_ax::CFRelease(focused_element_ptr as macos_ax::CFTypeRef);
@@ -286,7 +325,37 @@ fn verify_paste_landed_macos(pasted_text: &str) -> bool {
                 macos_ax::CFRelease(value_attr as macos_ax::CFTypeRef);
                 macos_ax::CFRelease(ax_app as macos_ax::CFTypeRef);
             }
-            return true;
+            // Only a genuinely missing/unsupported AXValue is evidence of a
+            // terminal-like app we can't verify — assume the paste landed there.
+            // With the messaging timeout set above, KAX_ERROR_CANNOT_COMPLETE is
+            // reachable and means the target app is hung, where the paste may
+            // NOT have landed; treating it as verified would restore the original
+            // clipboard and evict the transcription. So -25204 (and every other
+            // error) counts as unverified: the transcription stays on the
+            // clipboard for manual paste.
+            if value_result == KAX_ERROR_ATTRIBUTE_UNSUPPORTED || value_result == KAX_ERROR_NO_VALUE
+            {
+                info!(
+                    "Paste verification: focused element has no AXValue (error={}) — assuming paste succeeded (terminal-like app)",
+                    value_result
+                );
+                return true;
+            }
+            if value_result == KAX_ERROR_CANNOT_COMPLETE {
+                // Timed-out AX message — the target app is hung, so we genuinely
+                // don't know whether the paste landed. Keep the transcription on
+                // the clipboard instead of evicting it with a restore.
+                info!(
+                    "Paste verification: AXValue fetch timed out (hung app) (error={}) — treating as unverified (keeping transcription on clipboard)",
+                    value_result
+                );
+            } else {
+                info!(
+                    "Paste verification: AXValue fetch failed (error={}) — treating as unverified (keeping transcription on clipboard)",
+                    value_result
+                );
+            }
+            return false;
         }
 
         // Check if the AXValue contains the pasted text
@@ -376,13 +445,7 @@ fn paste_via_clipboard(
     let saved_clipboard = prepare_clipboard_for_paste(text, app_handle, paste_delay_ms)?;
 
     // Phase 2: Send paste key combo + verify (Enigo lock held by caller).
-    send_paste_keys_and_verify(
-        enigo,
-        text,
-        app_handle,
-        paste_method,
-        &saved_clipboard,
-    )
+    send_paste_keys_and_verify(enigo, text, app_handle, paste_method, &saved_clipboard)
 }
 
 /// Phase 1 of clipboard paste: write text to clipboard and sleep for paste_delay_ms.
@@ -393,6 +456,11 @@ fn prepare_clipboard_for_paste(
     app_handle: &AppHandle,
     paste_delay_ms: u64,
 ) -> Result<SavedClipboard, String> {
+    // New session: invalidate any still-pending paste-verifier from a previous
+    // dictation so it can never restore a stale snapshot over this session's
+    // freshly published transcription (see CLIPBOARD_EPOCH).
+    CLIPBOARD_EPOCH.fetch_add(1, Ordering::Relaxed);
+
     let clipboard = app_handle.clipboard();
     let saved_text = clipboard.read_text().ok().filter(|t| !t.is_empty());
     // Only probe for an image when there is no text to restore. Text is by far
@@ -475,80 +543,153 @@ fn send_paste_keys_and_verify(
         }
     }
 
-    // Verify-then-commit: wait for the paste to land before restoring clipboard.
-    // This fixes Bug 3 where the clipboard was restored too eagerly,
-    // destroying the transcription text before the target app had a chance
-    // to read it. If the paste might have failed (e.g., focus was lost),
-    // we keep the transcription text on the clipboard so the user can
-    // manually paste it.
+    // Verify-then-commit runs on a DETACHED thread now. This used to happen
+    // inline on the caller — the macOS main-thread paste closure — and an
+    // unbounded AXUIElementCopyAttributeValue against a hung target app
+    // parked the main thread forever, wedging every later main-thread hop
+    // (tray, overlay hide) and cascading into the coordinator (see
+    // research/main-thread-hang-tray-lock-wedge-2026-10-23.md). Only the
+    // keystroke ordering matters on the calling thread; the AX verification
+    // and the clipboard restore can safely defer.
     //
-    // Phase 1: Give the target app time to process Cmd+V.
-    // 150ms is generous — most apps process Cmd+V within 1 frame (16ms).
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    // On AX timeout / verification failure the verifier conservatively keeps
+    // the transcription text on the clipboard — identical degradation to the
+    // previous inline behavior, just never blocking the paste caller.
+    let verifier_app = app_handle.clone();
+    let verifier_text = text.to_owned();
+    let verifier_saved = saved_clipboard.clone();
+    // Snapshot the session generation at spawn. If the next dictation starts
+    // before this verifier restores, CLIPBOARD_EPOCH moves on and the restore
+    // is skipped (see the epoch guard below).
+    let verifier_epoch = CLIPBOARD_EPOCH.load(Ordering::Relaxed);
 
-    // Phase 2: Verify the paste landed (macOS only, using Accessibility API).
-    // If verification is available and confirms the paste succeeded, we
-    // can safely restore the original clipboard content.
-    // If verification fails or is unavailable, we err on the side of
-    // caution: keep the transcription text on the clipboard so the user
-    // can manually Cmd+V again.
-    let paste_verified = verify_paste_landed(app_handle, text);
+    info!("[PASTE-FLOW] paste keys sent — deferring AX verify + clipboard restore to detached paste-verifier thread");
+    let spawn_result = std::thread::Builder::new()
+        .name("paste-verifier".into())
+        .spawn(move || {
+            // A panic on this detached thread would die silently — no visible
+            // trace beyond a missing restore — so catch it and log it.
+            let verifier_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                info!("[PASTE-FLOW] paste-verifier started (150ms settle, then AX verify + restore)");
 
-    let clipboard = app_handle.clipboard();
+                // Give the target app time to process Cmd+V.
+                // 150ms is generous — most apps process Cmd+V within 1 frame (16ms).
+                std::thread::sleep(std::time::Duration::from_millis(150));
 
-    if paste_verified {
-        // Paste verified — safe to restore original clipboard contents.
-        // Text takes priority so this path stays identical to the previous
-        // behavior; an image is only restored when the clipboard held no
-        // text at all, which is the case that used to silently wipe
-        // screenshots.
-        info!("Paste verified — restoring original clipboard content");
-
-        // Skip the restore when something else wrote the clipboard after we
-        // published the transcription (e.g. the user copied over the paste):
-        // restoring would clobber that newer content. Idea borrowed from
-        // upstream paste_tx's changeCount guard (a70ac84f) per gate D4.
-        #[cfg(target_os = "macos")]
-        {
-            let current_count = macos_pasteboard::change_count();
-            if saved_clipboard.change_count_at_publish.is_some()
-                && current_count.is_some()
-                && saved_clipboard.change_count_at_publish != current_count
-            {
+                // Verify the paste landed (macOS only, using Accessibility API).
+                // If verification is available and confirms the paste succeeded, we
+                // can safely restore the original clipboard content.
+                // If verification fails or is unavailable, we err on the side of
+                // caution: keep the transcription text on the clipboard so the user
+                // can manually Cmd+V again.
+                let paste_verified = verify_paste_landed(&verifier_app, &verifier_text);
                 info!(
-                    "Clipboard changed since publish (changeCount {:?} -> {:?}) — skipping restore",
-                    saved_clipboard.change_count_at_publish, current_count
+                    "[PASTE-FLOW] paste-verifier AX result: verified={}",
+                    paste_verified
                 );
-                return Ok(());
-            }
-        }
 
-        if let Some(clipboard_content) = &saved_clipboard.text {
-            #[cfg(target_os = "linux")]
-            if is_wayland() && is_wl_copy_available() {
-                let _ = write_clipboard_via_wl_copy(clipboard_content);
-            } else {
-                let _ = clipboard.write_text(clipboard_content);
-            }
+                let clipboard = verifier_app.clipboard();
 
-            #[cfg(not(target_os = "linux"))]
-            let _ = clipboard.write_text(clipboard_content);
-        } else if let Some(image) = &saved_clipboard.image {
-            info!("Restoring image to clipboard");
-            let _ = clipboard.write_image(image);
-        } else {
-            // Nothing was there to begin with — don't leave the transcription behind.
-            let _ = clipboard.clear();
-        }
-    } else {
-        // Paste NOT verified — keep transcription text on clipboard.
-        // The user can manually Cmd+V to paste again. The transcription
-        // text stays available on the clipboard until the user copies
-        // something else or the next transcription overwrites it.
-        //
-        // This is the "verify-then-commit" pattern: we don't destroy the
-        // transcription text (commit) until we verify the paste landed.
-        info!("Paste not verified — keeping transcription text on clipboard for manual paste");
+                if paste_verified {
+                    // Paste verified — safe to restore original clipboard contents.
+                    // Text takes priority so this path stays identical to the previous
+                    // behavior; an image is only restored when the clipboard held no
+                    // text at all, which is the case that used to silently wipe
+                    // screenshots.
+                    info!("Paste verified — restoring original clipboard content");
+
+                    // CopyToClipboard's contract is that the clipboard ends up
+                    // holding the transcription: paste() writes the text right
+                    // after the paste keys are sent. Restoring the pre-paste
+                    // snapshot here would clobber that write, so skip the
+                    // restore entirely for this mode.
+                    if get_settings(&verifier_app).clipboard_handling
+                        == ClipboardHandling::CopyToClipboard
+                    {
+                        info!("[PASTE-FLOW] clipboard_handling=CopyToClipboard — skipping restore (clipboard keeps transcription)");
+                        return;
+                    }
+
+                    // Skip the restore when something else wrote the clipboard after we
+                    // published the transcription (e.g. the user copied over the paste):
+                    // restoring would clobber that newer content. Idea borrowed from
+                    // upstream paste_tx's changeCount guard (a70ac84f) per gate D4.
+                    #[cfg(target_os = "macos")]
+                    {
+                        let current_count = macos_pasteboard::change_count();
+                        if verifier_saved.change_count_at_publish.is_some()
+                            && current_count.is_some()
+                            && verifier_saved.change_count_at_publish != current_count
+                        {
+                            info!(
+                                "Clipboard changed since publish (changeCount {:?} -> {:?}) — skipping restore",
+                                verifier_saved.change_count_at_publish, current_count
+                            );
+                            return;
+                        }
+                    }
+
+                    // A newer dictation session started while this verifier was
+                    // pending: it already published its own transcription to the
+                    // clipboard, and restoring our pre-paste snapshot would make
+                    // that session paste the ORIGINAL content instead.
+                    let current_epoch = CLIPBOARD_EPOCH.load(Ordering::Relaxed);
+                    if current_epoch != verifier_epoch {
+                        debug!(
+                            "[PASTE-FLOW] paste-verifier epoch moved on ({} -> {}) — skipping restore",
+                            verifier_epoch, current_epoch
+                        );
+                        return;
+                    }
+
+                    if let Some(clipboard_content) = &verifier_saved.text {
+                        #[cfg(target_os = "linux")]
+                        if is_wayland() && is_wl_copy_available() {
+                            let _ = write_clipboard_via_wl_copy(clipboard_content);
+                        } else {
+                            let _ = clipboard.write_text(clipboard_content);
+                        }
+
+                        #[cfg(not(target_os = "linux"))]
+                        let _ = clipboard.write_text(clipboard_content);
+                    } else if let Some(image) = &verifier_saved.image {
+                        info!("Restoring image to clipboard");
+                        let _ = clipboard.write_image(image);
+                    } else {
+                        // Nothing was there to begin with — don't leave the transcription behind.
+                        let _ = clipboard.clear();
+                    }
+                } else {
+                    // Paste NOT verified — keep transcription text on clipboard.
+                    // The user can manually Cmd+V to paste again. The transcription
+                    // text stays available on the clipboard until the user copies
+                    // something else or the next transcription overwrites it.
+                    //
+                    // This is the "verify-then-commit" pattern: we don't destroy the
+                    // transcription text (commit) until we verify the paste landed.
+                    info!("Paste not verified — keeping transcription text on clipboard for manual paste");
+                }
+
+                info!("[PASTE-FLOW] paste-verifier finished");
+            }));
+            if let Err(panic_payload) = verifier_outcome {
+                let panic_msg = panic_payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic_payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("<non-string panic payload>");
+                error!("[PASTE-FLOW] paste-verifier panicked: {}", panic_msg);
+            }
+        });
+
+    if let Err(e) = spawn_result {
+        // Fire-and-forget: if the verifier thread could not be spawned, we
+        // cannot verify or restore — the transcription text simply stays on
+        // the clipboard, exactly like an unverified paste.
+        error!(
+            "[PASTE-FLOW] failed to spawn paste-verifier (clipboard restore skipped): {}",
+            e
+        );
     }
 
     Ok(())
@@ -1214,7 +1355,8 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     // submit nothing or the wrong content.
     if result.is_ok() && should_send_auto_submit(settings.auto_submit, paste_method) {
         info!("Sending auto-submit key");
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // 200ms margin: with AX verify deferred to a thread, this sleep alone must guarantee the old ≥200ms Cmd+V→Enter gap (slow apps: Electron, terminals).
+        std::thread::sleep(std::time::Duration::from_millis(200));
         if let Err(e) = send_return_key(&mut enigo, settings.auto_submit_key) {
             error!("Auto-submit failed: {}", e);
         }

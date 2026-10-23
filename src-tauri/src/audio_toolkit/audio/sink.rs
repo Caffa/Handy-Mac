@@ -435,7 +435,6 @@ impl CaptureSink {
         }
         (on_audio)(frame);
     }
-
 }
 
 impl Sink for CaptureSink {
@@ -570,10 +569,9 @@ impl Sink for CaptureSink {
                 // Voice stamp for the coordinator's sliding timeout.
                 let armed_at = control.armed_at_ms.load(Ordering::Relaxed);
                 if armed_at > 0 {
-                    control.last_voice_activity_ms.store(
-                        epoch_ms().saturating_sub(armed_at),
-                        Ordering::Relaxed,
-                    );
+                    control
+                        .last_voice_activity_ms
+                        .store(epoch_ms().saturating_sub(armed_at), Ordering::Relaxed);
                 }
             }
             VadFrame::Noise => {

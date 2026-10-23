@@ -214,16 +214,6 @@ pub fn get_settings_safe<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     })
 }
 
-/// Safe wrapper around [`write_settings`] that catches panics.
-/// Delegates to `write_settings` which updates the cache and schedules a
-/// debounced disk write. The `_safe` variant wraps the call in a panic
-/// catcher as an extra safety net for callers that prefer it.
-pub fn write_settings_safe(app: &AppHandle, settings: AppSettings) {
-    let _ = safe_settings_operation("write_settings_safe", || {
-        write_settings(app, settings);
-    });
-}
-
 /// Safe wrapper around [`write_settings_immediate`] that catches panics.
 /// Delegates to `write_settings_immediate` which updates the cache and
 /// writes to disk synchronously.
@@ -267,6 +257,33 @@ where
             write_settings_immediate(app, settings);
         }
     });
+}
+
+/// Atomically patch the in-memory settings cache with a fallible closure and
+/// flush the result to disk on success. Same locking as `patch_settings`.
+/// On `Err`: nothing is written to disk, nothing is flushed, and the error is
+/// returned to the caller. Closures MUST validate before mutating (all
+/// current call sites do), so an `Err` return leaves cached settings untouched.
+/// MUST NOT be called from within a `patch_settings` closure (lock re-entry).
+pub fn patch_settings_try<R: Runtime, F>(app: &AppHandle<R>, f: F) -> Result<(), String>
+where
+    F: FnOnce(&mut AppSettings) -> Result<(), String>,
+{
+    safe_settings_operation("patch_settings_try", || {
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            let mut guard = cache.settings.write().unwrap();
+            f(&mut guard)?;
+            sanitize_floats(&mut guard);
+            write_settings_to_disk(app, &guard);
+            Ok(())
+        } else {
+            let mut settings = get_settings(app);
+            f(&mut settings)?;
+            write_settings_immediate(app, settings);
+            Ok(())
+        }
+    })
+    .unwrap_or_else(|| Err("panic while patching settings".to_string()))
 }
 
 // ── Core load/save functions ──
@@ -421,8 +438,11 @@ pub fn load_or_create_app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSetting
                     updated = true;
                 }
 
-                // Migrate usb_watchdog_cycle_on_wake
-                if settings.usb_watchdog_enabled && !settings.usb_watchdog_cycle_on_wake {
+                // Migrate usb_watchdog_cycle_on_wake (only while the new key is
+                // absent, mirroring the shortcut_activation migration above).
+                if settings.usb_watchdog_enabled
+                    && settings_value.get("usb_watchdog_cycle_on_wake").is_none()
+                {
                     debug!("Migrating usb_watchdog_cycle_on_wake to true for enabled watchdog");
                     settings.usb_watchdog_cycle_on_wake = true;
                     updated = true;
@@ -503,7 +523,9 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
         return get_default_settings();
     };
 
+    let mut usb_watchdog_key_present = false;
     let mut settings = if let Some(settings_value) = store.get("settings") {
+        usb_watchdog_key_present = settings_value.get("usb_watchdog_cycle_on_wake").is_some();
         match serde_json::from_value::<AppSettings>(settings_value.clone()) {
             Ok(settings) => settings,
             Err(e) => {
@@ -546,7 +568,8 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
         needs_save = true;
     }
 
-    if settings.usb_watchdog_enabled && !settings.usb_watchdog_cycle_on_wake {
+    // Migrate usb_watchdog_cycle_on_wake (only while the new key is absent).
+    if settings.usb_watchdog_enabled && !usb_watchdog_key_present {
         debug!("Migrating usb_watchdog_cycle_on_wake to true for enabled watchdog");
         settings.usb_watchdog_cycle_on_wake = true;
         needs_save = true;
@@ -605,11 +628,6 @@ pub fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: AppSettings) {
             }
         }
 
-        // Update the in-memory cache first — mirror what write_settings_safe does.
-        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
-            cache.update(settings.clone());
-        }
-
         debug!(
             "[settings] write: active_model_id={:?} live_captions={} selected_language={} post_process_enabled={} overlay_position={:?} keyboard_implementation={:?}",
             settings.selected_model,
@@ -620,12 +638,19 @@ pub fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: AppSettings) {
             settings.keyboard_implementation,
         );
 
-        if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
-            let app_clone = app.clone();
-            let writer = writer.inner().clone();
-            tokio::spawn(async move {
-                writer.write(app_clone, settings).await;
-            });
+        // Update the in-memory cache first — mirror what write_settings_safe does.
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
+            cache.update(settings);
+
+            if let Some(writer) = app.try_state::<Arc<SettingsWriter>>() {
+                let app_clone = app.clone();
+                let writer = writer.inner().clone();
+                tokio::spawn(async move {
+                    writer.write(app_clone).await;
+                });
+            } else {
+                write_settings_immediate(app, cache.get());
+            }
         } else {
             write_settings_immediate(app, settings);
         }
@@ -744,7 +769,7 @@ pub const SETTINGS_DEBOUNCE_MS: u64 = 500;
 
 /// State for the debounced settings writer.
 pub struct SettingsWriter {
-    pending: Mutex<Option<AppSettings>>,
+    pending: Mutex<bool>,
     timer: Mutex<Option<JoinHandle<()>>>,
     debounce_ms: u64,
 }
@@ -753,7 +778,7 @@ impl SettingsWriter {
     /// Create a new writer with the default debounce interval.
     pub fn new() -> Self {
         Self {
-            pending: Mutex::new(None),
+            pending: Mutex::new(false),
             timer: Mutex::new(None),
             debounce_ms: SETTINGS_DEBOUNCE_MS,
         }
@@ -763,25 +788,28 @@ impl SettingsWriter {
     #[allow(dead_code)]
     pub fn with_debounce_ms(ms: u64) -> Self {
         Self {
-            pending: Mutex::new(None),
+            pending: Mutex::new(false),
             timer: Mutex::new(None),
             debounce_ms: ms,
         }
     }
 
     /// Check whether there is a pending write that hasn't been flushed yet.
-    /// Used by `flush_settings` to skip the expensive blocking path when
-    /// there's nothing to write.
+    /// Returns the current state of the flush-owed flag. Note: this is used by
+    /// callers that want to know whether a debounced write is still outstanding;
+    /// it does not gate the actual flush, which always writes the current cache.
     pub async fn has_pending(&self) -> bool {
-        self.pending.lock().await.is_some()
+        *self.pending.lock().await
     }
 
-    /// Schedule a settings write. If a write is already pending the new value
-    /// replaces it and the debounce timer is restarted.
-    pub async fn write<R: Runtime>(&self, app: AppHandle<R>, settings: AppSettings) {
+    /// Schedule a settings flush. Records that a flush is owed and (re)starts
+    /// the debounce timer. The value written to disk is always the current
+    /// in-memory `SettingsCache` value, so any `patch_settings` calls that
+    /// happen before the timer fires are included rather than reverted.
+    pub async fn write<R: Runtime>(&self, app: AppHandle<R>) {
         {
             let mut pending = self.pending.lock().await;
-            *pending = Some(settings);
+            *pending = true;
         }
 
         {
@@ -808,7 +836,8 @@ impl SettingsWriter {
         }
     }
 
-    /// Flush any pending settings to disk immediately.
+    /// Flush any pending settings to disk immediately, cancelling the debounce
+    /// timer first so the scheduled task does not run after this call.
     pub async fn flush<R: Runtime>(&self, app: &AppHandle<R>) {
         {
             let mut timer = self.timer.lock().await;
@@ -819,16 +848,20 @@ impl SettingsWriter {
         self.flush_inner(app).await;
     }
 
-    /// Internal flush: write the pending settings (if any) to the store.
+    /// Flush the current in-memory `SettingsCache` value to disk. Never
+    /// writes a stale snapshot: any `patch_settings` calls that happened after
+    /// the write was scheduled are included, not reverted.
     async fn flush_inner<R: Runtime>(&self, app: &AppHandle<R>) {
-        let maybe_settings = {
+        {
             let mut pending = self.pending.lock().await;
-            pending.take()
-        };
+            *pending = false;
+        }
 
-        if let Some(settings) = maybe_settings {
+        if let Some(cache) = app.try_state::<Arc<SettingsCache>>() {
             debug!("[settings] flushing debounced settings to disk");
-            write_settings_immediate(app, settings);
+            write_settings_immediate(app, cache.get());
+        } else {
+            warn!("[settings] debounced flush: SettingsCache not available, nothing to flush");
         }
     }
 }
@@ -1267,5 +1300,121 @@ mod tests {
             serde_json::from_value(stored_value).expect("stored settings should deserialize");
         assert_eq!(stored.custom_words, vec!["Zettelkasten".to_string()]);
         assert_eq!(stored.selected_model, "test-model".to_string());
+    }
+
+    /// Regression test for Bug 1: a debounced `write_settings` must flush the
+    /// *current* cache value, not the stale snapshot that was passed to the
+    /// writer when the debounce was scheduled. If the writer kept its own
+    /// payload, a `patch_settings` that ran before the timer fired would be
+    /// overwritten by the older value.
+    #[test]
+    fn debounced_flush_uses_current_cache_not_stale_snapshot() {
+        let rt = tokio::runtime::Runtime::new().expect("test runtime");
+
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        app.manage(Arc::new(SettingsWriter::with_debounce_ms(50)));
+        app.manage(Arc::new(SettingsCache::new(get_default_settings())));
+
+        rt.block_on(async {
+            let mut settings = get_settings_safe(&app);
+            settings.custom_words = vec!["Zettelkasten".to_string()];
+            // Schedules a debounced write; the writer must not keep this snapshot.
+            write_settings(&app, settings);
+
+            // Patch a different field before the debounce fires.
+            patch_settings(&app, |s| {
+                s.selected_model = "patched-model".to_string();
+            });
+
+            // Wait long enough for the 50ms debounce to fire.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        });
+
+        let cache = app
+            .try_state::<Arc<SettingsCache>>()
+            .expect("SettingsCache should be managed")
+            .get();
+        assert_eq!(cache.selected_model, "patched-model".to_string());
+        assert_eq!(cache.custom_words, vec!["Zettelkasten".to_string()]);
+
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        let stored_value = store
+            .get("settings")
+            .expect("settings should be written to disk");
+        let stored: AppSettings =
+            serde_json::from_value(stored_value).expect("stored settings should deserialize");
+
+        assert_eq!(stored.selected_model, "patched-model".to_string());
+        assert_eq!(stored.custom_words, vec!["Zettelkasten".to_string()]);
+    }
+
+    #[test]
+    fn usb_cycle_on_wake_migration_runs_only_when_stored_key_absent() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        let mut stored = serde_json::to_value(get_default_settings()).unwrap();
+        let map = stored.as_object_mut().unwrap();
+        map.insert("usb_watchdog_enabled".into(), serde_json::json!(true));
+        map.remove("usb_watchdog_cycle_on_wake");
+
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        store.set("settings", stored);
+        store.save().expect("store saves");
+
+        let settings = load_or_create_app_settings(&app);
+        assert!(settings.usb_watchdog_cycle_on_wake);
+
+        let reloaded_value = store
+            .get("settings")
+            .expect("settings still in store after load");
+        let reloaded: AppSettings = serde_json::from_value(reloaded_value)
+            .expect("reloaded settings deserialize cleanly after migration");
+        assert!(reloaded.usb_watchdog_cycle_on_wake);
+    }
+
+    #[test]
+    fn usb_cycle_on_wake_user_setting_false_survives_reload() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::new().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        let mut stored = serde_json::to_value(get_default_settings()).unwrap();
+        let map = stored.as_object_mut().unwrap();
+        map.insert("usb_watchdog_enabled".into(), serde_json::json!(true));
+        map.insert(
+            "usb_watchdog_cycle_on_wake".into(),
+            serde_json::json!(false),
+        );
+
+        let store = open_settings_store(&app).expect("store opens in mock app");
+        store.set("settings", stored);
+        store.save().expect("store saves");
+
+        let settings_first = load_or_create_app_settings(&app);
+        assert!(!settings_first.usb_watchdog_cycle_on_wake);
+
+        let settings_second = load_or_create_app_settings(&app);
+        assert!(!settings_second.usb_watchdog_cycle_on_wake);
+
+        let reloaded_value = store
+            .get("settings")
+            .expect("settings still in store after load");
+        let reloaded: AppSettings =
+            serde_json::from_value(reloaded_value).expect("reloaded settings deserialize cleanly");
+        assert!(!reloaded.usb_watchdog_cycle_on_wake);
     }
 }

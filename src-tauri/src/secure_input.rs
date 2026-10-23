@@ -535,8 +535,7 @@ mod imp {
             );
         }
         for binding in stale {
-            if let Err(e) = crate::shortcut::tauri_impl::unregister_shortcut(app, binding.clone())
-            {
+            if let Err(e) = crate::shortcut::tauri_impl::unregister_shortcut(app, binding.clone()) {
                 warn!(
                     "SecureInput fallback: failed to unregister '{}': {}",
                     binding.current_binding, e
@@ -733,9 +732,7 @@ mod imp {
 
     pub fn reconcile_fallback(_app: &AppHandle) {}
 
-    pub async fn run_diagnostic(
-        _duration_secs: u32,
-    ) -> Result<KeyboardDiagnosticReport, String> {
+    pub async fn run_diagnostic(_duration_secs: u32) -> Result<KeyboardDiagnosticReport, String> {
         Err("The keyboard diagnostic is only supported on macOS".to_string())
     }
 }

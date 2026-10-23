@@ -5,7 +5,7 @@ pub mod models;
 pub mod transcription;
 pub mod transcription_retry;
 
-use crate::settings::{get_settings_safe, write_settings_safe, AppSettings, LogLevel};
+use crate::settings::{get_settings_safe, AppSettings, LogLevel};
 use crate::utils::cancel_current_operation;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -90,9 +90,9 @@ pub fn set_log_level(app: AppHandle, level: LogLevel) -> Result<(), String> {
         std::sync::atomic::Ordering::Relaxed,
     );
 
-    let mut settings = get_settings_safe(&app);
-    settings.log_level = level;
-    write_settings_safe(&app, settings);
+    crate::settings::patch_settings(&app, |s| {
+        s.log_level = level;
+    });
 
     Ok(())
 }

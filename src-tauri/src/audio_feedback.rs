@@ -109,9 +109,10 @@ fn play_audio_file(
         } else {
             let host = crate::audio_toolkit::get_cpal_host();
 
-            let found_device = host
-                .output_devices()?
-                .find(|device| crate::audio_toolkit::audio::output_device_name(device).as_deref() == Some(&device_name));
+            let found_device = host.output_devices()?.find(|device| {
+                crate::audio_toolkit::audio::output_device_name(device).as_deref()
+                    == Some(&device_name)
+            });
 
             match found_device {
                 Some(device) => DeviceSinkBuilder::from_device(device)?,

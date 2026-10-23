@@ -19,6 +19,7 @@ mod helpers;
 mod input;
 mod llm_client;
 mod logging;
+mod main_watchdog;
 
 mod managers;
 mod overlay;
@@ -833,7 +834,11 @@ pub fn run(cli_args: CliArgs) {
         .plugin(
             LogBuilder::new()
                 .level(log::LevelFilter::Trace) // Set to most verbose level globally
-                .max_file_size(500_000)
+                // 5 MB keeps ~13 minutes of Debug-level logs (visualizer
+                // traffic dominates) instead of ~80 seconds at 500 KB — an
+                // hour-long wedge used to rotate away every relevant line
+                // before anyone could look at the file.
+                .max_file_size(5_000_000)
                 .rotation_strategy(RotationStrategy::KeepOne)
                 .clear_targets()
                 .targets([
@@ -1127,6 +1132,12 @@ pub fn run(cli_args: CliArgs) {
             if let Some(retry_worker) = app_handle.try_state::<Arc<Mutex<RetryWorker>>>() {
                 retry_worker.lock().start(app_handle.clone());
             }
+
+            // Main-thread heartbeat watchdog: detects a wedged main loop (which
+            // is invisible to logs because the parked thread cannot log) and
+            // reports it. See main_watchdog.rs and
+            // research/main-thread-hang-tray-lock-wedge-2026-10-23.md.
+            crate::main_watchdog::start(app_handle.clone());
 
             // Schedule a startup sweep to verify pending journal entries from previous runs
             // or races where an open Obsidian note clobbered an external append.

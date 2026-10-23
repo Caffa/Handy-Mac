@@ -8,7 +8,7 @@ use crate::errors::AppError;
 use crate::helpers::clamshell;
 use crate::managers::model::ModelManager;
 use crate::portable;
-use crate::settings::{get_settings, write_settings, AppSettings, VadBackend};
+use crate::settings::{get_settings, AppSettings, VadBackend};
 use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
@@ -629,13 +629,9 @@ impl AudioRecordingManager {
         let use_live_captions_model = !live_captions_model.is_empty();
         let router_attached = use_live_captions_model;
 
-        let pre_buffer_max_samples =
-            (settings.pre_recording_buffer_ms.saturating_mul(16)) as usize;
+        let pre_buffer_max_samples = (settings.pre_recording_buffer_ms.saturating_mul(16)) as usize;
 
-        let capture = Arc::new(CaptureControl::new(
-            pre_buffer_max_samples,
-            router_attached,
-        ));
+        let capture = Arc::new(CaptureControl::new(pre_buffer_max_samples, router_attached));
         capture
             .streaming_enabled
             .store(settings.live_captions_enabled, Ordering::Release);
@@ -670,9 +666,7 @@ impl AudioRecordingManager {
                     .try_state::<StreamingCancelFlag>()
                     .map(|state| state.inner().clone());
                 let tm = app
-                    .try_state::<
-                        Arc<Mutex<crate::managers::transcription::TranscriptionManager>>,
-                    >()
+                    .try_state::<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>()
                     .map(|state| state.inner().clone());
                 (cancel_flag, tm)
             };
@@ -749,7 +743,10 @@ impl AudioRecordingManager {
                     };
                     let lock_dt = lock_start.elapsed();
                     if lock_dt > Duration::from_millis(250) {
-                        warn!("[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)", lock_dt);
+                        warn!(
+                            "[STREAM-LOCK] tm.lock() acquired in {:?} (transcribe pending)",
+                            lock_dt
+                        );
                     }
                     let transcription_result = guard.transcribe(samples);
                     drop(guard);
@@ -780,7 +777,10 @@ impl AudioRecordingManager {
                                     warn!("[STREAM-LOCK] timed out acquiring TM lock for model-load re-kick after 2s, skipping");
                                 }
                             } else if matches!(e, AppError::TranscriptionBusy) {
-                                debug!("[Live Captions] Streaming transcription skipped (busy): {}", e);
+                                debug!(
+                                    "[Live Captions] Streaming transcription skipped (busy): {}",
+                                    e
+                                );
                             } else {
                                 warn!("[Live Captions] Streaming transcription failed: {}", e);
                             }
@@ -942,10 +942,7 @@ impl AudioRecordingManager {
                 // running sink (armed or standing) additionally proves the
                 // stream alive by delivering chunks. With no sink running,
                 // the crate discards audio, so chunk recency says nothing.
-                let failed = recorder
-                    .lock()
-                    .as_ref()
-                    .is_some_and(|m| m.needs_reopen());
+                let failed = recorder.lock().as_ref().is_some_and(|m| m.needs_reopen());
                 let sink_running = recording_active.load(Ordering::Acquire)
                     || standing_active.load(Ordering::Acquire);
                 let chunks_stale = sink_running && {
@@ -1291,20 +1288,22 @@ impl AudioRecordingManager {
     /// fallback. Re-read first so recovery cannot clear a microphone the user
     /// selected concurrently while the stream was being rebuilt.
     fn persist_default_microphone_after_fallback(&self, unavailable_name: &str) {
-        let mut settings = get_settings(&self.app_handle);
-        if settings.selected_microphone.as_deref() != Some(unavailable_name) {
-            return;
+        let mut cleared = false;
+        crate::settings::patch_settings(&self.app_handle, |s| {
+            if s.selected_microphone.as_deref() == Some(unavailable_name) {
+                s.selected_microphone = None;
+                cleared = true;
+            }
+        });
+        if cleared {
+            let _ = self.app_handle.emit(
+                "settings-changed",
+                serde_json::json!({
+                    "setting": "selected_microphone",
+                    "value": "Default"
+                }),
+            );
         }
-
-        settings.selected_microphone = None;
-        write_settings(&self.app_handle, settings);
-        let _ = self.app_handle.emit(
-            "settings-changed",
-            serde_json::json!({
-                "setting": "selected_microphone",
-                "value": "Default"
-            }),
-        );
     }
 
     fn schedule_lazy_close(&self) {
@@ -1434,8 +1433,8 @@ impl AudioRecordingManager {
             return false;
         }
         let pre_buffer = self.capture.pre_buffer_max_samples > 0;
-        let batch_captions = self.capture.streaming_enabled.load(Ordering::Acquire)
-            && !self.router_attached;
+        let batch_captions =
+            self.capture.streaming_enabled.load(Ordering::Acquire) && !self.router_attached;
         pre_buffer || batch_captions
     }
 
@@ -1500,8 +1499,7 @@ impl AudioRecordingManager {
                     "Standing capture started in {:?} (pre_buffer={}ms, batch_captions={})",
                     start.elapsed(),
                     self.capture.pre_buffer_max_samples / 16,
-                    self.capture.streaming_enabled.load(Ordering::Acquire)
-                        && !self.router_attached
+                    self.capture.streaming_enabled.load(Ordering::Acquire) && !self.router_attached
                 );
             }
             Err(StartError { error, sink }) => {
@@ -1919,12 +1917,17 @@ impl AudioRecordingManager {
                             },
                         );
                         debug!("Recording requested for binding {binding_id}");
-                        return Ok(RecordingReadiness { receiver, generation });
+                        return Ok(RecordingReadiness {
+                            receiver,
+                            generation,
+                        });
                     }
                     Err(StartError { error, sink }) => {
                         self.return_vad(sink.into_vad());
                         if reopened || error.kind() == ErrorKind::AlreadyRecording {
-                            return Err(anyhow::Error::new(error).context("Failed to start recorder"));
+                            return Err(
+                                anyhow::Error::new(error).context("Failed to start recorder")
+                            );
                         }
                         warn!("Microphone failed before this recording ({error}); reopening");
                         microphone.failed.store(true, Ordering::Release);
@@ -1947,7 +1950,10 @@ impl AudioRecordingManager {
             },
         );
         debug!("Recording armed on standing capture for binding {binding_id}");
-        Ok(RecordingReadiness { receiver, generation })
+        Ok(RecordingReadiness {
+            receiver,
+            generation,
+        })
     }
 
     /// The raw pre-VAD frame feed for a dedicated live-captions model.
@@ -2152,10 +2158,11 @@ impl AudioRecordingManager {
                             .unwrap_or_default()
                             .as_millis() as u64)
                             .saturating_sub(
-                                self.capture.last_voice_above_floor_ms.load(Ordering::Relaxed),
+                                self.capture
+                                    .last_voice_above_floor_ms
+                                    .load(Ordering::Relaxed),
                             );
-                        if elapsed_ms >= MIN_TRAILING_BUFFER_MS
-                            && quiet_for >= SILENCE_THRESHOLD_MS
+                        if elapsed_ms >= MIN_TRAILING_BUFFER_MS && quiet_for >= SILENCE_THRESHOLD_MS
                         {
                             debug!(
                                 "Smart-stop: silence for {quiet_for}ms after {elapsed_ms}ms — closing trailing window"
@@ -2164,10 +2171,7 @@ impl AudioRecordingManager {
                         }
                         std::thread::sleep(Duration::from_millis(25));
                     }
-                    debug!(
-                        "Smart-stop window held for {:?}",
-                        started.elapsed()
-                    );
+                    debug!("Smart-stop window held for {:?}", started.elapsed());
                 }
 
                 // Collect the recording (crate stop: pause-ack + full drain +
@@ -2337,8 +2341,7 @@ impl AudioRecordingManager {
     /// live recording; the cancel escape hatch clears the flag while a stale
     /// enum state may linger until the recovery worker heals it.
     pub fn is_recording_effective(&self) -> bool {
-        matches!(*self.state.lock(), RecordingState::Recording { .. })
-            && *self.is_recording.lock()
+        matches!(*self.state.lock(), RecordingState::Recording { .. }) && *self.is_recording.lock()
     }
 
     /// Diagnostic wrapper around `is_recording()` that logs the result and
@@ -2496,8 +2499,7 @@ impl AudioRecordingManager {
                     "[CANCEL-TIMING] recovery worker: state.try_lock acquired in {:?}",
                     t.elapsed()
                 );
-                if matches!(*state, RecordingState::Recording { .. })
-                    && !*self.is_recording.lock()
+                if matches!(*state, RecordingState::Recording { .. }) && !*self.is_recording.lock()
                 {
                     self.set_state(&mut state, RecordingState::Idle);
                     info!("[CANCEL-TIMING] recovery worker healed stale Recording state");
@@ -2608,7 +2610,11 @@ impl AudioRecordingManager {
             return (false, false);
         }
 
-        let failed = self.recorder.lock().as_ref().is_some_and(|m| m.needs_reopen());
+        let failed = self
+            .recorder
+            .lock()
+            .as_ref()
+            .is_some_and(|m| m.needs_reopen());
         let sink_running = self.is_recording() || self.standing_active.load(Ordering::Acquire);
         let chunks_fresh = sink_running && {
             let last = self.capture.last_chunk_ms();

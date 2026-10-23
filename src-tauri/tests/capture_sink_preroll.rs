@@ -17,7 +17,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use handy_app_lib::audio_toolkit::audio::{CaptureControl, CaptureSink, CaptureSinkConfig, VadPolicy};
+use handy_app_lib::audio_toolkit::audio::{
+    CaptureControl, CaptureSink, CaptureSinkConfig, VadPolicy,
+};
 use handy_app_lib::audio_toolkit::vad::{VadFrame, VoiceActivityDetector};
 use handy_app_lib::audio_toolkit::NoiseSuppressor;
 use handy_app_lib::settings::NoiseSuppressionLevel;
@@ -105,9 +107,8 @@ fn build(policy: VadPolicy, ns: Option<NoiseSuppressionLevel>, frame_samples: us
             on_levels: Arc::new(|_| {}),
             on_audio: Arc::new(move |frame| cap_for_cb.lock().unwrap().extend_from_slice(frame)),
             on_raw_frame: None,
-            noise_suppressor: ns.map(|level| {
-                Arc::new(parking_lot::Mutex::new(NoiseSuppressor::new(level)))
-            }),
+            noise_suppressor: ns
+                .map(|level| Arc::new(parking_lot::Mutex::new(NoiseSuppressor::new(level)))),
             control: Arc::clone(&control),
             emergency_backup: None,
         },
@@ -150,11 +151,28 @@ fn preroll_slice_reaches_recording_when_ns_off() {
         // And it must contain frames 1..=4 contiguously (preroll + onset + tail).
         let f2 = frame(2, 0.5, frame_samples);
         let f4 = frame(4, 0.5, frame_samples);
-        let offset1 = recorded.windows(frame_samples).position(|w| w == &f1[..]).unwrap();
-        let offset2 = recorded.windows(frame_samples).position(|w| w == &f2[..]).unwrap();
-        let offset4 = recorded.windows(frame_samples).position(|w| w == &f4[..]).unwrap();
-        assert_eq!(offset1 + frame_samples, offset2, "frames 1 and 2 must be contiguous");
-        assert_eq!(offset2 + 2 * frame_samples, offset4, "frames 2..=4 must be contiguous");
+        let offset1 = recorded
+            .windows(frame_samples)
+            .position(|w| w == &f1[..])
+            .unwrap();
+        let offset2 = recorded
+            .windows(frame_samples)
+            .position(|w| w == &f2[..])
+            .unwrap();
+        let offset4 = recorded
+            .windows(frame_samples)
+            .position(|w| w == &f4[..])
+            .unwrap();
+        assert_eq!(
+            offset1 + frame_samples,
+            offset2,
+            "frames 1 and 2 must be contiguous"
+        );
+        assert_eq!(
+            offset2 + 2 * frame_samples,
+            offset4,
+            "frames 2..=4 must be contiguous"
+        );
         // Frame 5 (post-emission noise) is withheld by the detector.
         let f5 = frame(5, 0.5, frame_samples);
         assert!(
@@ -177,7 +195,11 @@ fn preroll_slice_reaches_recording_when_ns_off() {
 #[test]
 fn ns_on_appends_current_original_frame_only() {
     for &frame_samples in &[FRAME_V4, FRAME_V6] {
-        let mut rig = build(VadPolicy::Offline, Some(NoiseSuppressionLevel::Medium), frame_samples);
+        let mut rig = build(
+            VadPolicy::Offline,
+            Some(NoiseSuppressionLevel::Medium),
+            frame_samples,
+        );
 
         for i in 0..6 {
             let f = frame(i, 0.5, frame_samples);
@@ -268,12 +290,10 @@ fn real_vad_preroll_slice() {
     let sink = CaptureSink::new(
         handy_app_lib::audio_toolkit::audio::CaptureVad::new(
             Box::new(handy_app_lib::audio_toolkit::vad::SmoothedVad::new(
-                Box::new(
-                    SileroVad::new(std::path::PathBuf::from(&vad_path), 0.5).unwrap(),
-                ),
+                Box::new(SileroVad::new(std::path::PathBuf::from(&vad_path), 0.5).unwrap()),
                 15, // prefill: 450 ms of pre-onset audio withheld then emitted
                 15,
-                2,  // onset: 2 consecutive voiced frames confirm speech
+                2, // onset: 2 consecutive voiced frames confirm speech
             )),
             15,
             55,

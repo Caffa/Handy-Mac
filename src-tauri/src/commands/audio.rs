@@ -3,7 +3,7 @@ use crate::audio_toolkit::audio::list_output_devices;
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
-use crate::settings::{get_settings_safe, write_settings_safe};
+use crate::settings::get_settings_safe;
 use crate::usb_watchdog;
 use log::{info, warn};
 use parking_lot::Mutex;
@@ -190,9 +190,9 @@ pub fn open_microphone_privacy_settings() -> Result<(), String> {
 #[specta::specta]
 pub async fn update_microphone_mode(app: AppHandle, always_on: bool) -> Result<(), String> {
     // Update settings — this is fast and can stay on the async runtime
-    let mut settings = get_settings_safe(&app);
-    settings.always_on_microphone = always_on;
-    write_settings_safe(&app, settings);
+    crate::settings::patch_settings(&app, |s| {
+        s.always_on_microphone = always_on;
+    });
 
     // Clone the Arc out of Tauri state before the closure, so the
     // State borrow is dropped before we enter spawn_blocking.
@@ -254,13 +254,13 @@ pub fn get_available_microphones() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn set_selected_microphone(app: AppHandle, device_name: String) -> Result<(), String> {
-    let mut settings = get_settings_safe(&app);
-    settings.selected_microphone = if device_name == "default" {
-        None
-    } else {
-        Some(device_name)
-    };
-    write_settings_safe(&app, settings);
+    crate::settings::patch_settings(&app, |s| {
+        s.selected_microphone = if device_name == "default" {
+            None
+        } else {
+            Some(device_name)
+        };
+    });
 
     // Update the audio manager to use the new device
     let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
@@ -305,13 +305,13 @@ pub fn get_available_output_devices() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn set_selected_output_device(app: AppHandle, device_name: String) -> Result<(), String> {
-    let mut settings = get_settings_safe(&app);
-    settings.selected_output_device = if device_name == "default" {
-        None
-    } else {
-        Some(device_name)
-    };
-    write_settings_safe(&app, settings);
+    crate::settings::patch_settings(&app, |s| {
+        s.selected_output_device = if device_name == "default" {
+            None
+        } else {
+            Some(device_name)
+        };
+    });
     Ok(())
 }
 
@@ -341,13 +341,13 @@ pub async fn play_test_sound(app: AppHandle, sound_type: String) {
 #[tauri::command]
 #[specta::specta]
 pub fn set_clamshell_microphone(app: AppHandle, device_name: String) -> Result<(), String> {
-    let mut settings = get_settings_safe(&app);
-    settings.clamshell_microphone = if device_name == "default" {
-        None
-    } else {
-        Some(device_name)
-    };
-    write_settings_safe(&app, settings);
+    crate::settings::patch_settings(&app, |s| {
+        s.clamshell_microphone = if device_name == "default" {
+            None
+        } else {
+            Some(device_name)
+        };
+    });
     Ok(())
 }
 
@@ -403,9 +403,9 @@ pub async fn set_selected_channel(app: AppHandle, channel: Option<u16>) -> Resul
         .map_err(|e| format!("audio task join failed: {e}"))?
         .map_err(|e| format!("Failed to update channel selection: {e}"))?;
 
-    let mut settings = get_settings_safe(&app);
-    settings.selected_channel = channel;
-    write_settings_safe(&app, settings);
+    crate::settings::patch_settings(&app, |s| {
+        s.selected_channel = channel;
+    });
     Ok(())
 }
 
@@ -431,10 +431,10 @@ pub fn list_usb_devices() -> Result<Vec<usb_watchdog::UsbDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn change_usb_watchdog_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mut settings = get_settings_safe(&app);
-    let device_name = settings.usb_watchdog_device_name.clone();
-    settings.usb_watchdog_enabled = enabled;
-    write_settings_safe(&app, settings);
+    let device_name = get_settings_safe(&app).usb_watchdog_device_name.clone();
+    crate::settings::patch_settings(&app, |s| {
+        s.usb_watchdog_enabled = enabled;
+    });
 
     // Update the runtime watchdog state
     let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
@@ -452,10 +452,10 @@ pub fn change_usb_watchdog_device_name_setting(
     app: AppHandle,
     device_name: String,
 ) -> Result<(), String> {
-    let mut settings = get_settings_safe(&app);
-    let enabled = settings.usb_watchdog_enabled;
-    settings.usb_watchdog_device_name = device_name.clone();
-    write_settings_safe(&app, settings);
+    let enabled = get_settings_safe(&app).usb_watchdog_enabled;
+    crate::settings::patch_settings(&app, |s| {
+        s.usb_watchdog_device_name = device_name.clone();
+    });
 
     // Update the runtime watchdog state
     let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
@@ -475,9 +475,9 @@ pub fn change_usb_watchdog_cycle_on_wake_setting(
     app: AppHandle,
     cycle_on_wake: bool,
 ) -> Result<(), String> {
-    let mut settings = get_settings_safe(&app);
-    settings.usb_watchdog_cycle_on_wake = cycle_on_wake;
-    write_settings_safe(&app, settings);
+    crate::settings::patch_settings(&app, |s| {
+        s.usb_watchdog_cycle_on_wake = cycle_on_wake;
+    });
     Ok(())
 }
 
@@ -540,8 +540,11 @@ pub fn start_pronunciation_recording(app: AppHandle) -> Result<(), String> {
         return Err("A recording is already in progress".to_string());
     }
 
-    rm.try_start_recording(PRONUNCIATION_BINDING_ID, crate::audio_toolkit::VadPolicy::Offline)
-        .map_err(|e| format!("Failed to start pronunciation recording: {e:#}"))?;
+    rm.try_start_recording(
+        PRONUNCIATION_BINDING_ID,
+        crate::audio_toolkit::VadPolicy::Offline,
+    )
+    .map_err(|e| format!("Failed to start pronunciation recording: {e:#}"))?;
 
     info!("Pronunciation recording started");
     Ok(())

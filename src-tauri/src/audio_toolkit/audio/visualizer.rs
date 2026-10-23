@@ -169,9 +169,11 @@ impl AudioVisualiser {
             let bucket_value = (boosted * GAIN).powf(CURVE_POWER).clamp(0.0, 1.0);
             buckets[bucket_idx] = bucket_value;
 
-            // Debug: Log first bucket value periodically to track signal levels
+            // Trace: first bucket value, per bucket. Downgraded from debug! —
+            // at ~30 lines/s it was rotating the file log window down to ~80s,
+            // hiding every other diagnostic during a wedge.
             if bucket_idx == 0 {
-                log::debug!(
+                log::trace!(
                     "[visualizer] bucket_0: db={:.1} normalized={:.3} peak={:.3} boost={:.2} value={:.3}",
                     db, normalized, self.peak_normalized[bucket_idx], boost, bucket_value
                 );

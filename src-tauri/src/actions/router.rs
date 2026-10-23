@@ -1261,12 +1261,7 @@ fn run_pending_entry_verify(
 ) {
     // The caller (router result thread) is already backgrounded; verify_thread_body
     // returns immediately after spawning the single sleeping/verify thread.
-    verify_thread_body(
-        router_script,
-        env_file,
-        hm_and_entry,
-        existing_routing_json,
-    );
+    verify_thread_body(router_script, env_file, hm_and_entry, existing_routing_json);
 }
 
 /// Schedule a one-time startup sweep to verify any pending entries from
