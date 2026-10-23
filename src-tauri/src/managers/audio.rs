@@ -900,6 +900,11 @@ impl AudioRecordingManager {
                     break;
                 }
 
+                if usb_watchdog.is_cycling() {
+                    debug!("Liveness monitor: USB cycle in progress, skipping check");
+                    continue;
+                }
+
                 // Only monitor when always-on or BT keep-alive is active
                 let is_always_on = {
                     let guard = mode.lock();

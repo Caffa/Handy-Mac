@@ -119,6 +119,15 @@ pub enum AppEvent {
         device: String,
         success: bool,
     },
+    /// Wake recovery decision log.
+    /// Stages: wake_detected | duplicate_wake | device_wait | deferred_busy |
+    /// deferred_gave_up | cycle_started | cycle_result | cycle_skipped |
+    /// bypass_armed | bypass_consumed.
+    WakeRecovery {
+        stage: String,
+        reason: String,
+        device_seen_secs: Option<u64>,
+    },
     AudioFeedback {
         sound_type: String,
     },
@@ -173,6 +182,16 @@ impl AppEvent {
 
             // Warnings
             Self::UsbWatchdogCycle { success: false, .. } => log::Level::Warn,
+            Self::WakeRecovery {
+                stage: s,
+                reason: r,
+                ..
+            } if s == "deferred_gave_up"
+                || s == "cycle_skipped"
+                || (s == "cycle_result" && r != "success") =>
+            {
+                log::Level::Warn
+            }
 
             // Info — completions and significant state changes
             Self::RecordingStarted { .. }
@@ -183,7 +202,8 @@ impl AppEvent {
             | Self::PostProcessCompleted { .. }
             | Self::PasteSucceeded { .. }
             | Self::AppStarted { .. }
-            | Self::MicDeviceChanged { .. } => log::Level::Info,
+            | Self::MicDeviceChanged { .. }
+            | Self::WakeRecovery { .. } => log::Level::Info,
 
             // Debug — starts and routine events
             Self::RecordingStopped { .. }

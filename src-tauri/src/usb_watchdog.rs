@@ -14,6 +14,7 @@
 //! Robustness fix: Names are normalized (alphanumeric only) before comparison
 //! to handle encoding issues (e.g. RØDE vs R?DE).
 
+use crate::logging;
 use crate::managers::audio::AudioRecordingManager;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -69,8 +70,49 @@ pub struct UsbWatchdog {
     /// During this time, we're more lenient about counting failures
     /// (shared Arc so spawned threads can set it)
     post_cycle_grace: Arc<AtomicBool>,
+    /// Epoch seconds until which the first post-wake mic-open failure should
+    /// bypass the normal failure-count threshold and cooldown.
+    wake_bypass_until_epoch: AtomicU64,
     /// AppHandle for emitting events to the frontend during power cycling
     app_handle: Option<tauri::AppHandle>,
+}
+
+/// Decision produced by the pure cycle-decision helper.
+pub(crate) enum CycleDecision {
+    /// A cycle should run. `skip_cooldown` bypasses only the cooldown check
+    /// (the `cycling` guard is still honoured by the power-cycle entry).
+    Cycle { skip_cooldown: bool },
+    /// Conditions do not permit a cycle right now.
+    Wait,
+}
+
+/// Pure decision logic for when to trigger a USB power cycle.
+///
+/// Priority: cycling or grace periods block everything; otherwise an armed
+/// wake-bypass overrides the failure-count threshold and skips the cooldown;
+/// otherwise the normal threshold applies.
+pub(crate) fn cycle_decision(
+    failures: u64,
+    threshold: u64,
+    grace: bool,
+    cycling: bool,
+    bypass_active: bool,
+) -> CycleDecision {
+    if cycling || grace {
+        return CycleDecision::Wait;
+    }
+    if bypass_active {
+        return CycleDecision::Cycle {
+            skip_cooldown: true,
+        };
+    }
+    if failures >= threshold {
+        CycleDecision::Cycle {
+            skip_cooldown: false,
+        }
+    } else {
+        CycleDecision::Wait
+    }
 }
 
 impl UsbWatchdog {
@@ -83,6 +125,7 @@ impl UsbWatchdog {
             consecutive_failures: AtomicU64::new(0),
             fail_threshold: AtomicU64::new(2), // Require 2 consecutive failures before cycling
             post_cycle_grace: Arc::new(AtomicBool::new(false)),
+            wake_bypass_until_epoch: AtomicU64::new(0),
             app_handle,
         }
     }
@@ -103,6 +146,25 @@ impl UsbWatchdog {
     #[allow(dead_code)]
     pub fn is_cycling(&self) -> bool {
         self.cycling.load(Ordering::SeqCst)
+    }
+
+    /// Arm the post-wake first-failure bypass for `ttl_secs` seconds.
+    /// When active, the very next mic-open failure will bypass both the
+    /// failure-count threshold and the cooldown guard.
+    pub fn arm_wake_bypass(&self, ttl_secs: u64) {
+        let until = epoch_secs().saturating_add(ttl_secs);
+        self.wake_bypass_until_epoch.store(until, Ordering::SeqCst);
+        logging::emit(logging::AppEvent::WakeRecovery {
+            stage: "bypass_armed".to_string(),
+            reason: format!("{}s", ttl_secs),
+            device_seen_secs: None,
+        });
+        info!("USB watchdog: post-wake bypass armed for {}s", ttl_secs);
+    }
+
+    /// Returns `true` if the post-wake first-failure bypass is currently armed.
+    pub fn wake_bypass_active(&self) -> bool {
+        self.wake_bypass_until_epoch.load(Ordering::SeqCst) > epoch_secs()
     }
 
     /// Called when the mic stream fails to open. Returns `true` if a
@@ -127,17 +189,31 @@ impl UsbWatchdog {
 
         let failures = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
         let threshold = self.fail_threshold.load(Ordering::SeqCst);
+        let bypass_active = self.wake_bypass_active();
         debug!(
-            "USB watchdog: mic open failure #{} (threshold: {})",
-            failures, threshold
+            "USB watchdog: mic open failure #{} (threshold: {}, bypass_active: {})",
+            failures, threshold, bypass_active
         );
 
-        if failures < threshold {
-            debug!("Failure count below threshold, not cycling yet");
-            return false;
+        match cycle_decision(failures, threshold, false, false, bypass_active) {
+            CycleDecision::Cycle { skip_cooldown } => {
+                if bypass_active {
+                    // Consume the one-shot post-wake bypass.
+                    self.wake_bypass_until_epoch.store(0, Ordering::SeqCst);
+                    logging::emit(logging::AppEvent::WakeRecovery {
+                        stage: "bypass_consumed".to_string(),
+                        reason: "first post-wake mic open failure".to_string(),
+                        device_seen_secs: None,
+                    });
+                    info!("USB watchdog: post-wake bypass consumed");
+                }
+                self.power_cycle_blocking_with(skip_cooldown)
+            }
+            CycleDecision::Wait => {
+                debug!("Failure count below threshold and no bypass, not cycling yet");
+                false
+            }
         }
-
-        self.power_cycle_blocking()
     }
 
     /// Called when the mic stream opens successfully (resets failure counter)
@@ -282,13 +358,24 @@ impl UsbWatchdog {
 
     /// Attempt a USB hub port power cycle **synchronously** (blocking).
     fn power_cycle_blocking(&self) -> bool {
-        // Check cooldown
+        self.power_cycle_blocking_with(false)
+    }
+
+    /// Synchronous power cycle with optional cooldown bypass.
+    /// `skip_cooldown=true` is used by the post-wake first-failure bypass so a
+    /// wake-thread cycle and a bypass-triggered cycle do not deadlock on the
+    /// same cooldown window.
+    fn power_cycle_blocking_with(&self, skip_cooldown: bool) -> bool {
         let now_epoch = epoch_secs();
-        let last = self.last_cycle_epoch.load(Ordering::SeqCst);
-        if now_epoch > last && (now_epoch - last) < RESET_COOLDOWN_SECS {
-            let remaining = RESET_COOLDOWN_SECS - (now_epoch - last);
-            debug!("USB watchdog: cooldown active, {}s remaining", remaining);
-            return false;
+
+        // Check cooldown unless bypassed.
+        if !skip_cooldown {
+            let last = self.last_cycle_epoch.load(Ordering::SeqCst);
+            if now_epoch > last && (now_epoch - last) < RESET_COOLDOWN_SECS {
+                let remaining = RESET_COOLDOWN_SECS - (now_epoch - last);
+                debug!("USB watchdog: cooldown active, {}s remaining", remaining);
+                return false;
+            }
         }
 
         if self.cycling.swap(true, Ordering::SeqCst) {
@@ -389,6 +476,11 @@ impl UsbWatchdog {
 
         self.cycling.store(false, Ordering::SeqCst);
 
+        logging::emit(logging::AppEvent::UsbWatchdogCycle {
+            device: device_name.clone(),
+            success: cycle_succeeded,
+        });
+
         if cycle_succeeded {
             // Set a grace period after successful USB cycle to prevent
             // false positives from the mic still recovering
@@ -400,6 +492,12 @@ impl UsbWatchdog {
         } else {
             false
         }
+    }
+
+    /// Public entry point used by the post-wake recovery thread.
+    /// Always respects the cooldown guard.
+    pub fn wake_recovery_cycle_blocking(&self) -> bool {
+        self.power_cycle_blocking_with(false)
     }
 
     pub fn force_power_cycle(&self) -> bool {
@@ -518,6 +616,11 @@ impl UsbWatchdog {
             }
 
             cycling.store(false, Ordering::SeqCst);
+
+            logging::emit(logging::AppEvent::UsbWatchdogCycle {
+                device: name.clone(),
+                success: cycle_succeeded,
+            });
 
             if cycle_succeeded {
                 // Set grace period after successful forced cycle
@@ -811,4 +914,88 @@ fn epoch_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycle_decision_table() {
+        // Grace blocks even an armed bypass.
+        assert!(
+            matches!(
+                cycle_decision(1, 1, true, false, false),
+                CycleDecision::Wait
+            ),
+            "grace must block"
+        );
+        assert!(
+            matches!(cycle_decision(0, 1, true, false, true), CycleDecision::Wait),
+            "grace must block bypass"
+        );
+
+        // Cycling blocks.
+        assert!(
+            matches!(cycle_decision(5, 1, false, true, true), CycleDecision::Wait),
+            "cycling must block"
+        );
+
+        // Armed bypass overrides threshold and cooldown.
+        assert!(
+            matches!(
+                cycle_decision(0, 2, false, false, true),
+                CycleDecision::Cycle {
+                    skip_cooldown: true
+                }
+            ),
+            "bypass must cycle below threshold"
+        );
+
+        // At/above threshold without bypass.
+        assert!(
+            matches!(
+                cycle_decision(2, 2, false, false, false),
+                CycleDecision::Cycle {
+                    skip_cooldown: false
+                }
+            ),
+            "at threshold must cycle"
+        );
+        assert!(
+            matches!(
+                cycle_decision(3, 2, false, false, false),
+                CycleDecision::Cycle {
+                    skip_cooldown: false
+                }
+            ),
+            "above threshold must cycle"
+        );
+
+        // Below threshold without bypass.
+        assert!(
+            matches!(
+                cycle_decision(1, 2, false, false, false),
+                CycleDecision::Wait
+            ),
+            "below threshold must wait"
+        );
+    }
+
+    #[test]
+    fn wake_bypass_arm_expire_consume() {
+        let wd = UsbWatchdog::new(false, "", None);
+
+        // TTL 0 expires immediately.
+        wd.arm_wake_bypass(0);
+        assert!(!wd.wake_bypass_active(), "0s TTL must expire immediately");
+
+        // Large TTL stays active.
+        wd.arm_wake_bypass(3600);
+        assert!(wd.wake_bypass_active(), "large TTL must be active");
+
+        // Consuming clears the bypass.
+        wd.wake_bypass_until_epoch.store(0, Ordering::SeqCst);
+        assert!(!wd.wake_bypass_active(), "consumed bypass must be inactive");
+    }
 }

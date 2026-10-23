@@ -1,5 +1,53 @@
 # Handy-Fork Learning Log
 
+## Post-wake USB recovery: deferred cycle + first-failure bypass (2026-10-23)
+
+### Problem
+
+After macOS wake-from-sleep, the USB microphone recovery path could:
+- skip the power cycle entirely if Handy was busy when the device re-appeared,
+- give up after only 10 seconds when the device was absent from `uhubctl`,
+- require two consecutive mic-open failures before triggering a cycle even on the very first failure after wake, and
+- invoke `force_power_cycle()` from the wake thread, which races with the cooldown guard and the liveness monitor.
+
+### Root Causes
+
+1. **Busy-skip was one-shot**: the wake thread checked `AppState` once after the 10s device wait and simply returned if busy. A recording that started during the wait aborted recovery permanently.
+2. **Absent-device retry window was too short**: the device was only polled for 10s before giving up, even though USB hubs and macOS USB services can take much longer to re-enumerate after deep sleep.
+3. **Threshold required two failures even post-wake**: `UsbWatchdog::on_mic_open_failed()` needed `consecutive_failures >= fail_threshold` (default 2) before cycling. The first post-wake mic-open failure therefore did not trigger immediate recovery.
+4. **Duplicate wake notifications**: `NSWorkspaceDidWakeNotification` and the wall-clock polling detector could both fire for the same wake, and macOS sometimes delivers multiple native wake notifications in quick succession.
+5. **`force_power_cycle()` from the wake thread**: this async entry point could collide with the liveness monitor's own restart logic and did not emit the structured `UsbWatchdogCycle` event.
+
+### Fix
+
+1. **`src-tauri/src/usb_watchdog.rs`**:
+   - Added `wake_bypass_until_epoch: AtomicU64` and `arm_wake_bypass()` / `wake_bypass_active()` APIs. The bypass arms for 300s after wake and is consumed on the very next mic-open failure, making the first failure skip both threshold and cooldown.
+   - Added a pure `cycle_decision()` helper so tests can verify the decision logic without spawning `uhubctl`.
+   - Reworked `on_mic_open_failed()` to count the failure, check the bypass, consume it, and call `power_cycle_blocking_with(skip_cooldown)`.
+   - Refactored `power_cycle_blocking()` into `power_cycle_blocking_with(skip_cooldown)`, keeping the `cycling` swap guard and all other mechanics identical. `power_cycle_blocking()` wraps the cooldown-respecting path; new `wake_recovery_cycle_blocking()` exposes that path to the wake thread.
+   - Emitted the previously-unused structured `UsbWatchdogCycle { device, success }` event from both `power_cycle_blocking_with()` and `force_power_cycle()`'s spawned thread.
+
+2. **`src-tauri/src/sleep_wake.rs`**:
+   - Added 30s duplicate-wake suppression (`LAST_WAKE_EPOCH`) with a structured `duplicate_wake` event and a bypass TTL refresh.
+   - Rewrote the wake-recovery thread into four bounded phases:
+     - Phase 1: settle 2s, then poll `device_present_in_usb_tree()` every 1s up to 10s.
+     - Phase 2: retry every 10s for up to 180s if the device is still absent.
+     - Phase 3: poll `AppState` every 2s for up to 120s, deferring the cycle while busy.
+     - Phase 4: run `wake_recovery_cycle_blocking()` and `restart_microphone_if_needed()` when idle.
+   - Added structured `WakeRecovery` events for every stage (`wake_detected`, `device_wait`, `deferred_busy`, `deferred_gave_up`, `cycle_started`, `cycle_result`, `cycle_skipped`).
+   - Added pure `is_idle()` helper covering `Idle { .. } | None` and unit-tested it for every `AppState` variant.
+
+3. **`src-tauri/src/logging.rs`**:
+   - Added `WakeRecovery { stage, reason, device_seen_secs }` structured event.
+   - Mapped `deferred_gave_up`, `cycle_skipped`, and `cycle_result` with non-success reason to `Warn`; all other wake stages to `Info`.
+
+4. **`src-tauri/src/managers/audio.rs`** (minimal hunk):
+   - Made `start_liveness_monitor()` skip its dead-stream check while `usb_watchdog.is_cycling()` is true, preventing the monitor from fighting an in-progress wake/bypass cycle.
+
+### Key Insight
+
+Cooldown arbitrates between the wake thread and the bypass: the wake thread uses `wake_recovery_cycle_blocking()` (cooldown respected), while the post-wake first-failure bypass uses `power_cycle_blocking_with(true)` (cooldown skipped). Grace still wins over bypass (`cycle_decision()` checks `grace` first), so a freshly cycled mic is not immediately re-cycled. Replacing the async `force_power_cycle()` call with a blocking, idle-checked cycle removes the race with the liveness monitor and guarantees the device has re-enumerated before `restart_microphone_if_needed()` runs.
+
 ## Router Confirmation Countdown Too Slow (2026-10-21)
 
 ### Problem

@@ -15,13 +15,17 @@
 //! case the native notification is delayed or unavailable.
 
 #[cfg(target_os = "macos")]
+use crate::logging;
+#[cfg(target_os = "macos")]
 use log::{debug, error, info, warn};
 #[cfg(target_os = "macos")]
 use parking_lot::Mutex;
 #[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 
@@ -29,6 +33,23 @@ use tauri::Manager;
 const WAKE_DEVICE_WAIT_SECS: u64 = 10;
 #[cfg(target_os = "macos")]
 const WAKE_DEVICE_POLL_MS: u64 = 1000;
+#[cfg(target_os = "macos")]
+const WAKE_DEDUPE_SECS: u64 = 30;
+#[cfg(target_os = "macos")]
+const WAKE_ABSENT_RETRY_POLL_SECS: u64 = 10;
+#[cfg(target_os = "macos")]
+const WAKE_ABSENT_RETRY_MAX_SECS: u64 = 180;
+#[cfg(target_os = "macos")]
+const WAKE_DEFERRED_IDLE_POLL_MS: u64 = 2000;
+#[cfg(target_os = "macos")]
+const WAKE_DEFERRED_IDLE_MAX_SECS: u64 = 120;
+#[cfg(target_os = "macos")]
+const WAKE_BYPASS_TTL_SECS: u64 = 300;
+
+/// Last-seen wake epoch for duplicate-wake suppression. A value of 0 means no
+/// wake has been recorded yet.
+#[cfg(target_os = "macos")]
+static LAST_WAKE_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// Start listening for macOS wake-from-sleep events.
 ///
@@ -205,6 +226,16 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
     debug!("Registered NSWorkspaceDidWakeNotification observer");
 }
 
+/// Returns true when the coordinator reports Idle or no coordinator is present.
+/// The None case is treated as idle because there is no active pipeline to guard.
+#[cfg(target_os = "macos")]
+fn is_idle(app_state: Option<&crate::transcription_coordinator::AppState>) -> bool {
+    matches!(
+        app_state,
+        Some(crate::transcription_coordinator::AppState::Idle { .. }) | None
+    )
+}
+
 /// Handle macOS wake-from-sleep event.
 #[cfg(target_os = "macos")]
 fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
@@ -246,6 +277,30 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         }
     }
 
+    // Duplicate-wake suppression. NSWorkspaceDidWakeNotification and the
+    // wall-clock polling detector can both fire for the same wake event, and
+    // multiple rapid notifications are common. We still refresh the bypass
+    // TTL on duplicates so the first-failure window does not expire early.
+    let now = epoch_secs();
+    let prev = LAST_WAKE_EPOCH.swap(now, Ordering::SeqCst);
+    if prev != 0 && now.saturating_sub(prev) < WAKE_DEDUPE_SECS {
+        info!(
+            "on_system_wake: duplicate wake detected (last was {}s ago), skipping recovery thread",
+            now.saturating_sub(prev)
+        );
+        logging::emit(logging::AppEvent::WakeRecovery {
+            stage: "duplicate_wake".to_string(),
+            reason: format!("{}s since last wake", now.saturating_sub(prev)),
+            device_seen_secs: None,
+        });
+        if let Some(rm) =
+            app_handle.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>()
+        {
+            rm.usb_watchdog.arm_wake_bypass(WAKE_BYPASS_TTL_SECS);
+        }
+        return;
+    }
+
     // USB watchdog recovery
     let settings = crate::settings::get_settings_safe(app_handle);
     let cycle_on_wake = settings.usb_watchdog_enabled && settings.usb_watchdog_cycle_on_wake;
@@ -274,8 +329,19 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         return;
     }
 
+    // Arm the first-failure bypass before spawning the recovery thread so a
+    // mic-open failure that fires immediately after wake can skip cooldown.
+    if let Some(rm) = app_handle.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>() {
+        rm.usb_watchdog.arm_wake_bypass(WAKE_BYPASS_TTL_SECS);
+    }
+
+    logging::emit(logging::AppEvent::WakeRecovery {
+        stage: "wake_detected".to_string(),
+        reason: "new macOS wake event".to_string(),
+        device_seen_secs: None,
+    });
     info!(
-        "Triggering post-wake USB recovery for device '{}' (wait for re-enumeration, then cycle unconditionally if idle)",
+        "Triggering post-wake USB recovery for device '{}' (defer if busy, retry if absent)",
         device_name
     );
 
@@ -286,65 +352,152 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
 
     let ah = app_handle.clone();
     std::thread::spawn(move || {
-        // Give macOS USB services a moment to resume before polling.
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        let thread_start = Instant::now();
+        let device_name_for_thread = device_name.clone();
 
-        // Wait for the device to re-appear in the USB tree. Post-wake
-        // re-enumeration can lag, and force_power_cycle's resolve_device gives
-        // up on the first miss, so we poll before deciding the device is absent.
+        // Phase 1: settle, then poll for device re-enumeration.
+        std::thread::sleep(Duration::from_secs(2));
+
         let mut device_seen = false;
+        let mut device_seen_secs: Option<u64> = None;
         for waited_secs in 0..WAKE_DEVICE_WAIT_SECS {
-            if crate::usb_watchdog::device_present_in_usb_tree(&device_name) {
+            if crate::usb_watchdog::device_present_in_usb_tree(&device_name_for_thread) {
                 device_seen = true;
+                device_seen_secs = Some(waited_secs);
+                logging::emit(logging::AppEvent::WakeRecovery {
+                    stage: "device_wait".to_string(),
+                    reason: "device re-appeared in USB tree".to_string(),
+                    device_seen_secs,
+                });
                 info!(
                     "Wake recovery: device '{}' re-appeared in USB tree after {}s",
-                    device_name, waited_secs
+                    device_name_for_thread, waited_secs
                 );
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(WAKE_DEVICE_POLL_MS));
+            std::thread::sleep(Duration::from_millis(WAKE_DEVICE_POLL_MS));
         }
 
-        // Guard: a recording may have started while we were waiting. Do not
-        // power-cycle the USB hub underneath an active transcription.
-        let app_state = ah
-            .try_state::<crate::TranscriptionCoordinator>()
-            .map(|c| c.get_state());
-        let busy = !matches!(
-            app_state,
-            Some(crate::transcription_coordinator::AppState::Idle { .. }) | None
-        );
-        if busy {
+        // Phase 2: if absent, retry with longer polling until the retry window.
+        while !device_seen && thread_start.elapsed().as_secs() < WAKE_ABSENT_RETRY_MAX_SECS {
+            std::thread::sleep(Duration::from_secs(WAKE_ABSENT_RETRY_POLL_SECS));
+            let elapsed = thread_start.elapsed().as_secs();
+            if crate::usb_watchdog::device_present_in_usb_tree(&device_name_for_thread) {
+                device_seen = true;
+                device_seen_secs = Some(elapsed);
+                logging::emit(logging::AppEvent::WakeRecovery {
+                    stage: "device_wait".to_string(),
+                    reason: "device re-appeared in USB tree after retry".to_string(),
+                    device_seen_secs,
+                });
+                info!(
+                    "Wake recovery: device '{}' re-appeared in USB tree after {}s (retry)",
+                    device_name_for_thread, elapsed
+                );
+                break;
+            }
+        }
+
+        if !device_seen {
+            let reason = "device absent after wake retry window";
             warn!(
-                "Wake recovery: skipping USB power cycle, app is busy: {:?}",
-                app_state
+                "Wake recovery: device '{}' did not re-appear within {}s; skipping USB power cycle",
+                device_name_for_thread, WAKE_ABSENT_RETRY_MAX_SECS
             );
+            let app_handle_for_event = (*ah).clone();
+            crate::usb_watchdog::emit_cycle_event_with_handle(
+                &Some(app_handle_for_event),
+                "usb-power-cycle-failed",
+                reason,
+            );
+            logging::emit(logging::AppEvent::WakeRecovery {
+                stage: "cycle_skipped".to_string(),
+                reason: reason.to_string(),
+                device_seen_secs: None,
+            });
             return;
         }
 
+        // Phase 3: wait until the app is idle. Do not power-cycle underneath an
+        // active recording or processing transcription.
+        let mut busy_emitted = false;
+        let deferred_start = Instant::now();
+        loop {
+            let app_state = ah
+                .try_state::<crate::TranscriptionCoordinator>()
+                .map(|c| c.get_state());
+            let busy = !is_idle(app_state.as_ref());
+
+            if busy {
+                if !busy_emitted {
+                    logging::emit(logging::AppEvent::WakeRecovery {
+                        stage: "deferred_busy".to_string(),
+                        reason: "app is not idle".to_string(),
+                        device_seen_secs,
+                    });
+                    busy_emitted = true;
+                }
+                if deferred_start.elapsed().as_secs() >= WAKE_DEFERRED_IDLE_MAX_SECS {
+                    let reason = "app remained busy beyond deferred idle window";
+                    warn!("Wake recovery: {}", reason);
+                    let app_handle_for_event = (*ah).clone();
+                    crate::usb_watchdog::emit_cycle_event_with_handle(
+                        &Some(app_handle_for_event),
+                        "usb-power-cycle-failed",
+                        "wake cycle deferred: app busy",
+                    );
+                    logging::emit(logging::AppEvent::WakeRecovery {
+                        stage: "deferred_gave_up".to_string(),
+                        reason: reason.to_string(),
+                        device_seen_secs,
+                    });
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(WAKE_DEFERRED_IDLE_POLL_MS));
+                continue;
+            }
+
+            break;
+        }
+
+        // Phase 4: run the cycle.
         let recording_manager =
             ah.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>();
 
         match recording_manager {
             Some(rm) => {
                 let wd = &rm.usb_watchdog;
-                if device_seen {
-                    warn!("Wake recovery: triggering post-wake USB power cycle");
-                    info!("Wake recovery: starting post-wake USB power cycle sequence");
-                    // force_power_cycle already handles restart_microphone_if_needed
-                    if !wd.force_power_cycle() {
-                        warn!("Wake recovery: post-wake USB power cycle was skipped (already cycling or cooldown active)");
+                logging::emit(logging::AppEvent::WakeRecovery {
+                    stage: "cycle_started".to_string(),
+                    reason: "app idle, starting post-wake USB power cycle".to_string(),
+                    device_seen_secs,
+                });
+                info!("Wake recovery: starting post-wake USB power cycle sequence");
+
+                let cycled = wd.wake_recovery_cycle_blocking();
+                if cycled {
+                    logging::emit(logging::AppEvent::WakeRecovery {
+                        stage: "cycle_result".to_string(),
+                        reason: "success".to_string(),
+                        device_seen_secs,
+                    });
+                    info!("Wake recovery: post-wake USB power cycle completed");
+                    if let Err(e) = rm.restart_microphone_if_needed() {
+                        error!(
+                            "Wake recovery: failed to restart microphone after cycle: {}",
+                            e
+                        );
                     }
                 } else {
+                    let reason = "cycling guard or cooldown active";
+                    logging::emit(logging::AppEvent::WakeRecovery {
+                        stage: "cycle_skipped".to_string(),
+                        reason: reason.to_string(),
+                        device_seen_secs,
+                    });
                     warn!(
-                        "Wake recovery: device '{}' did not re-appear within {}s; skipping USB power cycle",
-                        device_name, WAKE_DEVICE_WAIT_SECS
-                    );
-                    let app_handle_for_event = (*ah).clone();
-                    crate::usb_watchdog::emit_cycle_event_with_handle(
-                        &Some(app_handle_for_event),
-                        "usb-power-cycle-failed",
-                        "device absent after wake wait",
+                        "Wake recovery: post-wake USB power cycle was skipped ({})",
+                        reason
                     );
                 }
             }
@@ -359,4 +512,42 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
 #[cfg(not(target_os = "macos"))]
 pub fn start_sleep_wake_listener(_app_handle: tauri::AppHandle) {
     // Sleep/wake detection is macOS-only
+}
+
+#[cfg(target_os = "macos")]
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_idle_over_all_app_state_variants() {
+        use crate::transcription_coordinator::AppState;
+
+        assert!(is_idle(None));
+        assert!(is_idle(Some(&AppState::Idle { session_id: 0 })));
+        assert!(!is_idle(Some(&AppState::Recording {
+            binding_id: "transcribe".to_string(),
+            session_id: 1,
+        })));
+        assert!(!is_idle(Some(&AppState::Processing {
+            binding_id: Some("transcribe".to_string()),
+            session_id: 2,
+        })));
+        assert!(!is_idle(Some(&AppState::UsbCycling {
+            stage: "recovering".to_string(),
+            session_id: 3,
+        })));
+        assert!(!is_idle(Some(&AppState::Confirming {
+            text: "hello".to_string(),
+            binding_id: Some("router".to_string()),
+            session_id: 4,
+        })));
+    }
 }
