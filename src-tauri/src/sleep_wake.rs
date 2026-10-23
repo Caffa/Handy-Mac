@@ -277,10 +277,21 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         }
     }
 
+    // USB watchdog recovery settings (read once). The bypass is only armed
+    // when the watchdog is enabled, wake cycling is enabled, AND a device is
+    // configured. Use this same gate for both the primary wake path and the
+    // duplicate-wake TTL refresh so we never arm a bypass when cycling is off.
+    let settings = crate::settings::get_settings_safe(app_handle);
+    let device_name = settings.usb_watchdog_device_name.clone();
+    let should_arm_bypass = settings.usb_watchdog_enabled
+        && settings.usb_watchdog_cycle_on_wake
+        && !device_name.is_empty();
+
     // Duplicate-wake suppression. NSWorkspaceDidWakeNotification and the
     // wall-clock polling detector can both fire for the same wake event, and
     // multiple rapid notifications are common. We still refresh the bypass
-    // TTL on duplicates so the first-failure window does not expire early.
+    // TTL on duplicates so the first-failure window does not expire early,
+    // but only when the same settings gate that arms it on a fresh wake passes.
     let now = epoch_secs();
     let prev = LAST_WAKE_EPOCH.swap(now, Ordering::SeqCst);
     if prev != 0 && now.saturating_sub(prev) < WAKE_DEDUPE_SECS {
@@ -293,25 +304,19 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
             reason: format!("{}s since last wake", now.saturating_sub(prev)),
             device_seen_secs: None,
         });
-        if let Some(rm) =
-            app_handle.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>()
-        {
-            rm.usb_watchdog.arm_wake_bypass(WAKE_BYPASS_TTL_SECS);
+        if should_arm_bypass {
+            if let Some(rm) =
+                app_handle.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>()
+            {
+                rm.usb_watchdog.arm_wake_bypass(WAKE_BYPASS_TTL_SECS);
+            }
         }
         return;
     }
 
     // USB watchdog recovery
-    let settings = crate::settings::get_settings_safe(app_handle);
-    let cycle_on_wake = settings.usb_watchdog_enabled && settings.usb_watchdog_cycle_on_wake;
-
-    if !cycle_on_wake {
-        // Log clearly why recovery is skipped
-        if !settings.usb_watchdog_enabled {
-            info!("Wake recovery skipped: USB watchdog is disabled (usb_watchdog_enabled=false)");
-        } else {
-            info!("Wake recovery skipped: cycle-on-wake is disabled (usb_watchdog_cycle_on_wake=false)");
-        }
+    if !settings.usb_watchdog_enabled {
+        info!("Wake recovery skipped: USB watchdog is disabled (usb_watchdog_enabled=false)");
         info!(
             "on_system_wake: complete, elapsed={:?}",
             wake_start.elapsed()
@@ -319,7 +324,17 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         return;
     }
 
-    let device_name = settings.usb_watchdog_device_name.clone();
+    if !settings.usb_watchdog_cycle_on_wake {
+        info!(
+            "Wake recovery skipped: cycle-on-wake is disabled (usb_watchdog_cycle_on_wake=false)"
+        );
+        info!(
+            "on_system_wake: complete, elapsed={:?}",
+            wake_start.elapsed()
+        );
+        return;
+    }
+
     if device_name.is_empty() {
         warn!("Wake recovery skipped: USB watchdog device name not configured (empty setting)");
         info!(
@@ -522,7 +537,7 @@ fn epoch_secs() -> u64 {
         .as_secs()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

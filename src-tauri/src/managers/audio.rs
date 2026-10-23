@@ -2549,6 +2549,14 @@ impl AudioRecordingManager {
     /// volume bars not moving" issue.
     /// Returns Ok(()) if the stream was restarted or wasn't needed, Err if restart failed.
     pub fn restart_microphone_if_needed(&self) -> Result<(), anyhow::Error> {
+        // Wake-recovery / post-cycle restart must never tear down an in-flight
+        // dictation: close_microphone() discards collect_recording() and the
+        // captured audio would be lost. Bail out while recording.
+        if self.is_recording() {
+            info!("Skipping post-cycle microphone restart: a recording is currently active");
+            return Ok(());
+        }
+
         let is_always_on = matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn);
         let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
 
