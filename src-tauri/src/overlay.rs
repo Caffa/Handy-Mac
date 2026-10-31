@@ -954,6 +954,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
 /// The payload emitted to the frontend is formatted as `"{state}:{action}"`
 /// (e.g. `"recording:transcribe"`, `"transcribing:router"`), allowing the
 /// overlay to vary icon/colours/labels based on the originating action.
+#[derive(Clone, Copy)]
 pub enum OverlayMode {
     Transcribe,
     #[allow(dead_code)]
@@ -976,6 +977,48 @@ fn format_overlay_payload(state: &str, mode: &OverlayMode) -> String {
 }
 
 pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
+    // Robustness: ensure the *entire* show path (monitor detection + positioning
+    // + OS-level show) runs on the main thread as a single queued closure.
+    // Previously the app could run show_overlay_state from a worker thread,
+    // leading to nested main-thread hops (monitor query + set_position) each
+    // with 200ms timeouts; if the main thread was still draining the router's
+    // hide closure queue, positioning silently timed out and the window was
+    // shown at the OS default (center of screen) until the system stabilized.
+    if std::thread::current().name() == Some("main") {
+        show_overlay_state_main(app_handle, state, mode);
+        return;
+    }
+
+    let app = app_handle.clone();
+    let state_owned = state.to_string();
+    let mode_owned = *mode;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = app_handle.run_on_main_thread(move || {
+        show_overlay_state_main(&app, &state_owned, &mode_owned);
+        let _ = tx.send(());
+    });
+    // Give the main thread ample time to finish geometry + show.
+    let _ = rx.recv_timeout(std::time::Duration::from_millis(1000));
+}
+
+pub fn position_overlay_fixed(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
+    if std::thread::current().name() == Some("main") {
+        position_overlay_fixed_main(app_handle, state, mode);
+        return;
+    }
+
+    let app = app_handle.clone();
+    let state_owned = state.to_string();
+    let mode_owned = *mode;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = app_handle.run_on_main_thread(move || {
+        position_overlay_fixed_main(&app, &state_owned, &mode_owned);
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_millis(1000));
+}
+
+fn show_overlay_state_main(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     // Check if overlay should be shown based on position setting
     let settings = settings::get_settings_safe(app_handle);
     if settings.overlay_position == OverlayPosition::None {
@@ -1001,7 +1044,7 @@ pub(crate) fn show_overlay_state(app_handle: &AppHandle, state: &str, mode: &Ove
     // transparent areas click-through at the OS level. Position jumps are
     // prevented by combining set_position + set_size in a single atomic
     // run_on_main_thread closure.
-    position_overlay_fixed(app_handle, state, mode);
+    position_overlay_fixed_main(app_handle, state, mode);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         // NOTE: The 5ms sleep that was here has been replaced with a synchronous
@@ -1137,20 +1180,34 @@ fn position_overlay_on_monitor(
     // the position and size updates being applied asynchronously in separate calls.
     #[cfg(target_os = "macos")]
     {
-        let window = overlay_window.clone();
-        let (position_tx, position_rx) = std::sync::mpsc::channel();
-        let _ = overlay_window.run_on_main_thread(move || {
-            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
-            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        // When we are already on the main thread (the common case now that
+        // show_overlay_state runs its whole body on the main thread as one
+        // queued closure), apply the geometry directly. Going through
+        // run_on_main_thread from the main thread can deadlock/timeout
+        // because the queued closure never gets a chance to drain.
+        if std::thread::current().name() == Some("main") {
+            let _ = overlay_window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
                 width: actual_width,
                 height: actual_height,
             }));
-            let _ = position_tx.send(());
-        });
-        // Wait for the main thread to apply the position before showing the window.
-        // Without this, the window can appear at the wrong position (center of screen)
-        // because show() is called before the async run_on_main_thread completes.
-        let _ = position_rx.recv_timeout(std::time::Duration::from_millis(200));
+        } else {
+            let window = overlay_window.clone();
+            let (position_tx, position_rx) = std::sync::mpsc::channel();
+            let _ = overlay_window.run_on_main_thread(move || {
+                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                    width: actual_width,
+                    height: actual_height,
+                }));
+                let _ = position_tx.send(());
+            });
+            // Wait for the main thread to apply the position before showing the window.
+            // Without this, the window can appear at the wrong position (center of
+            // screen) because show() is called before the async run_on_main_thread
+            // completes.
+            let _ = position_rx.recv_timeout(std::time::Duration::from_millis(500));
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1164,7 +1221,7 @@ fn position_overlay_on_monitor(
     }
 }
 
-fn position_overlay_fixed(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
+fn position_overlay_fixed_main(app_handle: &AppHandle, state: &str, mode: &OverlayMode) {
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         #[cfg(target_os = "linux")]
         {

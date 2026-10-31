@@ -189,16 +189,30 @@ impl UsbWatchdog {
 
         let failures = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
         let threshold = self.fail_threshold.load(Ordering::SeqCst);
-        let bypass_active = self.wake_bypass_active();
+        let wake_bypass = self.wake_bypass_active();
+
+        // If the configured device is not even present in the USB tree (as is
+        // typical right after wake or a physical disconnect), do not wait for a
+        // second failure before cycling; treat it like an armed wake bypass.
+        // Guarded on uhubctl availability so a missing uhubctl (no tree to
+        // query) does not force every failure to cycle.
+        let device_name = self.device_name.lock().clone();
+        let device_absent = !device_name.is_empty()
+            && crate::usb_watchdog::is_uhubctl_available()
+            && !crate::usb_watchdog::device_present_in_usb_tree(&device_name);
+        let bypass_active = wake_bypass || device_absent;
+
         debug!(
-            "USB watchdog: mic open failure #{} (threshold: {}, bypass_active: {})",
-            failures, threshold, bypass_active
+            "USB watchdog: mic open failure #{} (threshold: {}, wake_bypass: {}, device_absent: {})",
+            failures, threshold, wake_bypass, device_absent
         );
 
         match cycle_decision(failures, threshold, false, false, bypass_active) {
             CycleDecision::Cycle { skip_cooldown } => {
-                if bypass_active {
-                    // Consume the one-shot post-wake bypass.
+                if wake_bypass {
+                    // Consume the one-shot post-wake bypass only when it was
+                    // actually armed. A device-absent cycle triggered outside of
+                    // wake does not revoke the armed (if any) wake bypass.
                     self.wake_bypass_until_epoch.store(0, Ordering::SeqCst);
                     logging::emit(logging::AppEvent::WakeRecovery {
                         stage: "bypass_consumed".to_string(),

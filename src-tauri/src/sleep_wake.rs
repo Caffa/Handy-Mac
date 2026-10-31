@@ -44,7 +44,7 @@ const WAKE_DEFERRED_IDLE_POLL_MS: u64 = 2000;
 #[cfg(target_os = "macos")]
 const WAKE_DEFERRED_IDLE_MAX_SECS: u64 = 120;
 #[cfg(target_os = "macos")]
-const WAKE_BYPASS_TTL_SECS: u64 = 300;
+const WAKE_BYPASS_TTL_SECS: u64 = 3600;
 
 /// Last-seen wake epoch for duplicate-wake suppression. A value of 0 means no
 /// wake has been recorded yet.

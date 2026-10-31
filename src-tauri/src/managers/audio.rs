@@ -1541,6 +1541,9 @@ impl AudioRecordingManager {
                 trace!("Microphone stream already active");
                 drop(open_flag);
                 self.refresh_standing_capture();
+                // Clear watchdog post-cycle grace / failure counters once the
+                // (already open) stream is confirmed alive.
+                self.usb_watchdog.on_mic_open_succeeded();
                 return Ok(());
             }
 
@@ -1654,6 +1657,9 @@ impl AudioRecordingManager {
             open_started.elapsed()
         );
         *self.recorder.lock() = Some(microphone);
+
+        // Successful open: clear post-cycle grace and reset failure counters.
+        self.usb_watchdog.on_mic_open_succeeded();
 
         *open_flag = true;
         if let Some(unavailable_name) = resolution.unavailable_selected_microphone {
