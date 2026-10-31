@@ -475,6 +475,107 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                         let model_id_for_history = transcription.model_id.clone();
 
+                        // ── Fast path: "Hey Minion, write for me …" ──
+                        // Single-shot Ollama Cloud (beam) reply, pasted back after a
+                        // 2-second countdown with a sound. Skips kimaki/router filing.
+                        if let Some(write_prompt) = write_for_me_prompt(&transcription_text) {
+                            info!(
+                                "Fast path: write-for-me prompt ({} chars)",
+                                write_prompt.len()
+                            );
+
+                            let api_key = std::env::var("OLLAMA_API_KEY").unwrap_or_default();
+                            if api_key.trim().is_empty() {
+                                send_macos_notification(
+                                    "Handy Write",
+                                    "OLLAMA_API_KEY not set; cannot generate output.",
+                                );
+                                utils::hide_recording_overlay(&ah);
+                                set_tray_state(&ah, TrayIconState::Idle);
+                                return;
+                            }
+
+                            let provider = crate::settings::PostProcessProvider {
+                                id: "ollama-cloud".to_string(),
+                                label: "Ollama Cloud".to_string(),
+                                base_url: "https://ollama.com/v1".to_string(),
+                                allow_base_url_edit: false,
+                                models_endpoint: None,
+                                supports_structured_output: false,
+                                api_format: crate::settings::PostProcessApiFormat::OpenAi,
+                            };
+
+                            let system_prompt = "You are a writing assistant. Produce ONLY the \
+                                finished, ready-to-use output the user asked for — no explanations, \
+                                no preamble, no quotes around the answer. If the request describes an \
+                                email, message, or letter, format it in that medium (greeting, body, \
+                                sign-off) with appropriate subject line when relevant. If it asks to \
+                                polish/rewrite, return the polished version only. Keep it concise and \
+                                accurate.";
+
+                            let result = crate::llm_client::send_chat_completion_with_schema(
+                                &provider,
+                                api_key,
+                                "beam",
+                                write_prompt.clone(),
+                                Some(system_prompt.to_string()),
+                                None,
+                                true,
+                            )
+                            .await;
+
+                            match result {
+                                Ok(Some(output)) => {
+                                    let output = output.trim().to_string();
+                                    if output.is_empty() {
+                                        send_macos_notification(
+                                            "Handy Write",
+                                            "Model returned empty output.",
+                                        );
+                                    } else {
+                                        // 2-second warning + sound before pasting.
+                                        play_feedback_sound(&ah, SoundType::Stop);
+                                        std::thread::sleep(Duration::from_secs(2));
+                                        if let Err(e) = utils::paste(output, ah.clone()) {
+                                            error!("Paste failed: {}", e);
+                                            send_macos_notification(
+                                                "Handy Write",
+                                                "Paste failed; output copied? Check clipboard.",
+                                            );
+                                        } else {
+                                            send_macos_notification(
+                                                "Handy Write",
+                                                "Wrote and pasted output.",
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    send_macos_notification(
+                                        "Handy Write",
+                                        "Model returned no content.",
+                                    );
+                                }
+                                Err(e) => {
+                                    error!("Ollama write-for-me failed: {}", e);
+                                    let disp = if e.len() > 150 { &e[..150] } else { &e };
+                                    send_macos_notification("Handy Write Error", disp);
+                                }
+                            }
+
+                            utils::hide_recording_overlay(&ah);
+                            set_tray_state(&ah, TrayIconState::Idle);
+
+                            if let (Some(ref s), Some(tracker)) =
+                                (&sid, ah.try_state::<Arc<SessionTracker>>())
+                            {
+                                tracker.finish_session(s, 0);
+                            }
+                            return;
+                        }
+
+                        let model_id_for_history = transcription.model_id.clone();
+
                         // ── Structured session tracking ──
                         if let (Some(ref s), Some(tracker)) =
                             (&sid, ah.try_state::<Arc<SessionTracker>>())
@@ -1090,6 +1191,60 @@ fn spawn_and_wait_with_drain(cmd: &mut Command) -> Result<(String, String), Stri
 
 /// Run boss_router.py as a subprocess and return the parsed output.
 /// Returns (summary_string, handler_data_vec) on success, or an error String.
+/// Detect the "Hey Minion, write for me …" fast path and return the cleaned
+/// user request, or `None` if the transcription is not one of these.
+fn write_for_me_prompt(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let low = t.to_lowercase();
+    if !low.starts_with("hey minion") {
+        return None;
+    }
+    let after_trigger = t["hey minion".len()..]
+        .trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
+    let after_low = after_trigger.to_lowercase();
+    // Accept a few phrasings of the write sub-trigger.
+    const PREFIXES: &[&str] = &["write for me", "write me", "write to me"];
+    let mut rest: Option<String> = None;
+    for prefix in PREFIXES {
+        if after_low.starts_with(prefix) {
+            let r = after_trigger[prefix.len()..]
+                .trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
+            rest = Some(r.to_string());
+            break;
+        }
+    }
+    let prompt = rest?.trim().to_string();
+    if prompt.is_empty() {
+        None
+    } else {
+        Some(prompt)
+    }
+}
+
+#[cfg(test)]
+mod write_for_me_tests {
+    use super::write_for_me_prompt;
+
+    #[test]
+    fn detects_write_for_me() {
+        let p = write_for_me_prompt("Hey Minion, write for me an email to my boss").unwrap();
+        assert_eq!(p, "an email to my boss");
+    }
+
+    #[test]
+    fn rejects_non_trigger() {
+        assert!(write_for_me_prompt("write an email please").is_none());
+    }
+
+    #[test]
+    fn rejects_generic_direct_order() {
+        assert!(write_for_me_prompt("Hey Minion, restart kimaki").is_none());
+    }
+}
+
 fn run_router_subprocess(
     router_script: &str,
     transcription_text: &str,
