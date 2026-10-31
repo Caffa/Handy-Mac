@@ -34,3 +34,8 @@ export { useModelLoadIndicator } from "./useModelLoadIndicator";
 export type { UseModelLoadIndicatorReturn } from "./useModelLoadIndicator";
 export { useRouterPreview } from "./useRouterPreview";
 export { useUSBRecovery } from "./useUSBRecovery";
+export { useWriteForMe } from "./useWriteForMe";
+export type {
+  WriteForMePhase,
+  WriteProgressEvent,
+} from "./useWriteForMe";

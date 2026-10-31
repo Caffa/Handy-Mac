@@ -1455,6 +1455,54 @@ pub fn set_post_process_selected_prompt(app: AppHandle, id: String) -> Result<()
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_write_for_me_model_setting(app: AppHandle, model: String) -> Result<(), String> {
+    settings::patch_settings(&app, |s| {
+        s.write_for_me_model = model.clone();
+    });
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_write_for_me_system_prompt_setting(
+    app: AppHandle,
+    prompt: String,
+) -> Result<(), String> {
+    settings::patch_settings(&app, |s| {
+        s.write_for_me_system_prompt = prompt.clone();
+    });
+    Ok(())
+}
+
+/// Set the Ollama API key used by the "write for me" fast path.
+/// The value is trimmed; an empty value clears the stored key.
+#[tauri::command]
+#[specta::specta]
+pub fn set_write_for_me_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
+    settings::patch_settings(&app, |s| {
+        s.write_for_me_api_key = settings::SecretString(api_key.trim().to_string());
+    });
+    Ok(())
+}
+
+/// Import OLLAMA_API_KEY from the process environment into the settings
+/// store. Returns whether a non-empty key was found and imported.
+#[tauri::command]
+#[specta::specta]
+pub fn import_ollama_api_key_from_env(app: AppHandle) -> Result<bool, String> {
+    let key = std::env::var("OLLAMA_API_KEY").unwrap_or_default();
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Ok(false);
+    }
+    settings::patch_settings(&app, |s| {
+        s.write_for_me_api_key = settings::SecretString(key.clone());
+    });
+    Ok(true)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_mute_while_recording_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     settings::patch_settings(&app, |s| {
         s.mute_while_recording = enabled;

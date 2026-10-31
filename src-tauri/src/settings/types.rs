@@ -588,6 +588,24 @@ impl std::ops::DerefMut for SecretMap {
     }
 }
 
+// ── SecretString ──
+
+/// Single secret value (e.g. an API key) that serializes transparently as a
+/// plain string but redacts itself in `Debug` output. Mirrors `SecretMap`.
+#[derive(Clone, Default, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub(crate) struct SecretString(pub(crate) String);
+
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            write!(f, "SecretString(\"\")")
+        } else {
+            write!(f, "SecretString(\"[REDACTED]\")")
+        }
+    }
+}
+
 // ── AppSettings ──
 
 /* still handy for composing the initial JSON in the store ------------- */
@@ -704,6 +722,17 @@ pub struct AppSettings {
     pub router_script_path: Option<String>,
     #[serde(default)]
     pub router_env_file: Option<String>,
+    /// Ollama Cloud model used by the "write for me" fast path in the router
+    /// action (e.g. "beam").
+    #[serde(default = "default_write_for_me_model")]
+    pub write_for_me_model: String,
+    /// System prompt sent with the "write for me" fast-path LLM call.
+    #[serde(default = "default_write_for_me_system_prompt")]
+    pub write_for_me_system_prompt: String,
+    /// Ollama API key for the "write for me" fast path. Falls back to the
+    /// OLLAMA_API_KEY environment variable when empty.
+    #[serde(default)]
+    pub write_for_me_api_key: SecretString,
     #[serde(default = "default_filler_word_removal_enabled")]
     pub filler_word_removal_enabled: bool,
     #[serde(default)]
@@ -884,6 +913,17 @@ pub(crate) fn default_sound_theme() -> SoundTheme {
 
 pub(crate) fn default_post_process_enabled() -> bool {
     false
+}
+
+pub(crate) fn default_write_for_me_model() -> String {
+    "beam".to_string()
+}
+
+pub(crate) fn default_write_for_me_system_prompt() -> String {
+    "You are a writing assistant. Produce ONLY the finished, ready-to-use output the user \
+     asked for — no explanations, no preamble, no quotes around the answer. Keep it concise \
+     and accurate."
+        .to_string()
 }
 
 pub(crate) fn default_filler_word_removal_enabled() -> bool {

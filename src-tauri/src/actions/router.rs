@@ -475,20 +475,26 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                         let model_id_for_history = transcription.model_id.clone();
 
-                        // ── Fast path: "Hey Minion, write for me …" ──
-                        // Single-shot Ollama Cloud (beam) reply, pasted back after a
-                        // 2-second countdown with a sound. Skips kimaki/router filing.
+                        // ── Fast path: "Hey Minion/Hey Assistant, write for me …" ──
+                        // Single-shot Ollama Cloud reply, pasted back after a short
+                        // countdown with a sound. Skips kimaki/router filing.
                         if let Some(write_prompt) = write_for_me_prompt(&transcription_text) {
                             info!(
                                 "Fast path: write-for-me prompt ({} chars)",
                                 write_prompt.len()
                             );
 
-                            let api_key = std::env::var("OLLAMA_API_KEY").unwrap_or_default();
+                            let settings = get_settings(&ah);
+
+                            // API key: stored setting first, then env fallback.
+                            let mut api_key = settings.write_for_me_api_key.0.clone();
+                            if api_key.trim().is_empty() {
+                                api_key = std::env::var("OLLAMA_API_KEY").unwrap_or_default();
+                            }
                             if api_key.trim().is_empty() {
                                 send_macos_notification(
                                     "Handy Write",
-                                    "OLLAMA_API_KEY not set; cannot generate output.",
+                                    "No Ollama API key set (Settings or OLLAMA_API_KEY).",
                                 );
                                 utils::hide_recording_overlay(&ah);
                                 set_tray_state(&ah, TrayIconState::Idle);
@@ -505,20 +511,38 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 api_format: crate::settings::PostProcessApiFormat::OpenAi,
                             };
 
-                            let system_prompt = "You are a writing assistant. Produce ONLY the \
-                                finished, ready-to-use output the user asked for — no explanations, \
-                                no preamble, no quotes around the answer. If the request describes an \
-                                email, message, or letter, format it in that medium (greeting, body, \
-                                sign-off) with appropriate subject line when relevant. If it asks to \
-                                polish/rewrite, return the polished version only. Keep it concise and \
-                                accurate.";
+                            // Model and system prompt from settings, with defaults
+                            // for blank values.
+                            let model = {
+                                let stored = settings.write_for_me_model.trim();
+                                if stored.is_empty() {
+                                    crate::settings::default_write_for_me_model()
+                                } else {
+                                    stored.to_string()
+                                }
+                            };
+                            let system_prompt = {
+                                let stored = settings.write_for_me_system_prompt.trim();
+                                if stored.is_empty() {
+                                    crate::settings::default_write_for_me_system_prompt()
+                                } else {
+                                    stored.to_string()
+                                }
+                            };
+
+                            // Tell the overlay to show a "writing" label while the
+                            // model generates.
+                            let _ = ah.emit(
+                                "write-progress",
+                                serde_json::json!({ "phase": "generating" }),
+                            );
 
                             let result = crate::llm_client::send_chat_completion_with_schema(
                                 &provider,
                                 api_key,
-                                "beam",
+                                &model,
                                 write_prompt.clone(),
-                                Some(system_prompt.to_string()),
+                                Some(system_prompt),
                                 None,
                                 true,
                             )
@@ -533,9 +557,15 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                             "Model returned empty output.",
                                         );
                                     } else {
-                                        // 2-second warning + sound before pasting.
+                                        // Warning sound + short countdown before
+                                        // pasting; the overlay shows the countdown
+                                        // driven by the write-progress event.
                                         play_feedback_sound(&ah, SoundType::Stop);
-                                        std::thread::sleep(Duration::from_secs(2));
+                                        let _ = ah.emit(
+                                            "write-progress",
+                                            serde_json::json!({ "phase": "pasting", "ms": 500 }),
+                                        );
+                                        tokio::time::sleep(Duration::from_millis(500)).await;
                                         if let Err(e) = utils::paste(output, ah.clone()) {
                                             error!("Paste failed: {}", e);
                                             send_macos_notification(
@@ -1191,14 +1221,31 @@ fn spawn_and_wait_with_drain(cmd: &mut Command) -> Result<(String, String), Stri
 
 /// Run boss_router.py as a subprocess and return the parsed output.
 /// Returns (summary_string, handler_data_vec) on success, or an error String.
-/// Detect the "Hey Minion, write for me …" fast path and return the cleaned
-/// user request, or `None` if the transcription is not one of these.
+/// Detect a "write for me" fast-path trigger and return the cleaned user
+/// request, or `None` if the transcription is not one of these.
+///
+/// Two triggers are accepted:
+/// - "Hey Assistant …" — everything after the trigger is the prompt.
+/// - "Hey Minion, write for me …" — requires a write sub-trigger prefix.
 fn write_for_me_prompt(text: &str) -> Option<String> {
     let t = text.trim();
     if t.is_empty() {
         return None;
     }
     let low = t.to_lowercase();
+
+    // "Hey assistant …" — the rest after the trigger is the whole request.
+    if low.starts_with("hey assistant") {
+        let rest = t["hey assistant".len()..]
+            .trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
+        let prompt = rest.trim().to_string();
+        return if prompt.is_empty() {
+            None
+        } else {
+            Some(prompt)
+        };
+    }
+
     if !low.starts_with("hey minion") {
         return None;
     }
@@ -1242,6 +1289,25 @@ mod write_for_me_tests {
     #[test]
     fn rejects_generic_direct_order() {
         assert!(write_for_me_prompt("Hey Minion, restart kimaki").is_none());
+    }
+
+    #[test]
+    fn hey_assistant_takes_rest_as_prompt() {
+        let p = write_for_me_prompt("Hey Assistant, write a polite decline to a meeting invite")
+            .unwrap();
+        assert_eq!(p, "write a polite decline to a meeting invite");
+    }
+
+    #[test]
+    fn hey_assistant_is_case_insensitive() {
+        let p = write_for_me_prompt("hey assistant draft a tweet").unwrap();
+        assert_eq!(p, "draft a tweet");
+    }
+
+    #[test]
+    fn hey_assistant_without_request_is_none() {
+        assert!(write_for_me_prompt("hey assistant").is_none());
+        assert!(write_for_me_prompt("Hey Assistant!").is_none());
     }
 }
 

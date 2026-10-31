@@ -621,6 +621,24 @@
         "cancel": "Cancel",
         "selectToEdit": "Select a prompt above to view and edit its details.",
         "createFirst": "Click 'Create New Prompt' above to create your first post-processing prompt."
+      },
+      "writeForMe": {
+        "title": "Write for Me",
+        "model": {
+          "title": "Model",
+          "description": "Ollama Cloud model used to generate the output.",
+          "placeholder": "beam"
+        },
+        "systemPrompt": {
+          "title": "System Prompt",
+          "description": "Instructions sent to the model. It receives only your spoken request."
+        },
+        "apiKey": {
+          "title": "Ollama API Key",
+          "description": "API key for ollama.com. Falls back to the OLLAMA_API_KEY environment variable when empty.",
+          "placeholder": "Paste your Ollama API key",
+          "importFromEnv": "Import from ENV"
+        }
       }
     },
     "history": {
@@ -1055,6 +1073,8 @@
     "hybridLong": "L",
     "routing": "Routing…",
     "filing": "Filing…",
+    "writeGenerating": "Writing…",
+    "writePasting": "Pasting in {{seconds}}s",
     "micDead": "Microphone not responding",
     "lowAudio": "Low audio - check microphone",
     "live": "Live",

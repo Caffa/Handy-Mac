@@ -193,6 +193,12 @@ const settingUpdaters: {
     commands.changePostProcessEnabledSetting(value as boolean),
   post_process_selected_prompt_id: (value) =>
     commands.setPostProcessSelectedPrompt(value as string),
+  write_for_me_model: (value) =>
+    commands.changeWriteForMeModelSetting(value as string),
+  write_for_me_system_prompt: (value) =>
+    commands.changeWriteForMeSystemPromptSetting(value as string),
+  write_for_me_api_key: (value) =>
+    commands.setWriteForMeApiKey(value as string),
   mute_while_recording: (value) =>
     commands.changeMuteWhileRecordingSetting(value as boolean),
   append_trailing_space: (value) =>

@@ -453,6 +453,120 @@ const PostProcessingSettingsPromptsComponent: React.FC = () => {
   );
 };
 
+const WriteForMeSettingsComponent: React.FC = () => {
+  const { t } = useTranslation();
+  const { getSetting, updateSetting, isUpdating, refreshSettings } =
+    useSettings();
+  const [importing, setImporting] = useState(false);
+
+  const model = getSetting("write_for_me_model") ?? "";
+  const systemPrompt = getSetting("write_for_me_system_prompt") ?? "";
+  const apiKey = getSetting("write_for_me_api_key") ?? "";
+
+  // Local drafts: persist to the backend on blur, not on every keystroke.
+  const [modelDraft, setModelDraft] = useState(model);
+  const [systemPromptDraft, setSystemPromptDraft] = useState(systemPrompt);
+  const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
+
+  React.useEffect(() => {
+    setModelDraft(model);
+  }, [model]);
+  React.useEffect(() => {
+    setSystemPromptDraft(systemPrompt);
+  }, [systemPrompt]);
+  React.useEffect(() => {
+    setApiKeyDraft(apiKey);
+  }, [apiKey]);
+
+  const handleImportFromEnv = async () => {
+    setImporting(true);
+    try {
+      const result = await commands.importOllamaApiKeyFromEnv();
+      if (result.status === "ok" && result.data) {
+        // The backend patched the setting directly — pull the imported key
+        // back into the store so the field reflects it.
+        await refreshSettings();
+      }
+    } catch (error) {
+      console.error("Failed to import Ollama API key:", error);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <>
+      <SettingContainer
+        title={t("settings.postProcessing.writeForMe.model.title")}
+        description={t("settings.postProcessing.writeForMe.model.description")}
+        descriptionMode="tooltip"
+        layout="horizontal"
+        grouped={true}
+      >
+        <Input
+          type="text"
+          value={modelDraft}
+          onChange={(e) => setModelDraft(e.target.value)}
+          onBlur={() => updateSetting("write_for_me_model", modelDraft.trim())}
+          placeholder={t("settings.postProcessing.writeForMe.model.placeholder")}
+          variant="compact"
+          disabled={isUpdating("write_for_me_model")}
+          className="min-w-[320px]"
+        />
+      </SettingContainer>
+
+      <SettingContainer
+        title={t("settings.postProcessing.writeForMe.systemPrompt.title")}
+        description={t(
+          "settings.postProcessing.writeForMe.systemPrompt.description",
+        )}
+        descriptionMode="tooltip"
+        layout="stacked"
+        grouped={true}
+      >
+        <Textarea
+          value={systemPromptDraft}
+          onChange={(e) => setSystemPromptDraft(e.target.value)}
+          onBlur={() =>
+            updateSetting("write_for_me_system_prompt", systemPromptDraft)
+          }
+          disabled={isUpdating("write_for_me_system_prompt")}
+        />
+      </SettingContainer>
+
+      <SettingContainer
+        title={t("settings.postProcessing.writeForMe.apiKey.title")}
+        description={t("settings.postProcessing.writeForMe.apiKey.description")}
+        descriptionMode="tooltip"
+        layout="horizontal"
+        grouped={true}
+      >
+        <div className="flex items-center gap-2">
+          <Input
+            type="password"
+            value={apiKeyDraft}
+            onChange={(e) => setApiKeyDraft(e.target.value)}
+            onBlur={() => updateSetting("write_for_me_api_key", apiKeyDraft)}
+            placeholder={t("settings.postProcessing.writeForMe.apiKey.placeholder")}
+            variant="compact"
+            disabled={isUpdating("write_for_me_api_key")}
+            className="min-w-[320px]"
+          />
+          <Button
+            onClick={handleImportFromEnv}
+            variant="secondary"
+            size="md"
+            disabled={importing}
+            className="shrink-0"
+          >
+            {t("settings.postProcessing.writeForMe.apiKey.importFromEnv")}
+          </Button>
+        </div>
+      </SettingContainer>
+    </>
+  );
+};
+
 export const PostProcessingSettingsApi = React.memo(
   PostProcessingSettingsApiComponent,
 );
@@ -462,6 +576,9 @@ export const PostProcessingSettingsPrompts = React.memo(
   PostProcessingSettingsPromptsComponent,
 );
 PostProcessingSettingsPrompts.displayName = "PostProcessingSettingsPrompts";
+
+export const WriteForMeSettings = React.memo(WriteForMeSettingsComponent);
+WriteForMeSettings.displayName = "WriteForMeSettings";
 
 export const PostProcessingSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -486,6 +603,10 @@ export const PostProcessingSettings: React.FC = () => {
 
       <SettingsGroup title={t("settings.postProcessing.prompts.title")}>
         <PostProcessingSettingsPrompts />
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.postProcessing.writeForMe.title")}>
+        <WriteForMeSettings />
       </SettingsGroup>
     </div>
   );

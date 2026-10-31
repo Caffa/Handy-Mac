@@ -35,6 +35,7 @@ import { useLiveCaptions } from "./hooks/useLiveCaptions";
 import { useModelLoadIndicator } from "./hooks/useModelLoadIndicator";
 import { useRouterPreview } from "./hooks/useRouterPreview";
 import { useUSBRecovery } from "./hooks/useUSBRecovery";
+import { useWriteForMe } from "./hooks/useWriteForMe";
 import { useRecordingTimeoutWarning } from "./hooks/useRecordingTimeoutWarning";
 import {
   VisualizerBars,
@@ -179,6 +180,14 @@ const RecordingOverlay: React.FC = () => {
       .catch(() => {});
   }, [state, isRouter, routerResult, timeoutWarningActive]);
 
+  // ─── Write-for-me fast path progress (generating / pasting countdown) ──
+  // Declared before the reset effect below, which clears it on new recordings.
+  const {
+    phase: writeForMePhase,
+    msRemaining: writeForMeMsRemaining,
+    reset: resetWriteForMe,
+  } = useWriteForMe();
+
   // ─── Reset on new recording ──────────────────────────────────────────
   // When the backend transitions to Recording from any other state,
   // reset all mutable UI state (streaming text, warnings, etc.).
@@ -190,8 +199,9 @@ const RecordingOverlay: React.FC = () => {
 
     if (currentState === "Recording" && prevState !== "Recording") {
       resetRecordingState();
+      resetWriteForMe();
     }
-  }, [backendState.appState.state, resetRecordingState]);
+  }, [backendState.appState.state, resetRecordingState, resetWriteForMe]);
 
   // ─── Visualizer (audio levels + mic warnings) ──────────────────────────
   const { levels } = useVisualizer({
@@ -361,18 +371,28 @@ const RecordingOverlay: React.FC = () => {
               backendState.appState.state === "Recording" && (
                 <VisualizerBars levels={levels} isRouter={isRouter} />
               )}
-            {/* Processing state: "Filing..." for router, "Loading model..."/
+            {/* Processing state: "Writing..."/"Pasting..." for the write-for-me
+                fast path, "Filing..." for router, "Loading model..."/
                 "Processing..." for normal. Post-stop, any in-flight load IS
                 the wait (upstream 20a6685e), so switch the label immediately. */}
             {state === "processing" && (
               <div
                 className={`transcribing-text${isRouter ? " routing-text" : ""}`}
               >
-                {isRouter
-                  ? t("overlay.filing")
-                  : modelLoading
-                    ? t("overlay.loadingModel")
-                    : t("overlay.processing")}
+                {writeForMePhase === "generating"
+                  ? t("overlay.writeGenerating")
+                  : writeForMePhase === "pasting"
+                    ? t("overlay.writePasting", {
+                        seconds: Math.max(
+                          1,
+                          Math.ceil(writeForMeMsRemaining / 1000),
+                        ),
+                      })
+                    : isRouter
+                      ? t("overlay.filing")
+                      : modelLoading
+                        ? t("overlay.loadingModel")
+                        : t("overlay.processing")}
               </div>
             )}
             {state === "usb-cycling" && (

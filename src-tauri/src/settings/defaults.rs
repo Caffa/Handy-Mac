@@ -143,6 +143,9 @@ pub fn get_default_settings() -> AppSettings {
         router_env_file: Some(
             "/Users/caffae/Local-Projects-2026/Voice-Memo-to-Router/.env".to_string(),
         ),
+        write_for_me_model: default_write_for_me_model(),
+        write_for_me_system_prompt: default_write_for_me_system_prompt(),
+        write_for_me_api_key: SecretString::default(),
         filler_word_removal_enabled: default_filler_word_removal_enabled(),
         custom_filler_words: None,
         chinese_script: default_chinese_script(),
