@@ -28,6 +28,8 @@ const HANDLER_ICONS: Record<string, string> = {
   Concerns: "⚠️",
   "Emotional Rant": "😤",
   Correction: "✏️",
+  "Direct Order": "🫡",
+  Task: "📋",
   default: "✅",
 };
 
