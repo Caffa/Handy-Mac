@@ -72,6 +72,19 @@ use tauri::image::Image;
 /// separately while still exposing the same inner manager API via `.0`.
 pub struct LiveCaptionsTranscriptionManager(pub Arc<Mutex<TranscriptionManager>>);
 
+/// Wrapper type for the trigger-fallback [`TranscriptionManager`] instance.
+///
+/// Same rationale as [`LiveCaptionsTranscriptionManager`]: Tauri's managed
+/// state is keyed by type, so a bare third `Arc<Mutex<TranscriptionManager>>`
+/// would be indistinguishable from the main and live captions instances and
+/// `try_state` would return whichever was registered first. This newtype lets
+/// the trigger scan TM — which owns the small scan model used by the gated
+/// trigger-phrase fallback (see `actions/trigger_fallback.rs`) — be registered
+/// and looked up separately while still exposing the same inner manager API
+/// via `.0`. Keeping it separate also means a scan-model load/unload never
+/// disturbs the engines of the two primary transcription paths.
+pub struct TriggerTranscriptionManager(pub Arc<Mutex<TranscriptionManager>>);
+
 /// The transcription engine supervisors (main + live captions manager), for
 /// lock-free cancellation of engine work. See the cancel path in `utils.rs`.
 pub struct TranscriptionEngineHandles {
@@ -278,6 +291,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         TranscriptionManager::new(app_handle, model_manager.clone())
             .expect("Failed to initialize live captions transcription manager"),
     ));
+    let trigger_transcription_manager = Arc::new(Mutex::new(
+        TranscriptionManager::new(app_handle, model_manager.clone())
+            .expect("Failed to initialize trigger transcription manager"),
+    ));
     let retry_queue = Arc::new(Mutex::new(
         TranscriptionRetryQueue::new(app_handle.clone())
             .expect("Failed to initialize transcription retry queue"),
@@ -316,6 +333,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(LiveCaptionsTranscriptionManager(
         live_captions_transcription_manager.clone(),
     ));
+    app_handle.manage(TriggerTranscriptionManager(
+        trigger_transcription_manager.clone(),
+    ));
     // Engine supervisor handles, stored so the cancel path can stop engine
     // work (a batch run or stream work in the transcription worker) without
     // acquiring the TranscriptionManager mutex — which the running
@@ -342,6 +362,36 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // read-modify-write race with the debounced disk writer.
     let initial_settings = settings::load_or_create_app_settings_safe(app_handle);
     app_handle.manage(Arc::new(SettingsCache::new(initial_settings)));
+
+    // Pre-warm the trigger-fallback scan model when the gated fallback is
+    // enabled and a scan model is configured. The download pre-check matters:
+    // `load_model` emits a `loading_failed` model-state event for anything not
+    // downloaded, which would surface as a spurious error in the UI at every
+    // startup. `initiate_model_load_for` itself runs the load on a detached
+    // thread and is idempotent, so calling it here never blocks startup.
+    {
+        let settings = settings::get_settings_safe(app_handle);
+        if settings.trigger_phrase_fallback_enabled && !settings.trigger_scan_model.is_empty() {
+            let downloaded = model_manager
+                .get_model_info(&settings.trigger_scan_model)
+                .map(|info| info.is_downloaded)
+                .unwrap_or(false);
+            if downloaded {
+                trigger_transcription_manager
+                    .lock()
+                    .initiate_model_load_for(&settings.trigger_scan_model);
+                log::info!(
+                    "Pre-warming trigger scan model '{}'",
+                    settings.trigger_scan_model
+                );
+            } else {
+                log::info!(
+                    "Trigger scan model '{}' not downloaded — skipping trigger fallback pre-warm",
+                    settings.trigger_scan_model
+                );
+            }
+        }
+    }
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -711,6 +761,9 @@ pub fn run(cli_args: CliArgs) {
             shortcut::set_model_vad_sensitivity,
             shortcut::change_live_captions_enabled_setting,
             shortcut::change_live_captions_model_setting,
+            shortcut::change_trigger_phrase_fallback_enabled_setting,
+            shortcut::change_trigger_scan_model_setting,
+            shortcut::change_trigger_scan_seconds_setting,
             shortcut::change_overlay_scale_setting,
             shortcut::change_noise_suppression_enabled_setting,
             shortcut::change_noise_suppression_level_setting,
@@ -1013,6 +1066,7 @@ pub fn run(cli_args: CliArgs) {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![]),

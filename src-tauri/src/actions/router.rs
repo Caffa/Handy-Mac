@@ -24,12 +24,13 @@ use crate::utils::{
 use crate::TranscriptionCoordinator;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use wait_timeout::ChildExt;
 
 /// Structured result from one boss_router.py handler.
@@ -43,6 +44,18 @@ pub struct RouterHandlerData {
     pub classification: String,
     /// Optional file path where content was saved (None for diary entries).
     pub file_path: Option<String>,
+}
+
+/// One route classification reported early by boss_router.py via a
+/// `"event":"classified"` stdout line, long before the handlers finish.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClassifiedRoute {
+    /// Internal classification (e.g. "direct_order").
+    pub classification: String,
+    /// Human-readable handler name (e.g. "Direct Order").
+    pub handler_name: String,
+    /// Emoji prefix ("" when the classification has none).
+    pub emoji: String,
 }
 
 /// Emitted when the router subprocess completes (success or failure).
@@ -342,6 +355,21 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                 let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
                 let wav_path = hm.recordings_dir().join(&file_name);
                 let wav_path_for_verify = wav_path.clone();
+                // Capture the opening for the gated trigger-phrase fallback scan
+                // (see actions/trigger_fallback.rs) before raw_samples is moved
+                // into the WAV writer. Only allocate when the feature is enabled,
+                // to keep normal recordings on the fast (zero-extra) path.
+                let trigger_samples: Vec<f32> = if get_settings(&ah).trigger_phrase_fallback_enabled
+                {
+                    let scan_seconds = get_settings(&ah).trigger_scan_seconds.clamp(3, 30) as usize;
+                    raw_samples
+                        .iter()
+                        .take(scan_seconds * 16_000)
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let samples_for_wav = raw_samples;
                 let wav_handle = tauri::async_runtime::spawn_blocking(move || {
                     crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
@@ -443,7 +471,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             transcription.model_id,
                         );
 
-                        let transcription_text = transcription.text.trim().to_string();
+                        let mut transcription_text = transcription.text.trim().to_string();
 
                         // ── Handle empty transcription in router mode ──
                         if transcription_text.is_empty() {
@@ -459,7 +487,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 }
                             }
 
-                            send_macos_notification("Handy Router", "No speech detected");
+                            send_macos_notification(&ah, "Handy Router", "No speech detected");
 
                             utils::hide_recording_overlay(&ah);
                             set_tray_state(&ah, TrayIconState::Idle);
@@ -473,12 +501,95 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             return;
                         }
 
-                        let model_id_for_history = transcription.model_id.clone();
+                        // ── Gated trigger-phrase fallback ──
+                        // When the primary model mangled a leading trigger phrase
+                        // (e.g. "hey million, write for me …"), re-scan the first
+                        // `trigger_scan_seconds` of raw audio with the dedicated
+                        // scan model and canonicalize the opening when the scan
+                        // candidate confirms a configured trigger.
+                        // See actions/trigger_fallback.rs for the pipeline contract.
+                        let settings = get_settings(&ah);
+                        let phrases = if settings.trigger_phrases.is_empty() {
+                            crate::settings::default_trigger_phrases()
+                        } else {
+                            settings.trigger_phrases.clone()
+                        };
+                        let suspicious = crate::actions::trigger_fallback::suspicious_opening(
+                            &transcription_text,
+                        );
+                        // Step 1 of the documented pipeline: if a canonical
+                        // trigger phrase is already present, there is nothing to
+                        // recover — skip the (paid) whisper rescan.
+                        let already_canonical =
+                            crate::actions::trigger_fallback::detect_canonical_trigger(
+                                &transcription_text,
+                                &phrases,
+                            )
+                            .is_some();
+                        let scan_model_downloadable = !settings.trigger_scan_model.is_empty()
+                            && ah
+                                .try_state::<std::sync::Arc<crate::managers::model::ModelManager>>()
+                                .and_then(|mm| mm.get_model_info(&settings.trigger_scan_model))
+                                .map(|info| info.is_downloaded)
+                                .unwrap_or(false);
+                        let gate = settings.trigger_phrase_fallback_enabled
+                            && (settings.trigger_fallback_force_scan || suspicious)
+                            && !already_canonical
+                            && write_for_me_prompt_with_phrases(&transcription_text, &phrases)
+                                .is_none();
+
+                        if gate {
+                            if let Some(trigger_state) =
+                                ah.try_state::<crate::TriggerTranscriptionManager>()
+                            {
+                                let trigger_arc = trigger_state.0.clone();
+                                let model = settings.trigger_scan_model.clone();
+                                let samples = trigger_samples.clone();
+                                let downloadable = scan_model_downloadable;
+                                let handle = tokio::task::spawn_blocking(move || {
+                                    let Some(guard) =
+                                        trigger_arc.try_lock_for(std::time::Duration::from_secs(2))
+                                    else {
+                                        return Ok::<Option<String>, ()>(None);
+                                    };
+                                    // Never attempt to initiate a load for a model that
+                                    // is not downloaded — `load_model` would emit a
+                                    // spurious `loading_failed` UI toast per utterance.
+                                    if !downloadable {
+                                        return Ok(None);
+                                    }
+                                    if !guard.is_model_loaded() || guard.is_model_loading() {
+                                        guard.initiate_model_load_for(&model);
+                                        return Ok(None);
+                                    }
+                                    let out = guard.transcribe(samples).ok().map(|o| o.text);
+                                    Ok(out)
+                                });
+                                match handle.await {
+                                    Ok(Ok(Some(candidate))) => {
+                                        if let Some(canonical) = crate::actions::trigger_fallback::detect_canonical_trigger(&candidate, &phrases) {
+                                            if let Some(canonicalized) = crate::actions::trigger_fallback::canonicalize_leading_trigger(&transcription_text, &canonical) {
+                                                info!(
+                                                    "Trigger fallback replaced leading token using Whisper scan candidate: {}",
+                                                    candidate
+                                                );
+                                                transcription_text = canonicalized;
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        debug!("Trigger fallback scan skipped/not available");
+                                    }
+                                }
+                            }
+                        }
 
                         // ── Fast path: "Hey Minion/Hey Assistant, write for me …" ──
                         // Single-shot Ollama Cloud reply, pasted back after a short
                         // countdown with a sound. Skips kimaki/router filing.
-                        if let Some(write_prompt) = write_for_me_prompt(&transcription_text) {
+                        if let Some(write_prompt) =
+                            write_for_me_prompt_with_phrases(&transcription_text, &phrases)
+                        {
                             info!(
                                 "Fast path: write-for-me prompt ({} chars)",
                                 write_prompt.len()
@@ -493,6 +604,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             }
                             if api_key.trim().is_empty() {
                                 send_macos_notification(
+                                    &ah,
                                     "Handy Write",
                                     "No Ollama API key set (Settings or OLLAMA_API_KEY).",
                                 );
@@ -553,6 +665,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                     let output = output.trim().to_string();
                                     if output.is_empty() {
                                         send_macos_notification(
+                                            &ah,
                                             "Handy Write",
                                             "Model returned empty output.",
                                         );
@@ -569,11 +682,13 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                         if let Err(e) = utils::paste(output, ah.clone()) {
                                             error!("Paste failed: {}", e);
                                             send_macos_notification(
+                                                &ah,
                                                 "Handy Write",
                                                 "Paste failed; output copied? Check clipboard.",
                                             );
                                         } else {
                                             send_macos_notification(
+                                                &ah,
                                                 "Handy Write",
                                                 "Wrote and pasted output.",
                                             );
@@ -582,6 +697,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 }
                                 Ok(None) => {
                                     send_macos_notification(
+                                        &ah,
                                         "Handy Write",
                                         "Model returned no content.",
                                     );
@@ -589,7 +705,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 Err(e) => {
                                     error!("Ollama write-for-me failed: {}", e);
                                     let disp = if e.len() > 150 { &e[..150] } else { &e };
-                                    send_macos_notification("Handy Write Error", disp);
+                                    send_macos_notification(&ah, "Handy Write Error", disp);
                                 }
                             }
 
@@ -744,6 +860,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             // Spawn the router as a subprocess
                             std::thread::spawn(move || {
                                 let result = run_router_subprocess(
+                                    &ah_for_router,
                                     &router_script,
                                     &transcription_text_for_router,
                                     &datetime_str,
@@ -806,12 +923,17 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                         } else {
                                             format!("Route: {}", summary_text)
                                         };
-                                        send_macos_notification("Handy Router", &notification_text);
+                                        send_macos_notification(
+                                            &ah_for_router,
+                                            "Handy Router",
+                                            &notification_text,
+                                        );
 
                                         // Schedule delayed verification of pending diary entries
                                         // in case Obsidian clobbered an external append.
                                         if any_success {
                                             run_pending_entry_verify(
+                                                ah_for_router.clone(),
                                                 router_script.clone(),
                                                 env_file.clone(),
                                                 hm_for_router.clone(),
@@ -863,6 +985,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                             e.clone()
                                         };
                                         send_macos_notification(
+                                            &ah_for_router,
                                             "Handy Router Error",
                                             &error_display,
                                         );
@@ -939,6 +1062,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             };
                             let _ = ah.emit("router-result", &event);
                             send_macos_notification(
+                                &ah,
                                 "Handy Router",
                                 "No router path configured. Check Settings.",
                             );
@@ -1044,6 +1168,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                         }
 
                         send_macos_notification(
+                            &ah,
                             "Handy Router",
                             "Transcription failed. Will retry automatically.",
                         );
@@ -1107,6 +1232,10 @@ const ROUTER_VERIFY_DELAY: Duration = Duration::from_secs(60);
 const STARTUP_VERIFY_DELAY: Duration = Duration::from_secs(30);
 static ROUTER_VERIFY_INFLIGHT: AtomicBool = AtomicBool::new(false);
 
+/// Per-line stdout callback passed to `spawn_and_wait_with_drain`; invoked
+/// from the reading thread as each line arrives, before process exit.
+type OnRouterStdoutLine = Box<dyn FnMut(&str) + Send>;
+
 /// Build the base router subprocess command with python bin, PATH prefix, env file, and cwd.
 fn build_router_command(router_script: &str, env_file: Option<&str>) -> Command {
     let python_bin = "/Users/caffae/miniforge3/bin/python3";
@@ -1155,11 +1284,18 @@ fn build_router_command(router_script: &str, env_file: Option<&str>) -> Command 
     cmd
 }
 
-/// Spawn a child process with piped stdout/stderr, drain both streams, and wait
-/// up to `ROUTER_SUBPROCESS_TIMEOUT`. On timeout the child is killed and waited on.
+/// Spawn a child process with piped stdout/stderr, stream stdout line by line
+/// with `BufReader::lines`, drain stderr concurrently, and wait up to
+/// `ROUTER_SUBPROCESS_TIMEOUT`. `on_stdout_line`, when provided, is invoked
+/// from the reading thread as each line arrives — before process exit — which
+/// is what makes early "classified" notifications possible. On timeout the
+/// child is killed and waited on.
 /// Returns `(stdout, stderr)` on success; on failure returns an error string
 /// including stderr contents when available.
-fn spawn_and_wait_with_drain(cmd: &mut Command) -> Result<(String, String), String> {
+fn spawn_and_wait_with_drain(
+    cmd: &mut Command,
+    mut on_stdout_line: Option<OnRouterStdoutLine>,
+) -> Result<(String, String), String> {
     debug!("Running router command: {:?}", cmd);
 
     let mut child = cmd
@@ -1168,13 +1304,25 @@ fn spawn_and_wait_with_drain(cmd: &mut Command) -> Result<(String, String), Stri
         .spawn()
         .map_err(|e| format!("Failed to execute router: {}", e))?;
 
-    // Drain stdout/stderr concurrently while waiting. This avoids a pipe-buffer
-    // deadlock if the router writes more than the OS pipe buffer before exiting.
-    let stdout_handle = child.stdout.take().map(|mut stdout| {
+    // Stream stdout incrementally (lines) instead of read_to_end so events can
+    // be acted on while the router is still running. Collected lines are
+    // joined so the previous (whole document, stderr) return contract and the
+    // downstream parse_router_json_output call are unchanged.
+    let stdout_handle = child.stdout.take().map(|stdout| {
         std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
+            let mut collected: Vec<String> = Vec::new();
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let Ok(line) = line else {
+                    debug!("Router stdout line was not valid UTF-8; skipping");
+                    continue;
+                };
+                if let Some(on_line) = on_stdout_line.as_mut() {
+                    on_line(&line);
+                }
+                collected.push(line);
+            }
+            collected
         })
     });
     let stderr_handle = child.stderr.take().map(|mut stderr| {
@@ -1202,7 +1350,8 @@ fn spawn_and_wait_with_drain(cmd: &mut Command) -> Result<(String, String), Stri
         Err(e) => return Err(format!("Failed to wait on router: {}", e)),
     };
 
-    let stdout_buf = stdout_handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default());
+    let stdout_lines = stdout_handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default());
+    let stdout = stdout_lines.join("\n");
     let stderr_buf = stderr_handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default());
 
     if !status.success() {
@@ -1214,61 +1363,88 @@ fn spawn_and_wait_with_drain(cmd: &mut Command) -> Result<(String, String), Stri
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
     let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
     Ok((stdout, stderr))
 }
 
-/// Run boss_router.py as a subprocess and return the parsed output.
-/// Returns (summary_string, handler_data_vec) on success, or an error String.
 /// Detect a "write for me" fast-path trigger and return the cleaned user
 /// request, or `None` if the transcription is not one of these.
 ///
-/// Two triggers are accepted:
+/// Test-only convenience wrapper using the default trigger phrase list; the
+/// router call site passes `AppSettings::trigger_phrases` to
+/// [`write_for_me_prompt_with_phrases`] instead.
+///
+/// Two triggers are accepted by default:
 /// - "Hey Assistant …" — everything after the trigger is the prompt.
 /// - "Hey Minion, write for me …" — requires a write sub-trigger prefix.
+#[cfg(test)]
 fn write_for_me_prompt(text: &str) -> Option<String> {
+    write_for_me_prompt_with_phrases(text, &crate::settings::default_trigger_phrases())
+}
+
+/// Settings-aware variant of [`write_for_me_prompt`]: `phrases` is
+/// `AppSettings::trigger_phrases`, checked in order (first match wins).
+///
+/// Roles are kept per phrase:
+/// - A phrase containing "minion" (case-insensitive) requires a write
+///   sub-trigger ("write for me" / "write me" / "write to me") after the
+///   trigger, otherwise it does not match.
+/// - Every other phrase hands the whole remainder through as the prompt.
+fn write_for_me_prompt_with_phrases(text: &str, phrases: &[String]) -> Option<String> {
     let t = text.trim();
     if t.is_empty() {
         return None;
     }
     let low = t.to_lowercase();
 
-    // "Hey assistant …" — the rest after the trigger is the whole request.
-    if low.starts_with("hey assistant") {
-        let rest = t["hey assistant".len()..]
-            .trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
-        let prompt = rest.trim().to_string();
+    for phrase in phrases {
+        let phrase_trimmed = phrase.trim();
+        if phrase_trimmed.is_empty() {
+            continue;
+        }
+        let phrase_low = phrase_trimmed.to_lowercase();
+        if !low.starts_with(&phrase_low) {
+            continue;
+        }
+
+        // Offset in the ORIGINAL text just past the matched phrase, counted
+        // by chars so Unicode case-folding can't desync the slice.
+        let phrase_chars = phrase_trimmed.chars().count();
+        let Some((offset, _)) = t.char_indices().nth(phrase_chars) else {
+            return None;
+        };
+        let after_trigger =
+            t[offset..].trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
+
+        if phrase_low.contains("minion") {
+            // "Hey minion"-style phrases gate on an explicit write sub-trigger.
+            const PREFIXES: &[&str] = &["write for me", "write me", "write to me"];
+            let after_low = after_trigger.to_lowercase();
+            let mut rest: Option<String> = None;
+            for prefix in PREFIXES {
+                if after_low.starts_with(prefix) {
+                    let r = after_trigger[prefix.len()..]
+                        .trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
+                    rest = Some(r.to_string());
+                    break;
+                }
+            }
+            let prompt = rest?.trim().to_string();
+            return if prompt.is_empty() {
+                None
+            } else {
+                Some(prompt)
+            };
+        }
+
+        let prompt = after_trigger.trim().to_string();
         return if prompt.is_empty() {
             None
         } else {
             Some(prompt)
         };
     }
-
-    if !low.starts_with("hey minion") {
-        return None;
-    }
-    let after_trigger = t["hey minion".len()..]
-        .trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
-    let after_low = after_trigger.to_lowercase();
-    // Accept a few phrasings of the write sub-trigger.
-    const PREFIXES: &[&str] = &["write for me", "write me", "write to me"];
-    let mut rest: Option<String> = None;
-    for prefix in PREFIXES {
-        if after_low.starts_with(prefix) {
-            let r = after_trigger[prefix.len()..]
-                .trim_start_matches(|c: char| c.is_whitespace() || ",.!?-:".contains(c));
-            rest = Some(r.to_string());
-            break;
-        }
-    }
-    let prompt = rest?.trim().to_string();
-    if prompt.is_empty() {
-        None
-    } else {
-        Some(prompt)
-    }
+    None
 }
 
 #[cfg(test)]
@@ -1309,9 +1485,181 @@ mod write_for_me_tests {
         assert!(write_for_me_prompt("hey assistant").is_none());
         assert!(write_for_me_prompt("Hey Assistant!").is_none());
     }
+
+    // ── write_for_me_prompt_with_phrases (settings-aware) ──
+
+    use super::write_for_me_prompt_with_phrases;
+
+    fn phrase_list(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn custom_non_minion_phrase_takes_whole_request() {
+        let phrases = phrase_list(&["Hey Jarvis"]);
+        // No write sub-trigger needed — the whole request is the prompt.
+        assert_eq!(
+            write_for_me_prompt_with_phrases("hey jarvis restart kimaki", &phrases).unwrap(),
+            "restart kimaki"
+        );
+        assert_eq!(
+            write_for_me_prompt_with_phrases("Hey Jarvis, write me a poem", &phrases).unwrap(),
+            "write me a poem"
+        );
+        assert!(write_for_me_prompt_with_phrases("hey jarvis", &phrases).is_none());
+    }
+
+    #[test]
+    fn custom_minion_phrase_requires_write_trigger() {
+        let phrases = phrase_list(&["Hey Minion"]);
+        assert_eq!(
+            write_for_me_prompt_with_phrases("hey minion write me a poem", &phrases).unwrap(),
+            "a poem"
+        );
+        assert!(write_for_me_prompt_with_phrases("hey minion restart kimaki", &phrases).is_none());
+    }
+
+    #[test]
+    fn minion_role_is_keyed_on_phrase_containing_minion() {
+        // "Minions" (plural) still carries the minion role.
+        let phrases = phrase_list(&["Hey Minions"]);
+        assert!(write_for_me_prompt_with_phrases("hey minions restart kimaki", &phrases).is_none());
+        assert_eq!(
+            write_for_me_prompt_with_phrases("hey minions write for me a haiku", &phrases).unwrap(),
+            "a haiku"
+        );
+    }
+
+    #[test]
+    fn phrases_checked_in_configured_order() {
+        // "Hey Assistant Pro" is a prefix-superset of "Hey Assistant"; the
+        // first configured match wins, so the configured order changes the
+        // extracted prompt for the same input.
+        let broad_first = phrase_list(&["Hey Assistant Pro", "Hey Assistant"]);
+        assert_eq!(
+            write_for_me_prompt_with_phrases("hey assistant pro draft a tweet", &broad_first)
+                .unwrap(),
+            "draft a tweet"
+        );
+        let narrow_first = phrase_list(&["Hey Assistant", "Hey Assistant Pro"]);
+        assert_eq!(
+            write_for_me_prompt_with_phrases("hey assistant pro draft a tweet", &narrow_first)
+                .unwrap(),
+            "pro draft a tweet"
+        );
+    }
+
+    #[test]
+    fn empty_or_blank_phrase_list_is_none() {
+        assert!(write_for_me_prompt_with_phrases("hey minion write me a poem", &[]).is_none());
+        let blanks = phrase_list(&["", "   "]);
+        assert!(write_for_me_prompt_with_phrases("hey minion write me a poem", &blanks).is_none());
+    }
+
+    #[test]
+    fn default_list_preserves_legacy_behavior() {
+        let default = crate::settings::default_trigger_phrases();
+        assert_eq!(
+            write_for_me_prompt_with_phrases(
+                "Hey Minion, write for me an email to my boss",
+                &default
+            )
+            .unwrap(),
+            "an email to my boss"
+        );
+        assert!(write_for_me_prompt_with_phrases("Hey Minion, restart kimaki", &default).is_none());
+        assert_eq!(
+            write_for_me_prompt_with_phrases("hey assistant draft a tweet", &default).unwrap(),
+            "draft a tweet"
+        );
+    }
 }
 
+/// One route classification reported early by boss_router.py arrives as a
+/// single-line JSON document. Parse one stdout line into those routes, or
+/// `None` for any other line (log noise, malformed JSON, the final document).
+fn parse_classified_event_line(line: &str) -> Option<Vec<ClassifiedRoute>> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if value.get("event").and_then(|v| v.as_str()) != Some("classified") {
+        return None;
+    }
+    let routes = value.get("routes")?.as_array()?;
+    Some(
+        routes
+            .iter()
+            .filter_map(|route| {
+                let classification = route.get("classification")?.as_str()?.to_string();
+                Some(ClassifiedRoute {
+                    classification,
+                    handler_name: route
+                        .get("handler_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    emoji: route
+                        .get("emoji")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Split raw router stdout lines into classified-route events and the
+/// remaining lines of the final JSON document. Lines that parse as
+/// `"event":"classified"` contribute their routes; all other lines (including
+/// malformed or empty ones) are joined with `\n` and still go through
+/// `parse_router_json_output` downstream, unchanged.
+fn split_router_stdout(lines: &[String]) -> (Vec<ClassifiedRoute>, String) {
+    let mut classified = Vec::new();
+    let mut document = String::new();
+    for line in lines {
+        if let Some(routes) = parse_classified_event_line(line) {
+            classified.extend(routes);
+        } else {
+            if !document.is_empty() {
+                document.push('\n');
+            }
+            document.push_str(line);
+        }
+    }
+    (classified, document)
+}
+
+/// Immediate notification when the router reports its classification, long
+/// before the (possibly slow) handlers finish. Body joins routes as
+/// "🫡 Direct Order", skipping the emoji when a route has none.
+fn notify_routes_classified(app: &AppHandle, routes: &[ClassifiedRoute]) {
+    if routes.is_empty() {
+        return;
+    }
+    let body = routes
+        .iter()
+        .map(|route| {
+            if route.emoji.is_empty() {
+                route.handler_name.clone()
+            } else {
+                format!("{} {}", route.emoji, route.handler_name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    send_macos_notification(app, "Handy Router", &body);
+}
+
+/// Run boss_router.py as a subprocess and return the parsed output.
+/// Returns (summary_string, handler_data_vec) on success, or an error String.
+/// Lines carrying an early `"event":"classified"` document trigger an
+/// immediate "Handy Router" notification while the subprocess is still
+/// running; the final document is parsed after exit as before.
 fn run_router_subprocess(
+    app: &AppHandle,
     router_script: &str,
     transcription_text: &str,
     datetime_str: &str,
@@ -1325,8 +1673,21 @@ fn run_router_subprocess(
         .arg("--json")
         .arg("--handy");
 
-    let (stdout, _stderr) = spawn_and_wait_with_drain(&mut cmd)?;
-    let (handler_summary, handler_data) = match parse_router_json_output(&stdout) {
+    let app_for_events = app.clone();
+    let (stdout, _stderr) = spawn_and_wait_with_drain(
+        &mut cmd,
+        Some(Box::new(move |line: &str| {
+            if let Some(routes) = parse_classified_event_line(line) {
+                notify_routes_classified(&app_for_events, &routes);
+            }
+        })),
+    )?;
+
+    // Classified events were already notified on arrival; the remaining lines
+    // form the final document for the existing JSON parser.
+    let lines: Vec<String> = stdout.lines().map(str::to_string).collect();
+    let (_classified, final_document) = split_router_stdout(&lines);
+    let (handler_summary, handler_data) = match parse_router_json_output(&final_document) {
         Some(output) => (Some(output.summary), output.handler_data),
         None => (None, Vec::new()),
     };
@@ -1339,7 +1700,7 @@ fn run_router_verify(router_script: &str, env_file: Option<&str>) -> Result<Stri
     let mut cmd = build_router_command(router_script, env_file);
     cmd.arg("--verify-pending").arg("--json");
 
-    let (stdout, stderr) = spawn_and_wait_with_drain(&mut cmd)?;
+    let (stdout, stderr) = spawn_and_wait_with_drain(&mut cmd, None)?;
     if !stderr.is_empty() {
         let preview: String = stderr.chars().take(500).collect();
         debug!("router verify stderr (first 500 chars): {}", preview);
@@ -1392,6 +1753,7 @@ fn append_verify_rows_to_routing_result(
 /// runs the router in verify mode, and surfaces any re-added/failed rows in
 /// history and macOS notifications.
 fn verify_thread_body(
+    app: AppHandle,
     router_script: String,
     env_file: Option<String>,
     hm_and_entry: Option<(Arc<HistoryManager>, i64)>,
@@ -1450,12 +1812,17 @@ fn verify_thread_body(
 
                 if any_readded {
                     send_macos_notification(
+                        &app,
                         "Handy Router",
                         "Journal entry re-added after conflict",
                     );
                 }
                 if any_failed {
-                    send_macos_notification("Handy Router", "Journal verify failed — see history");
+                    send_macos_notification(
+                        &app,
+                        "Handy Router",
+                        "Journal verify failed — see history",
+                    );
                 }
                 if !any_readded && !any_failed {
                     debug!("All pending journal entries verified as delivered");
@@ -1475,6 +1842,7 @@ fn verify_thread_body(
 
 /// Spawn a non-blocking pending-entry verification for a recent routing.
 fn run_pending_entry_verify(
+    app: AppHandle,
     router_script: String,
     env_file: Option<String>,
     hm_and_entry: Option<(Arc<HistoryManager>, i64)>,
@@ -1482,7 +1850,13 @@ fn run_pending_entry_verify(
 ) {
     // The caller (router result thread) is already backgrounded; verify_thread_body
     // returns immediately after spawning the single sleeping/verify thread.
-    verify_thread_body(router_script, env_file, hm_and_entry, existing_routing_json);
+    verify_thread_body(
+        app,
+        router_script,
+        env_file,
+        hm_and_entry,
+        existing_routing_json,
+    );
 }
 
 /// Schedule a one-time startup sweep to verify any pending entries from
@@ -1495,9 +1869,10 @@ pub(crate) fn schedule_startup_pending_entry_verify(app: &AppHandle) {
     };
     let env_file = settings.router_env_file.clone();
 
+    let app_handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(STARTUP_VERIFY_DELAY);
-        verify_thread_body(router_script, env_file, None, None);
+        verify_thread_body(app_handle, router_script, env_file, None, None);
     });
 }
 
@@ -1566,24 +1941,19 @@ fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
     None
 }
 
-/// Send a macOS notification via osascript.
+/// Send a macOS notification via the tauri notification plugin.
 /// Used for router success/failure feedback since the overlay is already hidden.
-fn send_macos_notification(title: &str, message: &str) {
-    let escaped_message = message
-        .replace('\\', "\\\\")
-        .replace('"', "\\\\\"")
-        .replace('\n', " ");
-    let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\\\"");
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        escaped_message, escaped_title
-    );
-    match std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .spawn()
+/// Posting through the plugin keeps the notification attributed to the Handy
+/// process itself (app icon) instead of osascript's Script Editor.
+fn send_macos_notification(app: &AppHandle, title: &str, message: &str) {
+    match app
+        .notification()
+        .builder()
+        .title(title)
+        .body(message)
+        .show()
     {
-        Ok(_) => debug!("macOS notification sent: {} - {}", title, message),
+        Ok(()) => debug!("macOS notification sent: {} - {}", title, message),
         Err(e) => warn!("Failed to send macOS notification: {}", e),
     }
 }
@@ -1591,6 +1961,58 @@ fn send_macos_notification(title: &str, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_split_router_stdout_classified_and_final() {
+        let lines = vec![
+            r#"{"event":"classified","routes":[{"classification":"direct_order","handler_name":"Direct Order","emoji":"🫡"}]}"#.to_string(),
+            r#"{"handlers": [{"status": "✅", "handler": "Direct Order", "classification": "direct_order", "file_path": null}]}"#.to_string(),
+        ];
+        let (classified, document) = split_router_stdout(&lines);
+        assert_eq!(classified.len(), 1);
+        assert_eq!(
+            classified[0],
+            ClassifiedRoute {
+                classification: "direct_order".to_string(),
+                handler_name: "Direct Order".to_string(),
+                emoji: "🫡".to_string(),
+            }
+        );
+        // The classified line is excluded from the final document.
+        assert_eq!(document, lines[1]);
+        // The final document still flows through the existing parser unchanged.
+        let output = parse_router_json_output(&document).expect("final document parses");
+        assert_eq!(output.handler_data.len(), 1);
+        assert_eq!(output.handler_data[0].classification, "direct_order");
+    }
+
+    #[test]
+    fn test_split_router_stdout_no_classified_lines() {
+        // Today's stdout (no classified events) must pass through unchanged.
+        let lines = vec![
+            "log line".to_string(),
+            r#"{"handlers": [{"status": "✅", "handler": "Daily", "classification": "diary_entry", "file_path": "/path/to/note.md"}]}"#.to_string(),
+        ];
+        let (classified, document) = split_router_stdout(&lines);
+        assert!(classified.is_empty());
+        assert_eq!(document, lines.join("\n"));
+        assert!(parse_router_json_output(&document).is_some());
+    }
+
+    #[test]
+    fn test_split_router_stdout_garbage_ignored() {
+        // Malformed/empty lines and non-classified JSON are ignored for
+        // classification purposes but kept in the final document.
+        let lines = vec![
+            "not json at all".to_string(),
+            "".to_string(),
+            "{broken json".to_string(),
+            r#"{"event":"other","routes":[1,2]}"#.to_string(),
+        ];
+        let (classified, document) = split_router_stdout(&lines);
+        assert!(classified.is_empty());
+        assert_eq!(document, lines.join("\n"));
+    }
 
     #[test]
     fn test_parse_verify_mode_output() {
