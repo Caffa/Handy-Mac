@@ -1252,6 +1252,51 @@ fn convert_number_words_to_digits_impl(text: &str, app_language: &str) -> String
         }
         let run = &tokens[i..run_end];
 
+        // Clock-time handling: when a number-word run is immediately followed by
+        // an AM/PM marker, format it as a time rather than as a plain integer.
+        if let Some(marker_token) = tokens.get(run_end) {
+            if let Some(marker) = am_pm_marker(marker_token) {
+                // Look-behind guard: reject "two oh five pm" shapes where the
+                // word just before the run is "oh" or "o".
+                let preceded_by_oh = i > 0
+                    && matches!(
+                        tokens[i - 1].cores.as_slice(),
+                        [s] if s == "oh" || s == "o"
+                    );
+
+                if !preceded_by_oh {
+                    let flat_cores: Vec<&str> = run
+                        .iter()
+                        .flat_map(|t| t.cores.iter().map(String::as_str))
+                        .collect();
+
+                    if let Some(formatted_time) = try_format_clock_time(&flat_cores) {
+                        let first = &run[0];
+                        let replacement = format!(
+                            "{}{} {}{}",
+                            first.prefix, formatted_time, marker, marker_token.suffix
+                        );
+                        result.push(replacement);
+                    } else {
+                        // Invalid time shape before the marker: keep the entire
+                        // run + marker as words rather than falling through to
+                        // the additive number parser.
+                        for token in &tokens[i..=run_end] {
+                            result.push(token.original.to_string());
+                        }
+                    }
+                } else {
+                    // "oh"/"o" prefix means this is not a standalone time.
+                    for token in &tokens[i..=run_end] {
+                        result.push(token.original.to_string());
+                    }
+                }
+
+                i = run_end + 1;
+                continue;
+            }
+        }
+
         // Decide whether the run qualifies for conversion.
         // A run converts when it is either:
         //   - a single hyphenated compound token (e.g. "twenty-five"), or
@@ -1360,6 +1405,128 @@ fn number_word_set_contains(word: &str) -> bool {
 
 fn scale_word_set_contains(word: &str) -> bool {
     SCALE_WORDS.contains(&word)
+}
+
+/// Returns the AM/PM marker label for a token, if it is one.
+fn am_pm_marker(token: &Token) -> Option<&'static str> {
+    if token.cores.len() != 1 {
+        return None;
+    }
+    match token.cores[0].as_str() {
+        "am" | "a.m" => Some("AM"),
+        "pm" | "p.m" => Some("PM"),
+        _ => None,
+    }
+}
+
+/// Returns the hour value for a number-word core (1–12), if valid.
+fn hour_word_value(core: &str) -> Option<u32> {
+    match core {
+        "one" => Some(1),
+        "two" => Some(2),
+        "three" => Some(3),
+        "four" => Some(4),
+        "five" => Some(5),
+        "six" => Some(6),
+        "seven" => Some(7),
+        "eight" => Some(8),
+        "nine" => Some(9),
+        "ten" => Some(10),
+        "eleven" => Some(11),
+        "twelve" => Some(12),
+        _ => None,
+    }
+}
+
+/// Returns the unit/tens value for a number-word core (0–99 by tens), if valid.
+fn unit_word_value(core: &str) -> Option<u32> {
+    match core {
+        "zero" => Some(0),
+        "one" => Some(1),
+        "two" => Some(2),
+        "three" => Some(3),
+        "four" => Some(4),
+        "five" => Some(5),
+        "six" => Some(6),
+        "seven" => Some(7),
+        "eight" => Some(8),
+        "nine" => Some(9),
+        "ten" => Some(10),
+        "eleven" => Some(11),
+        "twelve" => Some(12),
+        "thirteen" => Some(13),
+        "fourteen" => Some(14),
+        "fifteen" => Some(15),
+        "sixteen" => Some(16),
+        "seventeen" => Some(17),
+        "eighteen" => Some(18),
+        "nineteen" => Some(19),
+        "twenty" => Some(20),
+        "thirty" => Some(30),
+        "forty" => Some(40),
+        "fifty" => Some(50),
+        "sixty" => Some(60),
+        "seventy" => Some(70),
+        "eighty" => Some(80),
+        "ninety" => Some(90),
+        _ => None,
+    }
+}
+
+/// Tries to format a flat sequence of number-word cores as a clock time.
+///
+/// Accepted shapes:
+/// - hour only: "two" → "2"
+/// - hour + minutes (one word, ≤ 59): "two ten" → "2:10"
+/// - hour + tens + units: "two thirteen" → "2:13", "two twenty five" → "2:25"
+///
+/// Rejects "and", "point", scale words, invalid minutes, and unsupported shapes.
+fn try_format_clock_time(cores: &[&str]) -> Option<String> {
+    if cores.is_empty() {
+        return None;
+    }
+
+    // Reject any core that is explicitly disallowed in a time phrase.
+    if cores
+        .iter()
+        .any(|c| *c == "and" || *c == "point" || SCALE_WORDS.contains(c))
+    {
+        return None;
+    }
+
+    let hour = hour_word_value(cores[0])?;
+    let minute_cores = &cores[1..];
+
+    let minutes = match minute_cores.len() {
+        0 => return Some(hour.to_string()),
+        1 => {
+            let v = unit_word_value(minute_cores[0])?;
+            if v > 59 {
+                return None;
+            }
+            v
+        }
+        2 => {
+            let tens = unit_word_value(minute_cores[0])?;
+            let units = unit_word_value(minute_cores[1])?;
+            // First minute word must be a tens word (twenty..ninety).
+            if !(20..=90).contains(&tens) || tens % 10 != 0 {
+                return None;
+            }
+            // Second minute word must be a single digit (one..nine).
+            if units > 9 {
+                return None;
+            }
+            let sum = tens + units;
+            if sum > 59 {
+                return None;
+            }
+            sum
+        }
+        _ => return None,
+    };
+
+    Some(format!("{}:{:02}", hour, minutes))
 }
 
 /// Converts a flat sequence of number-word cores into a digit string.
@@ -3434,6 +3601,129 @@ mod tests {
     #[test]
     fn test_convert_number_words_zero_alone_unchanged() {
         assert_eq!(convert_number_words_to_digits("zero", "en"), "zero");
+    }
+
+    #[test]
+    fn test_convert_number_words_clock_times_accept() {
+        assert_eq!(
+            convert_number_words_to_digits("two ten pm", "en"),
+            "2:10 PM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("eleven forty five pm", "en"),
+            "11:45 PM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two thirty am", "en"),
+            "2:30 AM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("twelve thirty am", "en"),
+            "12:30 AM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two five pm", "en"),
+            "2:05 PM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("one twenty five pm", "en"),
+            "1:25 PM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two thirteen pm", "en"),
+            "2:13 PM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two zero pm", "en"),
+            "2:00 PM"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_clock_times_hour_only() {
+        assert_eq!(convert_number_words_to_digits("two pm", "en"), "2 PM");
+        assert_eq!(convert_number_words_to_digits("twelve am", "en"), "12 AM");
+        assert_eq!(
+            convert_number_words_to_digits("meet at nine am sharp", "en"),
+            "meet at 9 AM sharp"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_clock_times_case_and_punctuation() {
+        assert_eq!(
+            convert_number_words_to_digits("Two Ten Pm", "en"),
+            "2:10 PM"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two ten pm.", "en"),
+            "2:10 PM."
+        );
+        assert_eq!(
+            convert_number_words_to_digits("(two ten pm)", "en"),
+            "(2:10 PM)"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two ten p.m.", "en"),
+            "2:10 PM."
+        );
+        assert_eq!(
+            convert_number_words_to_digits("noon at two ten pm is late", "en"),
+            "noon at 2:10 PM is late"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_clock_times_rejected() {
+        assert_eq!(
+            convert_number_words_to_digits("thirteen pm", "en"),
+            "thirteen pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two ninety pm", "en"),
+            "two ninety pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two sixty pm", "en"),
+            "two sixty pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two ninety five pm", "en"),
+            "two ninety five pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("five hundred pm", "en"),
+            "five hundred pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two and ten pm", "en"),
+            "two and ten pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("three point five pm", "en"),
+            "three point five pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("twenty pm", "en"),
+            "twenty pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("two oh five pm", "en"),
+            "two oh five pm"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("oh five pm", "en"),
+            "oh five pm"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_clock_times_non_time_unchanged() {
+        assert_eq!(convert_number_words_to_digits("two ten", "en"), "12");
+        assert_eq!(
+            convert_number_words_to_digits("call zero zero four then two ten pm", "en"),
+            "call 004 then 2:10 PM"
+        );
     }
 
     // === US TO BRITISH ENGLISH CONVERSION TESTS ===
