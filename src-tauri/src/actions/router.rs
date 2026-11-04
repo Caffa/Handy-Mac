@@ -322,8 +322,16 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
         // call that might synchronously block (e.g. AppleScript mute, overlay JS).
         // See the matching comment in TranscribeAction::stop for full rationale.
         tauri::async_runtime::spawn(async move {
-            let mut finish_guard =
-                Some(super::transcribe::FinishGuard(ah.clone(), Arc::clone(&tm)));
+            // Capture the session that owns this router flow before any newer
+            // recording can bump the overlay session. A's teardown events are
+            // tagged with this id so they cannot clobber a later session.
+            let owner_session: u64 = crate::overlay::current_overlay_session();
+
+            let mut finish_guard = Some(super::transcribe::FinishGuard(
+                ah.clone(),
+                Arc::clone(&tm),
+                Some(owner_session),
+            ));
             debug!(
                 "Starting async router task for binding: {}",
                 binding_id_spawn
@@ -772,6 +780,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 &ah,
                                 transcription_text.clone(),
                                 Some("transcribe_with_router".to_string()),
+                                owner_session,
                             );
                         }
 
@@ -818,6 +827,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                             coordinator.set_processing_with_binding(
                                 &ah,
                                 Some("transcribe_with_router".to_string()),
+                                owner_session,
                             );
                         }
 
@@ -1008,7 +1018,7 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 if let Some(coord) =
                                     ah_for_router.try_state::<TranscriptionCoordinator>()
                                 {
-                                    coord.notify_processing_finished();
+                                    coord.notify_processing_finished(Some(owner_session));
                                 }
 
                                 // ── Show result overlay if no new recording started ──
@@ -1031,15 +1041,23 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
                                 // ── Schedule delayed overlay hide ──
                                 // Give the user 5 seconds to see the router result before
-                                // the overlay hides. hide_recording_overlay() has built-in
-                                // session guards that prevent hiding if a new recording
-                                // starts during the delay.
+                                // the overlay hides. Re-check the session inside the delayed
+                                // thread so A's teardown cannot flip the tray to Idle or hide
+                                // the overlay while a newer recording (B) is active.
                                 {
                                     let app_delayed = ah_for_router.clone();
+                                    let hide_session = owner_session;
                                     std::thread::spawn(move || {
                                         std::thread::sleep(Duration::from_secs(5));
-                                        utils::hide_recording_overlay(&app_delayed);
-                                        set_tray_state(&app_delayed, TrayIconState::Idle);
+                                        if crate::overlay::current_overlay_session() != hide_session
+                                        {
+                                            debug!(
+                                                "Skipping delayed hide/tray reset — newer recording session active"
+                                            );
+                                        } else {
+                                            utils::hide_recording_overlay(&app_delayed);
+                                            set_tray_state(&app_delayed, TrayIconState::Idle);
+                                        }
                                     });
                                 }
 

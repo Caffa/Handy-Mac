@@ -37,6 +37,7 @@ import { useRouterPreview } from "./hooks/useRouterPreview";
 import { useUSBRecovery } from "./hooks/useUSBRecovery";
 import { useWriteForMe } from "./hooks/useWriteForMe";
 import { useRecordingTimeoutWarning } from "./hooks/useRecordingTimeoutWarning";
+import { deriveOverlayView } from "./lib/overlayView";
 import {
   VisualizerBars,
   LiveCaptionsBox,
@@ -117,8 +118,17 @@ const RecordingOverlay: React.FC = () => {
   // though the router result hasn't arrived yet. Use routerResult as a
   // fallback signal — it's only non-null during router flows and persists
   // for the full 10-second display window.
-  const isRouter = backendState.isRouter || routerResult !== null;
-  const isVisible = backendState.isVisible || routerResult !== null;
+  //
+  // Defense in depth: a router result from a *previous* session must never
+  // hide the pill/visualizer of a *new* recording. deriveOverlayView enforces
+  // "recording wins" while preserving the solo-router result display.
+  const { isRouter, isVisible, routerResultActive, showPill } =
+    deriveOverlayView({
+      backendStateKind: backendState.appState.state,
+      backendIsVisible: backendState.isVisible,
+      backendIsRouter: backendState.isRouter,
+      routerResult,
+    });
 
   // ─── Sync backend visibility to legacy setIsVisible ─────────────────
   // Sub-hooks like useUSBRecovery and useRouterPreview still use
@@ -170,7 +180,7 @@ const RecordingOverlay: React.FC = () => {
       // Filing... — nothing to interact with
       (state === "processing" && isRouter) ||
       // Router result displayed — just visual cards, no interaction
-      routerResult !== null;
+      routerResultActive;
     // Timeout warning has an interactive Extend button; explicitly disable
     // forced click-through so the button receives clicks.
     const effectiveForceClickThrough =
@@ -178,7 +188,7 @@ const RecordingOverlay: React.FC = () => {
     commands
       .setOverlayForceClickThrough(effectiveForceClickThrough)
       .catch(() => {});
-  }, [state, isRouter, routerResult, timeoutWarningActive]);
+  }, [state, isRouter, routerResultActive, timeoutWarningActive]);
 
   // ─── Write-for-me fast path progress (generating / pasting countdown) ──
   // Declared before the reset effect below, which clears it on new recordings.
@@ -250,6 +260,7 @@ const RecordingOverlay: React.FC = () => {
     setIsVisible,
     isRouter,
     isConfirming,
+    isRecording,
     transcriptionPreview,
     transcriptionPreviewRef,
     routerResult,
@@ -332,9 +343,6 @@ const RecordingOverlay: React.FC = () => {
   // routerResult fallback for the FinishGuard race.
   if (!isVisible) return null;
 
-  // During router result display, hide the pill — only show the status message cards.
-  const showPill = isVisible && !routerResult;
-
   return (
     <>
       {showPill && (
@@ -402,7 +410,7 @@ const RecordingOverlay: React.FC = () => {
               />
             )}
             {/* Confirming state */}
-            {state === "confirming" && !routerResult && (
+            {state === "confirming" && !routerResultActive && (
               <div className="confirming-text">
                 {isEditing
                   ? t("overlay.editing", "Edit text:")
@@ -444,7 +452,7 @@ const RecordingOverlay: React.FC = () => {
       {isVisible &&
         backendState.appState.state === "Recording" &&
         liveCaptionsEnabled &&
-        !routerResult &&
+        !routerResultActive &&
         (streamingText?.trim() ? (
           <LiveCaptionsBox
             text={streamingText}
@@ -466,7 +474,8 @@ const RecordingOverlay: React.FC = () => {
 
       {/* Router result display / transcription preview */}
       {isRouter &&
-        (routerResult || (transcriptionPreview && state === "confirming")) && (
+        (routerResultActive ||
+          (transcriptionPreview && state === "confirming")) && (
           <RouterResultDisplay
             routerResult={routerResult}
             isEditing={isEditing}

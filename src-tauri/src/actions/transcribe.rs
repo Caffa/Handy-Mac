@@ -54,7 +54,13 @@ pub(super) struct RecordingErrorEvent {
 ///
 /// With this fix, FinishGuard only fires if stage is still Processing,
 /// preventing the race condition.
-pub(crate) struct FinishGuard(pub AppHandle, pub Arc<Mutex<TranscriptionManager>>);
+pub(crate) struct FinishGuard(
+    pub AppHandle,
+    pub Arc<Mutex<TranscriptionManager>>,
+    /// Owning overlay session, captured at construction time so a superseded
+    /// session's teardown cannot clobber a newer recording's visualizer.
+    pub Option<u64>,
+);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
         // Unload the model immediately so a recording that produced no audio
@@ -64,14 +70,15 @@ impl Drop for FinishGuard {
             .maybe_unload_immediately("transcription session");
         let has_coordinator = self.0.try_state::<TranscriptionCoordinator>().is_some();
         info!(
-            "[FINISH-GUARD] drop firing — requesting Processing→Idle reset (coordinator handle: {})",
+            "[FINISH-GUARD] drop firing — requesting Processing→Idle reset for session {:?} (coordinator handle: {})",
+            self.2,
             if has_coordinator { "present" } else { "absent" }
         );
         // The coordinator will only transition from Processing to Idle,
         // so if we're already Idle (due to cancel), this is a no-op.
         // This prevents race conditions between cancel and finish.
         if let Some(c) = self.0.try_state::<TranscriptionCoordinator>() {
-            c.notify_processing_finished();
+            c.notify_processing_finished(self.2);
         }
     }
 }
@@ -377,7 +384,11 @@ impl super::ShortcutAction for TranscribeAction {
             binding_id_spawn
         );
         tauri::async_runtime::spawn(async move {
-            let _guard = FinishGuard(ah.clone(), Arc::clone(&tm));
+            let _guard = FinishGuard(
+                ah.clone(),
+                Arc::clone(&tm),
+                Some(crate::overlay::current_overlay_session()),
+            );
 
             // Hide the visualizer immediately so the app feels responsive,
             // before transcription runs and regardless of success or failure.

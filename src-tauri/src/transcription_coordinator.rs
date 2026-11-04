@@ -152,7 +152,12 @@ enum Command {
     Cancel {
         recording_was_active: bool,
     },
-    ProcessingFinished,
+    ProcessingFinished {
+        /// Owning overlay session of the finishing pipeline. `None` = legacy/
+        /// untracked (acts unconditionally, today's behavior). `Some(id)` acts
+        /// only when `id` is still the coordinator's current session.
+        session_id: Option<u64>,
+    },
     /// Transition from Processing to a new Processing stage with fresh timer
     /// and binding_id. Used by the router action after user confirmation so
     /// the coordinator's internal Stage stays in sync with the shared AppState.
@@ -342,6 +347,10 @@ struct CoordinatorCore {
     /// Reset to zero whenever the stage leaves Recording so each recording
     /// session starts with a fresh hard cap.
     hard_cap_extension: Duration,
+    /// Mirror of the coordinator thread's `current_session`. Used to discard
+    /// teardown commands from superseded sessions; the only sync point is
+    /// after `start()` allocates a new session.
+    current_session: u64,
 }
 
 impl CoordinatorCore {
@@ -352,6 +361,7 @@ impl CoordinatorCore {
             pending_press: None,
             processing_timeout,
             hard_cap_extension: Duration::ZERO,
+            current_session: 0,
         }
     }
 
@@ -896,8 +906,17 @@ impl CoordinatorCore {
                 }
                 StageAction::None
             }
-            Command::ProcessingFinished => {
+            Command::ProcessingFinished { session_id } => {
                 if matches!(self.stage, Stage::Processing { .. }) {
+                    if let Some(finished) = session_id {
+                        if finished != self.current_session {
+                            info!(
+                                "CoordinatorCore: ignoring ProcessingFinished for stale session {} (current {})",
+                                finished, self.current_session
+                            );
+                            return StageAction::None;
+                        }
+                    }
                     info!("CoordinatorCore: processing finished, reset to Idle");
                     self.hard_cap_extension = Duration::ZERO;
                     self.transition_to(Stage::Idle);
@@ -1107,6 +1126,14 @@ pub struct TranscriptionCoordinator {
 
 pub fn is_transcribe_binding(id: &str) -> bool {
     id == "transcribe" || id == "transcribe_with_post_process" || id == "transcribe_with_router"
+}
+
+/// A router-stage emission belongs to the session that owned the pipeline
+/// when its operation started. If a newer session has been allocated since,
+/// the emission is stale: applying it would stamp the *new* session's id and
+/// clobber its AppState.
+fn router_emission_is_stale(owner_session: u64, current_session: u64) -> bool {
+    owner_session != current_session
 }
 
 impl TranscriptionCoordinator {
@@ -1411,7 +1438,7 @@ impl TranscriptionCoordinator {
                     let cmd_name = match cmd {
                         Command::Input { .. } => "Input",
                         Command::Cancel { .. } => "Cancel",
-                        Command::ProcessingFinished => "ProcessingFinished",
+                        Command::ProcessingFinished { .. } => "ProcessingFinished",
                         Command::ProcessingTimeout => "ProcessingTimeout",
                         Command::SetProcessingWithBinding { .. } => "SetProcessingWithBinding",
                         Command::ExtendRecording { .. } => "ExtendRecording",
@@ -1481,6 +1508,10 @@ impl TranscriptionCoordinator {
                                 &active_use_clone,
                                 &current_state_clone,
                             );
+                            // The new session id is now authoritative for this
+                            // coordinator iteration; mirror it into the core so
+                            // stale teardown commands can be rejected.
+                            core.current_session = current_session;
                         }
                         StageAction::StopRecording {
                             binding_id,
@@ -1607,7 +1638,21 @@ impl TranscriptionCoordinator {
     /// Set the application state to Confirming and emit an app-state event.
     /// Called when the router preview is shown for user confirmation.
     /// The `binding_id` identifies the originating action (e.g. "transcribe_with_router").
-    pub fn set_confirming(&self, app: &AppHandle, text: String, binding_id: Option<String>) {
+    pub fn set_confirming(
+        &self,
+        app: &AppHandle,
+        text: String,
+        binding_id: Option<String>,
+        owner_session: u64,
+    ) {
+        if router_emission_is_stale(owner_session, crate::overlay::current_overlay_session()) {
+            warn!(
+                "set_confirming: ignoring stale emission for session {} (current {})",
+                owner_session,
+                crate::overlay::current_overlay_session()
+            );
+            return;
+        }
         let session_id = crate::overlay::current_overlay_session();
         let new_state = AppState::Confirming {
             text,
@@ -1626,7 +1671,20 @@ impl TranscriptionCoordinator {
     /// we need the coordinator's Stage to reflect Processing with a fresh
     /// timeout timer (otherwise the 30s timeout from the initial stop() would
     /// fire too early). Also updates the shared AppState and emits the event.
-    pub fn set_processing_with_binding(&self, app: &AppHandle, binding_id: Option<String>) {
+    pub fn set_processing_with_binding(
+        &self,
+        app: &AppHandle,
+        binding_id: Option<String>,
+        owner_session: u64,
+    ) {
+        if router_emission_is_stale(owner_session, crate::overlay::current_overlay_session()) {
+            warn!(
+                "set_processing_with_binding: ignoring stale emission for session {} (current {})",
+                owner_session,
+                crate::overlay::current_overlay_session()
+            );
+            return;
+        }
         let _ = self.tx.send(Command::SetProcessingWithBinding {
             binding_id: binding_id.clone(),
         });
@@ -1726,8 +1784,12 @@ impl TranscriptionCoordinator {
         }
     }
 
-    pub fn notify_processing_finished(&self) {
-        if self.tx.send(Command::ProcessingFinished).is_err() {
+    pub fn notify_processing_finished(&self, session_id: Option<u64>) {
+        if self
+            .tx
+            .send(Command::ProcessingFinished { session_id })
+            .is_err()
+        {
             warn!("Transcription coordinator channel closed");
         }
     }

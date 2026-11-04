@@ -1,10 +1,50 @@
 # Handy-Fork Learning Log
 
+## Router completion teardown clobbered a concurrent recording's overlay/visualizer (2026-11-04)
+
+### Problem
+
+When a router-mode transcription A was still filing/processing and the user started a second recording B, A's completion path could close or suppress B's visualizer even though B was a separate, still-active session. The user saw the recording pill, visualizer bars, cancel button, and live captions disappear mid-recording.
+
+### Root Causes
+
+1. **`Command::ProcessingFinished` had no session identity.** The coordinator's `process_command` arm only checked `Stage::Processing`; A's late finish therefore reset B's stage to Idle and emitted `AppState::Idle { session_id: B }`, which the frontend's stale guard accepted because the ids matched.
+2. **`set_confirming` / `set_processing_with_binding` sampled `current_overlay_session()` at emit time.** If A's pipeline landed after B started, these setters stamped B's session id and emitted `Confirming`/`Processing`, causing the frontend to stop rendering the recording pill and visualizer bars.
+3. **The frontend `router-result` listener was session-blind.** It set `routerResult` unconditionally; `RecordingOverlay` then hid the pill (`showPill = isVisible && !routerResult`) and forced click-through for up to `ROUTER_RESULT_DISPLAY_MS`.
+4. **The router thread's delayed 5-second hide was unguarded for `set_tray_state(Idle)`** and re-sampled `OVERLAY_SESSION` inside the delayed closure, by which time B's id was current, so `hide_recording_overlay`'s guard passed.
+
+### Fix
+
+1. **`src-tauri/src/transcription_coordinator.rs`**:
+   - Added `session_id: Option<u64>` to `Command::ProcessingFinished`. `Some(id)` only acts when `id == CoordinatorCore.current_session`; `None` preserves the legacy forced/untagged contract.
+   - Added `current_session: u64` to `CoordinatorCore` and mirrored it from the thread loop right after `start()` allocates a new session.
+   - Added the pure helper `router_emission_is_stale(owner_session, current_session)`.
+   - Made `set_confirming` and `set_processing_with_binding` take `owner_session` and no-op when the overlay session has moved on, preventing stale emissions from overwriting shared AppState.
+
+2. **`src-tauri/src/actions/transcribe.rs`**:
+   - `FinishGuard` now carries an `Option<u64>` owner session captured at construction and passes it to `notify_processing_finished` in `Drop`.
+
+3. **`src-tauri/src/actions/router.rs`**:
+   - Captured `owner_session` at the top of the async stop block (before the session can be bumped by a newer recording).
+   - Passed `owner_session` to `FinishGuard`, `set_confirming`, and `set_processing_with_binding`.
+   - Tagged the router thread's `notify_processing_finished(Some(owner_session))` so it cannot free B's stage.
+   - Guarded the 5-second delayed hide/tray thread with a session check: skip both calls if `current_overlay_session() != hide_session`.
+
+4. **Frontend (`src/overlay/`)**:
+   - New `src/overlay/lib/overlayView.ts` with pure `deriveOverlayView({ backendStateKind, backendIsVisible, backendIsRouter, routerResult })` enforcing a "recording wins" rule: `routerResultActive = routerResult !== null && !isRecording`.
+   - `useRouterPreview` now accepts `isRecording` and drops `router-result` events while a recording is active (using a ref so the once-registered listener sees the latest prop).
+   - `RecordingOverlay` consumes `deriveOverlayView` for `isVisible`, `isRouter`, `routerResultActive`, and `showPill`, and gates click-through and `LiveCaptionsBox`/`RouterResultDisplay` on `routerResultActive`.
+
+### Key Insight
+
+"Each recording an independent process" cannot mean literal concurrent pipelines — the coordinator deliberately serializes the mic. The actionable meaning is **session-scoped lifecycle events**: every teardown, state emission, and visual arbitration must carry the originating session id and no-op when a newer session has taken over. The notification channel remains A's feedback when B holds the overlay.
+
 ## Post-wake USB recovery: deferred cycle + first-failure bypass (2026-10-23)
 
 ### Problem
 
 After macOS wake-from-sleep, the USB microphone recovery path could:
+
 - skip the power cycle entirely if Handy was busy when the device re-appeared,
 - give up after only 10 seconds when the device was absent from `uhubctl`,
 - require two consecutive mic-open failures before triggering a cycle even on the very first failure after wake, and
@@ -921,26 +961,31 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 ## VAD Pre-Roll Discard Bug — First Word Cut Off (2026-10-02)
 
 ### Problem
+
 - First word of dictation often missing ("Add the visual…" → "The visual…"), even with 1000ms pre-recording buffer.
 - Reported 3× across days; two earlier latency fixes (Cmd::Start ordering, 200ms sleep, wake reload) were real but not the cause.
 
 ### Investigation method (this is the reusable part)
+
 - Bisect empirically: app saves raw WAV + VAD WAV (= transcription input) + transcripts in history.db.
 - Find failing takes via re-dictation pairs: JOIN consecutive history entries ≤60s apart on overlapping text prefixes.
 - Re-transcribe stored WAVs with the same model via a tiny example harness (examples/transcribe_wav.rs) → raw heard "Add", vad didn't → loss in VAD stage.
 - Sample-exact alignment (64-sample block greedy match with resync) showed vad = raw minus one hole [hotkey..hotkey+0.5-0.8s] containing exactly the first word.
 
 ### Root cause
-- handle_frame() matched VadFrame::Speech(_) and appended only the current 16ms frame, discarding SmoothedVad's ~464ms pre-roll emission at speech onset.
+
+- handle*frame() matched VadFrame::Speech(*) and appended only the current 16ms frame, discarding SmoothedVad's ~464ms pre-roll emission at speech onset.
 - Soft/short first words ("Add", "She", "Can't") can't trigger the 4-frame VAD onset themselves → they lived only in the discarded pre-roll.
-- Regression from f6c2ac1c (2026-06-28 noise-suppression refactor, Speech(buf) → Speech(_)).
+- Regression from f6c2ac1c (2026-06-28 noise-suppression refactor, Speech(buf) → Speech(\_)).
 
 ### Fix (ddffa435)
+
 - handle_frame appends the full emitted slice when noise suppression is off (emitted frames are byte-identical to originals).
 - smoothed.rs onset emission skips already-emitted hangover frames (else speech→pause→speech duplicates ~350ms mid-recording — caught by deep review).
 - Regression tests in smoothed.rs; cargo test 471 pass.
 
 ### Key insights
+
 - Energy-preserving ≠ content-preserving: VAD passed all onset-timing checks yet dropped words; only model-level raw-vs-vad A/B exposed it.
 - Don't trim leading silence before ASR — in testing it caused hallucinations ("Big Brother"); leading silence helps these models.
 - Known limitation: noise-suppression-enabled users keep old behavior (suppressed pre-roll frames can't map back to originals).
@@ -948,15 +993,18 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 ## ESC-Cancel Lag + Visualizer Dead After Cancel (2026-10-17)
 
 ### Problem
+
 - Cmd+Escape cancel of an active recording felt like a multi-second freeze ("very bad lag"), and afterwards the visualizer didn't appear properly on the next recording.
 - Event-log forensics (handy-events.jsonl) showed the smoking gun: `RecordingStarted` emitted, then 20ms later `RecordingFailed error="Already recording"` (sessions s-20261017T052618.527Z, s-20261016T062500.906Z) — the audio manager was wedged in `RecordingState::Recording` while the coordinator/UI thought otherwise.
 
 ### Root causes (three verified defects, one chain)
+
 1. **Manager-thread starvation (the lag):** `handle_shortcut_event` (shortcut/handler.rs) dispatched `CancelAction::start` INLINE on the handy-keys manager thread. `cancel_current_operation` (utils.rs) step 2 `unregister_cancel_shortcut` does `recv_timeout(5s)` against that SAME thread's command queue — a guaranteed ~5s self-wait on every ESC — plus `cancel_recording`'s `try_lock_for` waits. The whole hotkey loop starved during the block. CLI `--cancel` never showed this because `commands/mod.rs` `cancel_operation` already runs on `spawn_blocking` (live repro: 35-40ms).
 2. **Escape hatch leaves state wedged (the visualizer symptom):** `cancel_recording`'s `state.try_lock_for(2s)` failure branch stored `is_recording=false` and silently RETURNED, leaving the enum as `Recording`. Then `transcription_coordinator`'s `start()` consulted `is_recording()` (enum-only!) → emitted `AppState::Recording` for a start that actually failed "Already recording" → overlay visible with no capture → no mic-level events → micDeadWarning/no bars.
 3. **Latent self-deadlock:** `schedule_lazy_close` held `state.lock()` while calling `stop_microphone_stream`, whose Phase 2 does `*self.state.lock() = Idle` (parking_lot non-reentrant → permanent lock deadlock 30s after every recording end when lazy_stream_close=true; comment claimed it doesn't take the lock — false).
 
 ### Fix (2026-10-17, uncommitted)
+
 - handler.rs + both lib.rs cancel call sites: dispatch via `tauri::async_runtime::spawn_blocking` (parity with the CLI path) — manager thread never blocks.
 - `cancel_recording` escape hatch: no silent return; detaches `recovery_after_state_lock_timeout` (bounded 3-phase worker: recorder stop without waiting for the reply → gated state heal `Recording && !is_recording` → on-demand stream close/lazy close parity with no locks held).
 - `try_start_recording` check 2: self-heal `Recording` + atomic false → Idle (`[RECOVERY]` log), killing the "Already recording" retry loop.
@@ -964,6 +1012,7 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 - `schedule_lazy_close`: drop the state guard after the gen+Idle check, re-check `close_generation`, then close — deadlock gone.
 
 ### Key insights
+
 - Two sources of truth (`is_recording` AtomicBool vs `RecordingState` enum) is the wedge's enabler: the escape hatch cleared one and left the other. Self-heal paths must gate on the atomic, which is always cleared/stored under the state lock.
 - Never call a method that takes `state.lock()` while holding `state.lock()` — parking_lot is non-reentrant and will deadlock silently. Audit every "close" helper for hidden lock acquisition.
 - Inline work on the hotkey manager thread must never do channel round-trips to itself or wait on locks; every second there reads as "app dead" to the user.
@@ -972,6 +1021,7 @@ After fixing the cancel-button deadlock, a comprehensive audit of all unbounded 
 ## Upstream Sync Cycle 2026-10 (cdbc2239..9e57a0d7) — Complete (2026-10-20)
 
 ### What was ported (one-line overview)
+
 161 upstream commits triaged into 61 applied (P0–P10, 34 fork commits),
 13 already-ported, 5 superseded, 76 policy-skipped, 6 verify-resolved; the
 engine stack was rebuilt on engine_supervisor child-process isolation +
@@ -980,6 +1030,7 @@ shortcut layer moved to handy-keys 0.3.4. Registry: `Handy-Fork/UPSTREAM_SYNC.md
 plan + per-phase evidence: `research/upstream-sync-2026-10-plan.md`.
 
 ### Notable technical learnings
+
 - **handy-recorder swap + preroll re-port:** fork's 1046-line recorder.rs died;
   the first-word-cut fix survives as sink-path tests (`capture_sink_preroll`) —
   NS-off re-emits the full `VadFrame::Speech` slice (pre-roll + current) into
@@ -999,9 +1050,9 @@ plan + per-phase evidence: `research/upstream-sync-2026-10-plan.md`.
   Fork keeps ONE supervisor per manager (main + live-captions), vs upstream's
   single manager.
 - **Vocabulary API replaces initial_prompt:** `RunOptions.vocabulary` (0.4.0)
-  + `LoadedInfo.supports_vocabulary`; skip the fork's n-gram fuzzy correction
-  EXACTLY when vocabulary was sent (`custom_words_prompted`), both batch and
-  streaming; non-vocabulary models keep initial_prompt-era fallback.
+  - `LoadedInfo.supports_vocabulary`; skip the fork's n-gram fuzzy correction
+    EXACTLY when vocabulary was sent (`custom_words_prompted`), both batch and
+    streaming; non-vocabulary models keep initial_prompt-era fallback.
 - **Chunking lives in the batch path:** fork WINS on live decode
   (StreamRouter = live-captions model); `Chunker` (40s+ gate, CJK-aware
   join) engages at stop; cancel = supervisor `CancelMark`/`transcribe_since`
@@ -1024,6 +1075,7 @@ plan + per-phase evidence: `research/upstream-sync-2026-10-plan.md`.
   `unloaded` races mid-load).
 
 ### OPEN items (REGRESSION-TEST-REQUIRED — manual mic/OS, no local GGUF E2E)
+
 - D5: macOS sleep/wake + recording-hotkey pass on handy-keys 0.3.4.
 - P7: first-word-intact preroll A/B (NS off), rapid stop→start, hot-unplug.
 - P9: 5+ min chunked recording + cancel-all; 30s no-chunk; toggle off;

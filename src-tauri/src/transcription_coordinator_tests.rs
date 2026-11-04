@@ -128,7 +128,7 @@ fn test_happy_path_idle_recording_processing_idle() {
     assert!(h.is_active());
 
     // ProcessingFinished → back to Idle
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
@@ -235,7 +235,7 @@ fn test_finish_guard_race_no_spurious_idle_after_cancel() {
 
     // Late ProcessingFinished (from FinishGuard) — should be a no-op
     // because we're already Idle, not Processing.
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
@@ -410,7 +410,7 @@ fn test_rapid_interleaving_no_panic_or_deadlock() {
         external: false,
     }); // → Processing
 
-    h.process(Command::ProcessingFinished); // → Idle
+    h.process(Command::ProcessingFinished { session_id: None }); // → Idle
 
     // Final cancel on already-Idle — should be a no-op
     h.process(Command::Cancel {
@@ -553,7 +553,7 @@ fn test_cancel_on_idle_is_noop() {
 fn test_processing_finished_on_idle_is_noop() {
     let mut h = TestHarness::new();
 
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
@@ -577,7 +577,7 @@ fn test_processing_finished_on_recording_is_noop() {
     assert!(matches!(h.state(), AppState::Recording { .. }));
 
     // ProcessingFinished should NOT transition from Recording to Idle
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(h.state(), AppState::Recording { .. }));
     assert!(h.is_active());
 }
@@ -728,7 +728,7 @@ fn test_session_id_preserved_through_lifecycle() {
     );
 
     // Finish → Idle: emitted Idle should carry the ending session id
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     let idle_session = match h.state() {
         AppState::Idle { session_id } => session_id,
         other => panic!("Expected Idle state, got {:?}", other),
@@ -1426,7 +1426,7 @@ fn test_cross_binding_press_stops_with_owner_binding() {
     assert!(h.is_active());
 
     // ProcessingFinished → Idle, session fully completed
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
@@ -1478,7 +1478,7 @@ fn test_router_owner_stopped_by_other_binding() {
     }
 
     // ProcessingFinished → Idle
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
@@ -1555,7 +1555,7 @@ fn test_ptt_cross_binding_release_is_ignored() {
     assert!(matches!(h.state(), AppState::Processing { .. }));
 
     // ProcessingFinished → Idle
-    h.process(Command::ProcessingFinished);
+    h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
 }
@@ -1712,7 +1712,7 @@ fn test_busy_pipeline_remembers_press_and_drains_on_processing_finished() {
     assert!(matches!(h.state(), AppState::Processing { .. }));
 
     // Pipeline drains → remembered press starts recording.
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(
         matches!(action, StageAction::StartRecording { .. }),
         "remembered press must start recording after drain, got {:?}",
@@ -1741,7 +1741,7 @@ fn test_second_toggle_press_during_busy_window_forgets() {
     }
 
     // Drain → nothing remembered.
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Idle { .. }));
 }
@@ -1774,7 +1774,7 @@ fn test_ptt_press_busy_remember_and_release_forgets() {
     assert!(matches!(action, StageAction::None));
 
     // Drain → nothing remembered.
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(action, StageAction::None));
 }
 
@@ -1805,7 +1805,7 @@ fn test_cross_binding_input_ignored_while_press_pending() {
     assert!(matches!(action, StageAction::None));
 
     // Drain → the ORIGINAL binding starts, not the cross-binding one.
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     match action {
         StageAction::StartRecording {
             binding_id,
@@ -1839,7 +1839,7 @@ fn test_cancel_drops_pending_press() {
         recording_was_active: false,
     });
 
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Idle { .. }));
 }
@@ -1863,7 +1863,7 @@ fn test_processing_timeout_drops_pending_press() {
     assert!(matches!(action, StageAction::ProcessingTimeoutExpired));
 
     // The stale press must not auto-start a recording after the hang.
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Idle { .. }));
 }
@@ -2089,7 +2089,7 @@ fn test_hold_or_toggle_busy_tap_drains_locked() {
     });
 
     // Drain → locked recording starts.
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(
         matches!(action, StageAction::StartRecording { .. }),
         "remembered tap must start recording after drain, got {:?}",
@@ -2144,7 +2144,213 @@ fn test_hold_or_toggle_busy_hold_drops_on_release() {
         external: false,
     });
 
-    let action = h.process(Command::ProcessingFinished);
+    let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Idle { .. }));
+}
+
+// ── Session-scoped ProcessingFinished regression tests ──
+// These tests verify that a late `ProcessingFinished` from a superseded
+// session cannot reset the coordinator while a newer session is active.
+
+#[test]
+fn test_stale_processing_finished_ignored_while_second_session_processing() {
+    let mut h = TestHarness::new();
+
+    // Session 1: Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.core.current_session = 1;
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    // Session 2: starts while session 1 is still processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.core.current_session = 2;
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+    assert!(h.is_active());
+
+    // A's stale finish must be ignored
+    let action = h.process(Command::ProcessingFinished { session_id: Some(1) });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+    assert!(h.is_active());
+}
+
+#[test]
+fn test_stale_processing_finished_still_frees_current_session() {
+    let mut h = TestHarness::new();
+
+    // Session 1: Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.core.current_session = 1;
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    // Session 2: starts while session 1 is still processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.core.current_session = 2;
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // The *current* session's finish must still reset to Idle
+    let action = h.process(Command::ProcessingFinished { session_id: Some(2) });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+#[test]
+fn test_processing_finished_none_act_unconditionally() {
+    let mut h = TestHarness::new();
+
+    // Session 2 in Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.core.current_session = 2;
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Legacy / untagged ProcessingFinished acts as today
+    let action = h.process(Command::ProcessingFinished { session_id: None });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+#[test]
+fn test_set_processing_with_binding_mismatch_noop_at_session_layer() {
+    // Pure helper: mismatched sessions are stale, matched sessions are not.
+    assert!(router_emission_is_stale(1, 2));
+    assert!(!router_emission_is_stale(2, 2));
+    assert!(!router_emission_is_stale(0, 0));
+}
+
+#[test]
+fn test_processing_timeout_then_second_session_then_stale_finish() {
+    let mut h = TestHarness::new();
+
+    // Session 1: Idle → Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.core.current_session = 1;
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    // The 30 s processing timeout fires, freeing the coordinator
+    let action = h.process(Command::ProcessingTimeout);
+    assert!(matches!(action, StageAction::ProcessingTimeoutExpired));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+
+    // Session 2 starts from Idle
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.core.current_session = 2;
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+    assert_eq!(h.core.current_session, 2);
+
+    // A's stale finish must not clobber session 2
+    let action = h.process(Command::ProcessingFinished { session_id: Some(1) });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+    assert!(h.is_active());
+    assert_eq!(h.core.current_session, 2);
 }

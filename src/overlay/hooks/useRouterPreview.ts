@@ -36,6 +36,8 @@ interface UseRouterPreviewOptions {
   isRouter: boolean;
   /** During migration: backend-derived isConfirming overrides state === "confirming" */
   isConfirming?: boolean;
+  /** Authoritative recording signal from the backend. Used to drop stale router results. */
+  isRecording: boolean;
   transcriptionPreview: string;
   transcriptionPreviewRef: React.MutableRefObject<string>;
   routerResult: RouterResultEvent | null;
@@ -71,6 +73,7 @@ export function useRouterPreview(
     setState,
     isRouter,
     isConfirming,
+    isRecording,
     transcriptionPreview,
     transcriptionPreviewRef,
     routerResult,
@@ -97,6 +100,11 @@ export function useRouterPreview(
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fadeOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isRecordingRef = useRef(isRecording);
+
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
 
   // Keep transcriptionPreviewRef in sync
   useEffect(() => {
@@ -291,6 +299,12 @@ export function useRouterPreview(
       unlistenRouterResult = await listen<RouterResultEvent>(
         "router-result",
         (event) => {
+          if (isRecordingRef.current) {
+            console.log(
+              "[Router] Dropping router result — new recording is active",
+            );
+            return;
+          }
           setRouterResult(event.payload);
         },
       );
