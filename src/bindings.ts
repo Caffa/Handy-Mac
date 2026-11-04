@@ -337,6 +337,10 @@ async changeWriteForMeSystemPromptSetting(prompt: string) : Promise<Result<null,
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Set the Ollama API key used by the "write for me" fast path.
+ * The value is trimmed; an empty value clears the stored key.
+ */
 async setWriteForMeApiKey(apiKey: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_write_for_me_api_key", { apiKey }) };
@@ -345,6 +349,10 @@ async setWriteForMeApiKey(apiKey: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Import OLLAMA_API_KEY from the process environment into the settings
+ * store. Returns whether a non-empty key was found and imported.
+ */
 async importOllamaApiKeyFromEnv() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("import_ollama_api_key_from_env") };
@@ -583,6 +591,30 @@ async changeLiveCaptionsEnabledSetting(enabled: boolean) : Promise<Result<null, 
 async changeLiveCaptionsModelSetting(modelId: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_live_captions_model_setting", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeTriggerPhraseFallbackEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_trigger_phrase_fallback_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeTriggerScanModelSetting(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_trigger_scan_model_setting", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeTriggerScanSecondsSetting(seconds: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_trigger_scan_seconds_setting", { seconds }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1607,7 +1639,21 @@ use_advanced_custom_words?: boolean;
 /**
  * Word correction mode. Defaults to WordBias for backward compatibility.
  */
-word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; write_for_me_model?: string; write_for_me_system_prompt?: string; write_for_me_api_key?: SecretString; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; 
+word_correction_mode?: WordCorrectionMode; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; router_script_path?: string | null; router_env_file?: string | null; 
+/**
+ * Ollama Cloud model used by the "write for me" fast path in the router
+ * action (e.g. "beam").
+ */
+write_for_me_model?: string; 
+/**
+ * System prompt sent with the "write for me" fast-path LLM call.
+ */
+write_for_me_system_prompt?: string; 
+/**
+ * Ollama API key for the "write for me" fast path. Falls back to the
+ * OLLAMA_API_KEY environment variable when empty.
+ */
+write_for_me_api_key?: SecretString; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; 
 /**
  * Fresh installs default from the OS locale. Existing stores keep
  * `AsTranscribed`; the fork's zh-Hans/zh-Hant language intents continue to
@@ -1630,7 +1676,33 @@ vad_backend?: VadBackend;
  * Decode long audio in chunks cut at pauses, for models whose accuracy
  * degrades on long audio.
  */
-long_form_chunking?: boolean }
+long_form_chunking?: boolean; 
+/**
+ * Master switch for the gated trigger-phrase fallback: when the primary
+ * transcription opens with a misheard trigger-phrase variant, the
+ * recorded opening is re-scanned with a small model to recover it.
+ */
+trigger_phrase_fallback_enabled?: boolean; 
+/**
+ * Canonical trigger phrases recognized by the router fast paths and the
+ * fallback scan, in priority order.
+ */
+trigger_phrases?: string[]; 
+/**
+ * How many seconds of the recording the fallback scan feeds to the scan
+ * model.
+ */
+trigger_scan_seconds?: number; 
+/**
+ * Catalog ID of the (small, fast) transcription model used for the
+ * fallback opening scan.
+ */
+trigger_scan_model?: string; 
+/**
+ * Debug escape hatch: run the fallback scan on every router recording
+ * instead of only suspicious openings.
+ */
+trigger_fallback_force_scan?: boolean }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1971,6 +2043,10 @@ history_entry_id: number | null;
  */
 is_processing: boolean }
 export type SecretMap = Partial<{ [key in string]: string }>
+/**
+ * Single secret value (e.g. an API key) that serializes transparently as a
+ * plain string but redacts itself in `Debug` output. Mirrors `SecretMap`.
+ */
 export type SecretString = string
 export type SecureInputStatus = { 
 /**

@@ -793,6 +793,27 @@ pub struct AppSettings {
     /// degrades on long audio.
     #[serde(default = "default_long_form_chunking")]
     pub long_form_chunking: bool,
+    /// Master switch for the gated trigger-phrase fallback: when the primary
+    /// transcription opens with a misheard trigger-phrase variant, the
+    /// recorded opening is re-scanned with a small model to recover it.
+    #[serde(default)]
+    pub trigger_phrase_fallback_enabled: bool,
+    /// Canonical trigger phrases recognized by the router fast paths and the
+    /// fallback scan, in priority order.
+    #[serde(default = "default_trigger_phrases")]
+    pub trigger_phrases: Vec<String>,
+    /// How many seconds of the recording the fallback scan feeds to the scan
+    /// model.
+    #[serde(default = "default_trigger_scan_seconds")]
+    pub trigger_scan_seconds: u8,
+    /// Catalog ID of the (small, fast) transcription model used for the
+    /// fallback opening scan.
+    #[serde(default = "default_trigger_scan_model")]
+    pub trigger_scan_model: String,
+    /// Debug escape hatch: run the fallback scan on every router recording
+    /// instead of only suspicious openings.
+    #[serde(default)]
+    pub trigger_fallback_force_scan: bool,
 }
 
 impl Default for AppSettings {
@@ -932,6 +953,20 @@ pub(crate) fn default_filler_word_removal_enabled() -> bool {
 
 pub(crate) fn default_long_form_chunking() -> bool {
     true
+}
+
+pub(crate) fn default_trigger_phrases() -> Vec<String> {
+    vec!["Hey Minion".to_string(), "Hey Assistant".to_string()]
+}
+
+pub(crate) fn default_trigger_scan_seconds() -> u8 {
+    8
+}
+
+pub(crate) fn default_trigger_scan_model() -> String {
+    // Catalog ID (same id space as `selected_model`) for the small Whisper
+    // model — cheap enough to scan a recording opening quickly.
+    "handy-computer/whisper-small-gguf".to_string()
 }
 
 pub(crate) fn default_chinese_script() -> ChineseScript {

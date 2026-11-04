@@ -13,6 +13,7 @@ import {
 import { Button } from "../../ui/Button";
 import { ResetButton } from "../../ui/ResetButton";
 import { Input } from "../../ui/Input";
+import { ToggleSwitch } from "../../ui/ToggleSwitch";
 
 import { ProviderSelect } from "../PostProcessingSettingsApi/ProviderSelect";
 import { BaseUrlField } from "../PostProcessingSettingsApi/BaseUrlField";
@@ -462,11 +463,18 @@ const WriteForMeSettingsComponent: React.FC = () => {
   const model = getSetting("write_for_me_model") ?? "";
   const systemPrompt = getSetting("write_for_me_system_prompt") ?? "";
   const apiKey = getSetting("write_for_me_api_key") ?? "";
+  const fallbackEnabled = getSetting("trigger_phrase_fallback_enabled") ?? false;
+  const scanModel = getSetting("trigger_scan_model") ?? "";
+  const scanSeconds = getSetting("trigger_scan_seconds");
 
   // Local drafts: persist to the backend on blur, not on every keystroke.
   const [modelDraft, setModelDraft] = useState(model);
   const [systemPromptDraft, setSystemPromptDraft] = useState(systemPrompt);
   const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
+  const [scanModelDraft, setScanModelDraft] = useState(scanModel);
+  const [scanSecondsDraft, setScanSecondsDraft] = useState(
+    scanSeconds != null ? String(scanSeconds) : "",
+  );
 
   React.useEffect(() => {
     setModelDraft(model);
@@ -477,6 +485,25 @@ const WriteForMeSettingsComponent: React.FC = () => {
   React.useEffect(() => {
     setApiKeyDraft(apiKey);
   }, [apiKey]);
+  React.useEffect(() => {
+    setScanModelDraft(scanModel);
+  }, [scanModel]);
+  React.useEffect(() => {
+    setScanSecondsDraft(scanSeconds != null ? String(scanSeconds) : "");
+  }, [scanSeconds]);
+
+  const handleScanModelBlur = () => {
+    updateSetting("trigger_scan_model", scanModelDraft.trim());
+  };
+
+  const handleScanSecondsBlur = () => {
+    const parsed = Number.parseInt(scanSecondsDraft, 10);
+    // Clamp to the backend's supported range (3–30) so out-of-range
+    // values can't fail serde u8 deserialization and silently roll back.
+    const seconds = Number.isNaN(parsed) || parsed <= 0 ? 8 : Math.min(30, Math.max(3, parsed));
+    setScanSecondsDraft(String(seconds));
+    updateSetting("trigger_scan_seconds", seconds);
+  };
 
   const handleImportFromEnv = async () => {
     setImporting(true);
@@ -563,6 +590,66 @@ const WriteForMeSettingsComponent: React.FC = () => {
           </Button>
         </div>
       </SettingContainer>
+
+      <ToggleSwitch
+        checked={fallbackEnabled}
+        onChange={(checked) =>
+          updateSetting("trigger_phrase_fallback_enabled", checked)
+        }
+        isUpdating={isUpdating("trigger_phrase_fallback_enabled")}
+        label={t("settings.postProcessing.writeForMe.triggerFallback.label")}
+        description={t(
+          "settings.postProcessing.writeForMe.triggerFallback.description",
+        )}
+      />
+
+      {fallbackEnabled && (
+        <>
+          <SettingContainer
+            title={t(
+              "settings.postProcessing.writeForMe.triggerFallback.modelLabel",
+            )}
+            description=""
+            descriptionMode="tooltip"
+            layout="horizontal"
+            grouped={true}
+          >
+            <Input
+              type="text"
+              value={scanModelDraft}
+              onChange={(e) => setScanModelDraft(e.target.value)}
+              onBlur={handleScanModelBlur}
+              placeholder={t(
+                "settings.postProcessing.writeForMe.triggerFallback.modelPlaceholder",
+              )}
+              variant="compact"
+              disabled={isUpdating("trigger_scan_model")}
+              className="min-w-[320px]"
+            />
+          </SettingContainer>
+
+          <SettingContainer
+            title={t(
+              "settings.postProcessing.writeForMe.triggerFallback.secondsLabel",
+            )}
+            description=""
+            descriptionMode="tooltip"
+            layout="horizontal"
+            grouped={true}
+          >
+            <Input
+              type="text"
+              inputMode="numeric"
+              value={scanSecondsDraft}
+              onChange={(e) => setScanSecondsDraft(e.target.value)}
+              onBlur={handleScanSecondsBlur}
+              variant="compact"
+              disabled={isUpdating("trigger_scan_seconds")}
+              className="min-w-[320px]"
+            />
+          </SettingContainer>
+        </>
+      )}
     </>
   );
 };

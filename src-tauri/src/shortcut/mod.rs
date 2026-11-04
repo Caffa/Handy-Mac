@@ -23,6 +23,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use conflicts::ConflictInfo;
 
+use crate::managers::model::ModelManager;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
@@ -33,6 +34,7 @@ use crate::settings::{
 };
 use crate::tray;
 use crate::LiveCaptionsTranscriptionManager;
+use crate::TriggerTranscriptionManager;
 
 // Note: Commands are accessed via shortcut::handy_keys:: in lib.rs
 
@@ -1903,6 +1905,110 @@ pub fn change_live_captions_model_setting(app: AppHandle, model_id: String) -> R
         );
     }
 
+    Ok(())
+}
+
+/// Pre-warm the trigger-fallback scan model in the dedicated trigger TM.
+///
+/// Shared by the enable and model-change commands. Loads only when the model
+/// is already downloaded: `load_model` emits a `loading_failed` model-state
+/// event for anything else, and the trigger fallback has no download UI, so
+/// such an event would be a spurious error from the user's point of view. The
+/// load itself is idempotent and runs on a detached thread inside the TM, so
+/// callers never block.
+fn prewarm_trigger_scan_model(app: &AppHandle, model_id: &str) {
+    if model_id.is_empty() {
+        return;
+    }
+
+    let downloaded = app
+        .state::<Arc<ModelManager>>()
+        .get_model_info(model_id)
+        .map(|info| info.is_downloaded)
+        .unwrap_or(false);
+    if !downloaded {
+        debug!(
+            "Trigger scan model '{}' not downloaded — skipping pre-warm",
+            model_id
+        );
+        return;
+    }
+
+    if let Some(trigger_tm) = app.try_state::<TriggerTranscriptionManager>() {
+        trigger_tm.0.lock().initiate_model_load_for(model_id);
+        debug!("Pre-warming trigger scan model '{}'", model_id);
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_trigger_phrase_fallback_enabled_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    settings::patch_settings(&app, |s| {
+        s.trigger_phrase_fallback_enabled = enabled;
+    });
+
+    let scan_model = settings::get_settings_safe(&app).trigger_scan_model;
+
+    if enabled {
+        // Pre-warm the scan model so the first fallback scan doesn't pay the
+        // model-load latency. Skipped (with a log) when not yet downloaded.
+        prewarm_trigger_scan_model(&app, &scan_model);
+    } else if !scan_model.is_empty() {
+        // Release the scan model's memory when the feature is turned off.
+        // Guarded by is_model_loaded so we don't emit a spurious "unloaded"
+        // event when nothing was loaded. request_unload never blocks the
+        // command behind the worker shutdown.
+        if let Some(trigger_tm) = app.try_state::<TriggerTranscriptionManager>() {
+            let tm = trigger_tm.0.lock();
+            if tm.is_model_loaded() {
+                tm.request_unload();
+                debug!("Trigger fallback disabled — unloading trigger scan model");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_trigger_scan_model_setting(app: AppHandle, model_id: String) -> Result<(), String> {
+    settings::patch_settings(&app, |s| {
+        s.trigger_scan_model = model_id.clone();
+    });
+
+    // Load the newly selected scan model so the first fallback scan is fast.
+    // The TM's load path drops the previously loaded engine first, so the old
+    // scan model is released without an explicit unload. Gated on the feature
+    // being enabled: no reason to hold a model in memory for a disabled
+    // feature — enabling the feature pre-warms it anyway.
+    if settings::get_settings_safe(&app).trigger_phrase_fallback_enabled {
+        prewarm_trigger_scan_model(&app, &model_id);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_trigger_scan_seconds_setting(app: AppHandle, seconds: u8) -> Result<(), String> {
+    // Clamp to a sane range: shorter openings may cut the trigger phrase off,
+    // longer ones waste scan time on audio past the sentence head.
+    const MIN_SCAN_SECONDS: u8 = 3;
+    const MAX_SCAN_SECONDS: u8 = 30;
+    let clamped = seconds.clamp(MIN_SCAN_SECONDS, MAX_SCAN_SECONDS);
+    if clamped != seconds {
+        info!(
+            "Clamping trigger scan seconds from {} to {} (allowed {}-{})",
+            seconds, clamped, MIN_SCAN_SECONDS, MAX_SCAN_SECONDS
+        );
+    }
+    settings::patch_settings(&app, |s| {
+        s.trigger_scan_seconds = clamped;
+    });
     Ok(())
 }
 

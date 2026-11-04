@@ -234,6 +234,12 @@ const settingUpdaters: {
     commands.changeLongFormChunkingSetting(value as boolean),
   live_captions_enabled: (value) =>
     commands.changeLiveCaptionsEnabledSetting(value as boolean),
+  trigger_phrase_fallback_enabled: (value) =>
+    commands.changeTriggerPhraseFallbackEnabledSetting(value as boolean),
+  trigger_scan_model: (value) =>
+    commands.changeTriggerScanModelSetting(value as string),
+  trigger_scan_seconds: (value) =>
+    commands.changeTriggerScanSecondsSetting(value as number),
   overlay_scale: (value) => commands.changeOverlayScaleSetting(value as number),
   noise_suppression_enabled: (value) =>
     commands.changeNoiseSuppressionEnabledSetting(value as boolean),

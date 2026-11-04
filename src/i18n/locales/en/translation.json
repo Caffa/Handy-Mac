@@ -638,6 +638,13 @@
           "description": "API key for ollama.com. Falls back to the OLLAMA_API_KEY environment variable when empty.",
           "placeholder": "Paste your Ollama API key",
           "importFromEnv": "Import from ENV"
+        },
+        "triggerFallback": {
+          "label": "Fallback trigger-phrase scan (Whisper)",
+          "description": "When the main model mangles the opening trigger phrase (e.g. \"Hey Minion\"), re-scan the first seconds with a cached local Whisper model. Only runs when the opening looks suspicious.",
+          "modelLabel": "Scan model",
+          "modelPlaceholder": "handy-computer/whisper-small-gguf",
+          "secondsLabel": "Scan seconds"
         }
       }
     },

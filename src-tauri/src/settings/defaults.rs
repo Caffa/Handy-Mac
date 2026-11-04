@@ -169,5 +169,10 @@ pub fn get_default_settings() -> AppSettings {
         noise_suppression_level: NoiseSuppressionLevel::default(),
         vad_backend: VadBackend::default(),
         long_form_chunking: true,
+        trigger_phrase_fallback_enabled: false,
+        trigger_phrases: default_trigger_phrases(),
+        trigger_scan_seconds: default_trigger_scan_seconds(),
+        trigger_scan_model: default_trigger_scan_model(),
+        trigger_fallback_force_scan: false,
     }
 }

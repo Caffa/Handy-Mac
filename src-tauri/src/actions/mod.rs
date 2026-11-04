@@ -4,6 +4,7 @@
 //   transcribe.rs   — TranscribeAction (standard + post-process)
 //   router.rs       — TranscribeWithRouterAction (boss_router.py)
 //   post_process.rs — LLM post-processing, Chinese conversion, transcription pipeline
+//   trigger_fallback.rs — gated trigger-phrase mishearing recovery (core logic)
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -13,6 +14,9 @@ use tauri::AppHandle;
 pub mod post_process;
 pub mod router;
 pub mod transcribe;
+// Gated trigger-phrase mishearing recovery: detection logic lives here;
+// the scan + call-site wiring lives in router.rs.
+pub mod trigger_fallback;
 
 // Re-export public items so external code using `crate::actions::X` continues to work
 pub use post_process::process_transcription_output;
