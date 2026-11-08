@@ -886,10 +886,22 @@ impl AudioRecordingManager {
         // monitor will self-heal if it isn't open yet.
         let should_open_stream = bt_active || matches!(mode, MicrophoneMode::AlwaysOn);
         if should_open_stream {
-            let manager_clone = manager.clone();
+            // Capture only the AppHandle: a thread-owned manager clone runs
+            // the FULL Drop when the thread ends (stop_device_monitor +
+            // liveness_stop), killing both background monitors seconds after
+            // startup. Resolve the managed instance instead — manage() runs
+            // synchronously right after new() returns, so the short sleep
+            // below guarantees try_state finds it.
+            let app_handle = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(100));
-                if let Err(e) = manager_clone.start_microphone_stream() {
+                let Some(rm) = app_handle.try_state::<Arc<AudioRecordingManager>>() else {
+                    error!(
+                        "Deferred open: AudioRecordingManager not managed yet; the liveness monitor will self-heal the stream"
+                    );
+                    return;
+                };
+                if let Err(e) = rm.start_microphone_stream() {
                     error!("Deferred always-on/BT microphone stream open failed: {}", e);
                 } else {
                     info!("Deferred always-on/BT microphone stream opened successfully");
@@ -1240,10 +1252,6 @@ impl AudioRecordingManager {
         let app_handle = self.app_handle.clone();
         let prev_input = self.prev_input_devices.clone();
         let prev_output = self.prev_output_devices.clone();
-        // Clone the manager (all Arc fields) so the thread can rebuild the
-        // standing stream when an input device change leaves it pointed at a
-        // dead device.
-        let manager = self.clone();
 
         // Seed with the current device list so we don't emit a spurious
         // "everything was added" event on the first poll.
@@ -1364,43 +1372,53 @@ impl AudioRecordingManager {
                         // or the stream idles as "open"). Rebuild the standing
                         // stream so the next dictation arms on fresh audio.
                         if !added_input.is_empty() || !removed_input.is_empty() {
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis() as u64;
-                            let last = manager
-                                .last_standing_rebuild_epoch
-                                .load(Ordering::Acquire);
-                            let elapsed_ms = now_ms.saturating_sub(last);
-                            let recording = manager.recording_active.load(Ordering::Acquire);
-
-                            if should_rebuild_standing_stream(elapsed_ms, recording) {
-                                manager
+                            // Resolve the managed instance instead of owning a
+                            // clone: a by-value clone runs the full Drop when
+                            // this thread ends, killing both monitors.
+                            if let Some(rm) =
+                                app_handle.try_state::<Arc<AudioRecordingManager>>()
+                            {
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64;
+                                let last = rm
                                     .last_standing_rebuild_epoch
-                                    .store(now_ms, Ordering::Release);
-                                logging::emit(logging::AppEvent::WakeRecovery {
-                                    stage: "device_list_rebuild".to_string(),
-                                    reason: format!(
-                                        "input devices changed: +{} -{} (idle {}ms, rebuilding standing stream)",
-                                        added_input.len(),
-                                        removed_input.len(),
-                                        elapsed_ms
-                                    ),
-                                    device_seen_secs: None,
-                                });
-                                info!(
-                                    "Device monitor: input list changed while idle — rebuilding standing stream"
-                                );
-                                // No hub cycling here: the change itself is
-                                // the evidence the device tree moved; a fresh
-                                // open is enough.
-                                manager.invalidate_device_cache();
-                                if let Err(e) = manager.restart_microphone_if_needed() {
-                                    warn!(
-                                        "Device monitor: standing stream rebuild failed: {}",
-                                        e
+                                    .load(Ordering::Acquire);
+                                let elapsed_ms = now_ms.saturating_sub(last);
+                                let recording = rm.recording_active.load(Ordering::Acquire);
+
+                                if should_rebuild_standing_stream(elapsed_ms, recording) {
+                                    rm.last_standing_rebuild_epoch
+                                        .store(now_ms, Ordering::Release);
+                                    logging::emit(logging::AppEvent::WakeRecovery {
+                                        stage: "device_list_rebuild".to_string(),
+                                        reason: format!(
+                                            "input devices changed: +{} -{} (idle {}ms, rebuilding standing stream)",
+                                            added_input.len(),
+                                            removed_input.len(),
+                                            elapsed_ms
+                                        ),
+                                        device_seen_secs: None,
+                                    });
+                                    info!(
+                                        "Device monitor: input list changed while idle — rebuilding standing stream"
                                     );
+                                    // No hub cycling here: the change itself is
+                                    // the evidence the device tree moved; a fresh
+                                    // open is enough.
+                                    rm.invalidate_device_cache();
+                                    if let Err(e) = rm.restart_microphone_if_needed() {
+                                        warn!(
+                                            "Device monitor: standing stream rebuild failed: {}",
+                                            e
+                                        );
+                                    }
                                 }
+                            } else {
+                                debug!(
+                                    "Device monitor: manager not managed yet — skipping standing-stream rebuild"
+                                );
                             }
                         }
                     }
@@ -2655,8 +2673,17 @@ impl AudioRecordingManager {
             None => {
                 warn!("[CANCEL-TIMING] Could not acquire state lock within 2s — forcing is_recording=false and spawning recovery worker");
                 *self.is_recording.lock() = false;
-                let this = self.clone();
-                std::thread::spawn(move || this.recovery_after_state_lock_timeout());
+                // Capture only the AppHandle: a thread-owned manager clone
+                // runs the FULL Drop when the thread ends, killing the device
+                // and liveness monitors.
+                let app = self.app_handle.clone();
+                std::thread::spawn(move || {
+                    let Some(rm) = app.try_state::<Arc<AudioRecordingManager>>() else {
+                        error!("Cancel recovery: AudioRecordingManager not managed");
+                        return;
+                    };
+                    rm.recovery_after_state_lock_timeout();
+                });
                 return;
             }
         };
