@@ -74,8 +74,17 @@ fn should_rebuild_standing_stream(elapsed_ms: u64, recording: bool) -> bool {
 const ZERO_SAMPLE_ABORT_MS: u64 = 2500;
 /// Digital-silence RMS ceiling for the abort predicate. Room tone is
 /// ~0.001 (−60 dBFS); only true digital silence proves the device is not
-/// delivering real samples.
-const ZERO_SAMPLE_MAX_RMS: f32 = 1e-6;
+/// delivering real samples. Shared with the USB watchdog (imported there):
+/// a recording of exact zeros is dead signal, never a healthy delivery.
+pub const ZERO_SAMPLE_MAX_RMS: f32 = 1e-6;
+
+/// Current wall-clock time in milliseconds since the Unix epoch.
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// Pure predicate: an armed recording is dead when it has run at least
 /// `ZERO_SAMPLE_ABORT_MS` with max-RMS still at digital silence AND the
@@ -887,7 +896,10 @@ impl AudioRecordingManager {
             device_monitor_stop: Arc::new(Mutex::new(None)),
             prev_input_devices: Arc::new(Mutex::new(Vec::new())),
             prev_output_devices: Arc::new(Mutex::new(Vec::new())),
-            last_standing_rebuild_epoch: Arc::new(AtomicU64::new(0)),
+            // Stamp with the current time so the first real device change is
+            // correctly measured as "idle 0ms", not against the epoch (a 0
+            // init produced garbage "idle 1794159154121ms" logs).
+            last_standing_rebuild_epoch: Arc::new(AtomicU64::new(epoch_ms())),
             auto_retry_allowed: Arc::new(AtomicBool::new(false)),
         };
 
