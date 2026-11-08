@@ -38,6 +38,17 @@ Desktop Mac with `SleepDisabled=1` — the system never sleeps, only the display
 4. Grep `WakeRecovery` events in `handy-events.jsonl`: expect `screens_wake_device_absent` or `device_list_rebuild`, then `zero_sample_abort` and `retry_started` (or `retry_failed` + notification if the rebuild failed).
 5. Cancel mid-recording (Cmd+Esc): the tracker session must finalize immediately instead of lingering.
 
+### Deep-review addendum (2026-11-08, second pass)
+
+Follow-up review of the fixes above confirmed two majors and found one new major; all fixed the same day. Symbols referenced as shipped.
+
+- **Clone-owned threads ran full `Drop` (the big one, pre-existing since Aug).** `AudioRecordingManager` is `Clone + Drop`; the deferred startup open (`new()`), `start_device_monitor`'s standing rebuild, and `cancel_recording`'s recovery worker each moved a by-value clone into a thread, and the clone's `Drop` at thread end ran `stop_device_monitor()` + `liveness_stop.store(true)` — killing both monitors seconds after launch in always-on mode. This also made the Step 3/Step 4 fixes above inert (their threads died with the monitors). All three sites now capture only the `AppHandle` and resolve via `try_state::<Arc<AudioRecordingManager>>()` with a not-yet-managed skip guard. (FIX 1b manual-`Clone` fallback was not needed.)
+- **Guard-across-join.** `stop_device_monitor` and `Drop` held the `parking_lot` guard across `join()` (if-let scrutinee temporaries live to the end of the statement). Both now bind the `JoinHandle` out, then join. The self-join panic disappears with the clone removal (FIX 1), so no explicit self-join check was added.
+- **Abort ordering.** The zero-RMS abort now runs `cancel_current_operation` FIRST (un-arms + hides) and watchdog accounting AFTER, because `on_recording_finished(0, …)` can block 6-15s in a power cycle; `armed`/`armed_at_ms` are re-checked immediately before cancel, and the coordinator must be `Idle` immediately before a synthetic press.
+- **Retry budget.** `auto_retry_allowed` is one-shot: armed only by real delivery (stop path with samples, or the monitor seeing `max_level > ZERO_SAMPLE_MAX_RMS` on an armed recording), consumed by exactly one press (`retry_decision(budget, coordinator_idle)`), so a still-dead stream cannot loop retries.
+- **Muted-mic false positive.** The standing path now records delivered max-RMS into `CaptureControl::pre_arm_max_rms` (reset on `disarm()`); `should_abort_dead_recording` aborts only on the zombie signature (nonzero pre-arm, digital-zero in-arm). Pre-arm-silent (muted / dead since boot) → no abort, no notification loop.
+- **Session snapshot.** `cancel_current_operation` snapshots `current_session_id()` at entry, before any blocking step; step 9 fails that captured id, and `fail_session`'s mismatch put-back keeps a session started mid-cancel untouched.
+
 ## Router completion teardown clobbered a concurrent recording's overlay/visualizer (2026-11-04)
 
 ### Problem
