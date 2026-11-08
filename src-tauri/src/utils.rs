@@ -184,6 +184,22 @@ pub fn cancel_current_operation(app: &AppHandle) {
         );
     }
 
+    // 9. Finalize the session tracker so a cancelled operation does not leak
+    // a ghost "still active" session. `fail_session` is idempotent (take()
+    // based): with no active session this is a no-op.
+    {
+        let t = std::time::Instant::now();
+        if let Some(tracker) = app.try_state::<Arc<crate::session::SessionTracker>>() {
+            if let Some(sid) = tracker.current_session_id() {
+                tracker.fail_session(&sid, "Operation cancelled by user");
+            }
+        }
+        info!(
+            "[CANCEL-TIMING] step 9 (fail_session) took {:?}",
+            t.elapsed()
+        );
+    }
+
     info!(
         "[CANCEL-TIMING] cancel_current_operation COMPLETE, total {:?}",
         total_start.elapsed()

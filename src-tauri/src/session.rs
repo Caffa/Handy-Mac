@@ -388,3 +388,45 @@ pub fn get_session_history(
     let limit = limit.unwrap_or(20) as usize;
     Ok(tracker.get_recent_sessions(limit))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fail_session_finalizes_and_records_failure() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("Test Mic", false);
+        assert_eq!(tracker.current_session_id(), Some(sid.clone()));
+
+        tracker.fail_session(&sid, "test failure");
+        assert!(
+            tracker.current_session_id().is_none(),
+            "fail_session must finalize the active session"
+        );
+
+        let history = tracker.get_recent_sessions(10);
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].success, "session must be recorded as failed");
+        assert!(history[0].errors.contains(&"test failure".to_string()));
+    }
+
+    #[test]
+    fn double_fail_session_is_a_no_op() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("Test Mic", false);
+
+        tracker.fail_session(&sid, "first failure");
+        tracker.fail_session(&sid, "second failure");
+
+        assert!(tracker.current_session_id().is_none());
+        // Only one history entry — the second fail found no active session.
+        let history = tracker.get_recent_sessions(10);
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].errors,
+            vec!["first failure".to_string()],
+            "second fail must not mutate the finalized session"
+        );
+    }
+}

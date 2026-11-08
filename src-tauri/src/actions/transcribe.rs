@@ -449,6 +449,14 @@ impl super::ShortcutAction for TranscribeAction {
 
                 if processed_samples.is_empty() {
                     warn!("[STOP-DIAGNOSTIC] Recording produced no audio samples; hiding overlay");
+                    // Finalize the tracker session (same pattern as the
+                    // None-branch below) so an empty stop cannot leak a
+                    // ghost "still active" session.
+                    if let (Some(ref s), Some(tracker)) =
+                        (&sid, ah.try_state::<Arc<SessionTracker>>())
+                    {
+                        tracker.fail_session(s, "Recording produced no audio samples");
+                    }
                     utils::hide_recording_overlay(&ah);
                     set_tray_state(&ah, TrayIconState::Idle);
                 } else {
