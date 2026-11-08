@@ -1199,8 +1199,14 @@ impl AudioRecordingManager {
 
                             // THEN count the dead recording with the watchdog
                             // (may cycle per the existing gates: threshold,
-                            // bypass, cooldown, cycling guard).
-                            usb_watchdog.on_recording_finished(0, armed_elapsed_ms as f32 / 1000.0);
+                            // bypass, cooldown, cycling guard). max_level is
+                            // 0.0 by construction — the abort predicate only
+                            // fires on digital silence.
+                            usb_watchdog.on_recording_finished(
+                                0,
+                                armed_elapsed_ms as f32 / 1000.0,
+                                0.0,
+                            );
 
                             // Rebuild the stream on the (likely re-enumerated)
                             // device, then auto-retry once (Toggle only) so the
@@ -2603,13 +2609,37 @@ impl AudioRecordingManager {
                     return None;
                 }
 
-                // Check for very low audio levels (potential dead/muted mic)
-                // This detects cases where the mic "works" but captures only silence.
-                // NOTE: We intentionally do NOT count this as a successful finish
-                // in the USB watchdog, because low audio is a failure condition.
+                // Post-recording watchdog accounting. Three mutually
+                // exclusive outcomes (never double-counted):
+                // 1. exact digital zeros → dead signal, cycle now (no
+                //    duration gate: even 0.3s of exact zeros is decisive;
+                //    intentionally NOT counted as a successful finish);
+                // 2. low but nonzero audio → ambiguous, keeps the 10s gate;
+                // 3. anything else → normal delivered/empty accounting.
                 let max_level = self.capture.get_max_level();
 
-                if !processed_samples.is_empty() && max_level < NO_AUDIO_THRESHOLD {
+                if !processed_samples.is_empty() && max_level <= ZERO_SAMPLE_MAX_RMS {
+                    warn!(
+                        "Recording delivered exact digital zeros (max RMS {:.2e}, duration {:.1}s) - dead signal, requesting USB cycle",
+                        max_level, recording_duration
+                    );
+                    if self
+                        .usb_watchdog
+                        .on_digital_silence(recording_duration, max_level)
+                    {
+                        if let Err(e) = self.restart_microphone_if_needed() {
+                            error!(
+                                "Failed to restart microphone after digital-silence USB cycle: {}",
+                                e
+                            );
+                        }
+                        crate::actions::router::send_macos_notification(
+                            &self.app_handle,
+                            "Handy",
+                            "Microphone delivered no signal — USB port cycled",
+                        );
+                    }
+                } else if !processed_samples.is_empty() && max_level < NO_AUDIO_THRESHOLD {
                     warn!(
                         "Recording had very low audio level (max RMS: {:.6}, threshold: {:.6}, duration: {:.1}s) - mic may be dead/muted",
                         max_level, NO_AUDIO_THRESHOLD, recording_duration
@@ -2631,10 +2661,11 @@ impl AudioRecordingManager {
                         // zero-RMS abort's synthetic press.
                         self.auto_retry_allowed.store(true, Ordering::Release);
                     }
-                    if self
-                        .usb_watchdog
-                        .on_recording_finished(processed_samples.len(), recording_duration)
-                    {
+                    if self.usb_watchdog.on_recording_finished(
+                        processed_samples.len(),
+                        recording_duration,
+                        max_level,
+                    ) {
                         if let Err(e) = self.restart_microphone_if_needed() {
                             error!(
                                 "Failed to restart microphone after dead-stream USB cycle: {}",

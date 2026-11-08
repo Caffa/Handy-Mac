@@ -15,7 +15,7 @@
 //! to handle encoding issues (e.g. RØDE vs R?DE).
 
 use crate::logging;
-use crate::managers::audio::AudioRecordingManager;
+use crate::managers::audio::{AudioRecordingManager, ZERO_SAMPLE_MAX_RMS};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -256,22 +256,52 @@ impl UsbWatchdog {
         }
     }
 
-    /// Called when a recording finishes. If the sample count is zero, it
-    /// counts as a failure and may trigger a power cycle.
+    /// Called when a recording finishes. A recording only resets the failure
+    /// counter when it delivered samples that were not exact digital zeros —
+    /// `sample_count > 0 && max_level > ZERO_SAMPLE_MAX_RMS`. Samples that
+    /// are all exact zeros (dock-flap zombie delivering nothing) count as a
+    /// dead stream and fall through to `on_mic_open_failed()`.
     ///
     /// Parameters:
     /// - `sample_count`: Number of audio samples captured
     /// - `duration_secs`: Duration of the recording in seconds
+    /// - `max_level`: Max RMS seen while armed (0.0 when unknown)
     ///
     /// Returns true if a USB power cycle was triggered.
-    pub fn on_recording_finished(&self, sample_count: usize, _duration_secs: f32) -> bool {
-        if sample_count > 0 {
+    pub fn on_recording_finished(
+        &self,
+        sample_count: usize,
+        _duration_secs: f32,
+        max_level: f32,
+    ) -> bool {
+        if sample_count > 0 && max_level > ZERO_SAMPLE_MAX_RMS {
             self.on_mic_open_succeeded();
             return false;
         }
 
-        // Zero samples always indicates a problem, regardless of duration
-        warn!("USB watchdog: recording finished with 0 samples - treating as dead stream");
+        // Zero samples, or samples that are all exact zeros, both indicate a
+        // dead stream regardless of duration.
+        warn!(
+            "USB watchdog: recording delivered no usable signal ({} samples, max RMS {:.2e}) - treating as dead stream",
+            sample_count, max_level
+        );
+        self.on_mic_open_failed()
+    }
+
+    /// Called when an armed recording delivered exact digital zeros — the
+    /// dock-flap zombie signature (stream open and delivering chunks, but
+    /// the device sends no signal). Deliberately has NO enabled/cycling/
+    /// grace/duration gates: `on_mic_open_failed` owns all of them, and the
+    /// absence of a duration gate is the point — 0.3s of exact zeros is
+    /// already decisive evidence, unlike ambiguous low audio which keeps the
+    /// 10s gate in `on_low_audio_level`.
+    ///
+    /// Returns true if a USB power cycle was triggered.
+    pub fn on_digital_silence(&self, duration_secs: f32, max_rms: f32) -> bool {
+        warn!(
+            "USB watchdog: recording delivered exact digital zeros (max RMS {:.2e}, duration {:.1}s) - dead signal",
+            max_rms, duration_secs
+        );
         self.on_mic_open_failed()
     }
 
@@ -1077,12 +1107,69 @@ mod tests {
         assert!(!wd.on_mic_open_failed());
         assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
 
-        // A recording that actually delivered samples resets the counter.
-        assert!(!wd.on_recording_finished(48_000, 1.5));
+        // A recording that actually delivered non-zero samples resets the
+        // counter.
+        assert!(!wd.on_recording_finished(48_000, 1.5, 0.5));
         assert_eq!(
             wd.consecutive_failures.load(Ordering::SeqCst),
             0,
             "delivered samples are the only open-independent reset"
         );
+    }
+
+    #[test]
+    fn zero_samples_still_count_as_failure() {
+        let wd = UsbWatchdog::new(true, "", None);
+        assert!(!wd.on_mic_open_failed());
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+
+        // Zero samples: no reset, counted again.
+        assert!(!wd.on_recording_finished(0, 2.0, 0.0));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn digital_silence_counts_and_cycles_at_threshold() {
+        // First digital-silence failure: below threshold 2, counts 1.
+        let wd = UsbWatchdog::new(true, "", None);
+        assert!(!wd.on_digital_silence(1.5, 0.0));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+
+        // Second consecutive: threshold reached — cycle attempted (no device
+        // configured, so it resolves to false without running uhubctl).
+        assert!(!wd.on_digital_silence(0.3, 0.0));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn digital_silence_respects_grace_and_consumes_bypass() {
+        // Grace period: not counted at all.
+        let wd = UsbWatchdog::new(true, "", None);
+        wd.post_cycle_grace.store(true, Ordering::SeqCst);
+        assert!(!wd.on_digital_silence(1.0, 0.0));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 0);
+
+        // Armed bypass: consumed by the first digital-silence failure.
+        let wd = UsbWatchdog::new(true, "", None);
+        wd.arm_wake_bypass(3600);
+        assert!(wd.wake_bypass_active());
+        // Cycle attempted (false — no device configured), bypass consumed.
+        assert!(!wd.on_digital_silence(1.5, 0.0));
+        assert_eq!(wd.wake_bypass_until_epoch.load(Ordering::SeqCst), 0);
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn samples_of_exact_zeros_never_reset() {
+        let wd = UsbWatchdog::new(true, "", None);
+
+        // n>0 but all exact zeros: must NOT reset — falls through to a
+        // counted failure.
+        assert!(!wd.on_recording_finished(100, 1.0, 0.0));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+
+        // A second such recording reaches the threshold.
+        assert!(!wd.on_recording_finished(100, 1.0, 1e-9));
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 2);
     }
 }
