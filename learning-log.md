@@ -1,5 +1,43 @@
 # Handy-Fork Learning Log
 
+## Display-wake zombie standing stream on a never-sleeps Mac (2026-11-08)
+
+### Problem
+
+Desktop Mac with `SleepDisabled=1` — the system never sleeps, only the displays do. On a wake transition the dock's ASMedia USB controller power-loses and the whole USB tree re-enumerates ~2.3s later. Handy's always-on standing capture stream survived as a zombie "trickle": it stayed open and kept delivering digitally-silent chunks, so every recency-based liveness layer stayed green. The first dictation after wake armed on the dead standing stream → 0 samples → counted as "mic open failure #1 (threshold 2, wake_bypass false)" → no recovery — and the next press's *successful open* reset the failure counter before the threshold was ever reached. Separately, Cancel (Cmd+Esc) and empty-stop leaked the SessionTracker session (ghost "still active" for 31 min). The Oct-23 wake machinery never fired because wall-clock gap detection never sees a display-only sleep.
+
+### Root Causes
+
+1. **Recency-only liveness is blind to digital-silence delivery.** The liveness monitor's `chunks_stale` check treats fresh chunks as proof of life; a zombie stream delivering silence passes it.
+2. **The watchdog failure counter reset on a mere stream open.** `on_mic_open_succeeded()` was called from both `start_microphone_stream` sites, so the press *after* a dead recording erased failure #1 — the threshold-2 gate could never be reached by repeated dead dictations.
+3. **Session leak on cancel/empty stop.** `cancel_current_operation` never touched the tracker; the `Some(samples)`-but-empty branch of the stop path hid the overlay without `fail_session`, leaving the session "active" until the next `start_session` warned about it.
+4. **Wake machinery was sleep-only.** `NSWorkspaceDidWakeNotification` and the wall-clock detector both require a system sleep; display wakes (and the dock power events that ride along) never reached any recovery path.
+
+### Fixes
+
+1. **`src-tauri/src/actions/transcribe.rs`** — the Some-empty branch of the `recording_result` match now calls `tracker.fail_session(sid, "Recording produced no audio samples")` (same pattern as the None branch) before hiding the overlay.
+2. **`src-tauri/src/utils.rs`** — `cancel_current_operation` step 9 finalizes the tracker session via `fail_session(&sid, "Operation cancelled by user")` (idempotent, take()-based).
+3. **`src-tauri/src/session.rs`** — `#[cfg(test)]` tests: fail finalizes + records failure; double-fail is a no-op.
+4. **`src-tauri/src/usb_watchdog.rs`** — new `on_stream_open_confirmed()` clears only `post_cycle_grace`; `consecutive_failures` now resets solely via `on_recording_finished(>0)` or a completed cycle. `on_mic_open_succeeded` docs updated accordingly.
+5. **`src-tauri/src/managers/audio.rs`** — both `start_microphone_stream` success sites call `on_stream_open_confirmed()` instead of `on_mic_open_succeeded()`.
+6. **`src-tauri/src/managers/audio.rs`** (`start_device_monitor`) — an INPUT device-list change while idle now rebuilds the standing stream (`invalidate_device_cache()` + `restart_microphone_if_needed()`), rate-limited by `should_rebuild_standing_stream` (≥10s between rebuilds, never while recording), emitting `WakeRecovery { stage: "device_list_rebuild" }`. No hub cycling on this path.
+7. **`src-tauri/src/managers/audio.rs`** (`start_liveness_monitor`) — zero-RMS abort: an armed recording past `ZERO_SAMPLE_ABORT_MS` (2500ms) with `capture.get_max_level()` still ≤ `ZERO_SAMPLE_MAX_RMS` (1e-6, digital silence; room tone ~0.001) is aborted, race-guarded by re-reading `armed` + `armed_at_ms`. Sequence: `WakeRecovery { stage: "zero_sample_abort" }` → `usb_watchdog.on_recording_finished(0, elapsed)` (may cycle per existing gates) → `utils::cancel_current_operation` (finalizes session + hides overlay; monitor thread holds no locks, no deadlock) → `restart_microphone_if_needed()`. Then one bounded auto-retry: Toggle mode + bound hotkey → ONE synthetic press via `handle_shortcut_event` on `spawn_blocking` (never inline — 2026-10-17 lesson), emitting `retry_started`; rebuild failure emits `retry_failed` + native notification; PushToTalk/HoldOrToggle → notification only.
+8. **`src-tauri/src/logging.rs`** — `zero_sample_abort`, `device_list_rebuild`, `retry_started`, `retry_failed` mapped to Warn in the `WakeRecovery` level table.
+9. **`src-tauri/src/sleep_wake.rs`** — `start_native_wake_observer` registers a second selector (`screensDidWake:` → `NSWorkspaceScreensDidWakeNotification`) on the same observer. New `on_screens_wake`: 120s self-dedupe (`LAST_SCREENS_WAKE_EPOCH`), same `should_arm_bypass` settings gate as `on_system_wake`, and **arms only when `device_present_in_usb_tree(&device_name)` is false** — a plain screensaver fade (device present) is log-only. On arm: `arm_wake_bypass(WAKE_BYPASS_TTL_SECS)` + `WakeRecovery { stage: "screens_wake_device_absent" }` + the shared `spawn_wake_recovery_thread` (thread body factored out of `on_system_wake`). Decision logic unit-tested in `screens_wake_decision`.
+10. **`src-tauri/src/actions/router.rs` / `src/shortcut/mod.rs`** — `send_macos_notification` and the `handler` module made crate-visible for the retry path.
+
+### Key Insight
+
+"Recency proves a stream is *running*, not that it is *delivering*; an armed recording with zero max-RMS is dead regardless of heartbeats." Every liveness layer built on last-chunk timestamps shares one blind spot: a zombie device that delivers silence looks exactly as alive as one delivering speech. The only evidence that cannot lie is the content of what arrives — max-RMS over an armed window — paired with a failure counter that mere opens cannot reset.
+
+### Verification recipe
+
+1. Configure the USB watchdog for the dock-attached mic, always-on microphone enabled, Toggle activation.
+2. Let displays sleep (or unplug/replug the dock) to force the tree re-enumeration, then dictate within ~10 s of wake.
+3. Expected: the first press either works or cancels itself within ~3 s of arming, the overlay closes cleanly (no ghost session — check `get_session_history` shows the session failed, not stuck), the stream rebuilds, and recording restarts without a second press.
+4. Grep `WakeRecovery` events in `handy-events.jsonl`: expect `screens_wake_device_absent` or `device_list_rebuild`, then `zero_sample_abort` and `retry_started` (or `retry_failed` + notification if the rebuild failed).
+5. Cancel mid-recording (Cmd+Esc): the tracker session must finalize immediately instead of lingering.
+
 ## Router completion teardown clobbered a concurrent recording's overlay/visualizer (2026-11-04)
 
 ### Problem
