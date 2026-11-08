@@ -630,7 +630,16 @@ fn spawn_wake_recovery_thread(app_handle: &Arc<tauri::AppHandle>, device_name: S
 fn on_screens_wake(app_handle: &Arc<tauri::AppHandle>) {
     let now = epoch_secs();
     let prev = LAST_SCREENS_WAKE_EPOCH.swap(now, Ordering::SeqCst);
-    let duplicate = prev != 0 && now.saturating_sub(prev) < SCREENS_WAKE_DEDUPE_SECS;
+    // Dedupe short-circuits BEFORE the uhubctl probe: macOS fires
+    // ScreensDidWake on every display wake, and a duplicate must not pay for
+    // a USB tree subprocess.
+    if prev != 0 && now.saturating_sub(prev) < SCREENS_WAKE_DEDUPE_SECS {
+        debug!(
+            "on_screens_wake: duplicate screens-wake (last was {}s ago), skipping",
+            now.saturating_sub(prev)
+        );
+        return;
+    }
 
     let settings = crate::settings::get_settings_safe(app_handle);
     let device_configured = !settings.usb_watchdog_device_name.is_empty();
@@ -642,19 +651,16 @@ fn on_screens_wake(app_handle: &Arc<tauri::AppHandle>) {
     let device_absent = bypass_gated
         && !crate::usb_watchdog::device_present_in_usb_tree(&settings.usb_watchdog_device_name);
 
+    // Duplicate cannot occur here (short-circuited above); the arm stays for
+    // exhaustiveness and is unit-tested directly via screens_wake_decision.
     match screens_wake_decision(
-        duplicate,
+        false,
         settings.usb_watchdog_enabled,
         settings.usb_watchdog_cycle_on_wake,
         device_configured,
         device_absent,
     ) {
-        ScreensWakeDecision::Duplicate => {
-            debug!(
-                "on_screens_wake: duplicate screens-wake (last was {}s ago), skipping",
-                now.saturating_sub(prev)
-            );
-        }
+        ScreensWakeDecision::Duplicate => {}
         ScreensWakeDecision::LogOnly => {
             debug!(
                 "on_screens_wake: screens woke but device present or watchdog gated off; no arm"
