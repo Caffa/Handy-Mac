@@ -152,14 +152,22 @@ impl UsbWatchdog {
     /// When active, the very next mic-open failure will bypass both the
     /// failure-count threshold and the cooldown guard.
     pub fn arm_wake_bypass(&self, ttl_secs: u64) {
-        let until = epoch_secs().saturating_add(ttl_secs);
-        self.wake_bypass_until_epoch.store(until, Ordering::SeqCst);
+        self.arm_wake_bypass_quiet(ttl_secs);
         logging::emit(logging::AppEvent::WakeRecovery {
             stage: "bypass_armed".to_string(),
             reason: format!("{}s", ttl_secs),
             device_seen_secs: None,
         });
         info!("USB watchdog: post-wake bypass armed for {}s", ttl_secs);
+    }
+
+    /// Arm the bypass without emitting the generic `bypass_armed` event —
+    /// for callers that emit their own more specific `WakeRecovery` stage
+    /// (e.g. the device-flap path).
+    pub fn arm_wake_bypass_quiet(&self, ttl_secs: u64) {
+        let until = epoch_secs().saturating_add(ttl_secs);
+        self.wake_bypass_until_epoch.store(until, Ordering::SeqCst);
+        info!("USB watchdog: bypass armed for {}s", ttl_secs);
     }
 
     /// Returns `true` if the post-wake first-failure bypass is currently armed.

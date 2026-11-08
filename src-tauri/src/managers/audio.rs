@@ -9,7 +9,7 @@ use crate::helpers::clamshell;
 use crate::logging;
 use crate::managers::model::ModelManager;
 use crate::portable;
-use crate::settings::{get_settings, AppSettings, VadBackend};
+use crate::settings::{get_settings, get_settings_safe, AppSettings, VadBackend};
 use crate::streaming_cancel_flag::StreamingCancelFlag;
 use crate::usb_watchdog;
 use crate::usb_watchdog::UsbWatchdog;
@@ -56,6 +56,15 @@ const MIN_SPEECH_FRAMES_BEFORE_STREAMING: u32 = 3;
 /// quick succession; the rate limit keeps us to one rebuild per burst.
 const STANDING_REBUILD_MIN_INTERVAL_MS: u64 = 10_000;
 
+/// How long after an input device-list change the stream counts as
+/// "changed recently" (feeds the zero-RMS abort gate and flap arming).
+const DEVICE_FLAP_RECENT_WINDOW_MS: u64 = 120_000;
+/// TTL of the one-shot wake bypass armed on a device flap (covers the
+/// user's first few post-flap dictations).
+const DEVICE_FLAP_BYPASS_TTL_SECS: u64 = 180;
+/// Minimum interval between flap-bypass arms (one arm per flap burst).
+const FLAP_ARM_MIN_INTERVAL_MS: u64 = 60_000;
+
 /// Decide whether an input device-list change should rebuild the standing
 /// (always-on / BT keep-alive) stream. Skipped entirely while a recording is
 /// active (`restart_microphone_if_needed` bails then anyway) and rate-limited
@@ -65,6 +74,19 @@ fn should_rebuild_standing_stream(elapsed_ms: u64, recording: bool) -> bool {
         return false;
     }
     elapsed_ms >= STANDING_REBUILD_MIN_INTERVAL_MS
+}
+
+/// True when an input device change happened within `window_ms` of `now_ms`.
+/// A stamp of 0 (never stamped) is never "recent".
+fn device_change_recent(change_epoch_ms: u64, now_ms: u64, window_ms: u64) -> bool {
+    change_epoch_ms > 0 && now_ms.saturating_sub(change_epoch_ms) <= window_ms
+}
+
+/// True when a flap bypass may be armed: never armed (stamp 0) always
+/// allows it; otherwise at least `FLAP_ARM_MIN_INTERVAL_MS` must have passed
+/// since the last arm.
+fn should_arm_flap_bypass(last_arm_epoch_ms: u64, now_ms: u64) -> bool {
+    last_arm_epoch_ms == 0 || now_ms.saturating_sub(last_arm_epoch_ms) >= FLAP_ARM_MIN_INTERVAL_MS
 }
 
 /// Armed-recording zero-RMS abort: an armed recording that has run this long
@@ -664,6 +686,12 @@ pub struct AudioRecordingManager {
     /// monitor observing a delivering armed recording); consumed by exactly
     /// one synthetic press so a still-dead stream cannot loop retries.
     auto_retry_allowed: Arc<AtomicBool>,
+    /// Epoch ms of the most recent input device-list change (device flap).
+    /// Feeds the zero-RMS abort's device_changed_recently gate.
+    last_input_change_epoch_ms: Arc<AtomicU64>,
+    /// Epoch ms of the last flap-bypass arm (rate limit: one arm per
+    /// `FLAP_ARM_MIN_INTERVAL_MS`).
+    last_flap_bypass_arm_epoch_ms: Arc<AtomicU64>,
 }
 
 // Helper types for microphone resolution live in the parent module so that
@@ -901,6 +929,8 @@ impl AudioRecordingManager {
             // init produced garbage "idle 1794159154121ms" logs).
             last_standing_rebuild_epoch: Arc::new(AtomicU64::new(epoch_ms())),
             auto_retry_allowed: Arc::new(AtomicBool::new(false)),
+            last_input_change_epoch_ms: Arc::new(AtomicU64::new(0)),
+            last_flap_bypass_arm_epoch_ms: Arc::new(AtomicU64::new(0)),
         };
 
         // Check for Bluetooth output devices — if detected, keep the mic
@@ -1494,10 +1524,47 @@ impl AudioRecordingManager {
                             if let Some(rm) =
                                 app_handle.try_state::<Arc<AudioRecordingManager>>()
                             {
-                                let now_ms = std::time::SystemTime::now()
-                                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as u64;
+                                let now_ms = epoch_ms();
+
+                                // Stamp the flap time BEFORE any gating: the
+                                // zero-RMS abort's device_changed_recently
+                                // gate must see it even when the rebuild is
+                                // rate-limited or a recording is active.
+                                rm.last_input_change_epoch_ms
+                                    .store(now_ms, Ordering::Release);
+
+                                // Arm the one-shot wake bypass on a flap so
+                                // the FIRST post-flap dead dictation cycles
+                                // immediately (exact zeros are decisive; the
+                                // 10s duration gates never see these short
+                                // presses). Settings-gated like the wake
+                                // path; rate-limited to one arm per burst.
+                                let settings = get_settings_safe(&app_handle);
+                                let flap_gated = settings.usb_watchdog_enabled
+                                    && settings.usb_watchdog_cycle_on_wake
+                                    && !settings.usb_watchdog_device_name.is_empty();
+                                if flap_gated && should_arm_flap_bypass(
+                                    rm.last_flap_bypass_arm_epoch_ms.load(Ordering::Acquire),
+                                    now_ms,
+                                ) {
+                                    rm.last_flap_bypass_arm_epoch_ms
+                                        .store(now_ms, Ordering::Release);
+                                    // Quiet arm: this call site emits the
+                                    // one distinguishable event below.
+                                    rm.usb_watchdog
+                                        .arm_wake_bypass_quiet(DEVICE_FLAP_BYPASS_TTL_SECS);
+                                    logging::emit(logging::AppEvent::WakeRecovery {
+                                        stage: "device_flap_bypass_armed".to_string(),
+                                        reason: format!(
+                                            "input devices changed: +{} -{} (arming {}s one-shot bypass)",
+                                            added_input.len(),
+                                            removed_input.len(),
+                                            DEVICE_FLAP_BYPASS_TTL_SECS
+                                        ),
+                                        device_seen_secs: None,
+                                    });
+                                }
+
                                 let last = rm
                                     .last_standing_rebuild_epoch
                                     .load(Ordering::Acquire);
@@ -3136,6 +3203,53 @@ mod tests {
         // First ever rebuild (epoch 0 baseline): elapsed == now, always large
         // enough.
         assert!(should_rebuild_standing_stream(20_000, false));
+    }
+
+    #[test]
+    fn device_change_recent_predicate() {
+        let now = 1_000_000;
+
+        // Stamp 0 (never stamped): never recent.
+        assert!(!device_change_recent(0, now, DEVICE_FLAP_RECENT_WINDOW_MS));
+
+        // Recent (well inside the window).
+        assert!(device_change_recent(
+            now - 5_000,
+            now,
+            DEVICE_FLAP_RECENT_WINDOW_MS
+        ));
+
+        // Stale (outside the window).
+        assert!(!device_change_recent(
+            now - DEVICE_FLAP_RECENT_WINDOW_MS - 1,
+            now,
+            DEVICE_FLAP_RECENT_WINDOW_MS
+        ));
+
+        // Exactly at the window boundary counts as recent.
+        assert!(device_change_recent(
+            now - DEVICE_FLAP_RECENT_WINDOW_MS,
+            now,
+            DEVICE_FLAP_RECENT_WINDOW_MS
+        ));
+    }
+
+    #[test]
+    fn flap_bypass_arm_predicate() {
+        let now = 2_000_000;
+
+        // Never armed (stamp 0): arm allowed.
+        assert!(should_arm_flap_bypass(0, now));
+
+        // Inside the 60s rate limit: no re-arm.
+        assert!(!should_arm_flap_bypass(now - 30_000, now));
+        assert!(!should_arm_flap_bypass(
+            now - FLAP_ARM_MIN_INTERVAL_MS + 1,
+            now
+        ));
+
+        // At/after the rate limit: arm allowed.
+        assert!(should_arm_flap_bypass(now - FLAP_ARM_MIN_INTERVAL_MS, now));
     }
 
     #[test]
