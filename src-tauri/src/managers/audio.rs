@@ -109,22 +109,25 @@ fn epoch_ms() -> u64 {
 }
 
 /// Pure predicate: an armed recording is dead when it has run at least
-/// `ZERO_SAMPLE_ABORT_MS` with max-RMS still at digital silence AND the
-/// stream was delivering nonzero RMS before arming. The pre-arm gate is the
-/// zombie signature ("was delivering, went digital-zero on arm"); a mic that
-/// was silent before arming too (hardware-muted / dead since boot) is not
-/// fixed by a rebuild, so no abort — the recording runs and the existing
-/// stop path reports 0 samples.
+/// `ZERO_SAMPLE_ABORT_MS` with max-RMS still at digital silence AND either
+/// the stream was delivering nonzero RMS before arming (zombie signature)
+/// OR the input device changed recently (dock-flap case: the stream was
+/// already silent since the flap, so there is no nonzero pre-arm window to
+/// observe). A mic that was silent before arming too with no recent device
+/// change (hardware-muted / dead since boot) is not fixed by a rebuild, so
+/// no abort — the recording runs and the existing stop path reports 0
+/// samples.
 fn should_abort_dead_recording(
     armed: bool,
     elapsed_ms: u64,
     max_level: f32,
     pre_arm_max_rms: f32,
+    device_changed_recently: bool,
 ) -> bool {
     armed
         && elapsed_ms >= ZERO_SAMPLE_ABORT_MS
         && max_level <= ZERO_SAMPLE_MAX_RMS
-        && pre_arm_max_rms > ZERO_SAMPLE_MAX_RMS
+        && (pre_arm_max_rms > ZERO_SAMPLE_MAX_RMS || device_changed_recently)
 }
 
 /// Pure decision for the bounded auto-retry: the one-shot budget must be
@@ -1176,12 +1179,31 @@ impl AudioRecordingManager {
                         }
                     }
                     let pre_arm_rms = capture.pre_arm_max_rms();
+                    // Dock-flap case: if an input device change happened
+                    // recently, the stream may have been silent since BEFORE
+                    // arming (no nonzero pre-arm window to observe), so the
+                    // device-change recency substitutes for the pre-arm gate.
+                    let device_changed_recently = app_handle
+                        .try_state::<Arc<AudioRecordingManager>>()
+                        .map(|rm| {
+                            device_change_recent(
+                                rm.last_input_change_epoch_ms.load(Ordering::Acquire),
+                                now_ms,
+                                DEVICE_FLAP_RECENT_WINDOW_MS,
+                            )
+                        })
+                        .unwrap_or(false);
 
                     // Race guard: re-read armed + armed_at before acting so a
                     // recording the user already stopped (or a newer
                     // recording that re-stamped armed_at_ms) is not aborted.
-                    if should_abort_dead_recording(armed, armed_elapsed_ms, max_level, pre_arm_rms)
-                        && capture.armed.load(Ordering::Acquire)
+                    if should_abort_dead_recording(
+                        armed,
+                        armed_elapsed_ms,
+                        max_level,
+                        pre_arm_rms,
+                        device_changed_recently,
+                    ) && capture.armed.load(Ordering::Acquire)
                         && capture.armed_at_ms.load(Ordering::Acquire) == armed_at
                     {
                         warn!(
@@ -3255,7 +3277,9 @@ mod tests {
     #[test]
     fn zero_sample_abort_predicate() {
         // Not armed: never abort.
-        assert!(!should_abort_dead_recording(false, 60_000, 0.0, 0.001));
+        assert!(!should_abort_dead_recording(
+            false, 60_000, 0.0, 0.001, false
+        ));
 
         // Armed but below the elapsed threshold: no abort (covers every
         // normal short recording, silent or not).
@@ -3263,22 +3287,29 @@ mod tests {
             true,
             ZERO_SAMPLE_ABORT_MS - 1,
             0.0,
-            0.001
+            0.001,
+            false
         ));
 
         // Armed and elapsed, but real audio captured (room tone ~0.001,
         // speech louder): no abort.
-        assert!(!should_abort_dead_recording(true, 60_000, 0.001, 0.001));
-        assert!(!should_abort_dead_recording(true, 60_000, 0.5, 0.001));
+        assert!(!should_abort_dead_recording(
+            true, 60_000, 0.001, 0.001, false
+        ));
+        assert!(!should_abort_dead_recording(
+            true, 60_000, 0.5, 0.001, false
+        ));
 
-        // Pre-arm silent (muted mic / dead since boot): no abort even with
-        // in-arm digital silence — a rebuild cannot fix it. (FIX 5 gate.)
-        assert!(!should_abort_dead_recording(true, 60_000, 0.0, 0.0));
+        // Pre-arm silent AND no recent device change (muted mic / dead since
+        // boot): no abort even with in-arm digital silence — a rebuild
+        // cannot fix it. (Muted-mic gate.)
+        assert!(!should_abort_dead_recording(true, 60_000, 0.0, 0.0, false));
         assert!(!should_abort_dead_recording(
             true,
             60_000,
             0.0,
-            ZERO_SAMPLE_MAX_RMS
+            ZERO_SAMPLE_MAX_RMS,
+            false
         ));
 
         // Armed, elapsed, digital silence in-arm, stream WAS delivering
@@ -3287,19 +3318,34 @@ mod tests {
             true,
             ZERO_SAMPLE_ABORT_MS,
             0.0,
-            0.001
+            0.001,
+            false
         ));
         assert!(should_abort_dead_recording(
             true,
             60_000,
             ZERO_SAMPLE_MAX_RMS,
-            ZERO_SAMPLE_MAX_RMS * 1.1
+            ZERO_SAMPLE_MAX_RMS * 1.1,
+            false
         ));
         assert!(!should_abort_dead_recording(
             true,
             60_000,
             ZERO_SAMPLE_MAX_RMS * 1.1,
-            0.001
+            0.001,
+            false
+        ));
+
+        // Dock-flap incident case: pre-arm silent (stream already dead since
+        // the flap) BUT the device changed recently — abort so the watchdog
+        // can cycle the port.
+        assert!(should_abort_dead_recording(true, 60_000, 0.0, 0.0, true));
+        assert!(should_abort_dead_recording(
+            true,
+            ZERO_SAMPLE_ABORT_MS,
+            0.0,
+            0.0,
+            true
         ));
     }
 
