@@ -1963,7 +1963,7 @@ fn parse_router_json_output(stdout: &str) -> Option<RouterOutput> {
 /// Used for router success/failure feedback since the overlay is already hidden.
 /// Posting through the plugin keeps the notification attributed to the Handy
 /// process itself (app icon) instead of osascript's Script Editor.
-fn send_macos_notification(app: &AppHandle, title: &str, message: &str) {
+pub(crate) fn send_macos_notification(app: &AppHandle, title: &str, message: &str) {
     match app
         .notification()
         .builder()

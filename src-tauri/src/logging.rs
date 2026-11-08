@@ -188,6 +188,10 @@ impl AppEvent {
                 ..
             } if s == "deferred_gave_up"
                 || s == "cycle_skipped"
+                || s == "zero_sample_abort"
+                || s == "device_list_rebuild"
+                || s == "retry_started"
+                || s == "retry_failed"
                 || (s == "cycle_result" && r != "success") =>
             {
                 log::Level::Warn

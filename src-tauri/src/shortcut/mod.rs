@@ -10,7 +10,9 @@
 //! setting and can be changed at runtime.
 
 pub mod conflicts;
-mod handler;
+/// Shared shortcut event dispatch used by both keyboard backends and the
+/// wake-recovery synthetic retry press.
+pub mod handler;
 pub mod handy_keys;
 pub mod tauri_impl;
 

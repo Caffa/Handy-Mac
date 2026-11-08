@@ -67,6 +67,22 @@ fn should_rebuild_standing_stream(elapsed_ms: u64, recording: bool) -> bool {
     elapsed_ms >= STANDING_REBUILD_MIN_INTERVAL_MS
 }
 
+/// Armed-recording zero-RMS abort: an armed recording that has run this long
+/// with max-RMS still at digital silence is dead regardless of chunk
+/// heartbeats (a zombie standing stream keeps *delivering* silence after a
+/// dock power-loss re-enumeration, so recency-based liveness stays green).
+const ZERO_SAMPLE_ABORT_MS: u64 = 2500;
+/// Digital-silence RMS ceiling for the abort predicate. Room tone is
+/// ~0.001 (−60 dBFS); only true digital silence proves the device is not
+/// delivering real samples.
+const ZERO_SAMPLE_MAX_RMS: f32 = 1e-6;
+
+/// Pure predicate: an armed recording is dead when it has run at least
+/// `ZERO_SAMPLE_ABORT_MS` with max-RMS still at digital silence.
+fn should_abort_dead_recording(armed: bool, elapsed_ms: u64, max_level: f32) -> bool {
+    armed && elapsed_ms >= ZERO_SAMPLE_ABORT_MS && max_level <= ZERO_SAMPLE_MAX_RMS
+}
+
 fn set_mute(mute: bool) {
     // Expected behavior:
     // - Windows: works on most systems using standard audio drivers.
@@ -1045,6 +1061,151 @@ impl AudioRecordingManager {
                                     &Some(app_handle.clone()),
                                     "usb-power-cycle-finished",
                                     "Stream recovered successfully",
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // ── Zero-RMS dead-recording abort ────────────────────────
+                // A zombie standing stream can keep *delivering* digitally
+                // silent chunks (dock power-loss re-enumeration), so chunk
+                // recency stays green while an armed recording captures
+                // nothing. An armed recording past ZERO_SAMPLE_ABORT_MS with
+                // max-RMS at digital silence is dead regardless of
+                // heartbeats: abort it, finalize the session, rebuild the
+                // stream, and retry once (Toggle only).
+                let armed = capture.armed.load(Ordering::Acquire);
+                if armed {
+                    let armed_at = capture.armed_at_ms.load(Ordering::Acquire);
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let armed_elapsed_ms = now_ms.saturating_sub(armed_at);
+                    let max_level = capture.get_max_level();
+
+                    // Race guard: re-read armed + armed_at before acting so a
+                    // recording the user already stopped (or a newer
+                    // recording that re-stamped armed_at_ms) is not aborted.
+                    if should_abort_dead_recording(armed, armed_elapsed_ms, max_level)
+                        && capture.armed.load(Ordering::Acquire)
+                        && capture.armed_at_ms.load(Ordering::Acquire) == armed_at
+                    {
+                        warn!(
+                            "Liveness monitor: armed recording captured only digital silence for {}ms (max_rms {:.2e}) — aborting dead recording",
+                            armed_elapsed_ms, max_level
+                        );
+                        logging::emit(logging::AppEvent::WakeRecovery {
+                            stage: "zero_sample_abort".to_string(),
+                            reason: format!("{}ms armed, max_rms {}", armed_elapsed_ms, max_level),
+                            device_seen_secs: None,
+                        });
+
+                        // Capture the binding before cancel resets the
+                        // coordinator to Idle, so the retry reuses the same
+                        // hotkey the user pressed.
+                        let binding_id = app_handle
+                            .try_state::<crate::TranscriptionCoordinator>()
+                            .map(|c| c.get_state())
+                            .and_then(|state| match state {
+                                crate::transcription_coordinator::AppState::Recording {
+                                    binding_id,
+                                    ..
+                                } => Some(binding_id),
+                                _ => None,
+                            });
+
+                        // Count the dead recording with the watchdog (may
+                        // cycle per the existing gates: threshold, bypass,
+                        // cooldown, cycling guard).
+                        usb_watchdog.on_recording_finished(0, armed_elapsed_ms as f32 / 1000.0);
+
+                        // Cancel finalizes the tracker session (Step's
+                        // fail_session) and hides the overlay. The monitor
+                        // thread holds no manager locks at this point, so
+                        // this cannot deadlock with cancel's lock
+                        // acquisitions.
+                        crate::utils::cancel_current_operation(&app_handle);
+
+                        // Rebuild the stream on the (likely re-enumerated)
+                        // device, then auto-retry once (Toggle only) so the
+                        // user does not have to press again.
+                        let rebuilt = app_handle
+                            .try_state::<Arc<AudioRecordingManager>>()
+                            .map(|rm| rm.restart_microphone_if_needed())
+                            .unwrap_or_else(|| {
+                                Err(anyhow::anyhow!("AudioRecordingManager not available"))
+                            });
+
+                        let settings = get_settings(&app_handle);
+                        let binding = binding_id.unwrap_or_else(|| "transcribe".to_string());
+                        let hotkey = settings
+                            .bindings
+                            .get(&binding)
+                            .map(|b| b.current_binding.clone())
+                            .filter(|h| !h.is_empty());
+
+                        match rebuilt {
+                            Ok(())
+                                if settings.shortcut_activation
+                                    == crate::settings::ShortcutActivation::Toggle =>
+                            {
+                                if let Some(hotkey) = hotkey {
+                                    logging::emit(logging::AppEvent::WakeRecovery {
+                                        stage: "retry_started".to_string(),
+                                        reason: format!(
+                                            "rebuilt stream, retrying binding '{}'",
+                                            binding
+                                        ),
+                                        device_seen_secs: None,
+                                    });
+                                    info!(
+                                        "Liveness monitor: retrying recording via synthetic press on '{}'",
+                                        binding
+                                    );
+                                    // NEVER inline on this thread:
+                                    // handle_shortcut_event can block on the
+                                    // coordinator channel and keyboard loops
+                                    // (2026-10-17 lesson).
+                                    let ah = app_handle.clone();
+                                    tauri::async_runtime::spawn_blocking(move || {
+                                        crate::shortcut::handler::handle_shortcut_event(
+                                            &ah, &binding, &hotkey, true,
+                                        );
+                                    });
+                                } else {
+                                    warn!(
+                                        "Liveness monitor: no hotkey bound to '{}' — cannot auto-retry",
+                                        binding
+                                    );
+                                    crate::actions::router::send_macos_notification(
+                                        &app_handle,
+                                        "Handy",
+                                        "Microphone did not recover — press to try again",
+                                    );
+                                }
+                            }
+                            Ok(()) => {
+                                // PushToTalk / HoldOrToggle: a synthetic
+                                // press cannot drive a hold, so notify only.
+                                crate::actions::router::send_macos_notification(
+                                    &app_handle,
+                                    "Handy",
+                                    "Microphone did not recover — press to try again",
+                                );
+                            }
+                            Err(e) => {
+                                logging::emit(logging::AppEvent::WakeRecovery {
+                                    stage: "retry_failed".to_string(),
+                                    reason: format!("stream rebuild failed: {}", e),
+                                    device_seen_secs: None,
+                                });
+                                error!("Liveness monitor: post-abort stream rebuild failed: {}", e);
+                                crate::actions::router::send_macos_notification(
+                                    &app_handle,
+                                    "Handy",
+                                    "Microphone did not recover — press to try again",
                                 );
                             }
                         }
@@ -2797,6 +2958,38 @@ mod tests {
         // First ever rebuild (epoch 0 baseline): elapsed == now, always large
         // enough.
         assert!(should_rebuild_standing_stream(20_000, false));
+    }
+
+    #[test]
+    fn zero_sample_abort_predicate() {
+        // Not armed: never abort.
+        assert!(!should_abort_dead_recording(false, 60_000, 0.0));
+
+        // Armed but below the elapsed threshold: no abort (covers every
+        // normal short recording, silent or not).
+        assert!(!should_abort_dead_recording(
+            true,
+            ZERO_SAMPLE_ABORT_MS - 1,
+            0.0
+        ));
+
+        // Armed and elapsed, but real audio captured (room tone ~0.001,
+        // speech louder): no abort.
+        assert!(!should_abort_dead_recording(true, 60_000, 0.001));
+        assert!(!should_abort_dead_recording(true, 60_000, 0.5));
+
+        // Armed, elapsed, digital silence only: abort.
+        assert!(should_abort_dead_recording(true, ZERO_SAMPLE_ABORT_MS, 0.0));
+        assert!(should_abort_dead_recording(
+            true,
+            60_000,
+            ZERO_SAMPLE_MAX_RMS
+        ));
+        assert!(!should_abort_dead_recording(
+            true,
+            60_000,
+            ZERO_SAMPLE_MAX_RMS * 1.1
+        ));
     }
 }
 
