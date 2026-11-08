@@ -1432,7 +1432,11 @@ impl AudioRecordingManager {
     fn stop_device_monitor(&self) {
         // Drop the sender to signal the thread to stop
         *self.device_monitor_stop.lock() = None;
-        if let Some(handle) = self.device_monitor.lock().take() {
+        // Bind the handle out of the mutex FIRST, then join: keeping the
+        // parking_lot guard alive across join() blocks any other thread
+        // touching this mutex for the whole (bounded but real) join.
+        let handle = self.device_monitor.lock().take();
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
     }
@@ -3025,7 +3029,10 @@ impl Drop for AudioRecordingManager {
         info!("AudioRecordingManager dropping — stopping background threads");
         self.stop_device_monitor();
         self.liveness_stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.liveness_monitor.lock().take() {
+        // Bind the handle out of the mutex first, then join — no guard held
+        // across the join (same pattern as stop_device_monitor).
+        let handle = self.liveness_monitor.lock().take();
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
     }
