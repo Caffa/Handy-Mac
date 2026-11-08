@@ -213,61 +213,51 @@ impl SessionTracker {
 
     /// Mark the session as done (text pasted successfully).
     pub fn finish_session(&self, sid: &SessionId, paste_duration_ms: u64) {
-        let session = self.current.lock().take();
-        if let Some(session) = session {
-            if session.id != *sid {
-                // Put it back
-                *self.current.lock() = Some(session);
-                return;
-            }
-            logging::emit(AppEvent::PasteSucceeded {
-                sid: sid.clone(),
-                duration_ms: paste_duration_ms,
-            });
-            self.finalise_session(session, true);
-        }
+        let Some(session) = self.take_if_current(sid) else {
+            return;
+        };
+        logging::emit(AppEvent::PasteSucceeded {
+            sid: sid.clone(),
+            duration_ms: paste_duration_ms,
+        });
+        self.finalise_session(session, true);
     }
 
     /// Mark the session as failed — e.g. transcription error or paste failure.
     pub fn fail_session(&self, sid: &SessionId, error: &str) {
-        let session = self.current.lock().take();
-        if let Some(mut session) = session {
-            if session.id != *sid {
-                // Put it back — different session
-                *self.current.lock() = Some(session);
-                return;
-            }
-            session.errors.push(error.to_string());
+        let Some(mut session) = self.take_if_current(sid) else {
+            return;
+        };
+        session.errors.push(error.to_string());
 
-            // Emit the appropriate failure event based on phase
-            match session.phase {
-                SessionPhase::Recording => {
-                    logging::emit(AppEvent::RecordingFailed {
-                        sid: sid.clone(),
-                        error: error.to_string(),
-                        error_type: "recording".to_string(),
-                    });
-                }
-                SessionPhase::Transcribing => {
-                    let model_id = session.model_id.clone().unwrap_or_default();
-                    logging::emit(AppEvent::TranscriptionFailed {
-                        sid: sid.clone(),
-                        model_id,
-                        error: error.to_string(),
-                        duration_ms: session.phase_started_at.elapsed().as_millis() as u64,
-                    });
-                }
-                SessionPhase::Pasting => {
-                    logging::emit(AppEvent::PasteFailed {
-                        sid: sid.clone(),
-                        error: error.to_string(),
-                    });
-                }
-                _ => {}
+        // Emit the appropriate failure event based on phase
+        match session.phase {
+            SessionPhase::Recording => {
+                logging::emit(AppEvent::RecordingFailed {
+                    sid: sid.clone(),
+                    error: error.to_string(),
+                    error_type: "recording".to_string(),
+                });
             }
-
-            self.finalise_session(session, false);
+            SessionPhase::Transcribing => {
+                let model_id = session.model_id.clone().unwrap_or_default();
+                logging::emit(AppEvent::TranscriptionFailed {
+                    sid: sid.clone(),
+                    model_id,
+                    error: error.to_string(),
+                    duration_ms: session.phase_started_at.elapsed().as_millis() as u64,
+                });
+            }
+            SessionPhase::Pasting => {
+                logging::emit(AppEvent::PasteFailed {
+                    sid: sid.clone(),
+                    error: error.to_string(),
+                });
+            }
+            _ => {}
         }
+
+        self.finalise_session(session, false);
     }
 
     /// Record a post-processing failure.
@@ -340,6 +330,22 @@ impl SessionTracker {
     }
 
     // ── Internal ───────────────────────────────────────────────────
+
+    /// Take the active session if it matches `sid`, atomically: one guard
+    /// acquisition covers take, compare, and put-back, so a concurrent
+    /// `start_session` landing in the gap cannot be overwritten by the
+    /// restore. Returns `None` (leaving the slot untouched) on mismatch or
+    /// when no session is active.
+    fn take_if_current(&self, sid: &SessionId) -> Option<ActiveSession> {
+        let mut guard = self.current.lock();
+        match guard.take() {
+            Some(session) if session.id == *sid => Some(session),
+            other => {
+                *guard = other;
+                None
+            }
+        }
+    }
 
     /// Convert an ActiveSession into a SessionSummary and add it to the
     /// history ring buffer.
@@ -427,6 +433,29 @@ mod tests {
             history[0].errors,
             vec!["first failure".to_string()],
             "second fail must not mutate the finalized session"
+        );
+    }
+
+    #[test]
+    fn mismatched_session_id_leaves_session_active() {
+        let tracker = SessionTracker::new();
+        let sid = tracker.start_session("Test Mic", false);
+        // Deterministically different from sid (new_session_id has only
+        // millisecond precision, so a second generated id could collide).
+        let bogus = format!("{}-bogus", sid);
+        assert_ne!(bogus, sid);
+
+        tracker.fail_session(&bogus, "wrong session");
+        tracker.finish_session(&bogus, 0);
+
+        assert_eq!(
+            tracker.current_session_id(),
+            Some(sid),
+            "mismatched sid must put the active session back untouched"
+        );
+        assert!(
+            tracker.get_recent_sessions(10).is_empty(),
+            "no history entry may be recorded for a mismatched sid"
         );
     }
 }

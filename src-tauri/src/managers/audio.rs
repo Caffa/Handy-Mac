@@ -561,7 +561,9 @@ impl RecordingReadiness {
     }
 }
 
-#[derive(Clone)]
+/// Not `Clone` on purpose: a by-value clone moved into a thread would run the
+/// full `Drop` when the thread ends (killing the device/liveness monitors).
+/// Share via `Arc<AudioRecordingManager>` — Arc clones never run `Drop`.
 pub struct AudioRecordingManager {
     /// Never assign through this directly — route every write through
     /// `set_state()`, which keeps `recording_active` in sync.
@@ -1327,7 +1329,10 @@ impl AudioRecordingManager {
     #[allow(dead_code)]
     fn stop_liveness_monitor(&self) {
         self.liveness_stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.liveness_monitor.lock().take() {
+        // Bind the handle out of the mutex first, then join — no guard held
+        // across the join (same pattern as stop_device_monitor).
+        let handle = self.liveness_monitor.lock().take();
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
     }
