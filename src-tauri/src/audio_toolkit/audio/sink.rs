@@ -135,6 +135,12 @@ pub struct CaptureControl {
     pub last_chunk_ms: AtomicU64,
     /// Max RMS·1_000_000 seen while armed (dead-mic detection).
     pub max_level: AtomicU32,
+    /// Max RMS·1_000_000 delivered while NOT armed (the standing window
+    /// leading up to the current recording). Reset to zero on disarm so each
+    /// standing window accumulates fresh; zero at abort-check time means the
+    /// stream was already silent before arming (muted mic) — a rebuild
+    /// cannot fix that, so the dead-recording abort must not fire.
+    pub pre_arm_max_rms: AtomicU32,
     /// VAD-speech frame count of the current recording (batch gate). Reset to
     /// zero on every noise frame, so the gate counts *consecutive* speech.
     pub speech_frames: AtomicU32,
@@ -171,6 +177,7 @@ impl CaptureControl {
             processed: Mutex::new(Vec::new()),
             last_chunk_ms: AtomicU64::new(0),
             max_level: AtomicU32::new(0),
+            pre_arm_max_rms: AtomicU32::new(0),
             speech_frames: AtomicU32::new(0),
             last_voice_activity_ms: AtomicU64::new(0),
             noise_floor: Mutex::new(DEFAULT_NOISE_FLOOR),
@@ -210,11 +217,21 @@ impl CaptureControl {
     pub fn disarm(&self) {
         self.armed.store(false, Ordering::Release);
         self.trailing.store(false, Ordering::Release);
+        // Fresh accumulation for the next standing window: the pre-arm peak
+        // must describe the window leading up to the NEXT recording.
+        self.pre_arm_max_rms.store(0, Ordering::Relaxed);
     }
 
     /// Max RMS seen while armed, normalized to f32 sample units.
     pub fn get_max_level(&self) -> f32 {
         self.max_level.load(Ordering::Relaxed) as f32 / 1_000_000.0
+    }
+
+    /// Max RMS delivered while NOT armed (standing window before the current
+    /// recording), normalized to f32 sample units. Zero means the stream was
+    /// already silent before arming.
+    pub fn pre_arm_max_rms(&self) -> f32 {
+        self.pre_arm_max_rms.load(Ordering::Relaxed) as f32 / 1_000_000.0
     }
 
     /// Epoch ms of the last delivered chunk, for liveness checks.
@@ -256,6 +273,19 @@ fn compute_rms(samples: &[f32]) -> f32 {
     }
     let sum: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
     (sum / samples.len() as f64).sqrt() as f32
+}
+
+/// CAS-max a scaled RMS into an AtomicU32 peak holder (same lock-free
+/// pattern the armed path uses for `max_level`).
+fn update_peak_rms(peak: &AtomicU32, rms: f32) {
+    let scaled = (rms * 1_000_000.0) as u32;
+    let mut current = peak.load(Ordering::Relaxed);
+    while scaled > current {
+        match peak.compare_exchange_weak(current, scaled, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// Everything a recording's sink needs beyond the borrowed detector. Built by
@@ -470,6 +500,12 @@ impl Sink for CaptureSink {
 
         if !armed {
             // ── Standing path ────────────────────────────────────────────
+            // Track what the stream is actually delivering while standing:
+            // the dead-recording abort must tell a zombie (was delivering,
+            // went digital-zero on arm) apart from a muted mic (silent
+            // before AND after arming).
+            update_peak_rms(&control.pre_arm_max_rms, compute_rms(real));
+
             // Maintain the rolling pre-hotkey buffer, and — when the batch
             // live-captions fallback is the active caption path (no
             // dedicated model) — keep VAD so post-VAD slices keep flowing.

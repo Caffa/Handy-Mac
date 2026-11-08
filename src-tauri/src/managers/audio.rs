@@ -78,9 +78,29 @@ const ZERO_SAMPLE_ABORT_MS: u64 = 2500;
 const ZERO_SAMPLE_MAX_RMS: f32 = 1e-6;
 
 /// Pure predicate: an armed recording is dead when it has run at least
-/// `ZERO_SAMPLE_ABORT_MS` with max-RMS still at digital silence.
-fn should_abort_dead_recording(armed: bool, elapsed_ms: u64, max_level: f32) -> bool {
-    armed && elapsed_ms >= ZERO_SAMPLE_ABORT_MS && max_level <= ZERO_SAMPLE_MAX_RMS
+/// `ZERO_SAMPLE_ABORT_MS` with max-RMS still at digital silence AND the
+/// stream was delivering nonzero RMS before arming. The pre-arm gate is the
+/// zombie signature ("was delivering, went digital-zero on arm"); a mic that
+/// was silent before arming too (hardware-muted / dead since boot) is not
+/// fixed by a rebuild, so no abort — the recording runs and the existing
+/// stop path reports 0 samples.
+fn should_abort_dead_recording(
+    armed: bool,
+    elapsed_ms: u64,
+    max_level: f32,
+    pre_arm_max_rms: f32,
+) -> bool {
+    armed
+        && elapsed_ms >= ZERO_SAMPLE_ABORT_MS
+        && max_level <= ZERO_SAMPLE_MAX_RMS
+        && pre_arm_max_rms > ZERO_SAMPLE_MAX_RMS
+}
+
+/// Pure decision for the bounded auto-retry: the one-shot budget must be
+/// available AND the coordinator must be Idle (a user re-press during the
+/// watchdog accounting window may have already started a new recording).
+fn retry_decision(budget_available: bool, coordinator_idle: bool) -> bool {
+    budget_available && coordinator_idle
 }
 
 fn set_mute(mute: bool) {
@@ -628,6 +648,11 @@ pub struct AudioRecordingManager {
     /// device-list change (rate limit: one rebuild per
     /// `STANDING_REBUILD_MIN_INTERVAL_MS`).
     last_standing_rebuild_epoch: Arc<AtomicU64>,
+    /// One-shot auto-retry budget for the zero-RMS abort's synthetic press.
+    /// Set when a recording actually delivers samples (stop path, or the
+    /// monitor observing a delivering armed recording); consumed by exactly
+    /// one synthetic press so a still-dead stream cannot loop retries.
+    auto_retry_allowed: Arc<AtomicBool>,
 }
 
 // Helper types for microphone resolution live in the parent module so that
@@ -861,6 +886,7 @@ impl AudioRecordingManager {
             prev_input_devices: Arc::new(Mutex::new(Vec::new())),
             prev_output_devices: Arc::new(Mutex::new(Vec::new())),
             last_standing_rebuild_epoch: Arc::new(AtomicU64::new(0)),
+            auto_retry_allowed: Arc::new(AtomicBool::new(false)),
         };
 
         // Check for Bluetooth output devices — if detected, keep the mic
@@ -1097,10 +1123,20 @@ impl AudioRecordingManager {
                     let armed_elapsed_ms = now_ms.saturating_sub(armed_at);
                     let max_level = capture.get_max_level();
 
+                    // An armed recording that is actually delivering re-arms
+                    // the one-shot auto-retry budget (covers the
+                    // mid-recording dock power-loss case).
+                    if max_level > ZERO_SAMPLE_MAX_RMS {
+                        if let Some(rm) = app_handle.try_state::<Arc<AudioRecordingManager>>() {
+                            rm.auto_retry_allowed.store(true, Ordering::Release);
+                        }
+                    }
+                    let pre_arm_rms = capture.pre_arm_max_rms();
+
                     // Race guard: re-read armed + armed_at before acting so a
                     // recording the user already stopped (or a newer
                     // recording that re-stamped armed_at_ms) is not aborted.
-                    if should_abort_dead_recording(armed, armed_elapsed_ms, max_level)
+                    if should_abort_dead_recording(armed, armed_elapsed_ms, max_level, pre_arm_rms)
                         && capture.armed.load(Ordering::Acquire)
                         && capture.armed_at_ms.load(Ordering::Acquire) == armed_at
                     {
@@ -1190,7 +1226,23 @@ impl AudioRecordingManager {
                                                 )
                                             })
                                             .unwrap_or(false);
-                                        if coordinator_idle {
+                                        // One-shot budget: only a recording
+                                        // that delivered samples re-arms it,
+                                        // so a still-dead stream cannot loop
+                                        // synthetic presses.
+                                        let budget_available = app_handle
+                                            .try_state::<Arc<AudioRecordingManager>>()
+                                            .map(|rm| rm.auto_retry_allowed.load(Ordering::Acquire))
+                                            .unwrap_or(false);
+                                        if retry_decision(budget_available, coordinator_idle) {
+                                            // Consume the budget only when the
+                                            // press actually dispatches.
+                                            if let Some(rm) =
+                                                app_handle.try_state::<Arc<AudioRecordingManager>>()
+                                            {
+                                                rm.auto_retry_allowed
+                                                    .store(false, Ordering::Release);
+                                            }
                                             logging::emit(logging::AppEvent::WakeRecovery {
                                                 stage: "retry_started".to_string(),
                                                 reason: format!(
@@ -1215,7 +1267,7 @@ impl AudioRecordingManager {
                                             });
                                         } else {
                                             warn!(
-                                                "Liveness monitor: coordinator not Idle — skipping synthetic press"
+                                                "Liveness monitor: auto-retry budget unavailable or coordinator busy — notifying instead"
                                             );
                                             crate::actions::router::send_macos_notification(
                                                 &app_handle,
@@ -2556,6 +2608,12 @@ impl AudioRecordingManager {
                 } else {
                     // Normal path: inform USB watchdog about recording result.
                     // If 0 samples were captured, this may trigger an automatic USB cycle.
+                    if !processed_samples.is_empty() {
+                        // A recording that delivered samples re-arms the
+                        // one-shot auto-retry budget consumed by the
+                        // zero-RMS abort's synthetic press.
+                        self.auto_retry_allowed.store(true, Ordering::Release);
+                    }
                     if self
                         .usb_watchdog
                         .on_recording_finished(processed_samples.len(), recording_duration)
@@ -3035,33 +3093,64 @@ mod tests {
     #[test]
     fn zero_sample_abort_predicate() {
         // Not armed: never abort.
-        assert!(!should_abort_dead_recording(false, 60_000, 0.0));
+        assert!(!should_abort_dead_recording(false, 60_000, 0.0, 0.001));
 
         // Armed but below the elapsed threshold: no abort (covers every
         // normal short recording, silent or not).
         assert!(!should_abort_dead_recording(
             true,
             ZERO_SAMPLE_ABORT_MS - 1,
-            0.0
+            0.0,
+            0.001
         ));
 
         // Armed and elapsed, but real audio captured (room tone ~0.001,
         // speech louder): no abort.
-        assert!(!should_abort_dead_recording(true, 60_000, 0.001));
-        assert!(!should_abort_dead_recording(true, 60_000, 0.5));
+        assert!(!should_abort_dead_recording(true, 60_000, 0.001, 0.001));
+        assert!(!should_abort_dead_recording(true, 60_000, 0.5, 0.001));
 
-        // Armed, elapsed, digital silence only: abort.
-        assert!(should_abort_dead_recording(true, ZERO_SAMPLE_ABORT_MS, 0.0));
+        // Pre-arm silent (muted mic / dead since boot): no abort even with
+        // in-arm digital silence — a rebuild cannot fix it. (FIX 5 gate.)
+        assert!(!should_abort_dead_recording(true, 60_000, 0.0, 0.0));
+        assert!(!should_abort_dead_recording(
+            true,
+            60_000,
+            0.0,
+            ZERO_SAMPLE_MAX_RMS
+        ));
+
+        // Armed, elapsed, digital silence in-arm, stream WAS delivering
+        // before arming (zombie signature): abort.
+        assert!(should_abort_dead_recording(
+            true,
+            ZERO_SAMPLE_ABORT_MS,
+            0.0,
+            0.001
+        ));
         assert!(should_abort_dead_recording(
             true,
             60_000,
-            ZERO_SAMPLE_MAX_RMS
+            ZERO_SAMPLE_MAX_RMS,
+            ZERO_SAMPLE_MAX_RMS * 1.1
         ));
         assert!(!should_abort_dead_recording(
             true,
             60_000,
-            ZERO_SAMPLE_MAX_RMS * 1.1
+            ZERO_SAMPLE_MAX_RMS * 1.1,
+            0.001
         ));
+    }
+
+    #[test]
+    fn auto_retry_budget_decision() {
+        // Budget available + coordinator idle: press allowed.
+        assert!(retry_decision(true, true));
+        // Budget already consumed: no second press.
+        assert!(!retry_decision(false, true));
+        // Coordinator busy (a user re-press already started a recording):
+        // never dispatch a synthetic press.
+        assert!(!retry_decision(true, false));
+        assert!(!retry_decision(false, false));
     }
 }
 
