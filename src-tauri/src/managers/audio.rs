@@ -1128,68 +1128,131 @@ impl AudioRecordingManager {
                                 _ => None,
                             });
 
-                        // Count the dead recording with the watchdog (may
-                        // cycle per the existing gates: threshold, bypass,
-                        // cooldown, cycling guard).
-                        usb_watchdog.on_recording_finished(0, armed_elapsed_ms as f32 / 1000.0);
+                        // Final revalidation immediately before cancelling: a
+                        // user stop (or a newer recording) that landed since
+                        // the predicate read must not be clobbered by this
+                        // stale abort.
+                        let still_armed = capture.armed.load(Ordering::Acquire)
+                            && capture.armed_at_ms.load(Ordering::Acquire) == armed_at;
+                        if !still_armed {
+                            debug!("Liveness monitor: recording ended before abort — skipping");
+                        } else {
+                            // Cancel FIRST: this is what un-arms the capture
+                            // and hides the overlay. Watchdog accounting goes
+                            // after because it can block 6-15s in a power
+                            // cycle; a user stop + re-press during that window
+                            // must not be cancelled by a stale abort. The
+                            // monitor thread holds no manager locks here, so
+                            // this cannot deadlock with cancel's lock
+                            // acquisitions.
+                            crate::utils::cancel_current_operation(&app_handle);
 
-                        // Cancel finalizes the tracker session (Step's
-                        // fail_session) and hides the overlay. The monitor
-                        // thread holds no manager locks at this point, so
-                        // this cannot deadlock with cancel's lock
-                        // acquisitions.
-                        crate::utils::cancel_current_operation(&app_handle);
+                            // THEN count the dead recording with the watchdog
+                            // (may cycle per the existing gates: threshold,
+                            // bypass, cooldown, cycling guard).
+                            usb_watchdog.on_recording_finished(0, armed_elapsed_ms as f32 / 1000.0);
 
-                        // Rebuild the stream on the (likely re-enumerated)
-                        // device, then auto-retry once (Toggle only) so the
-                        // user does not have to press again.
-                        let rebuilt = app_handle
-                            .try_state::<Arc<AudioRecordingManager>>()
-                            .map(|rm| rm.restart_microphone_if_needed())
-                            .unwrap_or_else(|| {
-                                Err(anyhow::anyhow!("AudioRecordingManager not available"))
-                            });
+                            // Rebuild the stream on the (likely re-enumerated)
+                            // device, then auto-retry once (Toggle only) so the
+                            // user does not have to press again.
+                            let rebuilt = app_handle
+                                .try_state::<Arc<AudioRecordingManager>>()
+                                .map(|rm| rm.restart_microphone_if_needed())
+                                .unwrap_or_else(|| {
+                                    Err(anyhow::anyhow!("AudioRecordingManager not available"))
+                                });
 
-                        let settings = get_settings(&app_handle);
-                        let binding = binding_id.unwrap_or_else(|| "transcribe".to_string());
-                        let hotkey = settings
-                            .bindings
-                            .get(&binding)
-                            .map(|b| b.current_binding.clone())
-                            .filter(|h| !h.is_empty());
+                            let settings = get_settings(&app_handle);
+                            let binding = binding_id.unwrap_or_else(|| "transcribe".to_string());
+                            let hotkey = settings
+                                .bindings
+                                .get(&binding)
+                                .map(|b| b.current_binding.clone())
+                                .filter(|h| !h.is_empty());
 
-                        match rebuilt {
-                            Ok(())
-                                if settings.shortcut_activation
-                                    == crate::settings::ShortcutActivation::Toggle =>
-                            {
-                                if let Some(hotkey) = hotkey {
-                                    logging::emit(logging::AppEvent::WakeRecovery {
-                                        stage: "retry_started".to_string(),
-                                        reason: format!(
-                                            "rebuilt stream, retrying binding '{}'",
+                            match rebuilt {
+                                Ok(())
+                                    if settings.shortcut_activation
+                                        == crate::settings::ShortcutActivation::Toggle =>
+                                {
+                                    if let Some(hotkey) = hotkey {
+                                        // Re-check the coordinator is Idle
+                                        // immediately before dispatching: a
+                                        // user re-press during the watchdog
+                                        // accounting window may have already
+                                        // started a new recording.
+                                        let coordinator_idle = app_handle
+                                            .try_state::<crate::TranscriptionCoordinator>()
+                                            .map(|c| {
+                                                matches!(
+                                                    c.get_state(),
+                                                    crate::transcription_coordinator::AppState::Idle { .. }
+                                                )
+                                            })
+                                            .unwrap_or(false);
+                                        if coordinator_idle {
+                                            logging::emit(logging::AppEvent::WakeRecovery {
+                                                stage: "retry_started".to_string(),
+                                                reason: format!(
+                                                    "rebuilt stream, retrying binding '{}'",
+                                                    binding
+                                                ),
+                                                device_seen_secs: None,
+                                            });
+                                            info!(
+                                                "Liveness monitor: retrying recording via synthetic press on '{}'",
+                                                binding
+                                            );
+                                            // NEVER inline on this thread:
+                                            // handle_shortcut_event can block on the
+                                            // coordinator channel and keyboard loops
+                                            // (2026-10-17 lesson).
+                                            let ah = app_handle.clone();
+                                            tauri::async_runtime::spawn_blocking(move || {
+                                                crate::shortcut::handler::handle_shortcut_event(
+                                                    &ah, &binding, &hotkey, true,
+                                                );
+                                            });
+                                        } else {
+                                            warn!(
+                                                "Liveness monitor: coordinator not Idle — skipping synthetic press"
+                                            );
+                                            crate::actions::router::send_macos_notification(
+                                                &app_handle,
+                                                "Handy",
+                                                "Microphone did not recover — press to try again",
+                                            );
+                                        }
+                                    } else {
+                                        warn!(
+                                            "Liveness monitor: no hotkey bound to '{}' — cannot auto-retry",
                                             binding
-                                        ),
+                                        );
+                                        crate::actions::router::send_macos_notification(
+                                            &app_handle,
+                                            "Handy",
+                                            "Microphone did not recover — press to try again",
+                                        );
+                                    }
+                                }
+                                Ok(()) => {
+                                    // PushToTalk / HoldOrToggle: a synthetic
+                                    // press cannot drive a hold, so notify only.
+                                    crate::actions::router::send_macos_notification(
+                                        &app_handle,
+                                        "Handy",
+                                        "Microphone did not recover — press to try again",
+                                    );
+                                }
+                                Err(e) => {
+                                    logging::emit(logging::AppEvent::WakeRecovery {
+                                        stage: "retry_failed".to_string(),
+                                        reason: format!("stream rebuild failed: {}", e),
                                         device_seen_secs: None,
                                     });
-                                    info!(
-                                        "Liveness monitor: retrying recording via synthetic press on '{}'",
-                                        binding
-                                    );
-                                    // NEVER inline on this thread:
-                                    // handle_shortcut_event can block on the
-                                    // coordinator channel and keyboard loops
-                                    // (2026-10-17 lesson).
-                                    let ah = app_handle.clone();
-                                    tauri::async_runtime::spawn_blocking(move || {
-                                        crate::shortcut::handler::handle_shortcut_event(
-                                            &ah, &binding, &hotkey, true,
-                                        );
-                                    });
-                                } else {
-                                    warn!(
-                                        "Liveness monitor: no hotkey bound to '{}' — cannot auto-retry",
-                                        binding
+                                    error!(
+                                        "Liveness monitor: post-abort stream rebuild failed: {}",
+                                        e
                                     );
                                     crate::actions::router::send_macos_notification(
                                         &app_handle,
@@ -1197,28 +1260,6 @@ impl AudioRecordingManager {
                                         "Microphone did not recover — press to try again",
                                     );
                                 }
-                            }
-                            Ok(()) => {
-                                // PushToTalk / HoldOrToggle: a synthetic
-                                // press cannot drive a hold, so notify only.
-                                crate::actions::router::send_macos_notification(
-                                    &app_handle,
-                                    "Handy",
-                                    "Microphone did not recover — press to try again",
-                                );
-                            }
-                            Err(e) => {
-                                logging::emit(logging::AppEvent::WakeRecovery {
-                                    stage: "retry_failed".to_string(),
-                                    reason: format!("stream rebuild failed: {}", e),
-                                    device_seen_secs: None,
-                                });
-                                error!("Liveness monitor: post-abort stream rebuild failed: {}", e);
-                                crate::actions::router::send_macos_notification(
-                                    &app_handle,
-                                    "Handy",
-                                    "Microphone did not recover — press to try again",
-                                );
                             }
                         }
                     }
