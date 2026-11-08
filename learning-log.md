@@ -1,5 +1,39 @@
 # Handy-Fork Learning Log
 
+## Dock-flap digital-zero recordings defeated every watchdog duration gate (2026-11-09)
+
+### Problem
+
+Dock USB flap at wake → the RØDE stays enumerated and "delivering" but sends EXACT DIGITAL ZEROS. Fresh stream opens do NOT fix the hardware — only a USB hub port power cycle does (verified: manual uhubctl cycle restored signal; Nov 4 auto-cycles fixed identical silence). The user's short post-flap presses (0.3–2.9s) were ALL declined by the watchdog's 10s duration gates — `silent transcription ignored (duration X < 10.0s)` / `low audio level ignored` — so zero cycles fired despite `usb_watchdog_enabled=true`.
+
+### Root Causes
+
+1. **Exact zeros conflated with ambiguous low audio.** Both went through the same `max_level < NO_AUDIO_THRESHOLD` arm and inherited the 10s gate, but exact zeros are unambiguous dead signal — duration is irrelevant evidence-wise.
+2. **Screens-wake bypass required literal device absence.** `on_screens_wake` only arms when `device_present_in_usb_tree` is false; the flap re-enumerates the tree in ~2.3s, so by the time the observer checked, the device was present and nothing armed.
+3. **Zero-RMS abort refused the flap case.** The pre-arm-silent gate (muted-mic protection) requires a nonzero pre-arm window, but after a flap the stream is silent from the start — no window to observe.
+4. **`last_standing_rebuild_epoch` initialized to 0** produced a garbage "idle 1794159154121ms" elapsed in the first device-list rebuild log.
+
+### Fixes (all `src-tauri/src`)
+
+1. **`managers/audio.rs`** — `last_standing_rebuild_epoch` stamps `epoch_ms()` at construction (new small `epoch_ms()` helper); `ZERO_SAMPLE_MAX_RMS` made `pub` as the single shared constant.
+2. **`usb_watchdog.rs`** — new `on_digital_silence(duration_secs, max_rms)`: one evidence `warn!` then `on_mic_open_failed()`, deliberately with NO duration/enabled/cycling/grace gates (the absence of a duration gate is the point). `on_recording_finished(sample_count, duration, max_level)` now resets only on `sample_count > 0 && max_level > ZERO_SAMPLE_MAX_RMS` — n>0-but-zeros counts as dead.
+3. **`managers/audio.rs`** (`collect_recording` accounting) — three mutually exclusive arms: exact zeros → `on_digital_silence` + `restart_microphone_if_needed` + native "Microphone delivered no signal — USB port cycled" notification on cycle; low-but-nonzero → existing `on_low_audio_level` 10s gate unchanged; else → `on_recording_finished(len, dur, max_level)`.
+4. **`managers/audio.rs`** (`start_device_monitor`) — new `last_input_change_epoch_ms` stamped on every input diff (before all gating) + `last_flap_bypass_arm_epoch_ms`; when the watchdog settings gate passes and `should_arm_flap_bypass` allows (one arm per 60s), arms a 180s one-shot bypass via new `UsbWatchdog::arm_wake_bypass_quiet` and emits one distinguishable `WakeRecovery { stage: "device_flap_bypass_armed" }` (no double generic event). Pure predicates `device_change_recent` / `should_arm_flap_bypass` unit-tested.
+5. **`managers/audio.rs`** (`start_liveness_monitor`) — `should_abort_dead_recording` gains `device_changed_recently`: within the 120s `DEVICE_FLAP_RECENT_WINDOW_MS` of a stamped flap, the abort fires even with a silent pre-arm window (flap substitutes for the zombie signature); muted mics with no flap stay protected.
+6. No watchdog consumption changes needed: `on_mic_open_failed` already treats an armed bypass as an immediate one-shot cycle.
+
+### DEFERRED — idle zero-RMS escalation (observe first)
+
+An always-on standing stream that goes exact-zero while the app is IDLE is still invisible: the liveness monitor's recency checks stay green and nothing cycles until the user dictates. An idle-time escalation (periodic probe recording or sink-side zero-RMS timer) would fix that, but it adds a new background probe surface and risks cycling during legitimate muted-mic use. **Observe-first plan:** if the structured log shows evidence of idle exact-zeros (e.g. arm-time `max_rms 0` immediately after `device_flap_bypass_armed` with no user press in between, or repeated `zero_sample_abort` without an antecedent flap stamp), add a LogOnly `idle_zero_rms` `WakeRecovery` stage at the standing path first, and only then decide whether a cycle is warranted.
+
+### Verification recipe
+
+1. Flap the dock (or replug) while `usb_watchdog_enabled=true`, `cycle_on_wake=true`, device configured; wait for re-enumeration (~3s).
+2. Within 2 minutes, dictate for 1–3 seconds.
+3. Expected on that FIRST press: `device_flap_bypass_armed` in `handy-events.jsonl`, then `UsbWatchdogCycle { success: true }`, mic signal restored, native "Microphone delivered no signal — USB port cycled" notification.
+4. After the 180s bypass TTL expires: the first dead press aborts (zero-RMS) and the SECOND press's failure crosses threshold-2 → cycle (or the flap arms a fresh bypass).
+5. Muted mic with NO flap: a single short dead press must NOT cycle (pre-arm gate holds; `on_low_audio_level` keeps its 10s gate).
+
 ## Display-wake zombie standing stream on a never-sleeps Mac (2026-11-08)
 
 ### Problem
