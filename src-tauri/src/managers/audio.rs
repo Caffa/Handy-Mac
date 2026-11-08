@@ -2657,6 +2657,10 @@ impl AudioRecordingManager {
                 };
                 self.standing_active.store(false, Ordering::Release);
                 self.capture.disarm();
+                // Read the peak NOW, while manager state is still `Stopping`:
+                // no arm() can intervene in this window, so max_level is
+                // guaranteed to belong to the recording just stopped.
+                let max_level = self.capture.get_max_level();
 
                 // Now transition to Idle after the buffer is complete.
                 {
@@ -2705,7 +2709,8 @@ impl AudioRecordingManager {
                 //    intentionally NOT counted as a successful finish);
                 // 2. low but nonzero audio → ambiguous, keeps the 10s gate;
                 // 3. anything else → normal delivered/empty accounting.
-                let max_level = self.capture.get_max_level();
+                // (max_level was captured right after disarm, while still in
+                // `Stopping` — see above.)
 
                 if !processed_samples.is_empty() && max_level <= ZERO_SAMPLE_MAX_RMS {
                     warn!(
