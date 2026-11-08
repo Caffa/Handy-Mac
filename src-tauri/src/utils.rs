@@ -46,6 +46,14 @@ pub fn cancel_current_operation(app: &AppHandle) {
     );
     let total_start = std::time::Instant::now();
 
+    // Snapshot the session id at ENTRY, before any blocking step: the cancel
+    // below can take seconds, and a newer session started during that window
+    // must not be failed by this stale cancel. fail_session's id-mismatch
+    // put-back makes interleaving with a newer session safe.
+    let cancelled_sid = app
+        .try_state::<Arc<crate::session::SessionTracker>>()
+        .and_then(|t| t.current_session_id());
+
     // CRITICAL: Cancel streaming transcription FIRST (uses StreamingCancelFlag, no lock needed).
     // This must happen before any other operations to stop live captions immediately,
     // preventing wasted GPU work on partial audio that will be discarded anyway.
@@ -185,13 +193,14 @@ pub fn cancel_current_operation(app: &AppHandle) {
     }
 
     // 9. Finalize the session tracker so a cancelled operation does not leak
-    // a ghost "still active" session. `fail_session` is idempotent (take()
-    // based): with no active session this is a no-op.
+    // a ghost "still active" session. Fail the id snapshotted at ENTRY —
+    // fail_session is idempotent (take() based) and puts back a mismatched
+    // session, so a session started mid-cancel is left untouched.
     {
         let t = std::time::Instant::now();
         if let Some(tracker) = app.try_state::<Arc<crate::session::SessionTracker>>() {
-            if let Some(sid) = tracker.current_session_id() {
-                tracker.fail_session(&sid, "Operation cancelled by user");
+            if let Some(ref sid) = cancelled_sid {
+                tracker.fail_session(sid, "Operation cancelled by user");
             }
         }
         info!(
