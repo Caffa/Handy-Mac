@@ -45,11 +45,56 @@ const WAKE_DEFERRED_IDLE_POLL_MS: u64 = 2000;
 const WAKE_DEFERRED_IDLE_MAX_SECS: u64 = 120;
 #[cfg(target_os = "macos")]
 const WAKE_BYPASS_TTL_SECS: u64 = 3600;
+/// Duplicate-suppression window for screens-wake events. macOS fires
+/// `ScreensDidWake` on every display wake (including screensaver fades), so
+/// this is wider than the system-wake window.
+#[cfg(target_os = "macos")]
+const SCREENS_WAKE_DEDUPE_SECS: u64 = 120;
 
 /// Last-seen wake epoch for duplicate-wake suppression. A value of 0 means no
 /// wake has been recorded yet.
 #[cfg(target_os = "macos")]
 static LAST_WAKE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Last-seen epoch of a screens-wake event (display wake). Separate from
+/// `LAST_WAKE_EPOCH` because displays wake far more often than the system.
+#[cfg(target_os = "macos")]
+static LAST_SCREENS_WAKE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Decision for handling a screens-wake (display wake) event.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScreensWakeDecision {
+    /// Inside the dedupe window — ignore.
+    Duplicate,
+    /// Device present (plain screensaver fade) or watchdog gated off — log
+    /// only, do not arm.
+    LogOnly,
+    /// Device genuinely absent from the USB tree (dock power loss) — arm the
+    /// wake bypass and spawn the recovery thread.
+    ArmRecovery,
+}
+
+/// Pure decision logic for the screens-wake path: arm the post-wake bypass
+/// only when the watchdog settings gate passes AND the configured device is
+/// genuinely absent from the USB tree.
+#[cfg(target_os = "macos")]
+fn screens_wake_decision(
+    duplicate: bool,
+    watchdog_enabled: bool,
+    cycle_on_wake: bool,
+    device_configured: bool,
+    device_absent: bool,
+) -> ScreensWakeDecision {
+    if duplicate {
+        return ScreensWakeDecision::Duplicate;
+    }
+    let bypass_gated = watchdog_enabled && cycle_on_wake && device_configured;
+    if !bypass_gated || !device_absent {
+        return ScreensWakeDecision::LogOnly;
+    }
+    ScreensWakeDecision::ArmRecovery
+}
 
 /// Start listening for macOS wake-from-sleep events.
 ///
@@ -188,10 +233,41 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
                 on_system_wake(app_handle);
             }
 
+            // Same shape as `didWake:`, for display-only wakes. Fires on
+            // machines that never system-sleep (SleepDisabled=1) where
+            // `DidWake` never does.
+            extern "C-unwind" fn screens_did_wake_impl(
+                this: *mut AnyObject,
+                _cmd: Sel,
+                _notification: *mut AnyObject,
+            ) {
+                let this_ref = unsafe { &*this };
+                let ivar = AnyClass::instance_variable(this_ref.class(), c"appHandle")
+                    .expect("HandyWakeObserver missing appHandle ivar");
+                let app_ptr: *const c_void = unsafe { *ivar.load::<*const c_void>(this_ref) };
+
+                if app_ptr.is_null() {
+                    warn!("NSWorkspaceScreensDidWakeNotification fired with null appHandle ivar");
+                    return;
+                }
+
+                // SAFETY: see did_wake_impl.
+                let app_ptr = app_ptr as *const Arc<tauri::AppHandle>;
+                let app_handle: &Arc<tauri::AppHandle> = unsafe { &*app_ptr };
+
+                info!("Received native NSWorkspaceScreensDidWakeNotification; checking device presence");
+                on_screens_wake(app_handle);
+            }
+
             unsafe {
                 builder.add_method(
                     sel!(didWake:),
                     did_wake_impl as extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject),
+                );
+                builder.add_method(
+                    sel!(screensDidWake:),
+                    screens_did_wake_impl
+                        as extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject),
                 );
             }
 
@@ -223,7 +299,18 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
         center.addObserver_selector_name_object(&*observer, sel!(didWake:), Some(name), None);
     }
 
-    debug!("Registered NSWorkspaceDidWakeNotification observer");
+    // Second registration on the same observer for display-only wakes.
+    let screens_name = unsafe { objc2_app_kit::NSWorkspaceScreensDidWakeNotification };
+    unsafe {
+        center.addObserver_selector_name_object(
+            &*observer,
+            sel!(screensDidWake:),
+            Some(screens_name),
+            None,
+        );
+    }
+
+    debug!("Registered NSWorkspaceDidWake + ScreensDidWake observers");
 }
 
 /// Returns true when the coordinator reports Idle or no coordinator is present.
@@ -365,11 +452,18 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
         wake_start.elapsed()
     );
 
+    spawn_wake_recovery_thread(app_handle, device_name);
+}
+
+/// Spawn the shared wake-recovery thread: wait for USB re-enumeration, wait
+/// for idle, then cycle and restart. Used by both the system-wake path and
+/// the screens-wake path.
+#[cfg(target_os = "macos")]
+fn spawn_wake_recovery_thread(app_handle: &Arc<tauri::AppHandle>, device_name: String) {
     let ah = app_handle.clone();
     std::thread::spawn(move || {
         let thread_start = Instant::now();
         let device_name_for_thread = device_name.clone();
-
         // Phase 1: settle, then poll for device re-enumeration.
         std::thread::sleep(Duration::from_secs(2));
 
@@ -523,6 +617,72 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
     });
 }
 
+/// Handle a display-only wake (`NSWorkspaceScreensDidWakeNotification`).
+///
+/// Machines that never system-sleep (SleepDisabled=1) never fire
+/// `NSWorkspaceDidWake` or trip the wall-clock detector — only the displays
+/// sleep. On display wake a dock can power-lose and re-enumerate the whole
+/// USB tree ~2.3s later, leaving the standing mic stream a zombie. Arm the
+/// wake bypass ONLY when the configured watchdog device is genuinely absent
+/// from the USB tree: a plain screensaver fade leaves the device present and
+/// must not disturb anything.
+#[cfg(target_os = "macos")]
+fn on_screens_wake(app_handle: &Arc<tauri::AppHandle>) {
+    let now = epoch_secs();
+    let prev = LAST_SCREENS_WAKE_EPOCH.swap(now, Ordering::SeqCst);
+    let duplicate = prev != 0 && now.saturating_sub(prev) < SCREENS_WAKE_DEDUPE_SECS;
+
+    let settings = crate::settings::get_settings_safe(app_handle);
+    let device_configured = !settings.usb_watchdog_device_name.is_empty();
+
+    // Only run the uhubctl probe when the settings gate passes, so a plain
+    // screensaver fade never pays for a USB tree query.
+    let bypass_gated =
+        settings.usb_watchdog_enabled && settings.usb_watchdog_cycle_on_wake && device_configured;
+    let device_absent = bypass_gated
+        && !crate::usb_watchdog::device_present_in_usb_tree(&settings.usb_watchdog_device_name);
+
+    match screens_wake_decision(
+        duplicate,
+        settings.usb_watchdog_enabled,
+        settings.usb_watchdog_cycle_on_wake,
+        device_configured,
+        device_absent,
+    ) {
+        ScreensWakeDecision::Duplicate => {
+            debug!(
+                "on_screens_wake: duplicate screens-wake (last was {}s ago), skipping",
+                now.saturating_sub(prev)
+            );
+        }
+        ScreensWakeDecision::LogOnly => {
+            debug!(
+                "on_screens_wake: screens woke but device present or watchdog gated off; no arm"
+            );
+        }
+        ScreensWakeDecision::ArmRecovery => {
+            info!(
+                "on_screens_wake: device '{}' absent after display wake — arming bypass and spawning recovery",
+                settings.usb_watchdog_device_name
+            );
+            if let Some(rm) =
+                app_handle.try_state::<Arc<crate::managers::audio::AudioRecordingManager>>()
+            {
+                rm.usb_watchdog.arm_wake_bypass(WAKE_BYPASS_TTL_SECS);
+            }
+            logging::emit(logging::AppEvent::WakeRecovery {
+                stage: "screens_wake_device_absent".to_string(),
+                reason: format!(
+                    "screens woke, device '{}' absent from USB tree",
+                    settings.usb_watchdog_device_name
+                ),
+                device_seen_secs: None,
+            });
+            spawn_wake_recovery_thread(app_handle, settings.usb_watchdog_device_name.clone());
+        }
+    }
+}
+
 /// No-op on non-macOS platforms.
 #[cfg(not(target_os = "macos"))]
 pub fn start_sleep_wake_listener(_app_handle: tauri::AppHandle) {
@@ -564,5 +724,40 @@ mod tests {
             binding_id: Some("router".to_string()),
             session_id: 4,
         })));
+    }
+
+    #[test]
+    fn screens_wake_decision_table() {
+        // Duplicate within the dedupe window: ignore regardless of gates.
+        assert_eq!(
+            screens_wake_decision(true, true, true, true, true),
+            ScreensWakeDecision::Duplicate
+        );
+
+        // Watchdog settings gate off: log only, even with the device absent.
+        assert_eq!(
+            screens_wake_decision(false, false, true, true, true),
+            ScreensWakeDecision::LogOnly
+        );
+        assert_eq!(
+            screens_wake_decision(false, true, false, true, true),
+            ScreensWakeDecision::LogOnly
+        );
+        assert_eq!(
+            screens_wake_decision(false, true, true, false, false),
+            ScreensWakeDecision::LogOnly
+        );
+
+        // Plain screensaver fade: device present → log only.
+        assert_eq!(
+            screens_wake_decision(false, true, true, true, false),
+            ScreensWakeDecision::LogOnly
+        );
+
+        // Dock power loss: device genuinely absent → arm recovery.
+        assert_eq!(
+            screens_wake_decision(false, true, true, true, true),
+            ScreensWakeDecision::ArmRecovery
+        );
     }
 }
