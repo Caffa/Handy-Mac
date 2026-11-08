@@ -230,7 +230,11 @@ impl UsbWatchdog {
         }
     }
 
-    /// Called when the mic stream opens successfully (resets failure counter)
+    /// Called when a recording delivered samples (resets the failure counter).
+    /// Mic-stream opens must NOT call this — an open alone proves nothing
+    /// about delivery (a zombie stream opens fine); use
+    /// `on_stream_open_confirmed` there. Only `on_recording_finished(>0)`
+    /// and a completed cycle may reset the count.
     pub fn on_mic_open_succeeded(&self) {
         let prev = self.consecutive_failures.swap(0, Ordering::SeqCst);
         if prev > 0 {
@@ -269,6 +273,20 @@ impl UsbWatchdog {
         // Zero samples always indicates a problem, regardless of duration
         warn!("USB watchdog: recording finished with 0 samples - treating as dead stream");
         self.on_mic_open_failed()
+    }
+
+    /// Called when the mic stream open is confirmed without an error. This
+    /// clears the post-cycle grace period but deliberately does NOT reset
+    /// `consecutive_failures`: merely opening a stream proves nothing about
+    /// delivery (the post-wake zombie opens fine and delivers silence), and
+    /// the next press's open must not erase a real failure the threshold has
+    /// not reached yet. The counter resets only via
+    /// `on_recording_finished(>0)` or a completed cycle.
+    pub fn on_stream_open_confirmed(&self) {
+        let grace = self.post_cycle_grace.swap(false, Ordering::SeqCst);
+        if grace {
+            debug!("USB watchdog: stream open confirmed, cleared post-cycle grace");
+        }
     }
 
     /// Called when a transcription returns empty text despite having audio samples.
@@ -1011,5 +1029,60 @@ mod tests {
         // Consuming clears the bypass.
         wd.wake_bypass_until_epoch.store(0, Ordering::SeqCst);
         assert!(!wd.wake_bypass_active(), "consumed bypass must be inactive");
+    }
+
+    #[test]
+    fn failure_count_preserved_across_stream_open_confirmed() {
+        // Enabled so failures count; empty device name keeps every path off
+        // uhubctl (the cycle attempt resolves to "not configured" without a
+        // subprocess).
+        let wd = UsbWatchdog::new(true, "", None);
+
+        // First failure below threshold: no cycle, counter incremented.
+        assert!(!wd.on_mic_open_failed());
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+
+        // The next press's stream opens — this must NOT erase the failure.
+        wd.on_stream_open_confirmed();
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            1,
+            "open confirmation must preserve the failure count"
+        );
+
+        // Second failure reaches threshold: cycle attempted (false here —
+        // no device configured), counter at 2.
+        assert!(!wd.on_mic_open_failed());
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn stream_open_confirmed_clears_grace_only() {
+        let wd = UsbWatchdog::new(true, "", None);
+        wd.post_cycle_grace.store(true, Ordering::SeqCst);
+        wd.consecutive_failures.store(1, Ordering::SeqCst);
+
+        wd.on_stream_open_confirmed();
+
+        assert!(
+            !wd.post_cycle_grace.load(Ordering::SeqCst),
+            "open confirmation must clear post-cycle grace"
+        );
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn delivered_recording_resets_failure_count() {
+        let wd = UsbWatchdog::new(true, "", None);
+        assert!(!wd.on_mic_open_failed());
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
+
+        // A recording that actually delivered samples resets the counter.
+        assert!(!wd.on_recording_finished(48_000, 1.5));
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "delivered samples are the only open-independent reset"
+        );
     }
 }
