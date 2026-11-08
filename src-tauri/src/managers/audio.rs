@@ -6,6 +6,7 @@ use crate::audio_toolkit::{
 };
 use crate::errors::AppError;
 use crate::helpers::clamshell;
+use crate::logging;
 use crate::managers::model::ModelManager;
 use crate::portable;
 use crate::settings::{get_settings, AppSettings, VadBackend};
@@ -49,6 +50,22 @@ const WHISPER_SAMPLE_RATE: usize = 16000;
 const STREAMING_INTERVAL_MS: u64 = 2500;
 /// Post-VAD speech frames required before the first batch invoke (~90ms).
 const MIN_SPEECH_FRAMES_BEFORE_STREAMING: u32 = 3;
+
+/// Minimum interval between standing-stream rebuilds triggered by input
+/// device-list changes. Dock re-enumerations can fire several list diffs in
+/// quick succession; the rate limit keeps us to one rebuild per burst.
+const STANDING_REBUILD_MIN_INTERVAL_MS: u64 = 10_000;
+
+/// Decide whether an input device-list change should rebuild the standing
+/// (always-on / BT keep-alive) stream. Skipped entirely while a recording is
+/// active (`restart_microphone_if_needed` bails then anyway) and rate-limited
+/// so one dock re-enumeration burst triggers at most one rebuild.
+fn should_rebuild_standing_stream(elapsed_ms: u64, recording: bool) -> bool {
+    if recording {
+        return false;
+    }
+    elapsed_ms >= STANDING_REBUILD_MIN_INTERVAL_MS
+}
 
 fn set_mute(mute: bool) {
     // Expected behavior:
@@ -591,6 +608,10 @@ pub struct AudioRecordingManager {
     prev_input_devices: Arc<Mutex<Vec<String>>>,
     /// Previous output device names (for change detection)
     prev_output_devices: Arc<Mutex<Vec<String>>>,
+    /// Epoch ms of the last standing-stream rebuild triggered by an input
+    /// device-list change (rate limit: one rebuild per
+    /// `STANDING_REBUILD_MIN_INTERVAL_MS`).
+    last_standing_rebuild_epoch: Arc<AtomicU64>,
 }
 
 // Helper types for microphone resolution live in the parent module so that
@@ -823,6 +844,7 @@ impl AudioRecordingManager {
             device_monitor_stop: Arc::new(Mutex::new(None)),
             prev_input_devices: Arc::new(Mutex::new(Vec::new())),
             prev_output_devices: Arc::new(Mutex::new(Vec::new())),
+            last_standing_rebuild_epoch: Arc::new(AtomicU64::new(0)),
         };
 
         // Check for Bluetooth output devices — if detected, keep the mic
@@ -1057,6 +1079,10 @@ impl AudioRecordingManager {
         let app_handle = self.app_handle.clone();
         let prev_input = self.prev_input_devices.clone();
         let prev_output = self.prev_output_devices.clone();
+        // Clone the manager (all Arc fields) so the thread can rebuild the
+        // standing stream when an input device change leaves it pointed at a
+        // dead device.
+        let manager = self.clone();
 
         // Seed with the current device list so we don't emit a spurious
         // "everything was added" event on the first poll.
@@ -1169,6 +1195,53 @@ impl AudioRecordingManager {
                         // Device list changed — if we have an open stream and
                         // its device disappeared, the crate's failure handler
                         // has/will mark it; the liveness monitor rebuilds.
+
+                        // An INPUT device change (dock re-enumeration,
+                        // unplug/replug) can leave the standing stream bound
+                        // to a dead device while every recency-based liveness
+                        // layer still reports healthy (chunks keep trickling
+                        // or the stream idles as "open"). Rebuild the standing
+                        // stream so the next dictation arms on fresh audio.
+                        if !added_input.is_empty() || !removed_input.is_empty() {
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let last = manager
+                                .last_standing_rebuild_epoch
+                                .load(Ordering::Acquire);
+                            let elapsed_ms = now_ms.saturating_sub(last);
+                            let recording = manager.recording_active.load(Ordering::Acquire);
+
+                            if should_rebuild_standing_stream(elapsed_ms, recording) {
+                                manager
+                                    .last_standing_rebuild_epoch
+                                    .store(now_ms, Ordering::Release);
+                                logging::emit(logging::AppEvent::WakeRecovery {
+                                    stage: "device_list_rebuild".to_string(),
+                                    reason: format!(
+                                        "input devices changed: +{} -{} (idle {}ms, rebuilding standing stream)",
+                                        added_input.len(),
+                                        removed_input.len(),
+                                        elapsed_ms
+                                    ),
+                                    device_seen_secs: None,
+                                });
+                                info!(
+                                    "Device monitor: input list changed while idle — rebuilding standing stream"
+                                );
+                                // No hub cycling here: the change itself is
+                                // the evidence the device tree moved; a fresh
+                                // open is enough.
+                                manager.invalidate_device_cache();
+                                if let Err(e) = manager.restart_microphone_if_needed() {
+                                    warn!(
+                                        "Device monitor: standing stream rebuild failed: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -2700,6 +2773,30 @@ mod tests {
         assert_eq!(second.channels, Channels::Only(1));
         assert_eq!(second.device.as_deref(), Some("id"));
         assert_eq!(second.frames_per_chunk, Some(256));
+    }
+
+    #[test]
+    fn standing_stream_rebuild_predicate() {
+        // While recording: never rebuild.
+        assert!(!should_rebuild_standing_stream(u64::MAX, true));
+
+        // Idle, inside the rate-limit window: no rebuild.
+        assert!(!should_rebuild_standing_stream(0, false));
+        assert!(!should_rebuild_standing_stream(
+            STANDING_REBUILD_MIN_INTERVAL_MS - 1,
+            false
+        ));
+
+        // Idle, rate-limit window elapsed: rebuild.
+        assert!(should_rebuild_standing_stream(
+            STANDING_REBUILD_MIN_INTERVAL_MS,
+            false
+        ));
+        assert!(should_rebuild_standing_stream(u64::MAX, false));
+
+        // First ever rebuild (epoch 0 baseline): elapsed == now, always large
+        // enough.
+        assert!(should_rebuild_standing_stream(20_000, false));
     }
 }
 
