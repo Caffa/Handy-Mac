@@ -1,5 +1,29 @@
 # Handy-Fork Learning Log
 
+## Bluetooth AirPods flaps spammed the USB watchdog with "device not found" cycles (2026-11-09)
+
+### Problem
+
+AirPods Pro connect/disconnect (input device flaps) caused spurious USB-watchdog warnings and uhubctl cycle attempts that always failed with "device not found in USB tree" — Bluetooth devices are invisible to `uhubctl`, so every attempted cycle was doomed, and each flap armed a fresh 180s one-shot bypass that skipped both the failure threshold AND the 30s cooldown on the next dead-looking recording.
+
+### Root Cause Chain
+
+1. Every AirPods input-device flap ran the same flap-arming path as a USB dock flap: `arm_wake_bypass_quiet(180s)` + `device_flap_bypass_armed` event.
+2. Any subsequent zero-RMS / digital-silence / open-fail while the AirPods were the active mic counted as a failure; the armed bypass made the FIRST failure cycle immediately (`cycle_decision` bypass skips threshold and cooldown).
+3. The cycle resolved the configured device against the USB tree via `uhubctl` — a Bluetooth name is never there → "device not found in USB tree" event, every time.
+4. Separately, screens/system wake handlers probed the USB tree for a BT-configured device (always absent) and spawned a recovery thread that polled uhubctl for the full retry window before giving up.
+
+### Fixes (all `src-tauri/src`)
+
+1. **`audio_toolkit/audio/device.rs`** — the name heuristic extracted into `is_bluetooth_device_name` (shared, input/output agnostic); `is_bluetooth_output_device` is now a one-line delegate.
+2. **`usb_watchdog.rs`** — `is_bluetooth_configured()` guard as the FIRST statement in `on_mic_open_failed`, `on_silent_transcription`, `force_power_cycle`, `arm_wake_bypass_quiet`, `arm_wake_bypass` (loud variant added so the wake path cannot emit a `bypass_armed` event for a bypass that was never armed), and `power_cycle_blocking_with` (belt-and-suspenders; also covers `wake_recovery_cycle_blocking`). Skip happens before any counter write, event, or uhubctl probe; guard never calls `is_uhubctl_available` so tests stay hermetic.
+3. **`managers/audio.rs`** — flap arming additionally requires `any_non_bluetooth_device(&added_input, &removed_input)` (pure-BT flaps never arm; the `last_input_change_epoch_ms` stamp still fires so dead-recording aborts keep working for BT-caused flaps); mic-open failures are not counted when the attempted device name is positively Bluetooth (`MicrophoneResolution` now carries `device_name`; unknown/default names keep normal accounting); the three post-recording watchdog calls are gated on the selected mic not being positively Bluetooth.
+4. **`sleep_wake.rs`** — `on_screens_wake`'s `bypass_gated` additionally requires a non-BT device name (no uhubctl probe, no arm); `spawn_wake_recovery_thread` early-returns at thread top for a BT name (zero subprocesses, zero "device absent after wake retry window" events).
+
+### Invariant
+
+Only a POSITIVE Bluetooth name match skips. `""`, `"Default"`, and unknown names take the exact pre-change path — for a non-BT watchdog device and non-BT failing mic, thresholds, cooldowns, grace, wake cycling, events, and uhubctl probes are byte-for-byte unchanged.
+
 ## Dock-flap digital-zero recordings defeated every watchdog duration gate (2026-11-09)
 
 ### Problem

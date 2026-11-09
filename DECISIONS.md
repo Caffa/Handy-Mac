@@ -1,5 +1,27 @@
 # Architecture Decisions
 
+## 2026-11-09: USB watchdog smart-ignores Bluetooth devices by name heuristic
+
+### Status
+
+**Accepted**
+
+### Context
+
+Bluetooth headsets (AirPods etc.) that expose an input device flap on connect/disconnect. The USB watchdog treated those flaps and any subsequent dead-looking recording exactly like USB dock flaps: it armed the one-shot wake bypass and attempted uhubctl power cycles that could never succeed ("device not found in USB tree") because Bluetooth devices do not appear in the USB tree.
+
+### Decision
+
+Classify devices by name only, using the existing `is_bluetooth_device_name` heuristic (substring/startswith match on AirPods/Beats/WH-/WF-/JBL/Bose/Jabra/Marshall/Galaxy Buds/FreeBuds/Bluetooth — the same logic already used for the BT output keep-alive). A POSITIVE match on (a) the configured watchdog device name or (b) the attempted/selected input mic name skips all watchdog accounting, bypass arming, wake probing, and power cycling. Empty, "Default", or unrecognized names keep the previous path exactly.
+
+Guard-before-probe invariant: every skip happens as the first statement of the entry point, before any counter write, event emission, or uhubctl invocation — so a BT device costs zero subprocesses and zero events.
+
+### Reconsider when
+
+- CoreAudio transport-type detection becomes reliably available from Rust (kAudioDevicePropertyTransport) — replace the name heuristic with the authoritative transport classification and delete the substring list.
+- The heuristic misfires in practice (e.g. a USB device whose marketing name contains "Bose"/"JBL", or a BT mic named something not in the list) — either extend the list or wire in the transport probe for the ambiguous case only.
+- A user legitimately wants wake/flap cycling for a device whose name the heuristic considers Bluetooth (they would need a setting; deliberately not added now to keep scope minimal).
+
 ## 2026-06-25: Spelling Dictionary Source for US-to-British Conversion
 
 ### Status
