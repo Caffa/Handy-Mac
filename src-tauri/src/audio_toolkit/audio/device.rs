@@ -160,7 +160,13 @@ mod tests {
 
     #[test]
     fn bluetooth_device_names_match_negative() {
-        for name in ["", "Default", "Fifine USB Mic", "MacBook Pro Microphone", "USB Audio CODEC"] {
+        for name in [
+            "",
+            "Default",
+            "Fifine USB Mic",
+            "MacBook Pro Microphone",
+            "USB Audio CODEC",
+        ] {
             assert!(
                 !is_bluetooth_device_name(name),
                 "expected '{name}' NOT to be detected as Bluetooth"

@@ -15,9 +15,9 @@
 //! case the native notification is delayed or unavailable.
 
 #[cfg(target_os = "macos")]
-use crate::logging;
-#[cfg(target_os = "macos")]
 use crate::audio_toolkit::is_bluetooth_device_name;
+#[cfg(target_os = "macos")]
+use crate::logging;
 #[cfg(target_os = "macos")]
 use log::{debug, error, info, warn};
 #[cfg(target_os = "macos")]

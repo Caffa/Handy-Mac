@@ -3359,10 +3359,7 @@ mod tests {
 
         // Pure-Bluetooth flap (AirPods connect): never arm.
         assert!(!any_non_bluetooth_device(&["AirPods Pro".to_string()], &[]));
-        assert!(!any_non_bluetooth_device(
-            &[],
-            &["AirPods Pro".to_string()]
-        ));
+        assert!(!any_non_bluetooth_device(&[], &["AirPods Pro".to_string()]));
 
         // Mixed flap (Bluetooth + wired): the wired device may arm.
         assert!(any_non_bluetooth_device(
@@ -3371,7 +3368,10 @@ mod tests {
         ));
 
         // Pure wired flap: normal arming path.
-        assert!(any_non_bluetooth_device(&["USB Audio CODEC".to_string()], &[]));
+        assert!(any_non_bluetooth_device(
+            &["USB Audio CODEC".to_string()],
+            &[]
+        ));
     }
 
     #[test]

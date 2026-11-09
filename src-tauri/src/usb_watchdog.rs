@@ -14,8 +14,8 @@
 //! Robustness fix: Names are normalized (alphanumeric only) before comparison
 //! to handle encoding issues (e.g. RØDE vs R?DE).
 
-use crate::logging;
 use crate::audio_toolkit::audio::is_bluetooth_device_name;
+use crate::logging;
 use crate::managers::audio::{AudioRecordingManager, ZERO_SAMPLE_MAX_RMS};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -125,10 +125,7 @@ impl UsbWatchdog {
         let name = self.device_name.lock().clone();
         let bluetooth = is_bluetooth_device_name(&name);
         if bluetooth {
-            debug!(
-                "USB watchdog: device '{}' is Bluetooth; ignoring",
-                name
-            );
+            debug!("USB watchdog: device '{}' is Bluetooth; ignoring", name);
         }
         bluetooth
     }
@@ -1280,10 +1277,8 @@ mod tests {
 
         // Even with the bypass pre-armed (simulating a stale arm), the
         // failure path must ignore it entirely.
-        wd.wake_bypass_until_epoch.store(
-            epoch_secs().saturating_add(3600),
-            Ordering::SeqCst,
-        );
+        wd.wake_bypass_until_epoch
+            .store(epoch_secs().saturating_add(3600), Ordering::SeqCst);
         assert!(!wd.on_mic_open_failed());
         assert_eq!(
             wd.consecutive_failures.load(Ordering::SeqCst),
