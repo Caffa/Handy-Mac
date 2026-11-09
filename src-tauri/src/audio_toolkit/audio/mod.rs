@@ -5,8 +5,8 @@ mod utils;
 mod visualizer;
 
 pub use device::{
-    is_bluetooth_audio_active, is_bluetooth_output_device, list_output_devices, output_device_name,
-    OutputDeviceInfo,
+    is_bluetooth_audio_active, is_bluetooth_device_name, is_bluetooth_output_device,
+    list_output_devices, output_device_name, OutputDeviceInfo,
 };
 pub use sink::{
     AudioFrameCallback, CaptureControl, CaptureSink, CaptureSinkConfig, CaptureVad, CapturedAudio,

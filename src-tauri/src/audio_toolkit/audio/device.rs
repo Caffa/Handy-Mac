@@ -60,7 +60,7 @@ pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>, Box<dyn std::error
 /// whenever *any* audio input stream is opened — even on a different device.
 /// This causes a brief audio dropout on the Bluetooth output. Keeping the
 /// mic stream alive prevents the repeated profile switching.
-pub fn is_bluetooth_output_device(device_name: &str) -> bool {
+pub fn is_bluetooth_device_name(device_name: &str) -> bool {
     let lower = device_name.to_lowercase();
 
     // Explicit "Bluetooth" in the name (macOS sometimes shows this)
@@ -100,6 +100,12 @@ pub fn is_bluetooth_output_device(device_name: &str) -> bool {
     false
 }
 
+/// Backwards-compatible alias: check whether an *output* device name is a
+/// Bluetooth device. See `is_bluetooth_device_name` for the matching rules.
+pub fn is_bluetooth_output_device(device_name: &str) -> bool {
+    is_bluetooth_device_name(device_name)
+}
+
 /// Returns true if the system default output device is a Bluetooth device,
 /// or if the given selected output device is Bluetooth.
 pub fn is_bluetooth_audio_active(selected_output: Option<&str>) -> bool {
@@ -130,4 +136,45 @@ pub fn is_bluetooth_audio_active(selected_output: Option<&str>) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bluetooth_device_names_match_positive() {
+        for name in [
+            "AirPods Pro",
+            "WH-1000XM4",
+            "Beats Solo 3",
+            "JBL Live",
+            "Galaxy Buds2",
+        ] {
+            assert!(
+                is_bluetooth_device_name(name),
+                "expected '{name}' to be detected as Bluetooth"
+            );
+        }
+    }
+
+    #[test]
+    fn bluetooth_device_names_match_negative() {
+        for name in ["", "Default", "Fifine USB Mic", "MacBook Pro Microphone", "USB Audio CODEC"] {
+            assert!(
+                !is_bluetooth_device_name(name),
+                "expected '{name}' NOT to be detected as Bluetooth"
+            );
+        }
+    }
+
+    #[test]
+    fn output_device_check_delegates_to_name_check() {
+        assert!(is_bluetooth_output_device("AirPods Pro"));
+        assert!(!is_bluetooth_output_device("USB Audio CODEC"));
+        assert_eq!(
+            is_bluetooth_output_device("JBL Live"),
+            is_bluetooth_device_name("JBL Live")
+        );
+    }
 }
