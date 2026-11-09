@@ -1,5 +1,30 @@
 # Handy-Fork Learning Log
 
+## Segfault at display wake: ObjC ScreensDidWake observer ran app logic on the main thread (2026-11-10)
+
+### Problem
+
+- After sleep/display-wake, Handy stopped responding to the hotkey and the always-on mic stream was dead until the app was reopened
+- Crash report `handy-2026-11-09-234707.ips`: SIGSEGV (faulting thread 0, faulting address `0x99`) at 23:47 local, three seconds after `Received native NSWorkspaceScreensDidWakeNotification` was logged; the process died and restarted 94s later (user reopen)
+
+### Root Cause
+
+- `screensDidWake:` and `didWake:` (the `HandyWakeObserver` ObjC callbacks in `sleep_wake.rs`) ran `on_screens_wake` / `on_system_wake` **synchronously inside the notification-center observer call-out on the main thread**
+- Symbolication against the matching build (UUID `CE3DF869…`) shows the crash chain: observer call-out → `screens_did_wake_impl` → inlined `on_screens_wake` → `get_settings_safe` → read at `0x99` (= `0x11 + 0x88`), where `0x11` traces to a dereference through the leaked `Arc<AppHandle>` raw pointer (a load of the Arc strong-count field, then `+0x10`), i.e. the `&AppHandle` handed to `get_settings_safe` was garbage
+- Independent bug in the same frame: `on_screens_wake` runs `device_present_in_usb_tree()` (multi-second uhubctl subprocess) on the main thread, freezing the app at every display wake
+- The stale design comment ("it only logs and calls on_system_wake, both of which are short and non-blocking") was false once `on_screens_wake` gained settings reads, state lookups, and USB probes
+
+### Fix
+
+- New private `dispatch_wake_handler` in `sleep_wake.rs`: both ObjC callbacks now do ONLY null-check → ivar load → `&*app_ptr` reborrow → log → `Arc::clone` → spawn named thread `wake-observer-dispatch` → return
+- All handler work (hotkey reset, settings, model checks, uhubctl probing, recovery spawning) runs on the plain thread — mirroring how `on_system_wake` already ran on the 3s wall-clock polling thread
+- Updated the stale comment; spawn failure now logs a `warn!` (wake path remains self-healing: the polling fallback re-fires ~3s later)
+- Unit test `dispatch_wake_handler_runs_off_thread` asserts the handler runs on another thread with the Arc payload intact
+
+### Key Insight
+
+An ObjC notification callback is FFI: treat it like a signal handler. Do the minimum (clone a handle, spawn a thread) and return — never run state lookups, settings reads, or subprocesses inside the notification-center call-out frame, even if the code "looks synchronous and safe" in Rust.
+
 ## Bluetooth AirPods flaps spammed the USB watchdog with "device not found" cycles (2026-11-09)
 
 ### Problem

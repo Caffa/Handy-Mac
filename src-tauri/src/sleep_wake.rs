@@ -119,9 +119,10 @@ pub fn start_sleep_wake_listener(app_handle: tauri::AppHandle) {
     let app_handle = Arc::new(app_handle);
 
     // Install the native NSWorkspaceDidWakeNotification observer before
-    // starting the polling thread. The observer callback is invoked on the
-    // same notification-center thread; it only logs and calls on_system_wake,
-    // both of which are short and non-blocking.
+    // starting the polling thread. The observer callback is invoked on the main thread inside the
+    // notification-center call-out; it only clones the leaked Arc and
+    // dispatches the handler to a dedicated thread (see
+    // dispatch_wake_handler), so it never blocks the run loop.
     start_native_wake_observer(&app_handle);
 
     std::thread::spawn(move || {
@@ -231,8 +232,8 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
                 let app_ptr = app_ptr as *const Arc<tauri::AppHandle>;
                 let app_handle: &Arc<tauri::AppHandle> = unsafe { &*app_ptr };
 
-                info!("Received native NSWorkspaceDidWakeNotification; running wake handlers");
-                on_system_wake(app_handle);
+                info!("Received native NSWorkspaceDidWakeNotification; dispatching wake handlers to a thread");
+                dispatch_wake_handler(app_handle, on_system_wake);
             }
 
             // Same shape as `didWake:`, for display-only wakes. Fires on
@@ -257,8 +258,8 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
                 let app_ptr = app_ptr as *const Arc<tauri::AppHandle>;
                 let app_handle: &Arc<tauri::AppHandle> = unsafe { &*app_ptr };
 
-                info!("Received native NSWorkspaceScreensDidWakeNotification; checking device presence");
-                on_screens_wake(app_handle);
+                info!("Received native NSWorkspaceScreensDidWakeNotification; dispatching device-presence check to a thread");
+                dispatch_wake_handler(app_handle, on_screens_wake);
             }
 
             unsafe {
@@ -323,6 +324,29 @@ fn is_idle(app_state: Option<&crate::transcription_coordinator::AppState>) -> bo
         app_state,
         Some(crate::transcription_coordinator::AppState::Idle { .. }) | None
     )
+}
+
+/// The ObjC notification callbacks run on the MAIN thread inside
+/// CFNotificationCenter's observer call-out. Running handler work
+/// there (Tauri state lookups, settings reads, multi-second
+/// uhubctl probes) blocked the run loop and segfaulted the
+/// process inside that frame on display wake (2026-11-09 crash).
+/// The callback must only clone the leaked Arc and return; all
+/// handler logic runs on a plain thread, mirroring how
+/// on_system_wake already runs on the 3s polling-thread path.
+#[cfg(target_os = "macos")]
+fn dispatch_wake_handler<T, F>(app_handle: &Arc<T>, handler: F)
+where
+    F: FnOnce(&Arc<T>) + Send + 'static,
+    T: Send + Sync + 'static,
+{
+    let ah = Arc::clone(app_handle);
+    if let Err(e) = std::thread::Builder::new()
+        .name("wake-observer-dispatch".into())
+        .spawn(move || handler(&ah))
+    {
+        warn!("Failed to spawn wake handler thread: {e}");
+    }
 }
 
 /// Handle macOS wake-from-sleep event.
@@ -781,6 +805,24 @@ mod tests {
         assert_eq!(
             screens_wake_decision(false, true, true, true, true),
             ScreensWakeDecision::ArmRecovery
+        );
+    }
+
+    #[test]
+    fn dispatch_wake_handler_runs_off_thread() {
+        let arc = Arc::new(42u8);
+        let (tx, rx) = std::sync::mpsc::channel::<(std::thread::ThreadId, u8)>();
+        dispatch_wake_handler(&arc, move |ah| {
+            let _ = tx.send((std::thread::current().id(), **ah));
+        });
+        let (handler_thread, value) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("handler must run");
+        assert_eq!(value, 42, "Arc clone must carry the payload");
+        assert_ne!(
+            handler_thread,
+            std::thread::current().id(),
+            "handler must not run on the caller's thread"
         );
     }
 }
