@@ -1268,12 +1268,29 @@ impl AudioRecordingManager {
                             // (may cycle per the existing gates: threshold,
                             // bypass, cooldown, cycling guard). max_level is
                             // 0.0 by construction — the abort predicate only
-                            // fires on digital silence.
-                            usb_watchdog.on_recording_finished(
-                                0,
-                                armed_elapsed_ms as f32 / 1000.0,
-                                0.0,
-                            );
+                            // fires on digital silence. Skipped when the
+                            // selected mic is positively Bluetooth, matching
+                            // the stop-path post-recording accounting: BT
+                            // mics are invisible to uhubctl and must never
+                            // power-cycle USB. Unknown/default names keep
+                            // normal accounting.
+                            let settings = get_settings(&app_handle);
+                            let selected_mic_bluetooth = settings
+                                .selected_microphone
+                                .as_deref()
+                                .map(is_bluetooth_device_name)
+                                .unwrap_or(false);
+                            if selected_mic_bluetooth {
+                                debug!(
+                                    "Liveness monitor: selected mic is Bluetooth; skipping zero-RMS watchdog accounting"
+                                );
+                            } else {
+                                usb_watchdog.on_recording_finished(
+                                    0,
+                                    armed_elapsed_ms as f32 / 1000.0,
+                                    0.0,
+                                );
+                            }
 
                             // Rebuild the stream on the (likely re-enumerated)
                             // device, then auto-retry once (Toggle only) so the
@@ -1285,7 +1302,6 @@ impl AudioRecordingManager {
                                     Err(anyhow::anyhow!("AudioRecordingManager not available"))
                                 });
 
-                            let settings = get_settings(&app_handle);
                             let binding = binding_id.unwrap_or_else(|| "transcribe".to_string());
                             let hotkey = settings
                                 .bindings
