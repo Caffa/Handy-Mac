@@ -1,5 +1,5 @@
 use crate::audio_toolkit::{
-    is_bluetooth_audio_active, list_output_devices,
+    is_bluetooth_audio_active, is_bluetooth_device_name, list_output_devices,
     vad::{frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_ONSET_MS, VAD_PREFILL_MS},
     CaptureControl, CaptureSink, CaptureSinkConfig, CaptureVad, SileroVad, SpeechScorer, VadPolicy,
     VoiceActivityDetector,
@@ -87,6 +87,17 @@ fn device_change_recent(change_epoch_ms: u64, now_ms: u64, window_ms: u64) -> bo
 /// since the last arm.
 fn should_arm_flap_bypass(last_arm_epoch_ms: u64, now_ms: u64) -> bool {
     last_arm_epoch_ms == 0 || now_ms.saturating_sub(last_arm_epoch_ms) >= FLAP_ARM_MIN_INTERVAL_MS
+}
+
+/// Pure predicate for flap-bypass arming: at least one added or removed
+/// input device must NOT match the Bluetooth name heuristic. Pure-Bluetooth
+/// flaps (AirPods connect/disconnect) must never arm the USB wake bypass —
+/// Bluetooth devices are invisible to uhubctl and must not power-cycle USB.
+fn any_non_bluetooth_device(added: &[String], removed: &[String]) -> bool {
+    added
+        .iter()
+        .chain(removed.iter())
+        .any(|name| !is_bluetooth_device_name(name))
 }
 
 /// Armed-recording zero-RMS abort: an armed recording that has run this long
@@ -397,9 +408,13 @@ enum DesiredMicrophone {
 /// Result of resolving the persisted preference to a recorder device ID.
 /// `device: None` opens the system default. The unavailable name is populated
 /// only when enumeration succeeded and confirmed that the user's regular
-/// selected microphone is missing.
+/// selected microphone is missing. `device_name` mirrors the name the open
+/// attempt targeted (None when the system default is opened and no name is
+/// known), so failure accounting can classify the attempted device.
 struct MicrophoneResolution {
     device: Option<String>,
+    /// The human-readable name the open attempt targeted, when known.
+    device_name: Option<String>,
     /// The ID came from `cached_device`, so it may be stale.
     from_cache: bool,
     unavailable_selected_microphone: Option<String>,
@@ -1564,7 +1579,11 @@ impl AudioRecordingManager {
                                 let settings = get_settings_safe(&app_handle);
                                 let flap_gated = settings.usb_watchdog_enabled
                                     && settings.usb_watchdog_cycle_on_wake
-                                    && !settings.usb_watchdog_device_name.is_empty();
+                                    && !settings.usb_watchdog_device_name.is_empty()
+                                    // Pure-Bluetooth flaps (AirPods etc.) never
+                                    // arm the bypass: they are invisible to
+                                    // uhubctl and must not power-cycle USB.
+                                    && any_non_bluetooth_device(&added_input, &removed_input);
                                 if flap_gated && should_arm_flap_bypass(
                                     rm.last_flap_bypass_arm_epoch_ms.load(Ordering::Acquire),
                                     now_ms,
@@ -1686,6 +1705,7 @@ impl AudioRecordingManager {
                 debug!("device resolve: no mic configured -> system default");
                 return MicrophoneResolution {
                     device: None,
+                    device_name: None,
                     from_cache: false,
                     unavailable_selected_microphone: None,
                 };
@@ -1701,6 +1721,7 @@ impl AudioRecordingManager {
                 debug!("device resolve: cache hit for '{}'", device_name);
                 return MicrophoneResolution {
                     device: Some(id.clone()),
+                    device_name: Some(device_name.clone()),
                     from_cache: true,
                     unavailable_selected_microphone: None,
                 };
@@ -1730,7 +1751,7 @@ impl AudioRecordingManager {
             device.is_some()
         );
         if let Some(id) = &device {
-            *self.cached_device.lock() = Some((device_name, id.clone()));
+            *self.cached_device.lock() = Some((device_name.clone(), id.clone()));
         }
 
         let unavailable_selected_microphone = if enumeration_succeeded && device.is_none() {
@@ -1740,6 +1761,7 @@ impl AudioRecordingManager {
         };
         MicrophoneResolution {
             device,
+            device_name: Some(device_name),
             from_cache: false,
             unavailable_selected_microphone,
         }
@@ -2097,7 +2119,22 @@ impl AudioRecordingManager {
         let microphone = match open_result {
             Ok(m) => m,
             Err(e) => {
-                // Count this as a mic-open failure for the USB watchdog threshold.
+                // Count this as a mic-open failure for the USB watchdog
+                // threshold — unless the attempted input device name is
+                // positively Bluetooth: BT mics are invisible to uhubctl and
+                // must never power-cycle USB. An unknown name (system
+                // default) keeps the normal accounting.
+                let attempted_name = resolution.device_name.as_deref();
+                let attempted_bluetooth = attempted_name
+                    .map(is_bluetooth_device_name)
+                    .unwrap_or(false);
+                if attempted_bluetooth {
+                    debug!(
+                        "USB watchdog: attempted mic '{}' is Bluetooth; not counting open failure",
+                        attempted_name.unwrap_or_default()
+                    );
+                    return Err(e.into());
+                }
                 let cycled = self.usb_watchdog.on_mic_open_failed();
                 if cycled {
                     warn!("USB watchdog power-cycled hub after mic open failure; retrying once");
@@ -2711,15 +2748,31 @@ impl AudioRecordingManager {
                 // 3. anything else → normal delivered/empty accounting.
                 // (max_level was captured right after disarm, while still in
                 // `Stopping` — see above.)
+                //
+                // All three are gated on the selected mic NOT being
+                // positively Bluetooth: BT mics are invisible to uhubctl and
+                // must never drive USB power cycling. Only a positive name
+                // match skips; unknown/default keeps normal accounting.
+                let selected_mic_bluetooth = get_settings(&self.app_handle)
+                    .selected_microphone
+                    .as_deref()
+                    .map(is_bluetooth_device_name)
+                    .unwrap_or(false);
+                if selected_mic_bluetooth {
+                    debug!(
+                        "USB watchdog: selected mic is Bluetooth; skipping post-recording accounting"
+                    );
+                }
 
                 if !processed_samples.is_empty() && max_level <= ZERO_SAMPLE_MAX_RMS {
                     warn!(
                         "Recording delivered exact digital zeros (max RMS {:.2e}, duration {:.1}s) - dead signal, requesting USB cycle",
                         max_level, recording_duration
                     );
-                    if self
-                        .usb_watchdog
-                        .on_digital_silence(recording_duration, max_level)
+                    if !selected_mic_bluetooth
+                        && self
+                            .usb_watchdog
+                            .on_digital_silence(recording_duration, max_level)
                     {
                         if let Err(e) = self.restart_microphone_if_needed() {
                             error!(
@@ -2738,7 +2791,9 @@ impl AudioRecordingManager {
                         "Recording had very low audio level (max RMS: {:.6}, threshold: {:.6}, duration: {:.1}s) - mic may be dead/muted",
                         max_level, NO_AUDIO_THRESHOLD, recording_duration
                     );
-                    if self.usb_watchdog.on_low_audio_level(recording_duration) {
+                    if !selected_mic_bluetooth
+                        && self.usb_watchdog.on_low_audio_level(recording_duration)
+                    {
                         if let Err(e) = self.restart_microphone_if_needed() {
                             error!(
                                 "Failed to restart microphone after low-audio-level USB cycle: {}",
@@ -2755,11 +2810,13 @@ impl AudioRecordingManager {
                         // zero-RMS abort's synthetic press.
                         self.auto_retry_allowed.store(true, Ordering::Release);
                     }
-                    if self.usb_watchdog.on_recording_finished(
-                        processed_samples.len(),
-                        recording_duration,
-                        max_level,
-                    ) {
+                    if !selected_mic_bluetooth
+                        && self.usb_watchdog.on_recording_finished(
+                            processed_samples.len(),
+                            recording_duration,
+                            max_level,
+                        )
+                    {
                         if let Err(e) = self.restart_microphone_if_needed() {
                             error!(
                                 "Failed to restart microphone after dead-stream USB cycle: {}",
@@ -3277,6 +3334,28 @@ mod tests {
 
         // At/after the rate limit: arm allowed.
         assert!(should_arm_flap_bypass(now - FLAP_ARM_MIN_INTERVAL_MS, now));
+    }
+
+    #[test]
+    fn flap_arm_requires_a_non_bluetooth_device() {
+        // Nothing changed: cannot arm.
+        assert!(!any_non_bluetooth_device(&[], &[]));
+
+        // Pure-Bluetooth flap (AirPods connect): never arm.
+        assert!(!any_non_bluetooth_device(&["AirPods Pro".to_string()], &[]));
+        assert!(!any_non_bluetooth_device(
+            &[],
+            &["AirPods Pro".to_string()]
+        ));
+
+        // Mixed flap (Bluetooth + wired): the wired device may arm.
+        assert!(any_non_bluetooth_device(
+            &["AirPods Pro".to_string()],
+            &["FIFINE K069".to_string()]
+        ));
+
+        // Pure wired flap: normal arming path.
+        assert!(any_non_bluetooth_device(&["USB Audio CODEC".to_string()], &[]));
     }
 
     #[test]
