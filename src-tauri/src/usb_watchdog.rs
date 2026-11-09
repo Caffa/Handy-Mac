@@ -15,6 +15,7 @@
 //! to handle encoding issues (e.g. RØDE vs R?DE).
 
 use crate::logging;
+use crate::audio_toolkit::audio::is_bluetooth_device_name;
 use crate::managers::audio::{AudioRecordingManager, ZERO_SAMPLE_MAX_RMS};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -116,6 +117,22 @@ pub(crate) fn cycle_decision(
 }
 
 impl UsbWatchdog {
+    /// True when the configured watchdog device name positively matches a
+    /// Bluetooth device. Bluetooth mic flaps/failures must never trigger USB
+    /// power cycling — only a positive name match skips; empty or unknown
+    /// names keep the normal USB path.
+    fn is_bluetooth_configured(&self) -> bool {
+        let name = self.device_name.lock().clone();
+        let bluetooth = is_bluetooth_device_name(&name);
+        if bluetooth {
+            debug!(
+                "USB watchdog: device '{}' is Bluetooth; ignoring",
+                name
+            );
+        }
+        bluetooth
+    }
+
     pub fn new(enabled: bool, device_name: &str, app_handle: Option<tauri::AppHandle>) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
@@ -165,6 +182,9 @@ impl UsbWatchdog {
     /// for callers that emit their own more specific `WakeRecovery` stage
     /// (e.g. the device-flap path).
     pub fn arm_wake_bypass_quiet(&self, ttl_secs: u64) {
+        if self.is_bluetooth_configured() {
+            return;
+        }
         let until = epoch_secs().saturating_add(ttl_secs);
         self.wake_bypass_until_epoch.store(until, Ordering::SeqCst);
         info!("USB watchdog: bypass armed for {}s", ttl_secs);
@@ -178,6 +198,10 @@ impl UsbWatchdog {
     /// Called when the mic stream fails to open. Returns `true` if a
     /// power cycle was completed (caller should retry).
     pub fn on_mic_open_failed(&self) -> bool {
+        if self.is_bluetooth_configured() {
+            return false;
+        }
+
         if !self.enabled.load(Ordering::SeqCst) {
             debug!("USB watchdog disabled, skipping auto-cycle");
             return false;
@@ -336,6 +360,10 @@ impl UsbWatchdog {
     ///
     /// Returns true if a USB power cycle was triggered.
     pub fn on_silent_transcription(&self, duration_secs: f32) -> bool {
+        if self.is_bluetooth_configured() {
+            return false;
+        }
+
         if !self.enabled.load(Ordering::SeqCst) {
             debug!("USB watchdog disabled, skipping silent transcription handler");
             return false;
@@ -436,6 +464,10 @@ impl UsbWatchdog {
     /// wake-thread cycle and a bypass-triggered cycle do not deadlock on the
     /// same cooldown window.
     fn power_cycle_blocking_with(&self, skip_cooldown: bool) -> bool {
+        if self.is_bluetooth_configured() {
+            return false;
+        }
+
         let now_epoch = epoch_secs();
 
         // Check cooldown unless bypassed.
@@ -571,6 +603,10 @@ impl UsbWatchdog {
     }
 
     pub fn force_power_cycle(&self) -> bool {
+        if self.is_bluetooth_configured() {
+            return false;
+        }
+
         if self.cycling.swap(true, Ordering::SeqCst) {
             debug!("USB watchdog: cycle already in progress");
             return false;
@@ -1179,5 +1215,78 @@ mod tests {
         // A second such recording reaches the threshold.
         assert!(!wd.on_recording_finished(100, 1.0, 1e-9));
         assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn bluetooth_configured_device_ignores_mic_open_failures() {
+        let wd = UsbWatchdog::new(true, "AirPods Pro", None);
+
+        assert!(
+            !wd.on_mic_open_failed(),
+            "Bluetooth device must never enter the failure path"
+        );
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "Bluetooth failure must not increment the counter"
+        );
+    }
+
+    #[test]
+    fn bluetooth_configured_device_ignores_silent_transcription() {
+        let wd = UsbWatchdog::new(true, "WH-1000XM4", None);
+
+        assert!(
+            !wd.on_silent_transcription(30.0),
+            "Bluetooth device must never count silent transcription"
+        );
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "Bluetooth silent transcription must not increment the counter"
+        );
+    }
+
+    #[test]
+    fn bluetooth_configured_device_blocks_force_power_cycle() {
+        let wd = UsbWatchdog::new(true, "AirPods Pro", None);
+
+        assert!(
+            !wd.force_power_cycle(),
+            "Bluetooth device must never trigger a forced USB power cycle"
+        );
+    }
+
+    #[test]
+    fn bluetooth_configured_device_never_arms_wake_bypass() {
+        let wd = UsbWatchdog::new(true, "AirPods Pro", None);
+
+        wd.arm_wake_bypass(3600);
+        assert!(
+            !wd.wake_bypass_active(),
+            "Bluetooth device must never arm the wake bypass"
+        );
+
+        // Even with the bypass pre-armed (simulating a stale arm), the
+        // failure path must ignore it entirely.
+        wd.wake_bypass_until_epoch.store(
+            epoch_secs().saturating_add(3600),
+            Ordering::SeqCst,
+        );
+        assert!(!wd.on_mic_open_failed());
+        assert_eq!(
+            wd.consecutive_failures.load(Ordering::SeqCst),
+            0,
+            "Bluetooth failure must not increment the counter even with bypass armed"
+        );
+    }
+
+    #[test]
+    fn empty_device_name_keeps_normal_failure_path() {
+        // Sanity: empty config name is NOT Bluetooth, so failures still count
+        // exactly as before the Bluetooth guards were added.
+        let wd = UsbWatchdog::new(true, "", None);
+        assert!(!wd.on_mic_open_failed());
+        assert_eq!(wd.consecutive_failures.load(Ordering::SeqCst), 1);
     }
 }
