@@ -17,6 +17,8 @@
 #[cfg(target_os = "macos")]
 use crate::logging;
 #[cfg(target_os = "macos")]
+use crate::audio_toolkit::is_bluetooth_device_name;
+#[cfg(target_os = "macos")]
 use log::{debug, error, info, warn};
 #[cfg(target_os = "macos")]
 use parking_lot::Mutex;
@@ -460,6 +462,17 @@ fn on_system_wake(app_handle: &Arc<tauri::AppHandle>) {
 /// the screens-wake path.
 #[cfg(target_os = "macos")]
 fn spawn_wake_recovery_thread(app_handle: &Arc<tauri::AppHandle>, device_name: String) {
+    // A Bluetooth watchdog device is invisible to uhubctl, so the USB tree
+    // polling would always end in "device absent after wake retry window".
+    // Bail out before spawning: zero subprocesses, zero events.
+    if is_bluetooth_device_name(&device_name) {
+        debug!(
+            "Wake recovery: device '{}' is Bluetooth; skipping USB recovery thread",
+            device_name
+        );
+        return;
+    }
+
     let ah = app_handle.clone();
     std::thread::spawn(move || {
         let thread_start = Instant::now();
@@ -645,9 +658,13 @@ fn on_screens_wake(app_handle: &Arc<tauri::AppHandle>) {
     let device_configured = !settings.usb_watchdog_device_name.is_empty();
 
     // Only run the uhubctl probe when the settings gate passes, so a plain
-    // screensaver fade never pays for a USB tree query.
-    let bypass_gated =
-        settings.usb_watchdog_enabled && settings.usb_watchdog_cycle_on_wake && device_configured;
+    // screensaver fade never pays for a USB tree query. A Bluetooth
+    // watchdog device never gates: BT devices are invisible to uhubctl
+    // ("device not found" on every wake) and must not power-cycle USB.
+    let bypass_gated = settings.usb_watchdog_enabled
+        && settings.usb_watchdog_cycle_on_wake
+        && device_configured
+        && !is_bluetooth_device_name(&settings.usb_watchdog_device_name);
     let device_absent = bypass_gated
         && !crate::usb_watchdog::device_present_in_usb_tree(&settings.usb_watchdog_device_name);
 

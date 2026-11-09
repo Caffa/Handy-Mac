@@ -169,6 +169,9 @@ impl UsbWatchdog {
     /// When active, the very next mic-open failure will bypass both the
     /// failure-count threshold and the cooldown guard.
     pub fn arm_wake_bypass(&self, ttl_secs: u64) {
+        if self.is_bluetooth_configured() {
+            return;
+        }
         self.arm_wake_bypass_quiet(ttl_secs);
         logging::emit(logging::AppEvent::WakeRecovery {
             stage: "bypass_armed".to_string(),
@@ -1261,10 +1264,18 @@ mod tests {
     fn bluetooth_configured_device_never_arms_wake_bypass() {
         let wd = UsbWatchdog::new(true, "AirPods Pro", None);
 
+        // Quiet variant (flap path).
+        wd.arm_wake_bypass_quiet(3600);
+        assert!(
+            !wd.wake_bypass_active(),
+            "Bluetooth device must never arm the wake bypass (quiet)"
+        );
+
+        // Loud variant (wake path) must also skip arming.
         wd.arm_wake_bypass(3600);
         assert!(
             !wd.wake_bypass_active(),
-            "Bluetooth device must never arm the wake bypass"
+            "Bluetooth device must never arm the wake bypass (loud)"
         );
 
         // Even with the bypass pre-armed (simulating a stale arm), the
