@@ -63,6 +63,15 @@ static LAST_WAKE_EPOCH: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static LAST_SCREENS_WAKE_EPOCH: AtomicU64 = AtomicU64::new(0);
 
+/// The app handle for the native wake observers, stored once at listener
+/// start. The observers read this instead of carrying the handle through an
+/// ObjC ivar: `Arc::into_raw` yields a pointer to the inner `AppHandle`
+/// (ArcInner + 0x10), not to an `Arc` handle, so reinterpreting the stored
+/// pointer as `&Arc<AppHandle>` read the AppHandle's first word (= 1) as a
+/// pointer and segfaulted on wake (2026-11-09 and 2026-11-10 crashes).
+#[cfg(target_os = "macos")]
+static WAKE_APP_HANDLE: std::sync::OnceLock<Arc<tauri::AppHandle>> = std::sync::OnceLock::new();
+
 /// Decision for handling a screens-wake (display wake) event.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,12 +127,16 @@ pub fn start_sleep_wake_listener(app_handle: tauri::AppHandle) {
 
     let app_handle = Arc::new(app_handle);
 
+    // Must be set before the native observer is installed so the very first
+    // delivered notification can find the handle.
+    let _ = WAKE_APP_HANDLE.set(app_handle.clone());
+
     // Install the native NSWorkspaceDidWakeNotification observer before
     // starting the polling thread. The observer callback is invoked on the main thread inside the
-    // notification-center call-out; it only clones the leaked Arc and
-    // dispatches the handler to a dedicated thread (see
+    // notification-center call-out; it only reads the WAKE_APP_HANDLE static
+    // and dispatches the handler to a dedicated thread (see
     // dispatch_wake_handler), so it never blocks the run loop.
-    start_native_wake_observer(&app_handle);
+    start_native_wake_observer();
 
     std::thread::spawn(move || {
         use std::time::{Duration, Instant, SystemTime};
@@ -178,16 +191,14 @@ pub fn start_sleep_wake_listener(app_handle: tauri::AppHandle) {
 /// observer leak is harmless and far less risky than keeping a raw Objective-C
 /// object alive across the process boundary without a reliable cleanup path.
 #[cfg(target_os = "macos")]
-fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
+fn start_native_wake_observer() {
     use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
     use objc2::{msg_send, sel, ClassType};
-    use std::ffi::{c_void, CStr};
-    use std::sync::Arc;
+    use std::ffi::CStr;
 
     // Create a tiny NSObject subclass to act as the notification observer.
-    // It stores a raw pointer to the Arc<AppHandle> in an ivar and forwards
-    // `didWake:` to our Rust wake handler. Using a dedicated class is safer
-    // than relying on KVC hacks on plain NSObject instances.
+    // The handle itself is read from a safe static (`WAKE_APP_HANDLE`), so
+    // the class only forwards the selector to our Rust wake handlers.
     let observer_class: &'static AnyClass = {
         let name = CStr::from_bytes_with_nul(b"HandyWakeObserver\0").unwrap();
         // If the class already exists (e.g. a previous process image in tests),
@@ -198,10 +209,6 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
             let mut builder = ClassBuilder::new(name, objc2::runtime::NSObject::class())
                 .expect("Failed to create HandyWakeObserver class");
 
-            // Store the app_handle pointer as an ivar so the callback can
-            // retrieve it without relying on fragile context plumbing.
-            builder.add_ivar::<*const c_void>(c"appHandle");
-
             // Method signature for `-(void)didWake:(NSNotification*)notification`
             // Encoding is inferred from the Rust function type by `add_method`.
             // The body is `unsafe` internally, but the function itself must not
@@ -209,28 +216,14 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
             // We use `*mut AnyObject` for `this` to avoid higher-ranked lifetime
             // issues that arise with `&mut AnyObject` in function item types.
             extern "C-unwind" fn did_wake_impl(
-                this: *mut AnyObject,
+                _this: *mut AnyObject,
                 _cmd: Sel,
                 _notification: *mut AnyObject,
             ) {
-                // Read the ivar we added above.
-                let this_ref = unsafe { &*this };
-                let ivar = AnyClass::instance_variable(this_ref.class(), c"appHandle")
-                    .expect("HandyWakeObserver missing appHandle ivar");
-                let app_ptr: *const c_void = unsafe { *ivar.load::<*const c_void>(this_ref) };
-
-                if app_ptr.is_null() {
-                    warn!("NSWorkspaceDidWakeNotification fired with null appHandle ivar");
+                let Some(app_handle) = WAKE_APP_HANDLE.get() else {
+                    warn!("NSWorkspaceDidWakeNotification fired before app handle was stored");
                     return;
-                }
-
-                // SAFETY: The pointer was obtained from Arc::into_raw on an
-                // Arc<tauri::AppHandle>, and the observer is guaranteed to be
-                // single-use per process (protected by LISTENER_STARTED). The
-                // Arc is never freed by this callback; ownership stays with
-                // the observer registration for the lifetime of the process.
-                let app_ptr = app_ptr as *const Arc<tauri::AppHandle>;
-                let app_handle: &Arc<tauri::AppHandle> = unsafe { &*app_ptr };
+                };
 
                 info!("Received native NSWorkspaceDidWakeNotification; dispatching wake handlers to a thread");
                 dispatch_wake_handler(app_handle, on_system_wake);
@@ -240,23 +233,14 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
             // machines that never system-sleep (SleepDisabled=1) where
             // `DidWake` never does.
             extern "C-unwind" fn screens_did_wake_impl(
-                this: *mut AnyObject,
+                _this: *mut AnyObject,
                 _cmd: Sel,
                 _notification: *mut AnyObject,
             ) {
-                let this_ref = unsafe { &*this };
-                let ivar = AnyClass::instance_variable(this_ref.class(), c"appHandle")
-                    .expect("HandyWakeObserver missing appHandle ivar");
-                let app_ptr: *const c_void = unsafe { *ivar.load::<*const c_void>(this_ref) };
-
-                if app_ptr.is_null() {
-                    warn!("NSWorkspaceScreensDidWakeNotification fired with null appHandle ivar");
+                let Some(app_handle) = WAKE_APP_HANDLE.get() else {
+                    warn!("NSWorkspaceScreensDidWakeNotification fired before app handle was stored");
                     return;
-                }
-
-                // SAFETY: see did_wake_impl.
-                let app_ptr = app_ptr as *const Arc<tauri::AppHandle>;
-                let app_handle: &Arc<tauri::AppHandle> = unsafe { &*app_ptr };
+                };
 
                 info!("Received native NSWorkspaceScreensDidWakeNotification; dispatching device-presence check to a thread");
                 dispatch_wake_handler(app_handle, on_screens_wake);
@@ -278,22 +262,10 @@ fn start_native_wake_observer(app_handle: &Arc<tauri::AppHandle>) {
         }
     };
 
-    // Leak an Arc<AppHandle> clone into the observer's ivar. This mirrors the
-    // intentional lifetime of the observer: the pointer remains valid until the
-    // process exits, so there is no need (and no safe place) to reclaim it.
-    let app_ptr: *const c_void = Arc::into_raw(app_handle.clone()) as *const c_void;
-
     // Allocate and init an observer instance. The notification center
     // will retain it for the lifetime of the registration.
     let observer: *mut AnyObject = unsafe { msg_send![observer_class, alloc] };
     let observer: *mut AnyObject = unsafe { msg_send![observer, init] };
-
-    // Set the ivar.
-    let ivar = AnyClass::instance_variable(observer_class, c"appHandle")
-        .expect("HandyWakeObserver missing appHandle ivar");
-    unsafe {
-        *ivar.load_mut::<*const c_void>(&mut *observer) = app_ptr;
-    }
 
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     let center = workspace.notificationCenter();

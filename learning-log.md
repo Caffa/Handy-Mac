@@ -9,21 +9,19 @@
 
 ### Root Cause
 
-- `screensDidWake:` and `didWake:` (the `HandyWakeObserver` ObjC callbacks in `sleep_wake.rs`) ran `on_screens_wake` / `on_system_wake` **synchronously inside the notification-center observer call-out on the main thread**
-- Symbolication against the matching build (UUID `CE3DF869…`) shows the crash chain: observer call-out → `screens_did_wake_impl` → inlined `on_screens_wake` → `get_settings_safe` → read at `0x99` (= `0x11 + 0x88`), where `0x11` traces to a dereference through the leaked `Arc<AppHandle>` raw pointer (a load of the Arc strong-count field, then `+0x10`), i.e. the `&AppHandle` handed to `get_settings_safe` was garbage
-- Independent bug in the same frame: `on_screens_wake` runs `device_present_in_usb_tree()` (multi-second uhubctl subprocess) on the main thread, freezing the app at every display wake
-- The stale design comment ("it only logs and calls on_system_wake, both of which are short and non-blocking") was false once `on_screens_wake` gained settings reads, state lookups, and USB probes
+- `start_native_wake_observer` stored `Arc::into_raw(app_handle.clone())` in an ObjC ivar. `Arc::into_raw` returns a pointer to the inner `AppHandle` (ArcInner + 0x10), NOT a pointer to an `Arc` handle — but the callbacks cast it back as `*const Arc<AppHandle>` and made `&Arc<AppHandle>` from it, one indirection level short
+- Every subsequent use read the AppHandle's own first word (value 1) as the `ArcInner` pointer: crash 1 (old build) computed `&AppHandle = 1 + 0x10 = 0x11` and faulted reading `[0x11 + 0x88]` (address 0x99) inside `get_settings_safe`; crash 2 (after the thread-dispatch fix) faulted at `0x1` doing the `Arc::clone` atomic refcount add. Same word, same bug, deterministic on every wake-notification delivery — the ivar itself was never corrupted
+- The callbacks also ran `on_screens_wake`/`on_system_wake` synchronously on the main thread inside the notification-center call-out (multi-second uhubctl probes, settings/state reads), and the design comment ("it only logs and calls on_system_wake, both of which are short and non-blocking") had been false since `on_screens_wake` gained that work
 
 ### Fix
 
-- New private `dispatch_wake_handler` in `sleep_wake.rs`: both ObjC callbacks now do ONLY null-check → ivar load → `&*app_ptr` reborrow → log → `Arc::clone` → spawn named thread `wake-observer-dispatch` → return
-- All handler work (hotkey reset, settings, model checks, uhubctl probing, recovery spawning) runs on the plain thread — mirroring how `on_system_wake` already ran on the 3s wall-clock polling thread
-- Updated the stale comment; spawn failure now logs a `warn!` (wake path remains self-healing: the polling fallback re-fires ~3s later)
+- First attempt moved handler work to a thread (`dispatch_wake_handler`) — correct for the main-thread block, but the crash moved with the bug into `Arc::clone`
+- Final fix removes the unsafe plumbing entirely: `static WAKE_APP_HANDLE: OnceLock<Arc<AppHandle>>` is set once at listener start; both ObjC callbacks contain zero `unsafe` code and only read the static and dispatch to the named thread. The ivar, `Arc::into_raw` leak, and ivar write are deleted
 - Unit test `dispatch_wake_handler_runs_off_thread` asserts the handler runs on another thread with the Arc payload intact
 
 ### Key Insight
 
-An ObjC notification callback is FFI: treat it like a signal handler. Do the minimum (clone a handle, spawn a thread) and return — never run state lookups, settings reads, or subprocesses inside the notification-center call-out frame, even if the code "looks synchronous and safe" in Rust.
+Two lessons: (1) `Arc::into_raw` gives you the **data pointer**; the only sound way back is `Arc::from_raw`, never a cast to `*const Arc<T>` — `&*ptr` then type-confuses the target's own bytes with the Arc header. (2) An ObjC notification callback is FFI: treat it like a signal handler — read a safe static, spawn a thread, return. Never keep state in the ObjC object or run settings/state/subprocess work inside the call-out frame.
 
 ## Bluetooth AirPods flaps spammed the USB watchdog with "device not found" cycles (2026-11-09)
 
