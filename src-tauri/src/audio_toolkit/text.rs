@@ -1297,34 +1297,38 @@ fn convert_number_words_to_digits_impl(text: &str, app_language: &str) -> String
             }
         }
 
+        // Flatten the run into a single word sequence (hyphenated cores are
+        // already split). We only keep real number-word cores, ignoring "and".
+        // Build this early: it gates conversion for decimal runs where "point"
+        // has no following number word (e.g. "one point" must stay as words).
+        let flat_cores: Vec<&str> = run
+            .iter()
+            .flat_map(|t| t.cores.iter().map(String::as_str))
+            .filter(|c| *c != "and")
+            .collect();
+
         // Decide whether the run qualifies for conversion.
         // A run converts when it is either:
         //   - a single hyphenated compound token (e.g. "twenty-five"), or
-        //   - spans 2+ tokens (e.g. "zero zero four"), or
-        //   - contains a scale word (e.g. "one hundred").
-        // Note: "point" is deliberately excluded here. A bare "point" must stay
-        // a word; multi-token runs containing "point" (e.g. "three point five")
-        // convert via the run-length >= 2 rule above.
+        //   - a single token containing a scale word (e.g. "one hundred"), or
+        //   - spans 2+ tokens (e.g. "zero zero four").
+        // A run ending in "point" with no following number word remains words
+        // because the decimal form requires at least one number word after
+        // "point" (e.g. "one point" stays words, "one point two" converts).
+        let has_trailing_bare_point = ends_with_bare_point(&flat_cores);
         let should_convert = if run.len() == 1 {
             let single = &run[0];
-            single.cores.len() > 1
+            (single.cores.len() > 1
                 || single
                     .cores
                     .iter()
-                    .any(|c| scale_word_set_contains(c.as_str()))
+                    .any(|c| scale_word_set_contains(c.as_str())))
+                && !has_trailing_bare_point
         } else {
-            true
+            !has_trailing_bare_point
         };
 
         if should_convert {
-            // Flatten the run into a single word sequence (hyphenated cores are
-            // already split). We only keep real number-word cores, ignoring "and".
-            let flat_cores: Vec<&str> = run
-                .iter()
-                .flat_map(|t| t.cores.iter().map(String::as_str))
-                .filter(|c| *c != "and")
-                .collect();
-
             // Preserve leading punctuation from the first token and trailing
             // punctuation from the last token. Intermediate spaces collapse to a
             // single space between tokens, as the original whitespace was already
@@ -1336,9 +1340,12 @@ fn convert_number_words_to_digits_impl(text: &str, app_language: &str) -> String
             result.push(replacement);
             i = run_end;
         } else {
-            // Single lone digit word stays as a word.
-            result.push(token.original.to_string());
-            i += 1;
+            // Keep the run as words. This handles lone digit words and runs where
+            // "point" has no following number word (e.g. "one point").
+            for t in run {
+                result.push(t.original.to_string());
+            }
+            i = run_end;
         }
     }
 
@@ -1394,9 +1401,10 @@ const NUMBER_WORDS: &[&str] = &[
 /// Subset of number words that force conversion even in a single-token run.
 ///
 /// These are scale words (hundred, thousand, million, billion). "point" is
-/// intentionally omitted: a lone "point" should remain a word, and
-/// multi-token decimal phrases such as "three point five" convert via the
-/// run-length >= 2 rule in `convert_number_words_to_digits_impl`.
+/// intentionally omitted: a lone "point" should remain a word. A multi-token
+/// run converts only when "point" is followed by at least one number word
+/// (e.g. "three point five"), enforced by `ends_with_bare_point` in
+/// `convert_number_words_to_digits_impl`.
 const SCALE_WORDS: &[&str] = &["hundred", "thousand", "million", "billion"];
 
 fn number_word_set_contains(word: &str) -> bool {
@@ -1529,6 +1537,15 @@ fn try_format_clock_time(cores: &[&str]) -> Option<String> {
     Some(format!("{}:{:02}", hour, minutes))
 }
 
+/// Returns true when the flat core sequence ends in a bare "point" with no
+/// number word following it.
+///
+/// Used at the run level to keep spoken trailing "point" in words
+/// (e.g. "one point" stays "one point" rather than becoming "1.").
+fn ends_with_bare_point(flat_cores: &[&str]) -> bool {
+    flat_cores.last() == Some(&"point")
+}
+
 /// Converts a flat sequence of number-word cores into a digit string.
 ///
 /// This handles two main forms:
@@ -1554,7 +1571,9 @@ fn convert_flat_number_words(cores: &[&str]) -> String {
             .iter()
             .map(|c| word_to_digit(c))
             .collect::<String>();
-        // If the fractional part is empty, just emit the integer with a trailing dot.
+        // Guard: a bare trailing "point" should not reach here because the run
+        // level `ends_with_bare_point` check keeps those runs as words. Keeping
+        // this branch defends against future direct callers of this function.
         if frac_part.is_empty() {
             return format!("{}.", int_part);
         }
@@ -3505,6 +3524,45 @@ mod tests {
         assert_eq!(
             convert_number_words_to_digits("a talking point", "en"),
             "a talking point"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_trailing_point_unchanged() {
+        // A spoken sequence ending in "point" with no following number word
+        // must stay in words, preserving attached punctuation and capitalization.
+        assert_eq!(
+            convert_number_words_to_digits("one point", "en"),
+            "one point"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("three point.", "en"),
+            "three point."
+        );
+        assert_eq!(
+            convert_number_words_to_digits("One point.", "en"),
+            "One point."
+        );
+        // Repeated "point" at the end (or after a valid decimal start) must
+        // keep the whole run as words.
+        assert_eq!(
+            convert_number_words_to_digits("one point two point", "en"),
+            "one point two point"
+        );
+        assert_eq!(
+            convert_number_words_to_digits("one point point", "en"),
+            "one point point"
+        );
+    }
+
+    #[test]
+    fn test_convert_number_words_point_with_following_number_converts() {
+        // Guard against over-rejection: decimals with a number after "point"
+        // must still convert.
+        assert_eq!(convert_number_words_to_digits("one point two", "en"), "1.2");
+        assert_eq!(
+            convert_number_words_to_digits("one hundred point five", "en"),
+            "100.5"
         );
     }
 
