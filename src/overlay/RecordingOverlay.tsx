@@ -173,6 +173,10 @@ const RecordingOverlay: React.FC = () => {
   // When the router is filing (Processing state) or showing results, the
   // overlay has nothing the user needs to interact with. Force click-through
   // so the NSTrackingArea doesn't disable ignoresMouseEvents and steal clicks.
+  // Non-interactive transcribe states ("transcribing", "processing",
+  // "usb-cycling") keep the fixed 800x280 canvas click-through so the
+  // transparent region never eats clicks. Must stay in sync with
+  // show_overlay_state_main in src-tauri/src/overlay.rs.
   // When the timeout warning is active, keep click-through OFF so the Extend
   // button is clickable on macOS.
   useEffect(() => {
@@ -180,7 +184,12 @@ const RecordingOverlay: React.FC = () => {
       // Filing... — nothing to interact with
       (state === "processing" && isRouter) ||
       // Router result displayed — just visual cards, no interaction
-      routerResultActive;
+      routerResultActive ||
+      // Non-interactive transcribe states keep the panel click-through.
+      (!isRouter &&
+        (state === "transcribing" ||
+          state === "processing" ||
+          state === "usb-cycling"));
     // Timeout warning has an interactive Extend button; explicitly disable
     // forced click-through so the button receives clicks.
     const effectiveForceClickThrough =

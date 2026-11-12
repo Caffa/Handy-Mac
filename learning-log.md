@@ -538,6 +538,29 @@ When calling methods that acquire Mutexes during UI-triggered operations (like s
 
 Startup-constructed callbacks that consume Tauri managed state must resolve at use time, not construction time. Implicit ordering in `initialize_core_logic` drifts silently; `try_state` returning `None` once is permanent.
 
+## Invisible 800×280 overlay region ate clicks during non-interactive transcribe states (2026-11-12)
+
+### Problem
+
+- During transcribe recording → transcribing → processing, and during USB-cycling, the overlay's transparent 800×280 fixed canvas blocked clicks and scrolls on the underlying application.
+- The user could not interact with the app underneath the overlay even though no interactive DOM elements were visible.
+
+### Root Cause
+
+- `swizzle_mouse_tracking` in `src-tauri/src/overlay.rs` flips the NSPanel's `setIgnoresMouseEvents: false` whenever the cursor enters the panel and `OVERLAY_FORCE_CLICK_THROUGH` is false.
+- `OVERLAY_FORCE_CLICK_THROUGH` was only armed for Router `processing` (and router result display on the React side). It was never armed for Transcribe non-interactive states.
+- macOS `ignoresMouseEvents` is all-or-nothing for the whole panel; CSS `pointer-events: none` is insufficient. DOM `onMouseEnter` cannot fire while the panel is pass-through, so interactive elements cannot opt in until the panel is already accepting events.
+
+### Fix
+
+- In `show_overlay_state_main` (`src-tauri/src/overlay.rs`), extended the `should_force` predicate to keep click-through during Transcribe/TranscribeWithPostProcess states `"transcribing"`, `"processing"`, and `"usb-cycling"`.
+- Left `recording` and `confirming` unforced so the cursor-enter flip still makes `.cancel-button` / `.recording-timeout-extend-button` and router textarea/cards clickable.
+- Mirrored the predicate in the `setOverlayForceClickThrough` effect in `src/overlay/RecordingOverlay.tsx` so React state transitions cannot undo the Rust-side flag.
+
+### Key Insight
+
+macOS `ignoresMouseEvents` is all-or-nothing for the panel; DOM opt-in is impossible while pass-through. The correct scope is therefore the overlay state machine: force click-through whenever the current state has no interactive DOM, and let the enter-flip remain active for states that do.
+
 ## Git Caution (2026-05-23)
 
 ### Problem

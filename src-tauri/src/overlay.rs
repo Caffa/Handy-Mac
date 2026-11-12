@@ -1030,12 +1030,25 @@ fn show_overlay_state_main(app_handle: &AppHandle, state: &str, mode: &OverlayMo
     // activates the Handy app, stealing focus from the user's target app.
     crate::focus::save_frontmost_app(app_handle);
 
-    // Set force click-through on the Rust side for non-interactive router phases.
+    // Set force click-through on the Rust side for non-interactive phases.
     // This eliminates the race where the NSTrackingArea's mouseEntered fires
     // before the frontend's useEffect can set the flag asynchronously.
+    //
+    // Non-interactive transcribe states ("transcribing", "processing",
+    // "usb-cycling") keep the panel click-through regardless of cursor position,
+    // so the 800x280 fixed canvas does not steal clicks.
+    // "recording" keeps the enter-flip so .cancel-button / .recording-timeout-extend-button
+    // remain clickable (DOM onMouseEnter cannot fire while the panel is pass-through).
+    // "confirming" keeps the flip for router textarea/cards.
+    // This predicate must stay in sync with the setOverlayForceClickThrough effect
+    // in src/overlay/RecordingOverlay.tsx.
     #[cfg(target_os = "macos")]
     {
-        let should_force = matches!(mode, OverlayMode::Router) && state == "processing";
+        let should_force = matches!(mode, OverlayMode::Router) && state == "processing"
+            || matches!(
+                mode,
+                OverlayMode::Transcribe | OverlayMode::TranscribeWithPostProcess
+            ) && matches!(state, "transcribing" | "processing" | "usb-cycling");
         OVERLAY_FORCE_CLICK_THROUGH.store(should_force, Ordering::SeqCst);
     }
 
