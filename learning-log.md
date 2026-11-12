@@ -1,5 +1,59 @@
 # Handy-Fork Learning Log
 
+## Live captions streamed to nothing: on_audio closure resolved Tauri state before it was managed (2026-11-12)
+
+### Problem
+
+- Live captions never streamed partial text to the overlay even though the setting was enabled and speech frames were passing the VAD gate.
+- The `[STREAM-CB]` / `[Live Captions]` log lines were missing entirely.
+
+### Root Cause
+
+- `AudioRecordingManager::new` eagerly resolved the live-captions managed state inside the `on_audio` closure constructor:
+  - `app.try_state::<StreamingCancelFlag>()` / `LiveCaptionsStreamingCancelFlag`
+  - `app.try_state::<Arc<Mutex<TranscriptionManager>>>()` / `LiveCaptionsTranscriptionManager`
+- `initialize_core_logic` calls `AudioRecordingManager::new` BEFORE it calls `app_handle.manage(streaming_cancel_flag)`, `manage(transcription_manager)`, `manage(LiveCaptionsStreamingCancelFlag)`, and `manage(LiveCaptionsTranscriptionManager)`.
+- Because Tauri managed state is never retroactively filled, the eager `try_state` captures returned `None` forever, and every speech frame silently dropped at the `let Some(cancel_flag)` / `let Some(tm)` guards.
+- Regression from commit `1f03472b` (2026-10-20).
+
+### Fix
+
+- Added `StreamingSeamState` in `src-tauri/src/managers/audio.rs` with a `OnceLock<SeamHandles>` cache and a `resolve()` method that:
+  - Returns the cached handles on subsequent frames.
+  - On a cache miss, lazily looks up the four managed states from the frame delivery thread.
+  - Retries (without caching) if any required state is not yet managed.
+  - Logs a rate-limited `[LIVE-CAPTIONS]` warning once per 30 s while transient.
+  - Emits a one-time `info!` when the seam finally resolves.
+- `AudioRecordingManager::new` now constructs `Arc<StreamingSeamState>` and moves it into the `on_audio` closure; the eager `try_state` blocks are deleted.
+- The closure destructures `seam.resolve()` once the interval/throttle gates have passed, preserving the original check order.
+
+### Key Insight
+
+Startup-constructed callbacks that consume Tauri managed state must resolve at use time, not construction time. Implicit ordering in `initialize_core_logic` drifts silently; `try_state` returning `None` once is permanent.
+
+## Invisible 800×280 overlay region ate clicks during non-interactive transcribe states (2026-11-12)
+
+### Problem
+
+- During transcribe recording → transcribing → processing, and during USB-cycling, the overlay's transparent 800×280 fixed canvas blocked clicks and scrolls on the underlying application.
+- The user could not interact with the app underneath the overlay even though no interactive DOM elements were visible.
+
+### Root Cause
+
+- `swizzle_mouse_tracking` in `src-tauri/src/overlay.rs` flips the NSPanel's `setIgnoresMouseEvents: false` whenever the cursor enters the panel and `OVERLAY_FORCE_CLICK_THROUGH` is false.
+- `OVERLAY_FORCE_CLICK_THROUGH` was only armed for Router `processing` (and router result display on the React side). It was never armed for Transcribe non-interactive states.
+- macOS `ignoresMouseEvents` is all-or-nothing for the whole panel; CSS `pointer-events: none` is insufficient. DOM `onMouseEnter` cannot fire while the panel is pass-through, so interactive elements cannot opt in until the panel is already accepting events.
+
+### Fix
+
+- In `show_overlay_state_main` (`src-tauri/src/overlay.rs`), extended the `should_force` predicate to keep click-through during Transcribe/TranscribeWithPostProcess states `"transcribing"`, `"processing"`, and `"usb-cycling"`.
+- Left `recording` and `confirming` unforced so the cursor-enter flip still makes `.cancel-button` / `.recording-timeout-extend-button` and router textarea/cards clickable.
+- Mirrored the predicate in the `setOverlayForceClickThrough` effect in `src/overlay/RecordingOverlay.tsx` so React state transitions cannot undo the Rust-side flag.
+
+### Key Insight
+
+macOS `ignoresMouseEvents` is all-or-nothing for the panel; DOM opt-in is impossible while pass-through. The correct scope is therefore the overlay state machine: force click-through whenever the current state has no interactive DOM, and let the enter-flip remain active for states that do.
+
 ## Segfault at display wake: ObjC ScreensDidWake observer ran app logic on the main thread (2026-11-10)
 
 ### Problem
@@ -507,59 +561,6 @@ When calling methods that acquire Mutexes during UI-triggered operations (like s
 - `src-tauri/src/managers/audio.rs` — Fixed `recreate_recorder()` panic point and is_open flag ordering
 - `src-tauri/src/shortcut/mod.rs` — Added error recovery and logging to `change_pre_recording_buffer_setting`
 
-## Live captions streamed to nothing: on_audio closure resolved Tauri state before it was managed (2026-11-12)
-
-### Problem
-
-- Live captions never streamed partial text to the overlay even though the setting was enabled and speech frames were passing the VAD gate.
-- The `[STREAM-CB]` / `[Live Captions]` log lines were missing entirely.
-
-### Root Cause
-
-- `AudioRecordingManager::new` eagerly resolved the live-captions managed state inside the `on_audio` closure constructor:
-  - `app.try_state::<StreamingCancelFlag>()` / `LiveCaptionsStreamingCancelFlag`
-  - `app.try_state::<Arc<Mutex<TranscriptionManager>>>()` / `LiveCaptionsTranscriptionManager`
-- `initialize_core_logic` calls `AudioRecordingManager::new` BEFORE it calls `app_handle.manage(streaming_cancel_flag)`, `manage(transcription_manager)`, `manage(LiveCaptionsStreamingCancelFlag)`, and `manage(LiveCaptionsTranscriptionManager)`.
-- Because Tauri managed state is never retroactively filled, the eager `try_state` captures returned `None` forever, and every speech frame silently dropped at the `let Some(cancel_flag)` / `let Some(tm)` guards.
-- Regression from commit `1f03472b` (2026-10-20).
-
-### Fix
-
-- Added `StreamingSeamState` in `src-tauri/src/managers/audio.rs` with a `OnceLock<SeamHandles>` cache and a `resolve()` method that:
-  - Returns the cached handles on subsequent frames.
-  - On a cache miss, lazily looks up the four managed states from the frame delivery thread.
-  - Retries (without caching) if any required state is not yet managed.
-  - Logs a rate-limited `[LIVE-CAPTIONS]` warning once per 30 s while transient.
-  - Emits a one-time `info!` when the seam finally resolves.
-- `AudioRecordingManager::new` now constructs `Arc<StreamingSeamState>` and moves it into the `on_audio` closure; the eager `try_state` blocks are deleted.
-- The closure destructures `seam.resolve()` once the interval/throttle gates have passed, preserving the original check order.
-
-### Key Insight
-
-Startup-constructed callbacks that consume Tauri managed state must resolve at use time, not construction time. Implicit ordering in `initialize_core_logic` drifts silently; `try_state` returning `None` once is permanent.
-
-## Invisible 800×280 overlay region ate clicks during non-interactive transcribe states (2026-11-12)
-
-### Problem
-
-- During transcribe recording → transcribing → processing, and during USB-cycling, the overlay's transparent 800×280 fixed canvas blocked clicks and scrolls on the underlying application.
-- The user could not interact with the app underneath the overlay even though no interactive DOM elements were visible.
-
-### Root Cause
-
-- `swizzle_mouse_tracking` in `src-tauri/src/overlay.rs` flips the NSPanel's `setIgnoresMouseEvents: false` whenever the cursor enters the panel and `OVERLAY_FORCE_CLICK_THROUGH` is false.
-- `OVERLAY_FORCE_CLICK_THROUGH` was only armed for Router `processing` (and router result display on the React side). It was never armed for Transcribe non-interactive states.
-- macOS `ignoresMouseEvents` is all-or-nothing for the whole panel; CSS `pointer-events: none` is insufficient. DOM `onMouseEnter` cannot fire while the panel is pass-through, so interactive elements cannot opt in until the panel is already accepting events.
-
-### Fix
-
-- In `show_overlay_state_main` (`src-tauri/src/overlay.rs`), extended the `should_force` predicate to keep click-through during Transcribe/TranscribeWithPostProcess states `"transcribing"`, `"processing"`, and `"usb-cycling"`.
-- Left `recording` and `confirming` unforced so the cursor-enter flip still makes `.cancel-button` / `.recording-timeout-extend-button` and router textarea/cards clickable.
-- Mirrored the predicate in the `setOverlayForceClickThrough` effect in `src/overlay/RecordingOverlay.tsx` so React state transitions cannot undo the Rust-side flag.
-
-### Key Insight
-
-macOS `ignoresMouseEvents` is all-or-nothing for the panel; DOM opt-in is impossible while pass-through. The correct scope is therefore the overlay state machine: force click-through whenever the current state has no interactive DOM, and let the enter-flip remain active for states that do.
 
 ## Git Caution (2026-05-23)
 

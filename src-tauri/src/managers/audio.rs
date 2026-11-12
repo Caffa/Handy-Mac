@@ -763,6 +763,13 @@ impl StreamingSeamState {
     /// Returns `None` when a required managed state is not yet available;
     /// the next frame will retry. Logs the first failure in any 30-second
     /// window so we don't spam while the app is still starting up.
+    ///
+    /// Live-model branch note: this branch exists only for completeness.
+    /// In practice it is shadowed by the `router_attached` early-return in
+    /// the frame callback, so it is not a hot path today. If it ever runs,
+    /// router resolution uses a non-blocking `try_lock` on the transcription
+    /// manager and degrades to `None` while that lock is busy, so the frame
+    /// thread never blocks.
     #[inline]
     fn resolve(&self) -> Option<SeamHandles> {
         // Cached hit: return the already-resolved handles.
@@ -779,10 +786,9 @@ impl StreamingSeamState {
                 .app_handle
                 .try_state::<LiveCaptionsTranscriptionManager>()
                 .map(|state| Arc::clone(&state.0));
-            let router = self
-                .app_handle
-                .try_state::<LiveCaptionsTranscriptionManager>()
-                .map(|tm| tm.0.lock().stream_router());
+            let router = tm
+                .as_ref()
+                .and_then(|tm| tm.try_lock().map(|m| m.stream_router()));
             (cancel_flag, tm, router)
         } else {
             let cancel_flag = self
