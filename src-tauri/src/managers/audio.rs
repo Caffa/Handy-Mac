@@ -23,7 +23,7 @@ use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
@@ -712,6 +712,135 @@ pub struct AudioRecordingManager {
     last_flap_bypass_arm_epoch_ms: Arc<AtomicU64>,
 }
 
+/// Resolved handles for the live-captions streaming seam.
+///
+/// Both the dedicated live-model branch and the batch fallback branch resolve
+/// to the same concrete types (`StreamingCancelFlag` plus
+/// `Arc<Mutex<TranscriptionManager>>`); the live branch additionally obtains the
+/// `StreamRouter` so it can gate the batch fallback when a streaming model is
+/// active.
+#[derive(Clone)]
+struct SeamHandles {
+    cancel_flag: StreamingCancelFlag,
+    tm: Arc<Mutex<crate::managers::transcription::TranscriptionManager>>,
+    router: Option<Arc<crate::managers::transcription::StreamRouter>>,
+}
+
+/// Lazily-resolved handles for the live-captions streaming seam.
+///
+/// Regression (1f03472b, 2026-10-20): `AudioRecordingManager::new` used to
+/// eagerly call `app.try_state::<...>()` while it was being constructed, but
+/// `initialize_core_logic` constructs the manager BEFORE it calls
+/// `app_handle.manage(streaming_cancel_flag)`, `manage(transcription_manager)`,
+/// `manage(LiveCaptionsStreamingCancelFlag)`, and
+/// `manage(LiveCaptionsTranscriptionManager)`. The eager captures therefore
+/// resolved to `None` forever and every speech frame was silently dropped.
+///
+/// This helper resolves the managed state on the first delivered frame,
+/// caches the result in a `OnceLock`, and retries on transient failures so
+/// startup ordering never matters. The handles are only cached once all
+/// required state is present; until then frames are dropped with a rate-limited
+/// warning.
+struct StreamingSeamState {
+    use_live_model: bool,
+    app_handle: tauri::AppHandle,
+    resolved: OnceLock<SeamHandles>,
+    last_fail_log_ms: AtomicU64,
+}
+
+impl StreamingSeamState {
+    fn new(app_handle: tauri::AppHandle, use_live_model: bool) -> Self {
+        Self {
+            use_live_model,
+            app_handle,
+            resolved: OnceLock::new(),
+            last_fail_log_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Resolve (and cache) the live-captions seam handles on first use.
+    ///
+    /// Returns `None` when a required managed state is not yet available;
+    /// the next frame will retry. Logs the first failure in any 30-second
+    /// window so we don't spam while the app is still starting up.
+    #[inline]
+    fn resolve(&self) -> Option<SeamHandles> {
+        // Cached hit: return the already-resolved handles.
+        if let Some(handles) = self.resolved.get() {
+            return Some(handles.clone());
+        }
+
+        let (cancel_flag, tm, router) = if self.use_live_model {
+            let cancel_flag = self
+                .app_handle
+                .try_state::<crate::LiveCaptionsStreamingCancelFlag>()
+                .map(|state| state.0.inner().clone());
+            let tm = self
+                .app_handle
+                .try_state::<LiveCaptionsTranscriptionManager>()
+                .map(|state| Arc::clone(&state.0));
+            let router = self
+                .app_handle
+                .try_state::<LiveCaptionsTranscriptionManager>()
+                .map(|tm| tm.0.lock().stream_router());
+            (cancel_flag, tm, router)
+        } else {
+            let cancel_flag = self
+                .app_handle
+                .try_state::<StreamingCancelFlag>()
+                .map(|state| state.inner().clone());
+            let tm = self
+                .app_handle
+                .try_state::<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>()
+                .map(|state| state.inner().clone());
+            (cancel_flag, tm, None)
+        };
+
+        let Some(cancel_flag) = cancel_flag else {
+            self.warn_once("[LIVE-CAPTIONS] streaming seam missing cancel flag (frame dropped)");
+            return None;
+        };
+        let Some(tm) = tm else {
+            self.warn_once(
+                "[LIVE-CAPTIONS] streaming seam missing transcription manager (frame dropped)",
+            );
+            return None;
+        };
+
+        let branch_name = if self.use_live_model {
+            "live-model"
+        } else {
+            "batch-fallback"
+        };
+        info!(
+            "[LIVE-CAPTIONS] streaming seam resolved (branch={})",
+            branch_name
+        );
+
+        let handles = SeamHandles {
+            cancel_flag,
+            tm,
+            router,
+        };
+
+        // Ignore a set race: another frame may have won and already cached
+        // equivalent handles.
+        let _ = self.resolved.set(handles.clone());
+        Some(handles)
+    }
+
+    /// Rate-limited warning: at most one log per 30-second window.
+    fn warn_once(&self, message: &str) {
+        const WARN_INTERVAL_MS: u64 = 30_000;
+        let now = epoch_ms();
+        let last = self.last_fail_log_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= WARN_INTERVAL_MS {
+            warn!("{}", message);
+            self.last_fail_log_ms.store(now, Ordering::Relaxed);
+        }
+    }
+}
+
 // Helper types for microphone resolution live in the parent module so that
 // methods below can reference them without scoping issues inside an impl block.
 impl AudioRecordingManager {
@@ -765,36 +894,19 @@ impl AudioRecordingManager {
         // Post-VAD seam: accumulate slices and fire the batch callback under
         // the fork's gates (enabled flag, ≥3 consecutive speech frames, 2.5s
         // interval, router not active, cancel flag, generation guards).
+        //
+        // The seam state is resolved LAZILY inside the frame callback. At
+        // construction time the managed handles are not yet registered by
+        // `initialize_core_logic`, so eager `try_state` captures returned `None`
+        // forever (regression 1f03472b, 2026-10-20).
         let on_audio: AudioFrameCallback = {
             let capture = Arc::clone(&capture);
             let batch_buffer = Arc::clone(&batch_buffer);
             let app_handle = app.clone();
-            let (cancel_flag, tm_arc): (
-                Option<StreamingCancelFlag>,
-                Option<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>,
-            ) = if use_live_captions_model {
-                let cancel_flag = app
-                    .try_state::<crate::LiveCaptionsStreamingCancelFlag>()
-                    .map(|state| state.0.inner().clone());
-                let tm = app
-                    .try_state::<LiveCaptionsTranscriptionManager>()
-                    .map(|state| Arc::clone(&state.0));
-                (cancel_flag, tm)
-            } else {
-                let cancel_flag = app
-                    .try_state::<StreamingCancelFlag>()
-                    .map(|state| state.inner().clone());
-                let tm = app
-                    .try_state::<Arc<Mutex<crate::managers::transcription::TranscriptionManager>>>()
-                    .map(|state| state.inner().clone());
-                (cancel_flag, tm)
-            };
-            let router = if use_live_captions_model {
-                app.try_state::<LiveCaptionsTranscriptionManager>()
-                    .and_then(|tm| Some(tm.0.lock().stream_router()))
-            } else {
-                None
-            };
+            let seam = Arc::new(StreamingSeamState::new(
+                app_handle.clone(),
+                use_live_captions_model,
+            ));
 
             Arc::new(move |frame| {
                 batch_buffer.lock().extend_from_slice(frame);
@@ -820,17 +932,19 @@ impl AudioRecordingManager {
                 if last != 0 && now.saturating_sub(last) < STREAMING_INTERVAL_MS {
                     return;
                 }
+                let Some(SeamHandles {
+                    cancel_flag,
+                    tm,
+                    router,
+                }) = seam.resolve()
+                else {
+                    return;
+                };
                 if let Some(router) = &router {
                     if router.is_open() {
                         return;
                     }
                 }
-                let Some(cancel_flag) = &cancel_flag else {
-                    return;
-                };
-                let Some(tm) = &tm_arc else {
-                    return;
-                };
                 if cancel_flag.load_flag() {
                     debug!("[STREAM-CB] Skipping streaming transcription — cancellation requested");
                     return;
@@ -846,7 +960,7 @@ impl AudioRecordingManager {
                 // blocking task to keep transcription off audio capture.
                 let app_handle = app_handle.clone();
                 let cancel_flag = cancel_flag.clone();
-                let tm = Arc::clone(tm);
+                let tm = Arc::clone(&tm);
                 tauri::async_runtime::spawn_blocking(move || {
                     if cancel_flag.load_flag() {
                         debug!("[STREAM-CB] Skipping streaming transcription (blocking) — cancellation requested");
