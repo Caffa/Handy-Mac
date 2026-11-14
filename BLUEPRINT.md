@@ -2,19 +2,27 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-14
+updated: 2026-11-15
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
 - Fork of Handy (github.com/Caffa/Handy-Mac) — offline, cross-platform speech-to-text desktop app.
+- Missing-first-syllable bug fixed: hotkey presses landing during the standing-stream rebuild window (sleep/wake, device change, USB watchdog) now hold up to 300ms lock-free so recording starts on the rebuilt stream instead of an on-demand path with an empty pre-buffer.
 - Live-captions streaming reworked: states resolve lazily on frame delivery, the transcribe overlay keeps click-through during non-interactive states, and the streaming seam uses a non-blocking TM lock. A live-captions model picker defaults to Moonshine Streaming Small.
-- Wake observers dispatch off the main thread; the display-wake segfault and an Arc pointer miscast are fixed.
 - Bluetooth mic is excluded from USB watchdog accounting via an is_bluetooth_device_name heuristic, with zero-RMS liveness gating.
 - US→British spelling dictionary purged of dated targets (reflexion, tzar, etc.) that caused "Reflexions"-style mistranscriptions; deduped to 284 entries with a regression test.
 
 ## Log
+
+### 2026-11-15 — Missing first syllable fix
+
+Investigated reports of the first syllable missing from raw recordings; waveform forensics over 300 recent WAVs ruled out chunking, VAD trimming, and pre-buffer drain bugs (292/300 have the full 1s lead). Root cause: hotkey presses landing during the standing-stream rebuild window (sleep/wake, device change, USB watchdog) fell to the on-demand path with an empty pre-buffer. Added a bounded lock-free 300ms hold at the top of try_start_recording (should_hold_start_for_standing_rebuild / hold_for_standing_rebuild, epoch-stamped CaptureControl, ARM-RACE instrumentation) plus a publication-order fix stamping the down-epoch before clearing the flag; cargo fmt/clippy/check clean and 640 lib tests pass.
+
+Next: confirm first words come through intact in daily dictation after sleep/wake and device swaps.
+
+https://discord.com/channels/1486966847810043924/1571160823752163400
 
 ### 2026-11-14 — British spelling dictionary purge
 
