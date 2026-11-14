@@ -8,7 +8,7 @@
  *
  * Scope: Live caption display during recording.
  * Dependencies: React hooks, PartialTranscriptionEvent and StreamTextEvent types.
- * Side effects: partial-transcription and stream-text event listeners, debug logging.
+ * Side effects: partial-transcription and stream-text-event event listeners, debug logging.
  */
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
@@ -300,17 +300,21 @@ export function useLiveCaptions(
     };
   }, []);
 
-  // Listen for stream-text events from the backend's streaming pipeline.
+  // Listen for stream-text-event events from the backend's streaming pipeline.
   // These provide low-latency live captions with an append-only committed
   // prefix plus a volatile tentative suffix. The partial-transcription
   // listener above continues to serve as the 2.5s batch fallback.
+  //
+  // IMPORTANT: The event name MUST match the tauri-specta kebab-case derivation
+  // of the Rust StreamTextEvent struct (StreamTextEvent → "stream-text-event").
+  // A mismatch will silently break live caption display.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
 
-    console.log("[Live Captions] Registering stream-text event listener");
+    console.log("[Live Captions] Registering stream-text-event event listener");
 
     const setup = async () => {
-      unlisten = await listen<StreamTextEvent>("stream-text", (event) => {
+      unlisten = await listen<StreamTextEvent>("stream-text-event", (event) => {
         const { committed, tentative } = event.payload;
 
         // Read current values from refs to avoid stale closure

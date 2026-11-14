@@ -872,6 +872,8 @@ pub fn run(cli_args: CliArgs) {
         .events(collect_events![
             managers::history::HistoryUpdate,
             managers::audio::DeviceListChanged,
+            managers::transcription::StreamTextEvent,
+            managers::transcription::StreamPhaseEvent,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds

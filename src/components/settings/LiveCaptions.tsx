@@ -91,25 +91,39 @@ export const LiveCaptions: React.FC<LiveCaptionsProps> = React.memo(
       }
     };
 
-    // Build dropdown options
-    const modelOptions: DropdownOption[] = models.map((m) => {
-      let label = `${m.name} (${m.size_mb} MB)`;
-      if (!m.is_downloaded) {
-        label += ` ${t("settings.advanced.liveCaptions.notDownloaded")}`;
-      }
-      if (m.is_downloading) {
-        label += ` ${t("settings.advanced.liveCaptions.downloading")}`;
-      }
-      return {
-        value: m.id,
-        label,
-        tooltip: m.description,
-      };
-    });
+    // Build dropdown options: "Same as main transcription model" first, then streaming models
+    const modelOptions: DropdownOption[] = [
+      {
+        value: "",
+        label: t("settings.advanced.liveCaptions.modelUseMainModel"),
+        tooltip: t("settings.advanced.liveCaptions.modelUseMainModelDescription"),
+      },
+      ...models.map((m) => {
+        let label = `${m.name} (${m.size_mb} MB)`;
+        if (!m.is_downloaded) {
+          label += ` ${t("settings.advanced.liveCaptions.notDownloaded")}`;
+        }
+        if (m.is_downloading) {
+          label += ` ${t("settings.advanced.liveCaptions.downloading")}`;
+        }
+        return {
+          value: m.id,
+          label,
+          tooltip: m.description,
+        };
+      }),
+    ];
 
-    // Determine selected value: current setting, or default if empty
+    // Determine selected value:
+    // - "" (empty) → "Same as main transcription model" option
+    // - matches a model option → that model
+    // - non-empty but unknown → show Moonshine default as placeholder (preserves existing intent)
     const selectedValue =
-      currentModelId && currentModelId.length > 0 ? currentModelId : MOONSHINE_SMALL_DEFAULT_ID;
+      currentModelId !== undefined && currentModelId.length > 0
+        ? modelOptions.some((opt) => opt.value === currentModelId)
+          ? currentModelId
+          : MOONSHINE_SMALL_DEFAULT_ID
+        : "";
 
     const isModelUpdating = isUpdating("live_captions_model");
 

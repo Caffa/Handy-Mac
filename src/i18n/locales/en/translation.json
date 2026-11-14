@@ -538,7 +538,8 @@
         "notDownloaded": "(not downloaded)",
         "downloading": "(downloading...)",
         "noStreamingModels": "No streaming-capable models found. Download a streaming model from the Models tab.",
-        "useMainModel": "Use main transcription model",
+        "modelUseMainModel": "Same as main transcription model",
+        "modelUseMainModelDescription": "Uses the main transcription model with the 2.5s batch fallback (not true streaming).",
         "streaming": "Streaming"
       },
       "noiseSuppression": {

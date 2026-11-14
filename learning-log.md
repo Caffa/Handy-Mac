@@ -1,5 +1,21 @@
 # Handy-Fork Learning Log
 
+## Live captions never displayed with streaming models (2026-11-15)
+
+### Problem
+- Live captions never appeared when a dedicated streaming model was selected.
+- The partial-transcription fallback (2.5s batch) worked, but the true streaming path (`StreamTextEvent`) produced zero visible output.
+- User logs showed 146 occurrences of "Event stream-text-event not found in registry!" on 2026-11-14.
+
+### Root Cause — two stacked causes
+1. **Wrong listener name**: Overlay (`useLiveCaptions.ts`) listened on `"stream-text"`, but `tauri-specta` derives the event name as kebab-case of the Rust struct (`StreamTextEvent` → `"stream-text-event"`). The events never reached the listener.
+2. **Events never registered**: `StreamTextEvent` and `StreamPhaseEvent` were missing from `collect_events!` in `lib.rs`. Every `emit()` panicked at runtime with "not found in registry" (caught by the supervisor's `catch_unwind`, so only the text was lost — no crash, but no captions either).
+
+### Fix
+- Renamed the listener to `"stream-text-event"` in `useLiveCaptions.ts` with a comment explaining the kebab-case derivation contract.
+- Added `managers::transcription::StreamTextEvent` and `managers::transcription::StreamPhaseEvent` to `collect_events!` in `lib.rs`.
+- Mirrors upstream commit a673551a which registered these events (registration was lost in this fork's port).
+
 ## Live captions with dedicated streaming model received zero audio frames (2026-11-15)
 
 ### Problem
