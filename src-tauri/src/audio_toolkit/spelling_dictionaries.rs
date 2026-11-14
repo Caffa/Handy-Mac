@@ -6,8 +6,10 @@
 //!
 //! Both dictionaries:
 //! - Exclude semantic ambiguities (check/cheque, tire/tyre, program/programme)
-//! - Exclude archaic spellings (waggon, instal, catalogue)
 //! - Are actively maintained upstream (no manual maintenance needed)
+//!
+//! 2026-11-14 purge: removed dated British targets (reflexion, inflexion,
+//! kilogramme, tzar, whisky, spelt), dead identity entries, and duplicates.
 //!
 //! Decision documented: 2026-06-25
 //! Replaced varcon (v2020.12.07) because:
@@ -64,11 +66,8 @@ impl Default for SpellingDictionary {
 /// - potter/putter (pottery maker vs golf club)
 /// - prize/prise (award vs lever open)
 ///
-/// Excludes archaic spellings:
-/// - waggon (archaic, modern British uses "wagon")
-/// - instal (incorrect, both use "install")
-/// - catalogue (modern British accepts "catalog" in computing)
-/// - dialogue (modern British accepts "dialog" in computing)
+/// 2026-11-14 purge: removed dated British targets (reflexion, inflexion,
+/// kilogramme, tzar, whisky, spelt), dead identity entries, and duplicates.
 static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     let mut map = HashMap::new();
 
@@ -148,7 +147,6 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             // ("meters", "metres"),
             ("theater", "theatre"),
             ("theaters", "theatres"),
-            ("theatrical", "theatrical"),
             ("specter", "spectre"),
             ("specters", "spectres"),
             ("somber", "sombre"),
@@ -195,7 +193,10 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("optimized", "optimised"),
             ("maximize", "maximise"),
             ("minimize", "minimise"),
-            ("normalise", "normalise"),
+            ("normalize", "normalise"),
+            ("normalizes", "normalises"),
+            ("normalized", "normalised"),
+            ("normalizing", "normalising"),
             ("socialize", "socialise"),
             ("specialize", "specialise"),
             ("stabilize", "stabilise"),
@@ -218,10 +219,8 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
         &[
             ("defense", "defence"),
             ("defenses", "defences"),
-            ("defensive", "defensive"),
             ("offense", "offence"),
             ("offenses", "offences"),
-            ("offensive", "offensive"),
             ("pretense", "pretence"),
             ("pretenses", "pretences"),
             // NOTE: license/licence excluded - UK noun/verb split
@@ -266,7 +265,6 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("marveling", "marvelling"),
             ("modeled", "modelled"),
             ("modeling", "modelling"),
-            ("queried", "queried"),
             ("quarreled", "quarrelled"),
             ("signaled", "signalled"),
             ("signaling", "signalling"),
@@ -293,8 +291,6 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
         &mut map,
         &[
             ("aging", "ageing"),
-            ("aging", "ageing"),
-            ("armor", "armour"),
             ("armored", "armoured"),
             ("behavior", "behaviour"),
             ("behaviors", "behaviours"),
@@ -361,9 +357,6 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("accouterment", "accoutrement"),
             ("adapter", "adaptor"),
             ("adapters", "adaptors"),
-            ("aesthetic", "aesthetic"), // Note: both same, but American uses "esthetic" variant
-            ("aging", "ageing"),
-            ("aged", "aged"),
             ("anemia", "anaemia"),
             ("anemic", "anaemic"),
             ("anesthetic", "anaesthetic"),
@@ -407,56 +400,36 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("crawfish", "crayfish"),
             // NOTE: dependent/dependant excluded - UK adjective (dependent) vs noun (dependant)
             // ("dependent", "dependant"), // Note: British distinguishes dependent/dependant
-            ("demeanor", "demeanour"),
             // NOTE: dialog/dialogue excluded - semantic ambiguity (UI vs conversation)
             ("distill", "distil"),
-            ("distilled", "distilled"),
-            ("distilling", "distilling"),
-            ("enamor", "enamour"),
             ("endeavor", "endeavour"),
             ("endeavors", "endeavours"),
-            ("fervor", "fervour"),
             // NOTE: font/fount excluded - semantic ambiguity (typeface vs source/fountain)
             // ("font", "fount"),
-            ("fueled", "fuelled"),
-            ("fueling", "fuelling"),
             ("furor", "furore"),
             // NOTE: gage/gauge excluded - semantic ambiguity (pledge vs measuring instrument)
             // ("gage", "gauge"),
             ("glamor", "glamour"), // Same
             ("generalization", "generalisation"),
             ("generalizations", "generalisations"),
-            ("goiter", "goitre"),
             ("goiters", "goitres"),
             ("groveling", "grovelling"),
             ("honorable", "honourable"),
-            ("inflection", "inflexion"),
-            ("inflections", "inflexions"),
             ("kidnaper", "kidnapper"),
             ("kidnaping", "kidnapping"),
-            ("kilogram", "kilogramme"),
-            ("kilograms", "kilogrammes"),
             ("kilometer", "kilometre"),
             ("kilometers", "kilometres"),
             ("licorice", "liquorice"),
-            ("maneuver", "manoeuvre"),
-            ("maneuvers", "manoeuvres"),
             ("maneuvered", "manoeuvred"),
             ("math", "maths"),
             ("misdemeanor", "misdemeanour"),
-            ("mustache", "moustache"),
-            ("mustaches", "moustaches"),
             // NOTE: naught/nought excluded - semantic ambiguity (nothing vs digit zero)
             // ("naught", "nought"),
             ("neighborhood", "neighbourhood"),
-            ("omelet", "omelette"),
-            ("omelets", "omelettes"),
             ("peddler", "pedlar"),
             ("peddlers", "pedlars"),
             ("persnickety", "pernickety"),
             ("philter", "philtre"),
-            ("plow", "plough"),
-            ("plows", "ploughs"),
             ("plowing", "ploughing"),
             // NOTE: potter/putter excluded - semantic ambiguity (pottery maker vs golf club)
             // ("potter", "putter"), // Note: different meanings
@@ -465,24 +438,13 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             // ("prizes", "prises"), // Note: prize = award, prise = leverage
             // NOTE: program/programme excluded - semantic ambiguity (software vs TV show)
             // Both spellings are valid in British English with different meanings
-            ("reflection", "reflexion"),
-            ("reflections", "reflexions"),
             ("rigor", "rigour"),
-            ("saber", "sabre"),
-            ("sabers", "sabres"),
-            ("saltpeter", "saltpetre"),
-            ("skeptical", "sceptical"),
-            ("smolder", "smoulder"),
             ("smolders", "smoulders"),
             ("snowplow", "snowplough"),
             ("siphon", "syphon"),
             ("siphons", "syphons"),
-            ("specter", "spectre"),
-            ("specters", "spectres"),
             ("specialty", "speciality"),
             ("specialties", "specialities"),
-            ("spelled", "spelt"), // Note: both valid in British
-            ("splendor", "splendour"),
             ("succor", "succour"),
             ("sulfate", "sulphate"),
             ("sulfates", "sulphates"),
@@ -490,17 +452,9 @@ static DWYL_DICTIONARY: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
             ("sulfides", "sulphides"),
             ("sulfur", "sulphur"),
             ("sulfurs", "sulphurs"),
-            ("theater", "theatre"),
-            ("theaters", "theatres"),
             // NOTE: tire/tyre excluded - semantic ambiguity (weary vs wheel)
             // Both words exist in British English with different meanings
-            ("tsar", "tzar"),
-            ("vapor", "vapour"),
-            ("vapors", "vapours"),
             // NOTE: wagon/waggon excluded - "waggon" is archaic, modern British uses "wagon"
-            ("whiskey", "whisky"), // Note: Irish = whiskey, Scottish = whisky
-            ("woolen", "woollen"),
-            ("woolens", "woollens"),
         ],
     );
 
@@ -989,6 +943,18 @@ mod tests {
         let dict = SpellingDictionary::Dwyl;
         let input = "The gray color of the center was organized.";
         let expected = "The grey colour of the centre was organised.";
+        assert_eq!(convert_us_to_british_with_dict(input, dict), expected);
+    }
+
+    #[test]
+    fn test_dated_entries_removed() {
+        let dict = SpellingDictionary::Dwyl;
+        // Dated British targets (reflexion, inflexion, kilogramme, tzar, whisky,
+        // spelt) were purged on 2026-11-14: they rewrote correct words after
+        // transcription. "normalized" should now convert to "normalised"
+        // (the old entry was the identity no-op ("normalise", "normalise")).
+        let input = "The reflections and inflections weighed a kilogram, a tsar drank whiskey while it spelled doom and normalized data.";
+        let expected = "The reflections and inflections weighed a kilogram, a tsar drank whiskey while it spelled doom and normalised data.";
         assert_eq!(convert_us_to_british_with_dict(input, dict), expected);
     }
 

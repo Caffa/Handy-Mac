@@ -1,5 +1,23 @@
 # Handy-Fork Learning Log
 
+## "Reflections" mistranscribed as "Reflexions" — post-processing dictionary rewrote correct words (2026-11-14)
+
+### Problem
+
+- Transcription output containing perfectly valid words ("reflections", "inflections", "kilogram", "tsar", "whiskey", "spelled") was rewritten by the US→British post-processing step into dated/incorrect British forms ("reflexions", "inflexions", "kilogramme", "tzar", "whisky", "spelt").
+
+### Root Cause
+
+- The DWYL-derived `DWYL_DICTIONARY` in `src-tauri/src/audio_toolkit/spelling_dictionaries.rs` contained dated British targets that modern British English no longer prefers (reflexion, inflexion, kilogramme, tzar, whisky, spelt — 9 pairs incl. inflected forms).
+- The same dictionary carried 8 dead identity entries (us==uk, e.g. ("theatrical","theatrical")), 31 verbatim duplicate keys, and a broken entry ("normalise","normalise") that should have been ("normalize","normalise") — so "normalize" was never converted while organize/realize were.
+- `convert_us_to_british` runs after transcription and trusted these entries blindly.
+
+### Fix
+
+- Purged the 9 dated pairs, 8 identity entries, and 31 later duplicates (kept first occurrence); replaced ("normalise","normalise") with ("normalize","normalise") plus normalizes/normalized/normalising forms. DWYL now has 284 clean entries.
+- Flagged-but-approved pairs (adapter/adaptor, siphon→syphon, philter→philtre, fetus→foetus, sulphur, judgement, speciality, -ise/-our/-re) intentionally kept.
+- Added `test_dated_entries_removed` guarding the purge; module doc updated with the 2026-11-14 purge note.
+
 ## Live captions streamed to nothing: on_audio closure resolved Tauri state before it was managed (2026-11-12)
 
 ### Problem
