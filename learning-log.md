@@ -1,5 +1,27 @@
 # Handy-Fork Learning Log
 
+## Hotkey during standing-stream rebuild armed an empty pre-buffer — first syllable clipped (2026-11-14)
+
+### Problem
+
+- After a system wake, input device change, or USB-watchdog cycle, the first hotkey dictation started with its first syllable clipped in the raw WAV: the always-on ("standing") mic stream was still rebuilding, so the press fell through to the on-demand path and armed with an EMPTY pre-hotkey buffer — no lead-in audio existed to drain at arm time.
+
+### Root Cause
+
+- `try_start_recording` checks `standing_active`; while the standing stream is down (teardown → reopen observed at ~110–230ms), it takes the on-demand path immediately. Nothing waits for the rebuild, and the on-demand sink's `begin_armed` drain finds nothing to drain.
+- Every `standing_active.store(false)` site was silent about WHEN the stream went down, so a start could not distinguish "rebuild in flight" from "standing deliberately off".
+
+### Fix
+
+- `CaptureControl` gained `standing_down_epoch_ms` (epoch ms the standing stream last went down, 0 = never) and `standing_started_epoch_ms` (epoch ms the current standing sink started), both stamped by the manager.
+- New `mark_standing_down` helper replaces every `standing_active.store(false)` site (failed-reopen teardown, `stop_microphone_stream`, `stop_recording`, `cancel_recording`, `recovery_after_state_lock_timeout`, and the no-longer-wanted branch of `refresh_standing_capture`), so the down-stamp is never missed.
+- `try_start_recording` now calls `hold_for_standing_rebuild` FIRST — before taking the `state` lock: a bounded, lock-free hold (poll every 10ms, up to 300ms via `STANDING_RACE_WAIT_BUDGET_MS`) gated by the pure predicate `should_hold_start_for_standing_rebuild` (wants-standing + stream down + down within `STANDING_RACE_RECENT_DOWN_MS` = 2s). If the standing stream returns, it is armed as usual (pre-buffer intact); on deadline it falls through to the existing on-demand path unchanged. No mutex is held across the sleep.
+- `begin_armed` in `sink.rs` logs `Pre-buffer drain at arm: N samples (Mms), standing age AmS` at INFO always, plus a WARN `ARM-RACE: armed Xms after standing stream went down …` when the teardown happened within `ARM_RACE_MARKER_WINDOW_MS` (5s) — the empty-drain signature is now visible in logs.
+
+### Known Limitation
+
+- A zombie standing stream (CoreAudio still "delivering" silence before any teardown/rebuild starts) never stamps `standing_down_epoch_ms`, so the hold cannot catch it — that is `should_abort_dead_recording`'s domain (zero-RMS abort + USB cycle), intentionally out of scope here.
+
 ## "Reflections" mistranscribed as "Reflexions" — post-processing dictionary rewrote correct words (2026-11-14)
 
 ### Problem

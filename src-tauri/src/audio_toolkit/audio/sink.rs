@@ -163,6 +163,14 @@ pub struct CaptureControl {
     /// before a recording starts; the sink fires it on the next armed chunk.
     /// The device, not the speech, is what this signals: silence counts.
     pub ready: Mutex<Option<mpsc::Sender<()>>>,
+    /// Epoch ms when the standing stream last went down (0 = never). Lets a
+    /// hotkey start detect the wake / device-change rebuild race: a press
+    /// landing while the stream is rebuilding would otherwise arm an
+    /// on-demand sink with an empty pre-buffer and clip the first syllable.
+    pub standing_down_epoch_ms: AtomicU64,
+    /// Epoch ms when the current standing sink started collecting (0 = none).
+    /// Diagnostic only: the arm-race logging compares it against arm time.
+    pub standing_started_epoch_ms: AtomicU64,
 }
 
 impl CaptureControl {
@@ -187,6 +195,8 @@ impl CaptureControl {
             last_batch_invoke_ms: AtomicU64::new(0),
             streaming_enabled: AtomicBool::new(false),
             ready: Mutex::new(None),
+            standing_down_epoch_ms: AtomicU64::new(0),
+            standing_started_epoch_ms: AtomicU64::new(0),
         }
     }
 
@@ -256,6 +266,17 @@ pub const NOISE_ALPHA: f32 = 0.05;
 // DEFAULT_NOISE_FLOOR: fallback floor when no VAD-noise frame has been
 //   observed yet (≈ RMS of −46 dBFS in 16-bit audio).
 pub const DEFAULT_NOISE_FLOOR: f32 = 0.005;
+
+/// How recent a standing-stream teardown must be for the arm-time WARN
+/// diagnostics to fire (the rebuild race these logs target).
+const ARM_RACE_MARKER_WINDOW_MS: u64 = 5_000;
+
+/// Pure predicate: the standing stream went down within
+/// `ARM_RACE_MARKER_WINDOW_MS` of `now_epoch_ms` (a stamp of 0 — never
+/// stamped — is never a race marker).
+fn arm_race_marker(down_epoch_ms: u64, now_epoch_ms: u64) -> bool {
+    down_epoch_ms > 0 && now_epoch_ms.saturating_sub(down_epoch_ms) <= ARM_RACE_MARKER_WINDOW_MS
+}
 
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
@@ -404,6 +425,33 @@ impl CaptureSink {
             let mut buf = self.control.pre_buffer.lock();
             std::mem::take(&mut *buf).into_iter().collect()
         };
+        // Arm-time diagnostics (INFO always, WARN in a recent rebuild-race
+        // window): an empty drain here is the first-syllable-clip signature.
+        let now = epoch_ms();
+        let drained_ms = drained.len() * 1000 / constants::WHISPER_SAMPLE_RATE as usize;
+        let standing_age_ms = match self
+            .control
+            .standing_started_epoch_ms
+            .load(Ordering::Acquire)
+        {
+            0 => 0,
+            started => now.saturating_sub(started),
+        };
+        log::info!(
+            "Pre-buffer drain at arm: {} samples ({}ms), standing age {}ms",
+            drained.len(),
+            drained_ms,
+            standing_age_ms
+        );
+        let down = self.control.standing_down_epoch_ms.load(Ordering::Acquire);
+        if arm_race_marker(down, now) {
+            log::warn!(
+                "ARM-RACE: armed {}ms after standing stream went down (drain {} samples, standing age {}ms)",
+                now.saturating_sub(down),
+                drained.len(),
+                standing_age_ms
+            );
+        }
         if !drained.is_empty() {
             log::debug!(
                 "Pre-buffer: prepended {} samples ({}ms) to recording",
@@ -630,5 +678,24 @@ impl Sink for CaptureSink {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arm_race_marker_window() {
+        let now = 50_000_000;
+
+        // Never stamped (0): not a race.
+        assert!(!arm_race_marker(0, now));
+
+        // Well inside the window: race.
+        assert!(arm_race_marker(now - 4_999, now));
+
+        // One ms past the window: no longer a race.
+        assert!(!arm_race_marker(now - 5_001, now));
     }
 }

@@ -1,5 +1,26 @@
 # Architecture Decisions
 
+## 2026-11-14: Hotkey start holds up to 300ms for a standing-stream rebuild (bounded, lock-free) instead of arming an empty pre-buffer on-demand sink
+
+### Status
+
+**Accepted**
+
+### Context
+
+When the always-on ("standing") mic stream is rebuilding after a system wake, input device change, or USB-watchdog cycle, a hotkey press during the rebuild window fell to the on-demand path and armed with an empty pre-hotkey buffer — the first syllable's lead-in was clipped from the raw WAV (observed reopen latency: ~110–230ms).
+
+### Decision
+
+`try_start_recording` calls `hold_for_standing_rebuild` before taking any lock: a bounded, lock-free hold (10ms polls, 300ms budget) gated by the pure predicate `should_hold_start_for_standing_rebuild` (standing wanted + stream down + `standing_down_epoch_ms` stamped within the last 2s). If the standing stream comes back, it is armed with its pre-buffer intact; on deadline the existing on-demand path runs unchanged. Every `standing_active` teardown goes through `mark_standing_down` so the down-stamp is never missed, and `begin_armed` emits INFO/WARN (`ARM-RACE`) drain diagnostics. No mutex is held across the wait — the hold reads atomics and instant mutex reads only, so concurrent stop/cancel is never blocked.
+
+Known limitation: a zombie standing stream that never tears down (still delivering digital silence) never stamps the down-epoch and is not caught by the hold — it stays `should_abort_dead_recording`'s domain (zero-RMS abort + USB cycle).
+
+### Reconsider when
+
+- Rebuild times shrink materially (the 300ms budget and 2s recency window become dead weight — tighten or remove the hold).
+- Users report post-wake hotkey press latency (the hold is felt; consider lowering the budget or gating on a readiness signal instead of polling).
+
 ## 2026-11-09: USB watchdog smart-ignores Bluetooth devices by name heuristic
 
 ### Status

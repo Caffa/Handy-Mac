@@ -56,6 +56,16 @@ const MIN_SPEECH_FRAMES_BEFORE_STREAMING: u32 = 3;
 /// quick succession; the rate limit keeps us to one rebuild per burst.
 const STANDING_REBUILD_MIN_INTERVAL_MS: u64 = 10_000;
 
+/// How long a hotkey start holds off arming while the standing stream
+/// rebuilds after a system wake / device change / USB cycle. Observed
+/// reopen latencies are ~110–230ms; the budget covers them with margin.
+const STANDING_RACE_WAIT_BUDGET_MS: u64 = 300;
+/// A hotkey press only waits when the standing stream went down recently;
+/// a stamp older than this means no rebuild is plausibly in flight.
+const STANDING_RACE_RECENT_DOWN_MS: u64 = 2_000;
+/// Poll interval while waiting for the standing stream to come back.
+const STANDING_RACE_POLL_MS: u64 = 10;
+
 /// How long after an input device-list change the stream counts as
 /// "changed recently" (feeds the zero-RMS abort gate and flap arming).
 const DEVICE_FLAP_RECENT_WINDOW_MS: u64 = 120_000;
@@ -74,6 +84,24 @@ fn should_rebuild_standing_stream(elapsed_ms: u64, recording: bool) -> bool {
         return false;
     }
     elapsed_ms >= STANDING_REBUILD_MIN_INTERVAL_MS
+}
+
+/// Pure predicate for the standing-rebuild race: a hotkey start should hold
+/// (bounded, lock-free) when a standing capture is wanted, the stream is
+/// currently down, AND it went down recently — i.e. a wake / device-change /
+/// USB-cycle rebuild is plausibly in flight. A press during that window must
+/// not fall through to the on-demand path, which would arm with an empty
+/// pre-buffer and clip the utterance's first syllable.
+fn should_hold_start_for_standing_rebuild(
+    wants_standing: bool,
+    standing_active: bool,
+    down_epoch_ms: u64,
+    now_ms: u64,
+) -> bool {
+    wants_standing
+        && !standing_active
+        && down_epoch_ms > 0
+        && now_ms.saturating_sub(down_epoch_ms) <= STANDING_RACE_RECENT_DOWN_MS
 }
 
 /// True when an input device change happened within `window_ms` of `now_ms`.
@@ -384,6 +412,20 @@ pub enum RecordingState {
 pub enum MicrophoneMode {
     AlwaysOn,
     OnDemand,
+}
+
+/// Outcome of the bounded hold at the top of `try_start_recording` that
+/// waits for a standing-stream rebuild to finish before arming.
+#[derive(Debug, PartialEq, Eq)]
+enum StandingRaceHold {
+    /// No rebuild race in flight (standing active, not wanted, or the
+    /// down-stamp is stale/absent): arm immediately.
+    NotNeeded,
+    /// The standing stream came back within the wait budget; arm it.
+    ArmedAfter(Duration),
+    /// The stream did not come back in time; fall through to the existing
+    /// on-demand path unchanged.
+    TimedOut(Duration),
 }
 
 /// Tracks our forced "mute while recording" so we can restore the user's audio
@@ -2057,6 +2099,17 @@ impl AudioRecordingManager {
         pre_buffer || batch_captions
     }
 
+    /// Stamp the standing stream as down and record when it happened, so a
+    /// hotkey start can detect the rebuild race window
+    /// (`hold_for_standing_rebuild`). Call this everywhere the standing flag
+    /// is cleared.
+    fn mark_standing_down(&self) {
+        self.standing_active.store(false, Ordering::Release);
+        self.capture
+            .standing_down_epoch_ms
+            .store(epoch_ms(), Ordering::Release);
+    }
+
     /// Bring the standing capture in line with the current mode/settings.
     /// Starts one when idle audio must be consumed, stops it when not. The
     /// stream must already be open; `start_microphone_stream` calls this on
@@ -2071,7 +2124,7 @@ impl AudioRecordingManager {
                 if let Some(microphone) = self.recorder.lock().as_ref() {
                     let _ = self.collect_recording(microphone); // Discard
                 }
-                self.standing_active.store(false, Ordering::Release);
+                self.mark_standing_down();
                 self.capture.disarm();
             }
             return;
@@ -2114,6 +2167,9 @@ impl AudioRecordingManager {
         match microphone.recorder.start(sink) {
             Ok(()) => {
                 self.standing_active.store(true, Ordering::Release);
+                self.capture
+                    .standing_started_epoch_ms
+                    .store(epoch_ms(), Ordering::Release);
                 debug!(
                     "Standing capture started in {:?} (pre_buffer={}ms, batch_captions={})",
                     start.elapsed(),
@@ -2179,7 +2235,7 @@ impl AudioRecordingManager {
                     mute_guard.did_mute = false;
                 }
             }
-            self.standing_active.store(false, Ordering::Release);
+            self.mark_standing_down();
             let failed = self.recorder.lock().take();
             if let Some(microphone) = failed {
                 self.close_microphone(microphone);
@@ -2332,7 +2388,7 @@ impl AudioRecordingManager {
             mute_guard.did_mute = false;
         }
 
-        self.standing_active.store(false, Ordering::Release);
+        self.mark_standing_down();
         let microphone = self.recorder.lock().take();
         if let Some(microphone) = microphone {
             self.close_microphone(microphone);
@@ -2477,11 +2533,70 @@ impl AudioRecordingManager {
         rx
     }
 
+    /// Bounded, lock-free hold for the standing-rebuild race: when the
+    /// standing stream went down recently (system wake / device change / USB
+    /// cycle) and its rebuild is in flight, a hotkey press waits briefly for
+    /// the standing capture to return instead of falling to the on-demand
+    /// path, which would arm with an EMPTY pre-buffer and clip the first
+    /// syllable's lead-in from the recording.
+    ///
+    /// MUST be called before any lock is taken: it sleeps across poll
+    /// iterations while reading atomics and instant mutex reads only, so a
+    /// concurrent stop/cancel is never blocked by the wait. On timeout the
+    /// existing on-demand path runs unchanged.
+    fn hold_for_standing_rebuild(&self) -> StandingRaceHold {
+        // Fast path (zero cost on every normal press): the standing capture
+        // is already running, or none is wanted at all.
+        if self.standing_active.load(Ordering::Acquire) || !self.wants_standing_capture() {
+            return StandingRaceHold::NotNeeded;
+        }
+        let down = self.capture.standing_down_epoch_ms.load(Ordering::Acquire);
+        if !should_hold_start_for_standing_rebuild(true, false, down, epoch_ms()) {
+            return StandingRaceHold::NotNeeded;
+        }
+        info!(
+            "Standing rebuild race: hotkey while standing stream is down (down for {}ms) — holding start up to {}ms",
+            epoch_ms().saturating_sub(down),
+            STANDING_RACE_WAIT_BUDGET_MS
+        );
+        let started = Instant::now();
+        let budget = Duration::from_millis(STANDING_RACE_WAIT_BUDGET_MS);
+        loop {
+            if self.standing_active.load(Ordering::Acquire) {
+                let elapsed = started.elapsed();
+                info!(
+                    "Standing rebuild race: standing stream returned after {}ms — arming it",
+                    elapsed.as_millis()
+                );
+                return StandingRaceHold::ArmedAfter(elapsed);
+            }
+            if !self.wants_standing_capture() {
+                debug!(
+                    "Standing rebuild race: standing capture no longer wanted — arming directly"
+                );
+                return StandingRaceHold::NotNeeded;
+            }
+            if started.elapsed() >= budget {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(STANDING_RACE_POLL_MS));
+        }
+        let elapsed = started.elapsed();
+        warn!(
+            "Standing rebuild race: standing stream did not return within {}ms — arming on-demand (pre-buffer may be empty)",
+            elapsed.as_millis()
+        );
+        StandingRaceHold::TimedOut(elapsed)
+    }
+
     pub fn try_start_recording(
         &self,
         binding_id: &str,
         vad_policy: VadPolicy,
     ) -> Result<RecordingReadiness, anyhow::Error> {
+        // Hold briefly for an in-flight standing rebuild BEFORE taking the
+        // state lock: the wait below sleeps and must never hold any mutex.
+        let _ = self.hold_for_standing_rebuild();
         let mut state = self.state.lock();
         if !matches!(*state, RecordingState::Idle) {
             // If the state is Recording but the is_recording flag has been
@@ -2828,7 +2943,7 @@ impl AudioRecordingManager {
                         (Vec::new(), Vec::new())
                     }
                 };
-                self.standing_active.store(false, Ordering::Release);
+                self.mark_standing_down();
                 self.capture.disarm();
                 // Read the peak NOW, while manager state is still `Stopping`:
                 // no arm() can intervene in this window, so max_level is
@@ -3136,7 +3251,7 @@ impl AudioRecordingManager {
                 if let Some(microphone) = self.recorder.lock().as_ref() {
                     let _ = self.collect_recording(microphone); // Discard
                 }
-                self.standing_active.store(false, Ordering::Release);
+                self.mark_standing_down();
                 self.capture.disarm();
 
                 *self.is_recording.lock() = false;
@@ -3195,7 +3310,7 @@ impl AudioRecordingManager {
                 );
             }
         }
-        self.standing_active.store(false, Ordering::Release);
+        self.mark_standing_down();
         self.capture.disarm();
 
         // Phase B — heal the stale Recording state. The atomic gate guarantees
@@ -3423,6 +3538,55 @@ mod tests {
         // First ever rebuild (epoch 0 baseline): elapsed == now, always large
         // enough.
         assert!(should_rebuild_standing_stream(20_000, false));
+    }
+
+    #[test]
+    fn standing_rebuild_hold_predicate() {
+        let now = 10_000_000;
+
+        // No standing capture wanted (on-demand, no pre-buffer, no batch
+        // captions): never hold.
+        assert!(!should_hold_start_for_standing_rebuild(
+            false,
+            false,
+            now - 500,
+            now
+        ));
+
+        // Standing capture already active: nothing to wait for.
+        assert!(!should_hold_start_for_standing_rebuild(
+            true,
+            true,
+            now - 500,
+            now
+        ));
+
+        // Never stamped as down (0): no rebuild race known.
+        assert!(!should_hold_start_for_standing_rebuild(true, false, 0, now));
+
+        // Recent teardown (500ms ago): a rebuild is plausibly in flight — hold.
+        assert!(should_hold_start_for_standing_rebuild(
+            true,
+            false,
+            now - 500,
+            now
+        ));
+
+        // Exactly at the recency-window boundary: still holds.
+        assert!(should_hold_start_for_standing_rebuild(
+            true,
+            false,
+            now - STANDING_RACE_RECENT_DOWN_MS,
+            now
+        ));
+
+        // One ms past the recency window: stale teardown, do not hold.
+        assert!(!should_hold_start_for_standing_rebuild(
+            true,
+            false,
+            now - STANDING_RACE_RECENT_DOWN_MS - 1,
+            now
+        ));
     }
 
     #[test]
