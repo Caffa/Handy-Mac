@@ -1,5 +1,24 @@
 # Handy-Fork Learning Log
 
+## Live captions with dedicated streaming model received zero audio frames (2026-11-15)
+
+### Problem
+
+- Live captions with a dedicated streaming model received ZERO audio frames: every Live preview finalize log line showed "0 frames fed, 0 updates emitted".
+- The user has always-on microphone + pre-recording buffer enabled, so a standing capture always exists.
+
+### Root Cause
+
+- `refresh_standing_capture()` built the standing-capture `CaptureSink` with `on_raw_frame: None` (stale comment: "Router feed attaches with hotkey sinks").
+- `try_start_recording()` PREFERS arming an existing standing capture in place (line ~2643) and only creates a fresh "hotkey sink" with the router feed (`on_raw_frame: self.raw_router_feed()`) when no standing capture exists.
+- With always-on + pre-buffer, a standing capture always exists → hotkey recordings never created the hotkey sink → the dedicated live-captions model's StreamRouter never received frames.
+- Safety facts: `StreamRouter::feed()` returns immediately when the stream is not open (idle feeding is free). The sink's `process_chunk` calls `on_raw_frame` on every chunk in every mode — the seam was designed to run continuously.
+
+### Fix
+
+- In `refresh_standing_capture()`: changed `on_raw_frame: None` to `on_raw_frame: self.raw_router_feed()` — exactly the same call the hotkey sink path uses.
+- Updated the comment to accurately describe that the raw router seam runs on standing captures too, and idle feeding is free because `StreamRouter::feed()` no-ops while no stream is open.
+
 ## Hotkey during standing-stream rebuild armed an empty pre-buffer — first syllable clipped (2026-11-14)
 
 ### Problem

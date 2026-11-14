@@ -2152,7 +2152,10 @@ impl AudioRecordingManager {
             CaptureSinkConfig {
                 on_levels: Arc::clone(&self.on_levels),
                 on_audio: Arc::clone(&self.on_audio),
-                on_raw_frame: None, // Router feed attaches with hotkey sinks.
+                // The raw router seam runs on standing captures too —
+                // StreamRouter::feed() no-ops while no stream is open, so
+                // idle feeding is free.
+                on_raw_frame: self.raw_router_feed(),
                 noise_suppressor: self.noise_suppressor(),
                 control: Arc::clone(&self.capture),
                 emergency_backup: None,
