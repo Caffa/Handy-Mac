@@ -2104,10 +2104,10 @@ impl AudioRecordingManager {
     /// (`hold_for_standing_rebuild`). Call this everywhere the standing flag
     /// is cleared.
     fn mark_standing_down(&self) {
-        self.standing_active.store(false, Ordering::Release);
         self.capture
             .standing_down_epoch_ms
             .store(epoch_ms(), Ordering::Release);
+        self.standing_active.store(false, Ordering::Release);
     }
 
     /// Bring the standing capture in line with the current mode/settings.
@@ -2166,10 +2166,10 @@ impl AudioRecordingManager {
         };
         match microphone.recorder.start(sink) {
             Ok(()) => {
-                self.standing_active.store(true, Ordering::Release);
                 self.capture
                     .standing_started_epoch_ms
                     .store(epoch_ms(), Ordering::Release);
+                self.standing_active.store(true, Ordering::Release);
                 debug!(
                     "Standing capture started in {:?} (pre_buffer={}ms, batch_captions={})",
                     start.elapsed(),

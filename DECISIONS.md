@@ -14,7 +14,7 @@ When the always-on ("standing") mic stream is rebuilding after a system wake, in
 
 `try_start_recording` calls `hold_for_standing_rebuild` before taking any lock: a bounded, lock-free hold (10ms polls, 300ms budget) gated by the pure predicate `should_hold_start_for_standing_rebuild` (standing wanted + stream down + `standing_down_epoch_ms` stamped within the last 2s). If the standing stream comes back, it is armed with its pre-buffer intact; on deadline the existing on-demand path runs unchanged. Every `standing_active` teardown goes through `mark_standing_down` so the down-stamp is never missed, and `begin_armed` emits INFO/WARN (`ARM-RACE`) drain diagnostics. No mutex is held across the wait — the hold reads atomics and instant mutex reads only, so concurrent stop/cancel is never blocked.
 
-Known limitation: a zombie standing stream that never tears down (still delivering digital silence) never stamps the down-epoch and is not caught by the hold — it stays `should_abort_dead_recording`'s domain (zero-RMS abort + USB cycle).
+Known limitation: a zombie standing stream that never tears down (still delivering digital silence) never stamps the down-epoch and is not caught by the hold — it stays `should_abort_dead_recording`'s domain (zero-RMS abort + USB cycle). Additionally, `epoch_ms()` is SystemTime-based and non-monotonic — a clock step can cause a spurious ≤300ms hold (backward step) or skip the hold for one press (forward step >2s); consistent with existing `epoch_ms()` usage elsewhere.
 
 ### Reconsider when
 
