@@ -2,18 +2,27 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-13
+updated: 2026-11-14
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
 - Fork of Handy (github.com/Caffa/Handy-Mac) — offline, cross-platform speech-to-text desktop app.
-- Live-captions streaming reworked: states resolve lazily on frame delivery, the transcribe overlay keeps click-through during non-interactive states, and the streaming seam uses a non-blocking TM lock.
+- Live-captions streaming reworked: states resolve lazily on frame delivery, the transcribe overlay keeps click-through during non-interactive states, and the streaming seam uses a non-blocking TM lock. A live-captions model picker defaults to Moonshine Streaming Small.
 - Wake observers dispatch off the main thread; the display-wake segfault and an Arc pointer miscast are fixed.
 - Bluetooth mic is excluded from USB watchdog accounting via an is_bluetooth_device_name heuristic, with zero-RMS liveness gating.
+- US→British spelling dictionary purged of dated targets (reflexion, tzar, etc.) that caused "Reflexions"-style mistranscriptions; deduped to 284 entries with a regression test.
 
 ## Log
+
+### 2026-11-14 — British spelling dictionary purge
+
+Purged the US→British spelling dictionary (DWYL_DICTIONARY in audio_toolkit/spelling_dictionaries.rs) that mistranscribed "reflections" as "Reflexions" — the root cause was dated British targets like reflection→reflexion applied post-transcription when convert_us_to_british is on. Removed 9 dated pairs, 8 identity no-ops, and 31 duplicate keys (329→284 entries), fixed a missing normalize→normalise, and added a regression test. Audit saved at research/british-spelling-dictionary-audit.md.
+
+Next: run convert_us_to_british on real dictation and check for remaining odd swaps.
+
+https://discord.com/channels/1486966847810043924/1571176896878743584
 
 ### 2026-11-12 — Live captions + overlay click-through fix pass
 
