@@ -457,6 +457,15 @@ pub fn load_or_create_app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSetting
                     updated = true;
                 }
 
+                // Migrate live_captions_model: if empty, set to Moonshine Streaming Small default
+                if settings.live_captions_model.is_empty() {
+                    debug!("Migrating live_captions_model from empty to Moonshine Streaming Small default");
+                    settings.live_captions_model =
+                        "handy-computer/moonshine-streaming-small-gguf/moonshine-streaming-small-Q8_0.gguf"
+                            .to_string();
+                    updated = true;
+                }
+
                 if updated {
                     debug!("Settings updated with new bindings");
                     sanitize_floats(&mut settings);
@@ -572,6 +581,15 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     if settings.usb_watchdog_enabled && !usb_watchdog_key_present {
         debug!("Migrating usb_watchdog_cycle_on_wake to true for enabled watchdog");
         settings.usb_watchdog_cycle_on_wake = true;
+        needs_save = true;
+    }
+
+    // Migrate live_captions_model: if empty, set to Moonshine Streaming Small default
+    if settings.live_captions_model.is_empty() {
+        debug!("Migrating live_captions_model from empty to Moonshine Streaming Small default");
+        settings.live_captions_model =
+            "handy-computer/moonshine-streaming-small-gguf/moonshine-streaming-small-Q8_0.gguf"
+                .to_string();
         needs_save = true;
     }
 

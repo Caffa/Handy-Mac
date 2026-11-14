@@ -159,7 +159,9 @@ pub fn get_default_settings() -> AppSettings {
         vad_sensitivity: VadSensitivity::VeryRelaxed,
         per_model_vad_sensitivity: HashMap::new(),
         live_captions_enabled: false,
-        live_captions_model: String::new(),
+        live_captions_model:
+            "handy-computer/moonshine-streaming-small-gguf/moonshine-streaming-small-Q8_0.gguf"
+                .to_string(),
         overlay_scale: default_overlay_scale(),
         convert_us_to_british: false,
         convert_number_words_to_digits: false,

@@ -533,7 +533,11 @@
         "label": "Live Captions",
         "description": "Show live captions below the volume bars during recording. Uses additional CPU.",
         "modelLabel": "Live captions model",
-        "modelDescription": "Choose a dedicated model for live captions, or use the main transcription model.",
+        "modelDescription": "Choose a dedicated streaming model for live captions. Streaming models update transcriptions in real-time as you speak.",
+        "modelPlaceholder": "Select a streaming model...",
+        "notDownloaded": "(not downloaded)",
+        "downloading": "(downloading...)",
+        "noStreamingModels": "No streaming-capable models found. Download a streaming model from the Models tab.",
         "useMainModel": "Use main transcription model",
         "streaming": "Streaming"
       },
