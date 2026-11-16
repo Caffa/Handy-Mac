@@ -103,6 +103,12 @@ impl super::ShortcutAction for TranscribeAction {
 
         if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
             let sid = tracker.start_session(&mic_name, is_always_on);
+            // Voice insert: start a fresh token buffer for this recording.
+            // Self-cleaning — a previous recording's leftover buffer is replaced.
+            if let Some(registry) = app.try_state::<Arc<crate::voice_insert::VoiceInsertRegistry>>()
+            {
+                registry.begin(sid.clone());
+            }
             logging::emit(AppEvent::ShortcutTriggered {
                 binding_id: binding_id.to_string(),
                 action: if self.post_process {
@@ -402,6 +408,15 @@ impl super::ShortcutAction for TranscribeAction {
 
             let stop_recording_time = Instant::now();
             let recording_result = rm.stop_recording(&binding_id_spawn);
+            // Voice insert: freeze the anchor totals now — the recording is
+            // over, so token anchors stop moving here.
+            if let Some(ref s) = sid {
+                if let Some(registry) =
+                    ah.try_state::<Arc<crate::voice_insert::VoiceInsertRegistry>>()
+                {
+                    registry.finalize(s);
+                }
+            }
             info!(
                 "[STOP-DIAGNOSTIC] rm.stop_recording returned in {:?} for binding: {} (result_is_some={})",
                 stop_recording_time.elapsed(),
@@ -593,12 +608,31 @@ impl super::ShortcutAction for TranscribeAction {
                             if post_process {
                                 show_processing_overlay(&ah);
                             }
-                            let processed = process_transcription_output(
+                            let mut processed = process_transcription_output(
                                 &ah,
                                 &transcription.text,
                                 post_process,
                             )
                             .await;
+
+                            // Voice insert: splice externally submitted tokens into
+                            // the final text. Strictly AFTER post-processing so the
+                            // LLM never rewrites token content. Also intentional:
+                            // a recording with tokens but no speech still pastes —
+                            // the dead-mic skip below is bypassed when tokens exist.
+                            if let Some(ref s) = sid {
+                                if let Some(registry) =
+                                    ah.try_state::<Arc<crate::voice_insert::VoiceInsertRegistry>>()
+                                {
+                                    if let Some((tokens, totals)) = registry.take_final(s) {
+                                        processed.final_text = crate::voice_insert::splice_tokens(
+                                            &processed.final_text,
+                                            &tokens,
+                                            &totals,
+                                        );
+                                    }
+                                }
+                            }
 
                             // Save to history if WAV was saved
                             if wav_saved {

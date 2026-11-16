@@ -99,6 +99,13 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
         if let Some(tracker) = app.try_state::<Arc<SessionTracker>>() {
             let sid = tracker.start_session(&mic_name, is_always_on);
+            // Voice insert: start a fresh token buffer for this recording.
+            // Router recordings accept inserts; Confirming/UsbCycling are
+            // rejected server-side because the server gates on Recording.
+            if let Some(registry) = app.try_state::<Arc<crate::voice_insert::VoiceInsertRegistry>>()
+            {
+                registry.begin(sid.clone());
+            }
             logging::emit(AppEvent::ShortcutTriggered {
                 binding_id: binding_id.to_string(),
                 action: "transcribe_with_router".to_string(),
@@ -339,6 +346,14 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
 
             let stop_recording_time = Instant::now();
             let recording_result = rm.stop_recording(&binding_id_spawn);
+            // Voice insert: freeze the anchor totals — the recording is over.
+            if let Some(ref s) = sid {
+                if let Some(registry) =
+                    ah.try_state::<Arc<crate::voice_insert::VoiceInsertRegistry>>()
+                {
+                    registry.finalize(s);
+                }
+            }
             if let Some((processed_samples, raw_samples)) = recording_result {
                 debug!(
                     "Recording stopped, processed: {}, raw: {}",
@@ -1085,11 +1100,28 @@ impl super::ShortcutAction for TranscribeWithRouterAction {
                                 "No router path configured. Check Settings.",
                             );
 
-                            // Fall back to paste if no router configured
+                            // Fall back to paste if no router configured.
+                            // This plain paste is the ONLY router path that gets
+                            // voice-insert tokens; the LLM-router and
+                            // confirm-handoff paths do not (Phase-1 limitation).
                             if !transcription_text.is_empty() {
+                                let mut pasted_text = transcription_text;
+                                if let Some(registry) =
+                                    ah.try_state::<Arc<crate::voice_insert::VoiceInsertRegistry>>()
+                                {
+                                    if let Some(ref s) = sid {
+                                        if let Some((tokens, totals)) = registry.take_final(s) {
+                                            pasted_text = crate::voice_insert::splice_tokens(
+                                                &pasted_text,
+                                                &tokens,
+                                                &totals,
+                                            );
+                                        }
+                                    }
+                                }
                                 let ah_for_paste = ah.clone();
                                 let _ = ah.run_on_main_thread(move || {
-                                    let _ = utils::paste(transcription_text, ah_for_paste.clone());
+                                    let _ = utils::paste(pasted_text, ah_for_paste.clone());
                                     utils::hide_recording_overlay(&ah_for_paste);
                                     set_tray_state(&ah_for_paste, TrayIconState::Idle);
                                 });

@@ -13,3 +13,4 @@ pub mod registry;
 pub mod splice;
 
 pub use registry::VoiceInsertRegistry;
+pub use splice::splice_tokens;
