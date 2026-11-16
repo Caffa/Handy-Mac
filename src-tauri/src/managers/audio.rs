@@ -1033,19 +1033,24 @@ impl AudioRecordingManager {
                     drop(guard);
 
                     match transcription_result {
-                        Ok(result) if !result.text.is_empty() => {
+                        Ok(mut result) if !result.text.is_empty() => {
                             if cancel_flag.load_flag() {
                                 debug!("[STREAM-CB] Discarding streaming transcription result — cancelled");
                                 return;
                             }
-                            // Feed the voice-insert display meter before the
-                            // emission: token anchors are captured against the
-                            // displayed char count. The meter takes a monotonic
-                            // max because these batch rewrites are non-monotonic.
+                            // Voice insert: feed the display meter (monotonic max —
+                            // these batch rewrites are non-monotonic) and splice
+                            // submitted tokens into the displayed text. Meter keeps
+                            // the ORIGINAL length so anchors don't inflate.
                             if let Some(registry) = app_handle
                                 .try_state::<std::sync::Arc<crate::voice_insert::VoiceInsertRegistry>>()
                             {
                                 registry.note_display_chars(result.text.chars().count());
+                                let tokens = registry.tokens_for_display();
+                                if !tokens.is_empty() {
+                                    result.text =
+                                        crate::voice_insert::splice_display(&result.text, &tokens);
+                                }
                             }
                             info!(
                                 "[Live Captions] Emitting partial-transcription event: text_len={}",

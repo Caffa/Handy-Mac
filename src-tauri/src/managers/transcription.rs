@@ -2355,16 +2355,26 @@ impl PreviewScript {
 }
 
 fn emit_stream_text(app_handle: &AppHandle, committed: &str, tentative: &str) {
-    // Feed the voice-insert display meter: token char anchors are captured
-    // against this committed-prefix length at insert time. No-op when the
-    // voice-insert registry is not managed (feature unused).
-    if let Some(registry) =
-        app_handle.try_state::<std::sync::Arc<crate::voice_insert::VoiceInsertRegistry>>()
-    {
-        registry.note_display_chars(committed.chars().count());
-    }
+    // Voice insert: feed the display meter and splice submitted tokens into
+    // the committed prefix. Tentative text is untouched. Anchors are display
+    // coordinates, and every emission re-derives from the same base, so the
+    // splice is stable across the append-only committed stream. No-op when
+    // the voice-insert registry is not managed (feature unused).
+    let tokens =
+        match app_handle.try_state::<std::sync::Arc<crate::voice_insert::VoiceInsertRegistry>>() {
+            Some(registry) => {
+                registry.note_display_chars(committed.chars().count());
+                registry.tokens_for_display()
+            }
+            None => Vec::new(),
+        };
+    let committed = if tokens.is_empty() {
+        committed.to_string()
+    } else {
+        crate::voice_insert::splice_display(committed, &tokens)
+    };
     let _ = StreamTextEvent {
-        committed: committed.to_string(),
+        committed,
         tentative: tentative.to_string(),
     }
     .emit(app_handle);
