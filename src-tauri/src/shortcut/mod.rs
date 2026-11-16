@@ -2099,6 +2099,83 @@ pub fn change_noise_suppression_level_setting(app: AppHandle, level: String) -> 
     Ok(())
 }
 
+// ── Voice insert API (Phase 1) ────────────────────────────────────────
+//
+// Settings plumbing for the localhost voice-insert HTTP server. The server
+// itself lives in `voice_insert::server` and is started in lib.rs; these
+// commands only manage the persisted settings and the live bearer token.
+
+/// Process-local counter mixed into every generated token so two
+/// regenerations within the same clock tick can never collide.
+static VOICE_INSERT_TOKEN_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Generate a voice-insert bearer token: sha256 hex over pid + wall-clock
+/// nanos + a process-local counter.
+pub(crate) fn generate_voice_insert_token() -> String {
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::Ordering;
+
+    let counter = VOICE_INSERT_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    let mut hasher = Sha256::new();
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(nanos.to_le_bytes());
+    hasher.update(counter.to_le_bytes());
+    let digest = hasher.finalize();
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_voice_insert_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    info!("Changing voice insert enabled to '{}'", enabled);
+    settings::patch_settings(&app, |s| {
+        s.voice_insert_enabled = enabled;
+    });
+    // The server binds at app startup only — enabling mid-session takes
+    // effect on the next launch. The settings pane communicates this.
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_voice_insert_port_setting(app: AppHandle, port: u16) -> Result<(), String> {
+    if port == 0 {
+        return Err("Voice insert port must be a non-zero TCP port".to_string());
+    }
+    info!("Changing voice insert port to '{}'", port);
+    settings::patch_settings(&app, |s| {
+        s.voice_insert_port = port;
+    });
+    // The server binds at app startup only — a port change requires an app
+    // restart. The settings pane communicates this.
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn regenerate_voice_insert_token(app: AppHandle) -> Result<String, String> {
+    let token = generate_voice_insert_token();
+    info!("Regenerating voice insert token");
+    settings::patch_settings(&app, |s| {
+        s.voice_insert_token = token.clone();
+    });
+
+    // Keep the live token (read by the running voice-insert server on every
+    // request) in sync so regeneration takes effect immediately without an
+    // app restart. Before startup wiring exists this simply primes the handle.
+    if let Ok(mut live) = crate::VOICE_INSERT_TOKEN.write() {
+        *live = token.clone();
+    }
+
+    Ok(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

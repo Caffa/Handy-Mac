@@ -176,5 +176,8 @@ pub fn get_default_settings() -> AppSettings {
         trigger_scan_seconds: default_trigger_scan_seconds(),
         trigger_scan_model: default_trigger_scan_model(),
         trigger_fallback_force_scan: false,
+        voice_insert_enabled: false,
+        voice_insert_port: default_voice_insert_port(),
+        voice_insert_token: String::new(),
     }
 }

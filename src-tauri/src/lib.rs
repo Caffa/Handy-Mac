@@ -56,7 +56,7 @@ use signal_hook::consts::{SIGUSR1, SIGUSR2};
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, RwLock};
 use tauri::image::Image;
 
 /// Wrapper type for the live captions [`TranscriptionManager`] instance.
@@ -103,6 +103,16 @@ pub struct TranscriptionEngineHandles {
 /// correct cancel flag based on whether a dedicated live captions model is
 /// configured.
 pub struct LiveCaptionsStreamingCancelFlag(pub crate::streaming_cancel_flag::StreamingCancelFlag);
+
+/// Live bearer token for the voice-insert HTTP server.
+///
+/// Shared between the settings command that regenerates the token and the
+/// server thread, so a regeneration takes effect immediately without an app
+/// restart (the server reads this on every request). Initialized empty; the
+/// startup path fills it from settings (generating + persisting a token when
+/// the voice-insert feature is enabled with a blank one).
+pub static VOICE_INSERT_TOKEN: LazyLock<Arc<RwLock<String>>> =
+    LazyLock::new(|| Arc::new(RwLock::new(String::new())));
 pub use transcription_coordinator::emit_app_state;
 pub use transcription_coordinator::AppState;
 pub use transcription_coordinator::CancelSignal;
@@ -767,6 +777,9 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_overlay_scale_setting,
             shortcut::change_noise_suppression_enabled_setting,
             shortcut::change_noise_suppression_level_setting,
+            shortcut::change_voice_insert_enabled_setting,
+            shortcut::change_voice_insert_port_setting,
+            shortcut::regenerate_voice_insert_token,
             shortcut::handy_keys::start_handy_keys_recording,
             shortcut::handy_keys::stop_handy_keys_recording,
             secure_input::get_secure_input_status,

@@ -9,6 +9,7 @@ import {
   Cpu,
   Target,
   BarChart3,
+  Plug,
 } from "lucide-react";
 import HandyTextLogo from "./icons/HandyTextLogo";
 import HandyHand from "./icons/HandyHand";
@@ -23,6 +24,7 @@ import {
   PostProcessingSettings,
   ModelsSettings,
   UsageSettings,
+  IntegrationsSettings,
 } from "./settings";
 
 export type SidebarSection = keyof typeof SECTIONS_CONFIG;
@@ -91,6 +93,12 @@ export const SECTIONS_CONFIG = {
     enabled: (settings) =>
       (settings?.post_process_enabled ?? false) ||
       (settings?.experimental_enabled ?? false),
+  },
+  integrations: {
+    labelKey: "sidebar.integrations",
+    icon: Plug,
+    component: IntegrationsSettings,
+    enabled: () => true,
   },
   debug: {
     labelKey: "sidebar.debug",

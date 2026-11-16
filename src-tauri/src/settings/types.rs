@@ -814,6 +814,20 @@ pub struct AppSettings {
     /// instead of only suspicious openings.
     #[serde(default)]
     pub trigger_fallback_force_scan: bool,
+    /// Enable the localhost voice-insert HTTP server. When on, the app accepts
+    /// authenticated POST /insert requests while a recording is active and
+    /// splices the submitted tokens into the final transcription (Phase 1).
+    #[serde(default)]
+    pub voice_insert_enabled: bool,
+    /// TCP port of the voice-insert server. Always binds 127.0.0.1. The server
+    /// binds once at app startup, so changing this requires an app restart.
+    #[serde(default = "default_voice_insert_port")]
+    pub voice_insert_port: u16,
+    /// Bearer token required by the voice-insert HTTP API. Regenerated from
+    /// the Integrations settings pane; stored as plain text so scripts can
+    /// read it out of the settings store.
+    #[serde(default)]
+    pub voice_insert_token: String,
 }
 
 impl Default for AppSettings {
@@ -1140,6 +1154,10 @@ where
 
 pub(crate) fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
+}
+
+pub(crate) fn default_voice_insert_port() -> u16 {
+    48213
 }
 
 #[cfg(test)]

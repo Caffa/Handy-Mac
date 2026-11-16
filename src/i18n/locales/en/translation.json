@@ -29,6 +29,7 @@
     "history": "History",
     "usage": "Usage",
     "debug": "Debug",
+    "integrations": "Integrations",
     "about": "About",
     "debugHint": "Debug settings:"
   },
@@ -555,6 +556,22 @@
         "high": "High",
         "highTooltip": "Aggressive noise reduction. Best for very noisy environments but may introduce slight artifacts in speech."
       }
+    },
+    "integrations": {
+      "title": "Integrations"
+    },
+    "voiceInsert": {
+      "label": "Voice Insert API",
+      "description": "Let external tools insert text tokens into an active transcription over a localhost HTTP API.",
+      "portTitle": "Port",
+      "portDescription": "TCP port the voice-insert server listens on (localhost only). Changing this requires an app restart.",
+      "tokenTitle": "Auth Token",
+      "tokenDescription": "Bearer token scripts must send to authenticate insert requests.",
+      "tokenEmpty": "No token yet — click Regenerate.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "regenerate": "Regenerate",
+      "restartHint": "Enable/disable and port changes apply on the next app restart. Token changes apply immediately."
     },
     "postProcessing": {
       "title": "Post Process",

@@ -644,6 +644,30 @@ async changeNoiseSuppressionLevelSetting(level: string) : Promise<Result<null, s
     else return { status: "error", error: e  as any };
 }
 },
+async changeVoiceInsertEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_voice_insert_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeVoiceInsertPortSetting(port: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_voice_insert_port_setting", { port }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async regenerateVoiceInsertToken() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("regenerate_voice_insert_token") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Start key recording mode
  */
@@ -1604,10 +1628,14 @@ async setOverlayForceClickThrough(forceClickThrough: boolean) : Promise<Result<n
 
 export const events = __makeEvents__<{
 deviceListChanged: DeviceListChanged,
-historyUpdate: HistoryUpdate
+historyUpdate: HistoryUpdate,
+streamPhaseEvent: StreamPhaseEvent,
+streamTextEvent: StreamTextEvent
 }>({
 deviceListChanged: "device-list-changed",
-historyUpdate: "history-update"
+historyUpdate: "history-update",
+streamPhaseEvent: "stream-phase-event",
+streamTextEvent: "stream-text-event"
 })
 
 /** user-defined constants **/
@@ -1702,7 +1730,24 @@ trigger_scan_model?: string;
  * Debug escape hatch: run the fallback scan on every router recording
  * instead of only suspicious openings.
  */
-trigger_fallback_force_scan?: boolean }
+trigger_fallback_force_scan?: boolean; 
+/**
+ * Enable the localhost voice-insert HTTP server. When on, the app accepts
+ * authenticated POST /insert requests while a recording is active and
+ * splices the submitted tokens into the final transcription (Phase 1).
+ */
+voice_insert_enabled?: boolean; 
+/**
+ * TCP port of the voice-insert server. Always binds 127.0.0.1. The server
+ * binds once at app startup, so changing this requires an app restart.
+ */
+voice_insert_port?: number; 
+/**
+ * Bearer token required by the voice-insert HTTP API. Regenerated from
+ * the Integrations settings pane; stored as plain text so scripts can
+ * read it out of the settings store.
+ */
+voice_insert_token?: string }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; gpu_devices: GpuDeviceOption[] }
@@ -2145,6 +2190,38 @@ export type SpellingDictionary =
  * Cons: Larger dataset, may include rare words
  */
 "cspell"
+/**
+ * Phase of the streaming overlay card, emitted to drive its UI state.
+ */
+export type StreamPhase = 
+/**
+ * Receiving audio / live text (or waiting for the stream to begin). Rust
+ * does not emit this today; the frontend starts in this phase and Rust only
+ * emits transitions away from it.
+ */
+"listening" | 
+/**
+ * Finalizing or post-processing — show a spinner.
+ */
+"working"
+/**
+ * Emitted to switch the streaming overlay to a working spinner.
+ */
+export type StreamPhaseEvent = { phase: StreamPhase; 
+/**
+ * Present only when `phase` is `Working`.
+ */
+kind?: StreamWorkKind | null }
+/**
+ * Live transcription snapshot emitted to the overlay during a streaming run.
+ * `committed` is the append-only, flicker-free prefix; `tentative` is the
+ * volatile suffix the model may still rewrite.
+ */
+export type StreamTextEvent = { committed: string; tentative: string }
+/**
+ * Semantic kind of "working" phase, used to localize the spinner label.
+ */
+export type StreamWorkKind = "transcribing" | "polishing"
 export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
 /**
  * Classification of transcription failure types.

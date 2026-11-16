@@ -245,6 +245,10 @@ const settingUpdaters: {
     commands.changeNoiseSuppressionEnabledSetting(value as boolean),
   noise_suppression_level: (value) =>
     commands.changeNoiseSuppressionLevelSetting(value as string),
+  voice_insert_enabled: (value) =>
+    commands.changeVoiceInsertEnabledSetting(value as boolean),
+  voice_insert_port: (value) =>
+    commands.changeVoiceInsertPortSetting(value as number),
 };
 
 export const useSettingsStore = create<SettingsStore>()(
