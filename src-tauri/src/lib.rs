@@ -1141,6 +1141,34 @@ pub fn run(cli_args: CliArgs) {
 
             initialize_core_logic(&app_handle);
 
+            // Voice insert HTTP server (Phase 1): bind localhost only when
+            // the feature is enabled. Port/enable changes require an app
+            // restart; the token is generated on first use and mirrored into
+            // the live VOICE_INSERT_TOKEN handle so regeneration applies
+            // without a restart. A bind failure (port in use) logs and
+            // continues — never fail app boot over this.
+            {
+                let vi_settings = settings::get_settings_safe(&app_handle);
+                if vi_settings.voice_insert_enabled {
+                    let mut vi_token = vi_settings.voice_insert_token;
+                    if vi_token.is_empty() {
+                        vi_token = shortcut::generate_voice_insert_token();
+                        settings::patch_settings(&app_handle, |s| {
+                            s.voice_insert_token = vi_token.clone();
+                        });
+                        log::info!("Generated initial voice insert token");
+                    }
+                    if let Ok(mut live) = crate::VOICE_INSERT_TOKEN.write() {
+                        *live = vi_token;
+                    }
+                    voice_insert::server::start_server(
+                        app_handle.clone(),
+                        vi_settings.voice_insert_port,
+                        crate::VOICE_INSERT_TOKEN.clone(),
+                    );
+                }
+            }
+
             // Secure Input monitor (macOS): detects stuck secure input that
             // silently blocks keyed shortcuts, warns the user, and activates
             // the Carbon fallback. See secure_input.rs and upstream #1578.

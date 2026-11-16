@@ -4,12 +4,10 @@
 //! Module layout:
 //! - [`splice`] — pure anchor/splice math (no Tauri deps), unit-tested.
 //! - [`registry`] — per-recording token buffer owned outside the coordinator.
-//!
-// The remaining wiring lands over the next commits (actions, live display,
-// server). Silence dead_code on the pure modules until then.
-#![allow(dead_code)]
+//! - [`server`] — localhost HTTP server (Phase 1).
 
 pub mod registry;
+pub mod server;
 pub mod splice;
 
 pub use registry::VoiceInsertRegistry;

@@ -2474,6 +2474,7 @@ dependencies = [
  "handy-recorder",
  "hf-hub",
  "hound",
+ "httparse",
  "isolang",
  "libc",
  "log",
