@@ -2,19 +2,26 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-15
+updated: 2026-11-16
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
-- Fork of Handy (github.com/Caffa/Handy-Mac) — offline, cross-platform speech-to-text desktop app.
-- Missing-first-syllable bug fixed: hotkey presses landing during the standing-stream rebuild window (sleep/wake, device change, USB watchdog) now hold up to 300ms lock-free so recording starts on the rebuilt stream instead of an on-demand path with an empty pre-buffer.
-- Live-captions streaming reworked: states resolve lazily on frame delivery, the transcribe overlay keeps click-through during non-interactive states, and the streaming seam uses a non-blocking TM lock. A live-captions model picker defaults to Moonshine Streaming Small.
-- Bluetooth mic is excluded from USB watchdog accounting via an is_bluetooth_device_name heuristic, with zero-RMS liveness gating.
-- US→British spelling dictionary purged of dated targets (reflexion, tzar, etc.) that caused "Reflexions"-style mistranscriptions; deduped to 284 entries with a regression test.
+- On branch `feature/voice-insert-api` (9 commits pushed to origin): Phase 1 of the voice insert API is done — an opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) lets an external process inject a text token during an active recording; it splices into the final transcription after LLM post-processing and shows in live captions immediately.
+- Voice insert is hardened after two review passes (recording gate, meter race, token cap raised 256→413, socket timeouts); 32 voice_insert tests pass, cargo/clippy/fmt/build clean at baseline.
+- Planned next: Phase 2 — exact token placement via split transcription (transcribe before/after token, then join); Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API (no bundled STT), with vault-synced bearer token.
+- Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
 
 ## Log
+
+### 2026-11-16 — Voice insert API Phase 1
+
+Built Phase 1 of the voice insert API on branch `feature/voice-insert-api` (base ee2bb114, 9 commits pushed to origin): an opt-in localhost HTTP API (127.0.0.1:48213, bearer token stored in settings) accepts a text token from an external process during an active recording, splices it into the final transcription at an approximate click-time anchor after LLM post-processing, and mirrors it into live captions immediately with alias-rendered coloring. New voice_insert Rust module (splice.rs, registry.rs, server.rs using httparse), a VoiceInsertApi card in the Integrations settings pane, scripts/test-voice-insert.sh, and an ADR in DECISIONS.md. Two review passes produced hardening commit a30688b7 (recording-gate, meter race, token cap 256→413, socket timeouts, parking_lot swap); 32 voice_insert tests pass with cargo/clippy/fmt/build at baseline, and the planned Obsidian plugin will be a thin client over Handy's API rather than bundling its own STT.
+
+Next: Phase 2 — exact token placement via split transcription, then the Obsidian "Link Dictate Co" plugin.
+
+https://discord.com/channels/1486966847810043924/1571480114150117437
 
 ### 2026-11-15 — Missing first syllable fix
 
