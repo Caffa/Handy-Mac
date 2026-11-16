@@ -1,5 +1,30 @@
 # Architecture Decisions
 
+## 2026-11-16: Voice insert API (localhost HTTP → live-token splice into transcription)
+
+### Status
+
+**Accepted** (Phase 1)
+
+### Context
+
+External tools (scripts, an eventual Obsidian plugin) need to inject text into an ongoing dictation — e.g. drop a wikilink `[[Char - Alice|Alice]]` into the transcript at the right moment without the user typing it. Final transcription in Handy is whole-audio re-transcription producing a flat string (no timestamps), and live captions are display-only previews with two backend paths: the streaming path (append-only committed prefix) and a 2.5s batch fallback whose rewrites are non-monotonic (VAD drops silence), so anything "inserted into the display" once gets wiped by the next rewrite.
+
+### Decision
+
+- **Transport: localhost-only, hand-rolled HTTP/1.1 parsed with `httparse`** (the only new dependency). Bind 127.0.0.1 only, one request per connection (`Connection: close`, no keep-alive), `Transfer-Encoding` rejected with 501, per-request handling panic-isolated via `catch_unwind` → 500. `tiny_http` is unmaintained; axum/hyper drag a server framework in for three endpoints (POST /insert, GET /state, GET /health). Auth is a bearer token (sha256 over pid + clock nanos + counter, persisted in settings, mirrored into a shared `Arc<RwLock<String>>` so regeneration applies without restart). The server gates on `AppState::Recording` only — Confirming/UsbCycling answer 409. A bind failure logs and continues app startup; the server never blocks boot.
+- **Registry keyed by `SessionId`, owned outside the coordinator.** `VoiceInsertRegistry` is managed Tauri state beside `SessionTracker`; the actions hook `begin`/`finalize`/`take_final` into the recording lifecycle and the coordinator never learns about it. `begin` replaces any previous Active wholesale — self-cleaning on cancel/timeout/USB-cycle; no teardown path to forget.
+- **Splice strictly AFTER `process_transcription_output`.** The LLM post-process and Chinese-variant conversion run on the raw transcription and never see token text, so they cannot rewrite, translate, or "clean" it. History entries stay token-free. Known intentional behavior change: a recording with tokens but no speech still pastes (the dead-mic skip is bypassed when tokens exist).
+- **Phase 1 anchors are approximate fractions**: char fraction against the display meter's monotonic max (batch-fallback lengths are non-monotonic, so the meter takes a max), falling back to elapsed-time fraction when no display text was seen, word-boundary-snapped (5-char forward scan, CJK-safe by char indexing). Every live-captions emission re-splices from the same base string (`splice_display` at `min(chars_anchor, len)`), which defeats the 2.5s rewrite without any frontend state.
+- **Colored alias display is frontend-only.** Live captions render `[[Target|Alias]]` as a colored inline `Alias` (indigo accent, brackets stripped); the final pasted text keeps the full wikilink syntax.
+
+Split-transcription — transcribe the audio before and after each token's time anchor separately and join with the token, giving exact placement — is the planned Phase 2 follow-up once timestamps are available in `TranscriptionResult`.
+
+### Reconsider when
+
+- The Phase 2 Obsidian plugin lands (its real usage decides whether /insert needs batching, a queryable token list, or structured anchors).
+- Timestamps appear in final transcription output (switch the splice from fraction anchors to exact time placement via split-transcription).
+
 ## 2026-11-14: Hotkey start holds up to 300ms for a standing-stream rebuild (bounded, lock-free) instead of arming an empty pre-buffer on-demand sink
 
 ### Status
