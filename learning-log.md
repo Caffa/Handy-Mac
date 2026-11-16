@@ -1,5 +1,19 @@
 # Handy-Fork Learning Log
 
+## Live captions missed the pre-hotkey lead: `begin_armed` drain never reached the StreamRouter seam (2026-11-16)
+
+### Problem
+- With a dedicated live-captions model, streaming partials started at the first armed chunk: the ~1s of pre-hotkey audio held in the always-on pre-buffer was missing from captions, while the final transcript was complete.
+
+### Root Cause
+- `CaptureSink::begin_armed` drained the rolling pre-buffer into `control.processed`/`raw_samples`/`on_audio` but never forwarded it to the `on_raw_frame` seam. `StreamRouter::feed` drops standing frames while no stream is open (the channel only opens at `start_stream`, in the kick thread), so the pre-hotkey lead existed nowhere on the streaming path.
+- Ordering trap: in `CaptureSink::process_chunk` the raw-seam and visualizer feeds ran BEFORE the armed-edge detection, so forwarding the drain from `begin_armed` alone would deliver the arming chunk's frame before the older drained audio — out of order on the worker's mpsc.
+
+### Fix
+- `begin_armed` forwards the drained samples to `on_raw_frame` inside the existing non-empty-drain block, matching what the final recording receives.
+- `process_chunk` detects the standing→armed edge before the visualizer/raw-seam feeds, so the drain reaches the StreamRouter worker first (worker consumes Feed commands in channel order).
+- Regression test `arm_drain_reaches_raw_seam_before_arming_chunk_frame` in `tests/capture_sink_preroll.rs` fails on the old order, passes on the new.
+
 ## Live captions never displayed with streaming models (2026-11-15)
 
 ### Problem

@@ -461,6 +461,11 @@ impl CaptureSink {
             self.control.processed.lock().extend_from_slice(&drained);
             self.raw_samples.extend_from_slice(&drained);
             (self.on_audio)(&drained);
+            // Live-captions seam: the StreamRouter worker must also see the
+            // pre-hotkey lead, matching the final recording.
+            if let Some(feed) = &self.on_raw_frame {
+                feed(&drained);
+            }
         }
         self.apply_policy_to_vad();
         if let Some(ns) = &self.noise_suppressor {
@@ -523,16 +528,11 @@ impl Sink for CaptureSink {
         // Mono by construction: the recorder mixes down or picks one channel.
         let real = &chunk.samples[..chunk.valid_frames];
 
-        // Spectrum and the raw router seam run in every mode: the fork's
-        // always-on stream fed the visualizer and StreamRouter continuously.
-        if let Some(levels) = self.visualizer.feed(real) {
-            (self.on_levels)(levels);
-        }
-        if let Some(feed) = &self.on_raw_frame {
-            feed(real);
-        }
-
-        // Detect the standing→armed edge (or a fresh sink starting armed).
+        // Detect the standing→armed edge (or a fresh sink starting armed)
+        // BEFORE the feeds below: the edge drains the always-on pre-buffer,
+        // and that drain must reach the raw router seam before this chunk's
+        // own frame — the StreamRouter worker consumes frames strictly in
+        // send order, so a later drain forward would splice the utterance.
         let armed = control.armed.load(Ordering::Acquire);
         if armed && !self.armed_locally {
             self.armed_locally = true;
@@ -544,6 +544,15 @@ impl Sink for CaptureSink {
             }
         } else if !armed {
             self.armed_locally = false;
+        }
+
+        // Spectrum and the raw router seam run in every mode: the fork's
+        // always-on stream fed the visualizer and StreamRouter continuously.
+        if let Some(levels) = self.visualizer.feed(real) {
+            (self.on_levels)(levels);
+        }
+        if let Some(feed) = &self.on_raw_frame {
+            feed(real);
         }
 
         if !armed {

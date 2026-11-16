@@ -342,3 +342,83 @@ fn real_vad_preroll_slice() {
         samples.len()
     );
 }
+
+/// The always-on pre-buffer must reach the live-captions raw seam at arm, in
+/// order: the drained standing lead-in is forwarded to `on_raw_frame` BEFORE
+/// the arming chunk's own frame. The StreamRouter worker consumes Feed
+/// commands in channel order, so an out-of-order forward would splice the
+/// utterance front — and a missing forward leaves streaming partials blind to
+/// the pre-hotkey lead (the final recording gets it via the drain either way).
+#[test]
+fn arm_drain_reaches_raw_seam_before_arming_chunk_frame() {
+    for &frame_samples in &[FRAME_V4, FRAME_V6] {
+        let control = Arc::new(CaptureControl::new(frame_samples * 4, true));
+        *control.policy.lock() = VadPolicy::Offline;
+        let raw_seen: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_cb = Arc::clone(&raw_seen);
+        // Mirror StreamRouter::feed: frames arriving while the channel is
+        // closed (standing mode) are dropped by the router, not buffered.
+        let channel_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let open_for_cb = Arc::clone(&channel_open);
+        let mut sink = CaptureSink::new(
+            handy_app_lib::audio_toolkit::audio::CaptureVad::new(
+                Box::new(ScriptedVad::new(4, frame_samples)),
+                15,
+                55,
+            ),
+            CaptureSinkConfig {
+                on_levels: Arc::new(|_| {}),
+                on_audio: Arc::new(|_| {}),
+                on_raw_frame: Some(Arc::new(move |frame: &[f32]| {
+                    if open_for_cb.load(Ordering::Relaxed) {
+                        seen_for_cb.lock().unwrap().extend_from_slice(frame);
+                    }
+                })),
+                noise_suppressor: None,
+                control: Arc::clone(&control),
+                emergency_backup: None,
+            },
+        );
+
+        // Standing window: the frame fills the rolling pre-buffer; the router
+        // (channel closed) never sees it — the reported bug's starting state.
+        let f0 = frame(0, 0.5, frame_samples);
+        sink.process_chunk(chunk(&f0));
+        assert_eq!(
+            control.pre_buffer.lock().len(),
+            frame_samples,
+            "standing frame must sit in the pre-buffer"
+        );
+        assert!(
+            raw_seen.lock().unwrap().is_empty(),
+            "closed router channel drops standing frames"
+        );
+
+        // Hotkey press: the kick thread's start_stream opens the router
+        // channel, then the first armed chunk arrives and begin_armed drains.
+        control.arm("test-binding");
+        channel_open.store(true, Ordering::Relaxed);
+        let f1 = frame(1, 0.5, frame_samples);
+        sink.process_chunk(chunk(&f1));
+
+        // The worker must see the drained lead-in, then the arming chunk —
+        // the exact order of the final recording.
+        let raw = raw_seen.lock().unwrap().clone();
+        assert_eq!(
+            raw.len(),
+            2 * frame_samples,
+            "worker view: drained lead-in + arming chunk frame"
+        );
+        assert_eq!(&raw[..frame_samples], &f0[..], "drained pre-buffer first");
+        assert_eq!(
+            &raw[frame_samples..],
+            &f1[..],
+            "arming chunk's own frame second"
+        );
+
+        // The seam must match the final recording's opening (the drain also
+        // feeds processed/raw_samples).
+        let recorded = control.processed.lock().clone();
+        assert_eq!(&recorded[..frame_samples], &f0[..]);
+    }
+}
