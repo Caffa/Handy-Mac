@@ -152,6 +152,15 @@
   opacity: 1;
 }
 
+/* Voice-insert tokens ([[...]] wikilinks, brackets stripped, alias applied)
+   render as colored inline spans. Indigo accent (#818cf8) matches the
+   overlay's existing accent palette and stays distinct from warning
+   (yellow/red) and success (green) semantics. */
+.live-captions-box .voice-insert-token {
+  color: #818cf8;
+  font-weight: 600;
+}
+
 .live-captions-box.routing-mode {
   background: rgba(59, 130, 246, 0.15);
   color: white;

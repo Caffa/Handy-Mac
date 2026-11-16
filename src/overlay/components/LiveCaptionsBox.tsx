@@ -5,10 +5,15 @@
  * Supports RTL direction and routing mode styling, and shows a "Live"
  * indicator while the backend is emitting stream-text events.
  *
+ * Voice-insert tokens embedded as [[...]] wikilinks render as colored inline
+ * spans (alias-resolved, brackets stripped); everything else renders exactly
+ * as before.
+ *
  * Scope: Pure presentational — no state or side effects beyond i18n.
  */
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { splitTokenSpans } from "../lib/tokenText";
 
 interface LiveCaptionsBoxProps {
   /** Transcribed text; omitted when the box shows a loading notice. */
@@ -20,6 +25,19 @@ interface LiveCaptionsBoxProps {
   /** Optional notice (e.g. "Loading model...") rendered in place of text
    *  while the model is still loading and no transcription has arrived. */
   notice?: string;
+}
+
+/** Render caption text, coloring [[...]] voice-insert tokens. */
+function renderCaptionText(text: string): React.ReactNode[] {
+  return splitTokenSpans(text).map((part, index) =>
+    part.isToken ? (
+      <span key={index} className="voice-insert-token">
+        {part.text}
+      </span>
+    ) : (
+      part.text
+    ),
+  );
 }
 
 export function LiveCaptionsBox({
@@ -50,7 +68,11 @@ export function LiveCaptionsBox({
           <span className="live-captions-label">{t("overlay.live")}</span>
         </span>
       )}
-      {notice ? <span className="live-captions-loading">{notice}</span> : text}
+      {notice ? (
+        <span className="live-captions-loading">{notice}</span>
+      ) : text ? (
+        renderCaptionText(text)
+      ) : null}
     </div>
   );
 }

@@ -17,10 +17,22 @@ import {
   StreamTextEvent,
   TranscriptionSegment,
 } from "@/lib/types/events";
+import { maskTokenSpans, restoreTokenSpans } from "../lib/tokenText";
 import type { OverlayState } from "./useOverlayState";
 
 /// Filter filler words from the start of streaming transcription text.
+///
+/// Voice-insert tokens ([[...]] wikilinks) are masked into sentinels first
+/// and restored after, so the word-by-word filler stripping can never remove
+/// or split token content (e.g. a token as the first word, or a multi-word
+/// alias like [[Char - Alice|Alice]]).
 function filterStreamingText(text: string): string {
+  const { masked, tokens } = maskTokenSpans(text);
+  if (tokens.length === 0) return filterFillerWords(text);
+  return restoreTokenSpans(filterFillerWords(masked), tokens);
+}
+
+function filterFillerWords(text: string): string {
   const fillerWords = [
     "okay",
     "yeah",
