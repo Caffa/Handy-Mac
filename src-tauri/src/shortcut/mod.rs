@@ -2168,8 +2168,9 @@ pub fn regenerate_voice_insert_token(app: AppHandle) -> Result<String, String> {
 
     // Keep the live token (read by the running voice-insert server on every
     // request) in sync so regeneration takes effect immediately without an
-    // app restart. Before startup wiring exists this simply primes the handle.
-    if let Ok(mut live) = crate::VOICE_INSERT_TOKEN.write() {
+    // app restart.
+    {
+        let mut live = crate::VOICE_INSERT_TOKEN.write();
         *live = token.clone();
     }
 

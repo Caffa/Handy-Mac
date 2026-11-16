@@ -9,12 +9,14 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::time::Duration;
 
 use log::{debug, error, info, warn};
+use parking_lot::RwLock;
 use serde_json::json;
 
-use super::registry::{NotRecording, VoiceInsertRegistry};
+use super::registry::{RegistryError, VoiceInsertRegistry};
 
 /// Reject /insert bodies larger than this (server-side guard; the API
 /// contract is "short tokens", not file upload).
@@ -28,16 +30,22 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 /// API version reported by GET /health.
 pub const API_VERSION: u32 = 1;
 
+/// Socket read/write timeout: a half-open local socket must not park a
+/// connection thread forever.
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Request core, decoupled from Tauri. Implemented by the app-side adapter
 /// (coordinator state + registry) and by test fakes.
 pub trait InsertDeps {
     /// True only while the coordinator is in `AppState::Recording`. The
-    /// server gates inserts on this: Confirming/UsbCycling/Processing all
-    /// count as not-recording and answer 409.
+    /// server checks this BEFORE `record_token` on every /insert, so bypass
+    /// routes that leave the registry buffer unfinalized (cancel,
+    /// coordinator timeouts, panic recovery, USB cycle) still answer 409.
     fn is_recording(&self) -> bool;
-    /// Record a token against the active recording. `Err(NotRecording)` maps
-    /// to HTTP 409.
-    fn record_token(&self, text: &str) -> Result<(), NotRecording>;
+    /// Record a token against the active recording.
+    /// `Err(RegistryError::NotRecording)` maps to HTTP 409,
+    /// `Err(RegistryError::BufferFull)` to HTTP 413.
+    fn record_token(&self, text: &str) -> Result<(), RegistryError>;
 }
 
 /// Extract and verify the bearer token from an Authorization header value.
@@ -117,9 +125,22 @@ pub fn handle_request(
             if trimmed.is_empty() {
                 return (400, error_body("empty_text"));
             }
+            // Gate on the coordinator's live recording state FIRST. The
+            // registry buffer can still be unfinalized after bypass routes
+            // (cancel, coordinator timeouts, panic recovery, USB cycle) —
+            // record_token alone cannot detect those; only the coordinator
+            // state can.
+            if !deps.is_recording() {
+                return (409, json!({ "error": "not_recording" }).to_string());
+            }
             match deps.record_token(trimmed) {
                 Ok(()) => (200, json!({ "ok": true }).to_string()),
-                Err(NotRecording) => (409, json!({ "error": "not_recording" }).to_string()),
+                Err(RegistryError::NotRecording) => {
+                    (409, json!({ "error": "not_recording" }).to_string())
+                }
+                Err(RegistryError::BufferFull) => {
+                    (413, json!({ "error": "buffer_full" }).to_string())
+                }
             }
         }
         _ => (404, error_body("not_found")),
@@ -244,6 +265,11 @@ fn read_request(stream: &mut TcpStream) -> ReadOutcome {
 
 /// Serve one connection: read a single request, dispatch, respond, close.
 fn handle_connection(stream: &mut TcpStream, deps: &dyn InsertDeps, token: &Arc<RwLock<String>>) {
+    // Socket hygiene: a half-open local socket must not park this thread
+    // forever. Best-effort — failures only lose the timeout, not the request.
+    let _ = stream.set_read_timeout(Some(SOCKET_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(SOCKET_TIMEOUT));
+
     let (method, path, auth_header, body) = match read_request(stream) {
         Ok(Some(request)) => request,
         Ok(None) => return,
@@ -253,7 +279,7 @@ fn handle_connection(stream: &mut TcpStream, deps: &dyn InsertDeps, token: &Arc<
         }
     };
 
-    let expected_token = token.read().map(|guard| guard.clone()).unwrap_or_default();
+    let expected_token = token.read().clone();
 
     // Per-request handling is panic-isolated: a bug in the splice path must
     // not wedge the accept loop, it answers 500 and the connection closes.
@@ -301,10 +327,10 @@ impl InsertDeps for AppInsertDeps {
         )
     }
 
-    fn record_token(&self, text: &str) -> Result<(), NotRecording> {
+    fn record_token(&self, text: &str) -> Result<(), RegistryError> {
         match tauri::Manager::try_state::<Arc<VoiceInsertRegistry>>(&self.app) {
             Some(registry) => registry.record_token(text),
-            None => Err(NotRecording),
+            None => Err(RegistryError::NotRecording),
         }
     }
 }
@@ -362,7 +388,6 @@ pub fn start_server(app: tauri::AppHandle, port: u16, token: Arc<RwLock<String>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use std::net::Shutdown;
     use std::time::Duration;
 
@@ -377,12 +402,29 @@ mod tests {
             self.recording
         }
 
-        fn record_token(&self, text: &str) -> Result<(), NotRecording> {
+        fn record_token(&self, text: &str) -> Result<(), RegistryError> {
             if !self.recording {
-                return Err(NotRecording);
+                return Err(RegistryError::NotRecording);
             }
-            self.recorded.write().unwrap().push(text.to_string());
+            self.recorded.write().push(text.to_string());
             Ok(())
+        }
+    }
+
+    /// Registry-backed deps: forwards to a real registry so buffer-full and
+    /// gate interactions are exercised through handle_request end-to-end.
+    struct RegistryBackedDeps {
+        recording: bool,
+        registry: Arc<VoiceInsertRegistry>,
+    }
+
+    impl InsertDeps for RegistryBackedDeps {
+        fn is_recording(&self) -> bool {
+            self.recording
+        }
+
+        fn record_token(&self, text: &str) -> Result<(), RegistryError> {
+            self.registry.record_token(text)
         }
     }
 
@@ -422,11 +464,14 @@ mod tests {
         );
         assert_eq!(status, 200);
         assert_eq!(body, r#"{"ok":true}"#);
-        assert_eq!(recorded.read().unwrap().as_slice(), ["[[Note A]]"]);
+        assert_eq!(recorded.read().as_slice(), ["[[Note A]]"]);
     }
 
     #[test]
     fn insert_while_idle_is_conflict() {
+        // Exercises the handle_request gate: deps report is_recording()==false
+        // and the 409 comes from the gate, never from record_token (see
+        // insert_gates_on_is_recording_before_record_token for the proof).
         let (deps, recorded) = fake(false);
         let (status, body) = handle_request(
             "POST",
@@ -438,7 +483,54 @@ mod tests {
         );
         assert_eq!(status, 409);
         assert_eq!(body, r#"{"error":"not_recording"}"#);
-        assert!(recorded.read().unwrap().is_empty());
+        assert!(recorded.read().is_empty());
+    }
+
+    #[test]
+    fn insert_gates_on_is_recording_before_record_token() {
+        // record_token always succeeds, but is_recording()==false: only the
+        // explicit gate can produce the 409. Covers bypass routes (cancel,
+        // coordinator timeouts, panic recovery, USB cycle) that leave the
+        // registry buffer unfinalized.
+        struct AlwaysOkDeps;
+        impl InsertDeps for AlwaysOkDeps {
+            fn is_recording(&self) -> bool {
+                false
+            }
+            fn record_token(&self, _text: &str) -> Result<(), RegistryError> {
+                Ok(())
+            }
+        }
+        let (status, body) = handle_request(
+            "POST",
+            "/insert",
+            Some(&format!("Bearer {TOKEN}")),
+            br#"{"text":"x"}"#,
+            &AlwaysOkDeps,
+            TOKEN,
+        );
+        assert_eq!(status, 409);
+        assert_eq!(body, r#"{"error":"not_recording"}"#);
+    }
+
+    #[test]
+    fn insert_returns_413_when_buffer_full() {
+        let registry = Arc::new(VoiceInsertRegistry::new());
+        registry.begin("s1".to_string());
+        let deps = RegistryBackedDeps {
+            recording: true,
+            registry,
+        };
+        let auth = format!("Bearer {TOKEN}");
+        let body: &[u8] = br#"{"text":"t"}"#;
+        for i in 0..super::super::registry::MAX_TOKENS_PER_SESSION {
+            let (status, _) = handle_request("POST", "/insert", Some(&auth), body, &deps, TOKEN);
+            assert_eq!(status, 200, "token {i} should still fit");
+        }
+        // The 257th insert hits the cap → 413 buffer_full.
+        let (status, err_body) = handle_request("POST", "/insert", Some(&auth), body, &deps, TOKEN);
+        assert_eq!(status, 413);
+        assert_eq!(err_body, r#"{"error":"buffer_full"}"#);
     }
 
     #[test]
@@ -646,7 +738,7 @@ mod tests {
             );
             assert!(response.contains("Connection: close"));
         }
-        assert_eq!(recorded.read().unwrap().as_slice(), ["[[Note A]]"]);
+        assert_eq!(recorded.read().as_slice(), ["[[Note A]]"]);
 
         // Not-recording → 409 over the wire: flip the fake to idle.
         let (idle_deps, _) = fake(false);

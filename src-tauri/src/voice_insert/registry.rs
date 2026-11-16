@@ -16,10 +16,20 @@ use crate::logging::SessionId;
 
 use super::splice::{AnchorTotals, InjectedToken};
 
-/// Error returned when tokens arrive while no unfinalized recording is
-/// active (idle, already finalized, or stale).
+/// Error returned when a token insert cannot be recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotRecording;
+pub enum RegistryError {
+    /// No unfinalized recording is active (idle, already finalized, or
+    /// stale).
+    NotRecording,
+    /// The per-session token buffer is full.
+    BufferFull,
+}
+
+/// Hard cap on tokens buffered per recording. Bounds the splice cost and
+/// the per-emission `tokens_for_display` clone; inserts past it answer
+/// HTTP 413.
+pub const MAX_TOKENS_PER_SESSION: usize = 256;
 
 /// One active (or just-finalized) recording's token buffer.
 struct Active {
@@ -50,23 +60,34 @@ impl VoiceInsertRegistry {
 
     /// Start tracking a new recording. Resets the display meter and replaces
     /// any previous Active (self-cleaning on cancel/timeout/USB-cycle).
+    ///
+    /// Ordering invariant: the meter reset happens while `inner` is held, so
+    /// a concurrent `record_token` (server thread) either ran before `begin`
+    /// — anchoring against the OLD session and its meter — or after it,
+    /// observing meter 0. It can never install a new-session Active and then
+    /// capture the previous recording's meter value.
     pub fn begin(&self, session_id: SessionId) {
-        *self.inner.lock() = Some(Active {
+        let mut guard = self.inner.lock();
+        self.display_chars.store(0, Ordering::Relaxed);
+        *guard = Some(Active {
             session_id,
             started_at: Instant::now(),
             tokens: Vec::new(),
             totals: None,
         });
-        self.display_chars.store(0, Ordering::Relaxed);
     }
 
     /// Record an inserted token against the active, unfinalized recording.
     /// Captures both anchors: the current display char meter and the elapsed
-    /// milliseconds since the recording started.
-    pub fn record_token(&self, text: &str) -> Result<(), NotRecording> {
+    /// milliseconds since the recording started. Rejects with
+    /// [`RegistryError::BufferFull`] past [`MAX_TOKENS_PER_SESSION`].
+    pub fn record_token(&self, text: &str) -> Result<(), RegistryError> {
         let mut guard = self.inner.lock();
         match guard.as_mut() {
             Some(active) if active.totals.is_none() => {
+                if active.tokens.len() >= MAX_TOKENS_PER_SESSION {
+                    return Err(RegistryError::BufferFull);
+                }
                 active.tokens.push(InjectedToken {
                     text: text.to_string(),
                     chars_anchor: self.display_chars.load(Ordering::Relaxed),
@@ -74,7 +95,7 @@ impl VoiceInsertRegistry {
                 });
                 Ok(())
             }
-            _ => Err(NotRecording),
+            _ => Err(RegistryError::NotRecording),
         }
     }
 
@@ -187,7 +208,40 @@ mod tests {
     #[test]
     fn record_rejected_without_active_session() {
         let reg = VoiceInsertRegistry::new();
-        assert_eq!(reg.record_token("nope"), Err(NotRecording));
+        assert_eq!(reg.record_token("nope"), Err(RegistryError::NotRecording));
+    }
+
+    #[test]
+    fn token_cap_rejects_past_max() {
+        let reg = VoiceInsertRegistry::new();
+        reg.begin("s1".to_string());
+        for i in 0..MAX_TOKENS_PER_SESSION {
+            assert!(
+                reg.record_token(&format!("t{i}")).is_ok(),
+                "token {i} rejected early"
+            );
+        }
+        assert_eq!(reg.record_token("overflow"), Err(RegistryError::BufferFull));
+        // The buffer holds exactly the cap.
+        reg.finalize(&"s1".to_string());
+        let (tokens, _) = reg.take_final(&"s1".to_string()).unwrap();
+        assert_eq!(tokens.len(), MAX_TOKENS_PER_SESSION);
+    }
+
+    #[test]
+    fn record_token_immediately_after_begin_sees_meter_zero() {
+        // Companion to begin()'s ordering-invariant doc: the meter reset is
+        // covered by the `inner` lock, so the first token of a new session
+        // always anchors at 0 chars even if the previous recording's meter
+        // was already advanced.
+        let reg = VoiceInsertRegistry::new();
+        reg.note_display_chars(500);
+        reg.begin("s1".to_string());
+        reg.record_token("first").unwrap();
+        let tokens = reg.tokens_for_display();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].chars_anchor, 0);
+        assert_eq!(tokens[0].ms_anchor < 5_000, true);
     }
 
     #[test]

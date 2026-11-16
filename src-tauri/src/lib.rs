@@ -50,14 +50,14 @@ use managers::model::ModelManager;
 use managers::retry_worker::RetryWorker;
 use managers::transcription::TranscriptionManager;
 use managers::transcription_retry::TranscriptionRetryQueue;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 #[cfg(unix)]
 use signal_hook::consts::{SIGUSR1, SIGUSR2};
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock};
 use tauri::image::Image;
 
 /// Wrapper type for the live captions [`TranscriptionManager`] instance.
@@ -111,7 +111,8 @@ pub struct LiveCaptionsStreamingCancelFlag(pub crate::streaming_cancel_flag::Str
 /// server thread, so a regeneration takes effect immediately without an app
 /// restart (the server reads this on every request). Initialized empty; the
 /// startup path fills it from settings (generating + persisting a token when
-/// the voice-insert feature is enabled with a blank one).
+/// the voice-insert feature is enabled with a blank one). `parking_lot` per
+/// house convention: reads are infallible, no poison handling.
 pub static VOICE_INSERT_TOKEN: LazyLock<Arc<RwLock<String>>> =
     LazyLock::new(|| Arc::new(RwLock::new(String::new())));
 pub use transcription_coordinator::emit_app_state;
@@ -1158,7 +1159,8 @@ pub fn run(cli_args: CliArgs) {
                         });
                         log::info!("Generated initial voice insert token");
                     }
-                    if let Ok(mut live) = crate::VOICE_INSERT_TOKEN.write() {
+                    {
+                        let mut live = crate::VOICE_INSERT_TOKEN.write();
                         *live = vi_token;
                     }
                     voice_insert::server::start_server(

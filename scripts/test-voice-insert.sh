@@ -4,7 +4,12 @@
 # Prerequisites: Handy is RUNNING with voice_insert_enabled = true
 # (Settings → Integrations). The script exercises:
 #   health → unauthenticated 401 → state → 409 while idle → start recording
-#   (CLI toggle) → two spaced inserts → stop → 409 after stop.
+#   (CLI toggle) → two spaced inserts → CANCEL via --cancel (a real CLI flag,
+#   see cli.rs; it routes to utils::cancel_current_operation) → 409 after
+#   cancel → state back to idle.
+#
+# Note: cancel leaves the registry buffer unfinalized by design; the server's
+# is_recording gate is what makes late inserts answer 409 in that case.
 #
 # Env overrides:
 #   HANDY_TOKEN  bearer token (default: read from the settings store)
@@ -87,15 +92,24 @@ code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
   -d '{"text":"[[Note B]]"}' "$BASE/insert")"
 expect_code 200 "$code" "insert Note B"
 sleep 2
-"$HANDY_BIN" --toggle-transcription
+
+echo "6) cancel the recording via --cancel (real CLI flag, routes to"
+echo "   utils::cancel_current_operation — NOT the toggle stop):"
+"$HANDY_BIN" --cancel
 sleep 1
 
-echo "6) insert after stop (expect 409):"
+echo "7) state after cancel:"
+state="$(curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" "$BASE/state")"
+echo "   $state"
+
+echo "8) insert after cancel (expect 409):"
 code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"text":"[[Late Token]]"}' "$BASE/insert")"
-expect_code 409 "$code" "insert after stop"
+expect_code 409 "$code" "insert after cancel"
 
 echo
 echo "Done. Check the pasted text for the tokens (as colored [[wikilinks]]"
-echo "in live captions, and spliced into the final transcription)."
+echo "in live captions, and spliced into the final transcription). The"
+echo "cancel step intentionally drops this recording's tokens — late"
+echo "inserts must 409 via the recording gate."
