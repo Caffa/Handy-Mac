@@ -238,7 +238,9 @@ fn start_native_wake_observer() {
                 _notification: *mut AnyObject,
             ) {
                 let Some(app_handle) = WAKE_APP_HANDLE.get() else {
-                    warn!("NSWorkspaceScreensDidWakeNotification fired before app handle was stored");
+                    warn!(
+                        "NSWorkspaceScreensDidWakeNotification fired before app handle was stored"
+                    );
                     return;
                 };
 

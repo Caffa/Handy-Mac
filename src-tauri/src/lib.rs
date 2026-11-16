@@ -36,6 +36,7 @@ mod tray;
 mod tray_i18n;
 mod usb_watchdog;
 mod utils;
+mod voice_insert;
 
 pub use cli::CliArgs;
 #[cfg(debug_assertions)]

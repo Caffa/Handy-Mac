@@ -1199,7 +1199,8 @@ fn position_overlay_on_monitor(
         // run_on_main_thread from the main thread can deadlock/timeout
         // because the queued closure never gets a chance to drain.
         if std::thread::current().name() == Some("main") {
-            let _ = overlay_window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            let _ = overlay_window
+                .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
             let _ = overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize {
                 width: actual_width,
                 height: actual_height,
@@ -1208,7 +1209,8 @@ fn position_overlay_on_monitor(
             let window = overlay_window.clone();
             let (position_tx, position_rx) = std::sync::mpsc::channel();
             let _ = overlay_window.run_on_main_thread(move || {
-                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+                let _ =
+                    window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
                 let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
                     width: actual_width,
                     height: actual_height,
