@@ -2355,6 +2355,14 @@ impl PreviewScript {
 }
 
 fn emit_stream_text(app_handle: &AppHandle, committed: &str, tentative: &str) {
+    // Feed the voice-insert display meter: token char anchors are captured
+    // against this committed-prefix length at insert time. No-op when the
+    // voice-insert registry is not managed (feature unused).
+    if let Some(registry) =
+        app_handle.try_state::<std::sync::Arc<crate::voice_insert::VoiceInsertRegistry>>()
+    {
+        registry.note_display_chars(committed.chars().count());
+    }
     let _ = StreamTextEvent {
         committed: committed.to_string(),
         tentative: tentative.to_string(),

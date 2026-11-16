@@ -361,6 +361,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(retry_queue.clone());
     app_handle.manage(retry_worker.clone());
     app_handle.manage(Arc::new(session::SessionTracker::new()));
+    // Voice-insert token registry: per-recording buffer fed by the local
+    // HTTP server (when enabled) and drained into the final transcription.
+    app_handle.manage(Arc::new(voice_insert::VoiceInsertRegistry::new()));
     app_handle.manage(focus::SavedFrontmostApp::new());
     app_handle.manage(Arc::new(SettingsWriter::new()));
     app_handle.manage(Arc::new(Mutex::new(())));

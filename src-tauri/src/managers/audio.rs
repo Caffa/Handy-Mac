@@ -1038,6 +1038,15 @@ impl AudioRecordingManager {
                                 debug!("[STREAM-CB] Discarding streaming transcription result — cancelled");
                                 return;
                             }
+                            // Feed the voice-insert display meter before the
+                            // emission: token anchors are captured against the
+                            // displayed char count. The meter takes a monotonic
+                            // max because these batch rewrites are non-monotonic.
+                            if let Some(registry) = app_handle
+                                .try_state::<std::sync::Arc<crate::voice_insert::VoiceInsertRegistry>>()
+                            {
+                                registry.note_display_chars(result.text.chars().count());
+                            }
                             info!(
                                 "[Live Captions] Emitting partial-transcription event: text_len={}",
                                 result.text.len()
