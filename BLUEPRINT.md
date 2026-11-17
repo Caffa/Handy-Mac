@@ -8,13 +8,22 @@ discord_channel: https://discord.com/channels/1529123294631166223
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (11 commits pushed to origin): Phase 1 of the voice insert API is done — an opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) lets an external process inject a text token during an active recording; it splices into the final transcription after LLM post-processing and shows in live captions immediately.
-- Voice insert is hardened after two review passes (recording gate, meter race, token cap raised 256→413, socket timeouts); 32 voice_insert tests pass, cargo/clippy/fmt/build clean at baseline, and the full lib suite is green — 676 passed / 0 failed / 19 ignored after the 4 pre-existing test failures were fixed (e5a6de20).
-- Fixed live captions clipping the front of utterances (37560c58): the arm-time pre-buffer drain in `CaptureSink::begin_armed` is now forwarded to the streaming `on_raw_frame` seam, with armed-edge detection ordered so the drain arrives before the arming chunk — streaming partials no longer miss ~1s of lead-in; regression test added.
-- Planned next: Phase 2 — exact token placement via split transcription (transcribe before/after token, then join); Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API (no bundled STT), with vault-synced bearer token.
+- On branch `feature/voice-insert-api` (tip afc441ab): new "Delayed paste" feature — when the focused element isn't an editable text field (macOS Accessibility check via new ax_focus.rs FFI), the transcription stays on a concealed clipboard and auto-pastes once an editable field is focused (250ms poll, 300s timeout, manual paste disarms); toggle in Settings→Advanced→Output, on by default. Not yet runtime-tested — Pamela will verify manually.
+- Delayed paste hardened in two fix passes (peek-vs-take of the frontmost app, pending survives busy states, arm probe on a helper thread, generation off-by-one fixed so armed pastes fire); pending_paste tests 7/7, full lib suite 682 passed / 0 failed.
+- Still standing: voice insert API Phase 1 — opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) splices external text tokens into an active recording, 32 voice_insert tests; and the live-captions pre-buffer fix (37560c58) so streaming partials no longer clip the first ~1s of an utterance.
+- Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
+- Planned next: manual runtime verification of delayed paste, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API.
 - Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
 
 ## Log
+
+### 2026-11-17 — Delayed paste feature
+
+Added "Delayed paste" to `feature/voice-insert-api` (4 commits pushed to origin): when the focused element isn't an editable text field (checked via new macOS Accessibility FFI in ax_focus.rs, extracted from clipboard.rs), the transcription stays on a concealed clipboard and auto-pastes the moment an editable field is focused (250ms poll, 300s timeout, single slot, manual paste disarms it); the toggle lives in Settings→Advanced→Output and it's on by default. Two review-fix commits hardened the flow — peek instead of take for the frontmost app, pending survives busy states, arm probe moved to a helper thread — and corrected a generation-counter off-by-one that made armed pastes never fire. cargo check, pending_paste tests 7/7, and the full lib suite (682 passed / 0 failed) are green; no runtime testing by an agent — Pamela will verify manually with the installed app.
+
+Next: manual runtime check of delayed paste in daily dictation.
+
+https://discord.com/channels/1486966847810043924/1572247541817544865
 
 ### 2026-11-17 — Pre-existing lib tests fixed
 
