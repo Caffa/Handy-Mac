@@ -30,7 +30,6 @@ struct ReservedShortcut {
 
 // ── macOS reserved shortcuts ──────────────────────────────────────────
 
-#[cfg(target_os = "macos")]
 const MACOS_RESERVED: &[ReservedShortcut] = &[
     ReservedShortcut {
         shortcut: "cmd+q",
@@ -140,12 +139,8 @@ const MACOS_RESERVED: &[ReservedShortcut] = &[
     },
 ];
 
-#[cfg(not(target_os = "macos"))]
-const MACOS_RESERVED: &[ReservedShortcut] = &[];
-
 // ── Windows reserved shortcuts ────────────────────────────────────────
 
-#[cfg(target_os = "windows")]
 const WINDOWS_RESERVED: &[ReservedShortcut] = &[
     ReservedShortcut {
         shortcut: "alt+f4",
@@ -229,15 +224,10 @@ const WINDOWS_RESERVED: &[ReservedShortcut] = &[
     },
 ];
 
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-const WINDOWS_RESERVED: &[ReservedShortcut] = &[];
-
 // ── Linux reserved shortcuts ───────────────────────────────────────────
 // Note: Linux DE shortcuts vary widely. We check for the most common ones
 // across GNOME and KDE.
 
-#[cfg(target_os = "linux")]
 const LINUX_RESERVED: &[ReservedShortcut] = &[
     // GNOME shortcuts
     ReservedShortcut {
@@ -317,10 +307,6 @@ const LINUX_RESERVED: &[ReservedShortcut] = &[
         reserved: false,
     },
 ];
-
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-const LINUX_RESERVED: &[ReservedShortcut] = &[];
 
 /// Normalize a shortcut string for comparison.
 ///

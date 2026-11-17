@@ -1,5 +1,30 @@
 # Handy-Fork Learning Log
 
+## History tests failed on missing `file_name_vad` column; test fixture drifted from the migration chain (2026-11-17)
+
+### Problem
+- `managers::history::tests::{get_latest_entry_returns_none_when_empty, get_latest_entry_returns_newest_entry, get_latest_completed_entry_returns_only_nonempty}` all panicked with `no such column: file_name_vad` from the SELECT in `get_latest_completed_entry_with_conn` / `get_latest_entry_with_conn`.
+- After fixing the schema, `get_latest_completed_entry_returns_only_nonempty` still failed on `assert_eq!(entry.transcription_text, "completed ")` — the expected literal had a stray trailing space while the roundtrip value was `"completed"`.
+
+### Root Cause
+- The test helper `setup_conn()` (test module in `managers/history.rs`) created the table with a hardcoded `CREATE TABLE transcription_history` copied from an older schema, bypassing the real migration runner (`MIGRATIONS` / `Migrations::to_latest`). Migration 12 (`df65f4ac`, 2026-07-27, "save raw + VAD-filtered audio separately") added the `file_name_vad` column to production; the fixture predated it (`setup_conn` born in `17277cf6`) and was never updated. Production was NOT broken — fresh installs get the column through the migration chain — only the test harness drifted.
+- The trailing-space literal came from a mechanical edit in `f9aa0459` ("Restore incomplete SQL query…") that appended trailing spaces to nearby string literals (expect messages AND the assertion literal). `map_history_entry` is a plain DB roundtrip with no trimming, and the `insert_entry` helper inserts exactly `"completed"`, so no correct implementation could ever produce `"completed "` there. Repairing the literal strengthens the test (exact roundtrip), not weakens it.
+
+### Fix
+- `setup_conn()` now opens an in-memory connection and applies the real `MIGRATIONS` via `Migrations::new(MIGRATIONS.to_vec()).to_latest(&mut conn)` — the fixture can never drift from the production schema again; future migrations automatically apply to tests.
+- Assertion literal corrected to `"completed"`.
+
+## `detect_conflicts_all_platforms` degenerated to current-OS-only on macOS (2026-11-17)
+
+### Problem
+- `shortcut::conflicts::tests::test_detect_conflicts_all_platforms` failed on macOS: `detect_conflicts_all_platforms("alt+f4")` returned nothing from Windows/Linux, though the full reserved lists exist in the file.
+
+### Root Cause
+- Authoring bug in the fork's own commit `011fe1b1` ("FEAT: detect keyboard shortcut conflicts"), not an upstream-sync loss and not an intentional removal: `MACOS_RESERVED` / `WINDOWS_RESERVED` / `LINUX_RESERVED` were each defined twice — populated behind `#[cfg(target_os = …)]`, empty stub behind `#[cfg(not(target_os = …))]`. `detect_conflicts_all_platforms` iterates those consts, so on any one platform two of the three lists compile to empty and the function silently degrades to a current-OS scan — contradicting its documented contract ("returns conflicts from all platforms, regardless of the current OS"). `test_detect_conflicts_cmd_space` masked this on macOS because it only needs the macOS list; the Windows/Linux assertion could only ever pass in a non-macOS test build. Nothing in REMOVED_FEATURES.md or fork docs marks Windows/Linux conflict sources as removed; later commits (`59d8df57`, `d482c3e9`) touched the file cosmetically only.
+
+### Fix
+- Ungated the three populated lists (compiled on all targets) and deleted the three empty-stub consts. `detect_conflicts` keeps its `#[cfg(target_os = …)]` selection — per-platform behavior identical. `detect_conflicts_all_platforms` now genuinely scans all three lists on every OS, fulfilling its contract; all consts are unconditionally referenced by it so no dead-code warnings appear. Test passes because product behavior is fixed, not because the assertion was relaxed.
+
 ## Live captions missed the pre-hotkey lead: `begin_armed` drain never reached the StreamRouter seam (2026-11-16)
 
 ### Problem

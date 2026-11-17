@@ -1736,28 +1736,14 @@ mod tests {
     use rusqlite::{params, Connection};
 
     fn setup_conn() -> Connection {
-        let conn = Connection::open_in_memory().expect("open in-memory database ");
-        conn.execute_batch(
-            "CREATE TABLE transcription_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_name TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                saved BOOLEAN NOT NULL DEFAULT 0,
-                title TEXT NOT NULL,
-                transcription_text TEXT NOT NULL,
-                post_processed_text TEXT,
-                post_process_prompt TEXT,
-                post_process_requested BOOLEAN NOT NULL DEFAULT 0,
-                model_id TEXT,
-                routed BOOLEAN NOT NULL DEFAULT 0,
-                routing_result TEXT,
-                tags TEXT,
-                ground_truth TEXT,
-                quality TEXT,
-                speech_speed TEXT
-            );",
-        )
-        .expect("create transcription_history table ");
+        let mut conn = Connection::open_in_memory().expect("open in-memory database ");
+        // Build the test schema through the real migration chain so the fixture
+        // can never drift from the production schema (e.g. when a migration
+        // adds a column like file_name_vad that the SELECT queries expect).
+        let migrations = Migrations::new(MIGRATIONS.to_vec());
+        migrations
+            .to_latest(&mut conn)
+            .expect("apply history migrations ");
         conn
     }
 
@@ -1834,6 +1820,6 @@ mod tests {
             .expect("completed entry found ");
 
         assert_eq!(entry.timestamp, 100);
-        assert_eq!(entry.transcription_text, "completed ");
+        assert_eq!(entry.transcription_text, "completed");
     }
 }
