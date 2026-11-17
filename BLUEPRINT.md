@@ -9,12 +9,20 @@ discord_channel: https://discord.com/channels/1529123294631166223
 ## Where it stands
 
 - On branch `feature/voice-insert-api` (11 commits pushed to origin): Phase 1 of the voice insert API is done — an opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) lets an external process inject a text token during an active recording; it splices into the final transcription after LLM post-processing and shows in live captions immediately.
-- Voice insert is hardened after two review passes (recording gate, meter race, token cap raised 256→413, socket timeouts); 32 voice_insert tests pass, cargo/clippy/fmt/build clean at baseline.
+- Voice insert is hardened after two review passes (recording gate, meter race, token cap raised 256→413, socket timeouts); 32 voice_insert tests pass, cargo/clippy/fmt/build clean at baseline, and the full lib suite is green — 676 passed / 0 failed / 19 ignored after the 4 pre-existing test failures were fixed (e5a6de20).
 - Fixed live captions clipping the front of utterances (37560c58): the arm-time pre-buffer drain in `CaptureSink::begin_armed` is now forwarded to the streaming `on_raw_frame` seam, with armed-edge detection ordered so the drain arrives before the arming chunk — streaming partials no longer miss ~1s of lead-in; regression test added.
 - Planned next: Phase 2 — exact token placement via split transcription (transcribe before/after token, then join); Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API (no bundled STT), with vault-synced bearer token.
 - Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
 
 ## Log
+
+### 2026-11-17 — Pre-existing lib tests fixed
+
+Fixed the 4 pre-existing `cargo test --lib` failures on `feature/voice-insert-api` (e5a6de20): the three history tests were failing because the `setup_conn()` fixture hardcoded a stale `CREATE TABLE transcription_history` from before the `file_name_vad` migration (fixture now wired to the real MIGRATIONS chain) plus a trailing-space assertion artifact from f9aa0459; the shortcut-conflicts test was a production-behavior bug from 011fe1b1 where three reserved-shortcut lists had cfg-gated duplicates, leaving the Windows/Linux lists empty on macOS (populated lists ungated, empty stubs removed, `detect_conflicts()` behavior unchanged). Suite now 676 passed / 0 failed / 19 ignored; both root causes logged in learning-log.md.
+
+Next: Phase 2 — exact token placement via split transcription.
+
+https://discord.com/channels/1486966847810043924/1571704447476834335
 
 ### 2026-11-16 — Live-captions pre-buffer fix
 
