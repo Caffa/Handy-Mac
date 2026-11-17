@@ -10,11 +10,17 @@ use crate::settings::{get_settings, PasteMethod};
 use log::{info, warn};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 
+#[cfg(target_os = "macos")]
 const POLL_MS: u64 = 250;
+#[cfg(target_os = "macos")]
 const PENDING_PASTE_TIMEOUT_SECS: u64 = 300;
+#[cfg(target_os = "macos")]
 const EDITABLE_ROLES: [&str; 4] = ["AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,8 +82,11 @@ fn decide_tick(
     if !enabled_now || !method_pasteable_now {
         return TickDecision::Disarm;
     }
+    // The coordinator transitions Idle asynchronously after a session finishes.
+    // A tick that sees Processing/Confirming should wait, not disarm: new-session
+    // invalidation is handled by GENERATION/cancel_for_new_session.
     if busy_coordinator {
-        return TickDecision::Disarm;
+        return TickDecision::KeepPending;
     }
     if frontmost_is_self {
         return TickDecision::KeepPending;
@@ -98,6 +107,7 @@ fn decide_tick(
 /// Slot that holds the text waiting to be pasted and the generation it belongs to.
 struct PendingSlot {
     text: String,
+    #[cfg(target_os = "macos")]
     armed_at: Instant,
     gen: u64,
 }
@@ -137,36 +147,38 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
         text.to_string()
     };
 
-    let target_pid = {
-        #[cfg(target_os = "macos")]
-        {
-            // A deferred paste must consume the saved frontmost app so it is not
-            // restored later by an unrelated paste.
-            if let Some((_, pid)) = crate::focus::take_saved_frontmost_app(app_handle) {
-                Some(pid)
-            } else {
-                frontmost_pid()
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            None::<i32>
-        }
-    };
-
-    let Some(target_pid) = target_pid else {
-        return false;
-    };
-
-    let own_pid = std::process::id() as i32;
-    if target_pid == own_pid {
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Non-macOS platforms cannot inspect AX role; fall back to immediate paste.
+        let _ = final_text;
         return false;
     }
 
     #[cfg(target_os = "macos")]
     {
-        let info = crate::ax_focus::read_focused_element(target_pid, false);
-        let editability = role_editability(info.as_ref().and_then(|i| i.role.as_deref()));
+        // Probe non-destructively: peek the saved frontmost app so the normal
+        // PasteNow paths (Editable/Unknown) still leave it intact for the
+        // desktop-like check and restore_frontmost_app in clipboard::paste().
+        let target_pid = if let Some((_, pid)) = crate::focus::peek_saved_frontmost_app(app_handle)
+        {
+            Some(pid)
+        } else {
+            frontmost_pid()
+        };
+
+        let Some(target_pid) = target_pid else {
+            return false;
+        };
+
+        let own_pid = std::process::id() as i32;
+        if target_pid == own_pid {
+            return false;
+        }
+
+        // Run the arm-time AX probe off the calling (often main) thread so a
+        // hung target app cannot block transcription completion. Timeout treats
+        // the element as Unknown, which falls back to immediate paste.
+        let editability = probe_editability(target_pid);
 
         match decide_arm(
             settings.delayed_paste_enabled,
@@ -175,9 +187,20 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
         ) {
             ArmDecision::PasteNow => false,
             ArmDecision::Arm => {
+                // Now consume the saved frontmost app so it is not restored by a
+                // later unrelated paste while we hold the text pending.
+                let _ = crate::focus::take_saved_frontmost_app(app_handle);
+
+                // Publish the pending text to the clipboard. We intentionally do
+                // NOT snapshot the user's current clipboard here: the pending text
+                // must survive on the clipboard until fire, and the fire-time
+                // verify-then-commit verifier will restore whatever the user
+                // copied since arming.
                 crate::clipboard::publish_for_pending(&final_text, app_handle);
 
-                let gen = GENERATION.load(Ordering::SeqCst);
+                // Allocate a fresh generation for this watcher so any previous
+                // pending watcher for this session auto-cancels.
+                let gen = GENERATION.fetch_add(1, Ordering::SeqCst);
                 let mut slot = SLOT.lock();
                 *slot = Some(PendingSlot {
                     text: final_text.clone(),
@@ -199,13 +222,6 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
                 true
             }
         }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Non-macOS platforms cannot inspect AX role; fall back to immediate paste.
-        let _ = final_text;
-        false
     }
 }
 
@@ -240,6 +256,40 @@ fn frontmost_pid() -> Option<i32> {
         let app = workspace.frontmostApplication()?;
         Some(app.processIdentifier())
     })
+}
+
+/// Probe the focused element's editability off the calling thread.
+///
+/// A timeout (or any AX failure) is treated as Unknown so the caller falls back
+/// to immediate paste rather than waiting forever.
+#[cfg(target_os = "macos")]
+fn probe_editability(target_pid: i32) -> Editability {
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel();
+    let spawn_result = std::thread::Builder::new()
+        .name("pending-paste-probe".into())
+        .spawn(move || {
+            let info = crate::ax_focus::read_focused_element(target_pid, false);
+            let editability = role_editability(info.as_ref().and_then(|i| i.role.as_deref()));
+            let _ = tx.send(editability);
+        });
+
+    if let Err(e) = spawn_result {
+        warn!("Failed to spawn arm-time AX probe thread: {}", e);
+        return Editability::Unknown;
+    }
+
+    match rx.recv_timeout(Duration::from_millis(300)) {
+        Ok(editability) => editability,
+        Err(_) => {
+            warn!(
+                "Arm-time AX probe timed out for pid={} — treating as Unknown",
+                target_pid
+            );
+            Editability::Unknown
+        }
+    }
 }
 
 /// Watcher thread entry point. Polls the focused element until the pending text
@@ -314,7 +364,8 @@ fn watch(app_handle: AppHandle, gen: u64) {
             }
         };
 
-        let text_already_present = value.map_or(false, |v| v.contains(&pending_text));
+        let text_already_present =
+            value.is_some_and(|v| v.contains(&pending_text) || v.contains(pending_text.trim_end()));
 
         match decide_tick(
             busy,
@@ -325,6 +376,12 @@ fn watch(app_handle: AppHandle, gen: u64) {
             method_pasteable_now,
         ) {
             TickDecision::Fire => {
+                // Re-check generation right before firing to shrink the
+                // cancel-after-decide race window.
+                if GENERATION.load(Ordering::SeqCst) != gen {
+                    return;
+                }
+
                 info!("Focused element is editable — firing delayed paste");
                 if let Err(e) = crate::clipboard::paste_pending_now(&pending_text, &app_handle) {
                     warn!(
@@ -421,10 +478,10 @@ mod tests {
             TickDecision::Disarm
         );
 
-        // Busy coordinator disarms even when editable.
+        // Busy coordinator keeps pending until the async Idle transition.
         assert_eq!(
             decide_tick(true, false, Editability::Editable, false, true, true),
-            TickDecision::Disarm
+            TickDecision::KeepPending
         );
 
         // Self frontmost keeps pending.
@@ -459,6 +516,13 @@ mod tests {
     #[test]
     fn default_settings_have_delayed_paste_enabled() {
         let settings = crate::settings::get_default_settings();
+        assert!(settings.delayed_paste_enabled);
+    }
+
+    #[test]
+    fn missing_field_defaults_to_delayed_paste_enabled() {
+        let settings = serde_json::from_str::<crate::settings::AppSettings>("{}")
+            .expect("empty JSON should deserialize with defaults");
         assert!(settings.delayed_paste_enabled);
     }
 }

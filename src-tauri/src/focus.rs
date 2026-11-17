@@ -43,7 +43,6 @@ impl SavedFrontmostApp {
 ///
 /// Returns `Some((bundle_id, pid))` on macOS if an app was previously saved,
 /// otherwise `None`. Non-macOS platforms always return `None`.
-#[allow(dead_code)]
 pub fn peek_saved_frontmost_app(app: &AppHandle) -> Option<(String, i32)> {
     #[cfg(target_os = "macos")]
     {

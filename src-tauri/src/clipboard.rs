@@ -1119,7 +1119,8 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     // a watcher that pastes once an editable field becomes focused. If this arms,
     // we intentionally skip the Finder-fallback, restore-frontmost, and immediate
     // paste paths; any AX failure inside maybe_arm already falls back to the normal
-    // immediate paste path.
+    // immediate paste path. When armed, the Finder clipboard-fallback toast is
+    // intentionally superseded by the arm-and-wait behavior.
     if crate::pending_paste::maybe_arm(&app_handle, &text) {
         return Ok(());
     }
@@ -1284,6 +1285,11 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
 /// This keeps the pending text on the clipboard and stamps NSPasteboard
 /// concealment markers so well-behaved clipboard managers skip it, mirroring
 /// the live paste path.
+///
+/// Note: this intentionally overwrites the user's current clipboard at arm
+/// time without taking a snapshot. The pending text must remain on the
+/// clipboard until fire; the fire-time verify-then-commit verifier will
+/// restore whatever the user copied in between.
 pub(crate) fn publish_for_pending(text: &str, app_handle: &AppHandle) {
     if let Err(e) = write_to_clipboard(text, app_handle) {
         warn!("Failed to publish pending paste text to clipboard: {}", e);
