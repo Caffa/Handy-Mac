@@ -4,6 +4,8 @@ mod apple_intelligence;
 mod audio_feedback;
 pub mod audio_toolkit;
 mod autostart;
+#[cfg(target_os = "macos")]
+mod ax_focus;
 pub mod catalog;
 pub mod chinese_script;
 pub mod cli;

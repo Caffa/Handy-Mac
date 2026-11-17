@@ -47,7 +47,7 @@ use crate::utils::{is_kde_wayland, is_wayland};
 // borrowed from upstream paste_tx (a70ac84f) per gate D4 — the fork keeps
 // its own AX verify-then-commit restore as the engine.
 #[cfg(target_os = "macos")]
-mod macos_pasteboard {
+pub(crate) mod macos_pasteboard {
     use objc2_app_kit::NSPasteboard;
     use objc2_foundation::NSString;
 
@@ -92,108 +92,13 @@ mod macos_pasteboard {
 // clipboard restore. Without this, we'd unconditionally restore the
 // clipboard content even if the paste failed, destroying the transcription
 // text (Bug 3).
+//
+// The raw types and extern declarations now live in `crate::ax_focus` so the
+// delayed-paste watcher can reuse them without duplicating FFI surface.
 #[cfg(target_os = "macos")]
-mod macos_ax {
-    use std::os::raw::c_int;
-
-    // Opaque types from ApplicationServices.framework
-    #[repr(C)]
-    pub struct AXUIElement(pub *mut std::ffi::c_void);
-    #[repr(C)]
-    pub struct CFString(pub *mut std::ffi::c_void);
-    #[repr(C)]
-    pub struct CFType(pub *mut std::ffi::c_void);
-
-    pub type AXUIElementRef = *const AXUIElement;
-    pub type CFTypeRef = *const CFType;
-    pub type CFStringRef = *const CFString;
-    pub type AXError = c_int;
-    pub type CFStringEncoding = u32;
-
-    // AXError codes
-    pub const KAX_ERROR_SUCCESS: i32 = 0;
-    /// kAXErrorCannotComplete — with AXUIElementSetMessagingTimeout in place,
-    /// this is what a HUNG target app returns (the AX message timed out).
-    /// It means the app is unresponsive, NOT that an attribute is missing,
-    /// so it must not be treated as "terminal-like app, paste landed".
-    pub const KAX_ERROR_CANNOT_COMPLETE: i32 = -25204;
-    /// kAXErrorAttributeUnsupported — the element genuinely does not support
-    /// the attribute (many terminal apps don't expose AXValue).
-    pub const KAX_ERROR_ATTRIBUTE_UNSUPPORTED: i32 = -25205;
-    /// kAXErrorNoValue — the attribute exists but has no value.
-    pub const KAX_ERROR_NO_VALUE: i32 = -25212;
-
-    // CoreFoundation encoding
-    pub const K_CFSTRING_ENCODING_UTF8: u32 = 0x08000100;
-
-    /// Create a CFString for the `AXFocusedUIElement` accessibility attribute.
-    /// Caller must release the returned CFStringRef with CFRelease.
-    pub fn ax_focused_ui_element_attribute() -> CFStringRef {
-        unsafe {
-            CFStringCreateWithCString(
-                std::ptr::null::<std::ffi::c_void>() as CFTypeRef,
-                c"AXFocusedUIElement".as_ptr(),
-                K_CFSTRING_ENCODING_UTF8,
-            )
-        }
-    }
-
-    /// Create a CFString for the `AXValue` accessibility attribute.
-    /// Caller must release the returned CFStringRef with CFRelease.
-    pub fn ax_value_attribute() -> CFStringRef {
-        unsafe {
-            CFStringCreateWithCString(
-                std::ptr::null::<std::ffi::c_void>() as CFTypeRef,
-                c"AXValue".as_ptr(),
-                K_CFSTRING_ENCODING_UTF8,
-            )
-        }
-    }
-
-    #[link(kind = "framework", name = "ApplicationServices")]
-    extern "C" {
-        pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
-        // Bounds the round-trip time of AX messages sent to `element`'s
-        // process (seconds, f32 per HIServices). Without this,
-        // AXUIElementCopyAttributeValue against a hung target app blocks the
-        // calling thread FOREVER — observed live: the macOS main thread parked
-        // permanently inside the paste closure and wedged the whole app (see
-        // research/main-thread-hang-tray-lock-wedge-2026-10-23.md).
-        pub fn AXUIElementSetMessagingTimeout(
-            element: AXUIElementRef,
-            inTimeoutSeconds: f32,
-        ) -> AXError;
-        pub fn AXUIElementCopyAttributeValue(
-            element: AXUIElementRef,
-            // `attribute` is a CFStringRef (a CoreFoundation object pointer), NOT
-            // a raw C string. Passing a *const i8 here previously made the framework
-            // call CFStringGetLength on a non-CFString pointer, triggering an Apple
-            // Silicon PAC trap (SIGTRAP / EXC_BREAKPOINT) and crashing the app
-            // after every successful paste. We now build proper CFString objects
-            // with CFStringCreateWithCString instead of relying on linkable globals.
-            attribute: CFStringRef,
-            value: *mut *mut std::ffi::c_void,
-        ) -> AXError;
-        pub fn CFGetTypeID(cf: CFTypeRef) -> usize;
-        pub fn CFStringGetTypeID() -> usize;
-        pub fn CFStringGetLength(theString: CFStringRef) -> isize;
-        pub fn CFStringGetCString(
-            theString: CFStringRef,
-            buffer: *mut i8,
-            bufferSize: isize,
-            encoding: CFStringEncoding,
-        ) -> bool;
-        pub fn CFRelease(cf: CFTypeRef);
-        pub fn CFStringCreateWithCString(
-            alloc: CFTypeRef,
-            cStr: *const i8,
-            encoding: CFStringEncoding,
-        ) -> CFStringRef;
-    }
-}
-
+use crate::ax_focus as macos_ax;
 #[cfg(target_os = "macos")]
-use macos_ax::*;
+use crate::ax_focus::*;
 
 /// Writes text to the system clipboard without pasting or restoring the previous content.
 /// Used as a fallback when the paste keystroke fails, so the user can manually paste.
