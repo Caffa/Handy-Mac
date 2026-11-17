@@ -119,6 +119,17 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The single pending-paste slot. Holding `None` means no watcher is armed.
 static SLOT: Mutex<Option<PendingSlot>> = Mutex::new(None);
 
+/// Allocate a fresh generation for a new watcher. `fetch_add` returns the
+/// previous value, so the new generation is that value + 1.
+fn arm_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Check whether the global generation still matches the supplied one.
+fn gen_is_current(gen: u64) -> bool {
+    GENERATION.load(Ordering::SeqCst) == gen
+}
+
 /// Arm the delayed-paste watcher if appropriate.
 ///
 /// Returns `true` if the watcher was armed (the caller should skip its normal
@@ -200,7 +211,7 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
 
                 // Allocate a fresh generation for this watcher so any previous
                 // pending watcher for this session auto-cancels.
-                let gen = GENERATION.fetch_add(1, Ordering::SeqCst);
+                let gen = arm_generation();
                 let mut slot = SLOT.lock();
                 *slot = Some(PendingSlot {
                     text: final_text.clone(),
@@ -228,10 +239,13 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
 /// Cancel any pending paste for the current session. Called when a new recording
 /// starts so the previous session's watcher cannot fire into the new one.
 pub fn cancel_for_new_session() {
-    GENERATION.fetch_add(1, Ordering::SeqCst);
+    let new_gen = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let mut slot = SLOT.lock();
     if slot.is_some() {
-        warn!("Cancelling pending paste because a new session started");
+        warn!(
+            "Cancelling pending paste because a new session started (gen={})",
+            new_gen
+        );
     }
     *slot = None;
 }
@@ -300,7 +314,7 @@ fn watch(app_handle: AppHandle, gen: u64) {
     let own_pid = std::process::id() as i32;
 
     loop {
-        if GENERATION.load(Ordering::SeqCst) != gen {
+        if !gen_is_current(gen) {
             return;
         }
 
@@ -364,8 +378,11 @@ fn watch(app_handle: AppHandle, gen: u64) {
             }
         };
 
-        let text_already_present =
-            value.is_some_and(|v| v.contains(&pending_text) || v.contains(pending_text.trim_end()));
+        let text_already_present = value.is_some_and(|v| {
+            v.contains(&pending_text)
+                || (pending_text.ends_with(char::is_whitespace)
+                    && v.contains(pending_text.trim_end()))
+        });
 
         match decide_tick(
             busy,
@@ -378,7 +395,7 @@ fn watch(app_handle: AppHandle, gen: u64) {
             TickDecision::Fire => {
                 // Re-check generation right before firing to shrink the
                 // cancel-after-decide race window.
-                if GENERATION.load(Ordering::SeqCst) != gen {
+                if !gen_is_current(gen) {
                     return;
                 }
 
@@ -524,5 +541,14 @@ mod tests {
         let settings = serde_json::from_str::<crate::settings::AppSettings>("{}")
             .expect("empty JSON should deserialize with defaults");
         assert!(settings.delayed_paste_enabled);
+    }
+
+    #[test]
+    fn generation_handoff_roundtrip() {
+        let gen = arm_generation();
+        assert!(gen_is_current(gen));
+
+        cancel_for_new_session();
+        assert!(!gen_is_current(gen));
     }
 }
