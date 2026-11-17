@@ -2,18 +2,27 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-16
+updated: 2026-11-17
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (9 commits pushed to origin): Phase 1 of the voice insert API is done — an opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) lets an external process inject a text token during an active recording; it splices into the final transcription after LLM post-processing and shows in live captions immediately.
+- On branch `feature/voice-insert-api` (11 commits pushed to origin): Phase 1 of the voice insert API is done — an opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) lets an external process inject a text token during an active recording; it splices into the final transcription after LLM post-processing and shows in live captions immediately.
 - Voice insert is hardened after two review passes (recording gate, meter race, token cap raised 256→413, socket timeouts); 32 voice_insert tests pass, cargo/clippy/fmt/build clean at baseline.
+- Fixed live captions clipping the front of utterances (37560c58): the arm-time pre-buffer drain in `CaptureSink::begin_armed` is now forwarded to the streaming `on_raw_frame` seam, with armed-edge detection ordered so the drain arrives before the arming chunk — streaming partials no longer miss ~1s of lead-in; regression test added.
 - Planned next: Phase 2 — exact token placement via split transcription (transcribe before/after token, then join); Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API (no bundled STT), with vault-synced bearer token.
 - Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
 
 ## Log
+
+### 2026-11-16 — Live-captions pre-buffer fix
+
+Fixed live captions sometimes clipping the front of an utterance: the always-on pre-buffer drained at arm time (`begin_armed` in src-tauri/src/audio_toolkit/audio/sink.rs) was never forwarded to the live-captions `StreamRouter` seam (`on_raw_frame`), so streaming partials missed ~1s of audio that was present in the final transcript. Commit 37560c58 (pushed to origin/feature/voice-insert-api) forwards the drain to `on_raw_frame` and moves armed-edge detection in `CaptureSink::process_chunk` above the raw-seam feed so frames arrive in order; regression test src-tauri/tests/capture_sink_preroll.rs proves the drain-before-arming-chunk ordering and fails on the old code. Reviewer confirmed no regressions — the streaming final is display-only, the authoritative transcript still comes from the batch transcription.
+
+Next: Phase 2 — exact token placement via split transcription.
+
+https://discord.com/channels/1486966847810043924/1571704447476834335
 
 ### 2026-11-16 — Voice insert API Phase 1
 
