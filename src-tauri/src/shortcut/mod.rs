@@ -1067,6 +1067,15 @@ pub fn change_paste_delay_ms_setting(app: AppHandle, ms: u64) -> Result<(), Stri
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_delayed_paste_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    settings::patch_settings(&app, |s| {
+        s.delayed_paste_enabled = enabled;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_paste_method_setting(app: AppHandle, method: String) -> Result<(), String> {
     let parsed = match method.as_str() {
         "ctrl_v" => PasteMethod::CtrlV,

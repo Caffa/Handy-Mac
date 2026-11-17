@@ -715,6 +715,8 @@ pub struct AppSettings {
     pub show_tray_icon: bool,
     #[serde(default = "default_paste_delay_ms")]
     pub paste_delay_ms: u64,
+    #[serde(default = "default_delayed_paste_enabled")]
+    pub delayed_paste_enabled: bool,
     #[serde(default = "default_typing_tool")]
     pub typing_tool: TypingTool,
     pub external_script_path: Option<String>,
@@ -920,6 +922,10 @@ pub(crate) fn default_word_correction_threshold() -> f64 {
 
 pub(crate) fn default_paste_delay_ms() -> u64 {
     60
+}
+
+pub(crate) fn default_delayed_paste_enabled() -> bool {
+    true
 }
 
 pub(crate) fn default_auto_submit() -> bool {

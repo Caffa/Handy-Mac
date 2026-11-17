@@ -418,6 +418,10 @@
         },
         "externalScriptPlaceholder": "/path/to/your/script.sh"
       },
+      "delayedPaste": {
+        "label": "Delayed Paste",
+        "description": "If the focused app is not a text field, keep the transcription on the clipboard and paste automatically once you focus an editable field (within 5 minutes). Turn off to always paste immediately."
+      },
       "typingTool": {
         "title": "Typing Tool",
         "description": "Choose which Linux typing tool to use for Direct paste method. Auto will automatically detect and use the best available tool for your system.",

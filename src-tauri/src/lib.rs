@@ -25,6 +25,7 @@ mod main_watchdog;
 
 mod managers;
 mod overlay;
+pub mod pending_paste;
 pub mod portable;
 mod secure_input;
 mod session;
@@ -728,6 +729,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_extra_recording_buffer_setting,
             shortcut::change_pre_recording_buffer_setting,
             shortcut::change_paste_delay_ms_setting,
+            shortcut::change_delayed_paste_enabled_setting,
             shortcut::change_paste_method_setting,
             shortcut::get_available_typing_tools,
             shortcut::change_typing_tool_setting,

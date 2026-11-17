@@ -135,6 +135,7 @@ pub fn get_default_settings() -> AppSettings {
         keyboard_implementation: KeyboardImplementation::default(),
         show_tray_icon: default_show_tray_icon(),
         paste_delay_ms: default_paste_delay_ms(),
+        delayed_paste_enabled: default_delayed_paste_enabled(),
         typing_tool: default_typing_tool(),
         external_script_path: None,
         router_script_path: Some(

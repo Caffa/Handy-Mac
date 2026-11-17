@@ -179,6 +179,8 @@ const settingUpdaters: {
     commands.changeWordCorrectionThresholdSetting(value as number),
   paste_delay_ms: (value) =>
     commands.changePasteDelayMsSetting(value as number),
+  delayed_paste_enabled: (value) =>
+    commands.changeDelayedPasteEnabledSetting(value as boolean),
   paste_method: (value) => commands.changePasteMethodSetting(value as string),
   typing_tool: (value) => commands.changeTypingToolSetting(value as string),
   external_script_path: (value) =>

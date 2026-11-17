@@ -1115,6 +1115,15 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     let paste_method = settings.paste_method;
     let paste_delay_ms = settings.paste_delay_ms;
 
+    // Delayed paste: if the focused element is not an editable text field, arm
+    // a watcher that pastes once an editable field becomes focused. If this arms,
+    // we intentionally skip the Finder-fallback, restore-frontmost, and immediate
+    // paste paths; any AX failure inside maybe_arm already falls back to the normal
+    // immediate paste path.
+    if crate::pending_paste::maybe_arm(&app_handle, &text) {
+        return Ok(());
+    }
+
     // Check if the previously frontmost app is a desktop/file manager (e.g., Finder).
     // On macOS, Finder interprets Cmd+V as "paste files" or does nothing with text.
     // When the user is focused on Finder/Desktop, we fall back to clipboard-only
@@ -1268,6 +1277,74 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Publish transcription text to the clipboard when arming a delayed paste.
+///
+/// This keeps the pending text on the clipboard and stamps NSPasteboard
+/// concealment markers so well-behaved clipboard managers skip it, mirroring
+/// the live paste path.
+pub(crate) fn publish_for_pending(text: &str, app_handle: &AppHandle) {
+    if let Err(e) = write_to_clipboard(text, app_handle) {
+        warn!("Failed to publish pending paste text to clipboard: {}", e);
+    }
+
+    #[cfg(target_os = "macos")]
+    macos_pasteboard::stamp_concealment_markers();
+}
+
+/// Fire a delayed paste at the moment an editable field becomes focused.
+///
+/// Re-uses the same Enigo lock, clipboard prepare, and key-sending path as an
+/// immediate paste, but intentionally does NOT restore the frontmost app or
+/// auto-submit. The verify-then-commit verifier runs as usual.
+pub(crate) fn paste_pending_now(text: &str, app_handle: &AppHandle) -> Result<(), String> {
+    let settings = get_settings(app_handle);
+    let paste_method = settings.paste_method;
+    let paste_delay_ms = settings.paste_delay_ms;
+
+    info!(
+        "Delayed paste firing: method={:?}, delay={}ms, text_len={}",
+        paste_method,
+        paste_delay_ms,
+        text.len()
+    );
+
+    match paste_method {
+        PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
+            // Prepare clipboard (writes pending text + saves current clipboard).
+            // This also bumps CLIPBOARD_EPOCH so a new session cannot be clobbered
+            // by an old verifier.
+            let saved_clipboard = prepare_clipboard_for_paste(text, app_handle, paste_delay_ms)?;
+
+            let enigo_state = app_handle
+                .try_state::<EnigoState>()
+                .ok_or("Enigo state not initialized")?;
+            let mut enigo = enigo_state.0.lock();
+
+            send_paste_keys_and_verify(
+                &mut enigo,
+                text,
+                app_handle,
+                &paste_method,
+                &saved_clipboard,
+            )
+        }
+        PasteMethod::Direct => {
+            let enigo_state = app_handle
+                .try_state::<EnigoState>()
+                .ok_or("Enigo state not initialized")?;
+            let mut enigo = enigo_state.0.lock();
+
+            paste_direct(
+                &mut enigo,
+                text,
+                #[cfg(target_os = "linux")]
+                settings.typing_tool,
+            )
+        }
+        _ => Err("Invalid paste method for delayed paste".into()),
+    }
 }
 
 #[cfg(test)]

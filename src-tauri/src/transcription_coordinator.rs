@@ -1720,6 +1720,10 @@ impl TranscriptionCoordinator {
         activation: ShortcutActivation,
         hold_threshold: Duration,
     ) {
+        // A new user session invalidates any pending delayed paste from the
+        // previous transcription so it cannot fire into this new session.
+        crate::pending_paste::cancel_for_new_session();
+
         let send_start = Instant::now();
         let result = self.tx.send(Command::Input {
             binding_id: binding_id.to_string(),
@@ -1751,6 +1755,9 @@ impl TranscriptionCoordinator {
     /// event from the user's own integration, and dropping it desyncs toggle
     /// parity (upstream c6fa60da).
     pub fn send_external_input(&self, binding_id: &str, source: &str) {
+        // A new external session also invalidates any pending delayed paste.
+        crate::pending_paste::cancel_for_new_session();
+
         if self
             .tx
             .send(Command::Input {

@@ -39,6 +39,46 @@ impl SavedFrontmostApp {
     }
 }
 
+/// Peek at the saved frontmost application without consuming it.
+///
+/// Returns `Some((bundle_id, pid))` on macOS if an app was previously saved,
+/// otherwise `None`. Non-macOS platforms always return `None`.
+#[allow(dead_code)]
+pub fn peek_saved_frontmost_app(app: &AppHandle) -> Option<(String, i32)> {
+    #[cfg(target_os = "macos")]
+    {
+        let state = app.try_state::<SavedFrontmostApp>()?;
+        let guard = state.0.lock();
+        guard
+            .as_ref()
+            .map(|info| (info.bundle_id.clone(), info.pid))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// Take (consume) the saved frontmost application.
+///
+/// A deferred paste path must consume the save so it is not restored by a
+/// later unrelated paste. Returns `Some((bundle_id, pid))` on macOS if an app
+/// was saved, otherwise `None`.
+pub fn take_saved_frontmost_app(app: &AppHandle) -> Option<(String, i32)> {
+    #[cfg(target_os = "macos")]
+    {
+        let state = app.try_state::<SavedFrontmostApp>()?;
+        let mut guard = state.0.lock();
+        guard.take().map(|info| (info.bundle_id, info.pid))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        None
+    }
+}
+
 /// Save the bundle identifier and PID of the current frontmost application.
 ///
 /// On non-macOS platforms this is a no-op (the overlay uses different windowing
