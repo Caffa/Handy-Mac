@@ -44,6 +44,9 @@ const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
 /// Information about the currently focused accessibility element.
 pub struct FocusedElementInfo {
     pub role: Option<String>,
+    /// When `role` is `AXWebArea`, this is the role of the focused web node
+    /// inside the web area (e.g. AXTextArea/AXTextField if a DOM input has focus).
+    pub nested_role: Option<String>,
     pub value: Option<String>,
 }
 
@@ -175,15 +178,45 @@ pub fn read_focused_element(pid: i32, include_value: bool) -> Option<FocusedElem
         let _ =
             unsafe { AXUIElementSetMessagingTimeout(focused_element, AX_MESSAGING_TIMEOUT_SECS) };
 
-        let role = read_string_attribute(focused_element, role_attr);
-        let value = if include_value {
+        let top_role = read_string_attribute(focused_element, role_attr);
+        let top_value = if include_value {
             read_string_attribute(focused_element, value_attr)
         } else {
             None
         };
 
-        // Release the focused element (Create-rule +1 reference) now that
-        // we no longer need it.
+        // For web content, the top-level focused element is often a generic
+        // AXWebArea; the actual focused DOM node (text input, etc.) is exposed
+        // as the AXFocusedUIElement of that web area. Resolve one level deeper
+        // so chat/ Electron apps are recognized as editable when a text field
+        // has DOM focus.
+        let mut nested_role: Option<String> = None;
+        let mut nested_value: Option<String> = None;
+        if top_role.as_deref() == Some("AXWebArea") {
+            let mut nested_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let nested_result = unsafe {
+                AXUIElementCopyAttributeValue(
+                    focused_element,
+                    focused_attr,
+                    &mut nested_ptr as *mut _,
+                )
+            };
+            if nested_result == KAX_ERROR_SUCCESS && !nested_ptr.is_null() {
+                let nested_element: AXUIElementRef = nested_ptr as AXUIElementRef;
+                let _ = unsafe {
+                    AXUIElementSetMessagingTimeout(nested_element, AX_MESSAGING_TIMEOUT_SECS)
+                };
+                nested_role = read_string_attribute(nested_element, role_attr);
+                if include_value {
+                    nested_value = read_string_attribute(nested_element, value_attr);
+                }
+                // Release the nested element (Create-rule +1 reference).
+                unsafe { CFRelease(nested_ptr as CFTypeRef) };
+            }
+        }
+
+        // Release the top-level focused element (Create-rule +1 reference)
+        // now that we no longer need it.
         unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
 
         unsafe {
@@ -194,7 +227,18 @@ pub fn read_focused_element(pid: i32, include_value: bool) -> Option<FocusedElem
             CFRelease(ax_app as CFTypeRef);
         }
 
-        Some(FocusedElementInfo { role, value })
+        let is_web_area = top_role.as_deref() == Some("AXWebArea");
+        let value = if is_web_area {
+            nested_value.or(top_value)
+        } else {
+            top_value
+        };
+
+        Some(FocusedElementInfo {
+            role: top_role,
+            nested_role,
+            value,
+        })
     })
 }
 

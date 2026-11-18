@@ -7,7 +7,7 @@
 //! be determined, or the user manually pastes, the watcher disarms.
 
 use crate::settings::{get_settings, PasteMethod};
-use log::{info, warn};
+use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
@@ -22,6 +22,24 @@ const POLL_MS: u64 = 250;
 const PENDING_PASTE_TIMEOUT_SECS: u64 = 300;
 #[cfg(target_os = "macos")]
 const EDITABLE_ROLES: [&str; 4] = ["AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"];
+
+/// Bundle IDs of apps whose main window is inherently a text box (launcher
+/// windows, Spotlight). These apps often don't expose a pasteable AX role, so
+/// we treat them as editable both at arm time and fire time. This set can
+/// become a user-facing setting later.
+#[cfg(target_os = "macos")]
+const PASTE_ANYWHERE_BUNDLE_IDS: [&str; 4] = [
+    "com.runningwithcrayons.Alfred",
+    "com.runningwithcrayons.Alfred-Preferences",
+    "com.raycast.macos",
+    "com.apple.Spotlight",
+];
+
+/// Returns true for launcher-style apps whose purpose is a text field.
+#[cfg(target_os = "macos")]
+fn is_paste_anywhere_bundle(bundle_id: &str) -> bool {
+    PASTE_ANYWHERE_BUNDLE_IDS.contains(&bundle_id)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Editability {
@@ -43,17 +61,33 @@ pub(crate) enum TickDecision {
     Disarm,
 }
 
-/// Decide whether a focused element's role should trigger arming.
+/// Resolve editability from the focused element's role and, for web content,
+/// the focused nested node's role.
 ///
-/// - Editable  → paste now (normal flow)
-/// - Unknown   → paste now (AX unavailable/failed/role unknown fallback)
-/// - NotEditable → arm the watcher
-fn role_editability(role: Option<&str>) -> Editability {
-    match role {
+/// - Top-level editable role → Editable.
+/// - Top-level AXWebArea with nested editable role → Editable.
+/// - Top-level AXWebArea with nested missing → Unknown (fallback to immediate paste).
+/// - Top-level AXWebArea with nested non-editable → NotEditable (arm and wait).
+/// - Any other non-editable role → NotEditable.
+/// - No role at all → Unknown.
+#[cfg(target_os = "macos")]
+fn resolve_editability(top_role: Option<&str>, nested_role: Option<&str>) -> Editability {
+    match top_role {
         Some(r) if EDITABLE_ROLES.contains(&r) => Editability::Editable,
+        Some("AXWebArea") => match nested_role {
+            Some(r) if EDITABLE_ROLES.contains(&r) => Editability::Editable,
+            Some(_) => Editability::NotEditable,
+            None => Editability::Unknown,
+        },
         Some(_) => Editability::NotEditable,
         None => Editability::Unknown,
     }
+}
+
+/// Legacy helper kept for non-macOS compile paths.
+#[cfg(not(target_os = "macos"))]
+fn resolve_editability(_top_role: Option<&str>, _nested_role: Option<&str>) -> Editability {
+    Editability::Unknown
 }
 
 /// Decide whether to arm the pending-paste watcher at transcription end.
@@ -170,12 +204,14 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
         // Probe non-destructively: peek the saved frontmost app so the normal
         // PasteNow paths (Editable/Unknown) still leave it intact for the
         // desktop-like check and restore_frontmost_app in clipboard::paste().
-        let target_pid = if let Some((_, pid)) = crate::focus::peek_saved_frontmost_app(app_handle)
-        {
-            Some(pid)
-        } else {
-            frontmost_pid()
-        };
+        let (target_pid, target_bundle) =
+            if let Some((bundle_id, pid)) = crate::focus::peek_saved_frontmost_app(app_handle) {
+                (Some(pid), bundle_id)
+            } else if let Some((pid, bundle_id)) = frontmost_app_info() {
+                (Some(pid), bundle_id)
+            } else {
+                (None::<i32>, String::new())
+            };
 
         let Some(target_pid) = target_pid else {
             return false;
@@ -189,7 +225,7 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
         // Run the arm-time AX probe off the calling (often main) thread so a
         // hung target app cannot block transcription completion. Timeout treats
         // the element as Unknown, which falls back to immediate paste.
-        let editability = probe_editability(target_pid);
+        let editability = probe_editability(target_pid, &target_bundle);
 
         match decide_arm(
             settings.delayed_paste_enabled,
@@ -221,8 +257,8 @@ pub fn maybe_arm(app_handle: &AppHandle, text: &str) -> bool {
                 drop(slot);
 
                 info!(
-                    "Delayed paste armed for pid={} (timeout={}s)",
-                    target_pid, PENDING_PASTE_TIMEOUT_SECS
+                    "Delayed paste armed for pid={} bundle={} (timeout={}s)",
+                    target_pid, target_bundle, PENDING_PASTE_TIMEOUT_SECS
                 );
 
                 let app_handle = app_handle.clone();
@@ -261,14 +297,19 @@ fn clear_if_gen(gen: u64) {
 }
 
 #[cfg(target_os = "macos")]
-fn frontmost_pid() -> Option<i32> {
+fn frontmost_app_info() -> Option<(i32, String)> {
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSWorkspace;
 
     autoreleasepool(|_| {
         let workspace = NSWorkspace::sharedWorkspace();
         let app = workspace.frontmostApplication()?;
-        Some(app.processIdentifier())
+        let pid = app.processIdentifier();
+        let bundle_id = app
+            .bundleIdentifier()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        Some((pid, bundle_id))
     })
 }
 
@@ -277,15 +318,22 @@ fn frontmost_pid() -> Option<i32> {
 /// A timeout (or any AX failure) is treated as Unknown so the caller falls back
 /// to immediate paste rather than waiting forever.
 #[cfg(target_os = "macos")]
-fn probe_editability(target_pid: i32) -> Editability {
+fn probe_editability(target_pid: i32, target_bundle: &str) -> Editability {
     use std::sync::mpsc;
+
+    if is_paste_anywhere_bundle(target_bundle) {
+        return Editability::Editable;
+    }
 
     let (tx, rx) = mpsc::channel();
     let spawn_result = std::thread::Builder::new()
         .name("pending-paste-probe".into())
         .spawn(move || {
             let info = crate::ax_focus::read_focused_element(target_pid, false);
-            let editability = role_editability(info.as_ref().and_then(|i| i.role.as_deref()));
+            let editability = match info {
+                Some(ref i) => resolve_editability(i.role.as_deref(), i.nested_role.as_deref()),
+                None => Editability::Unknown,
+            };
             let _ = tx.send(editability);
         });
 
@@ -356,7 +404,7 @@ fn watch(app_handle: AppHandle, gen: u64) {
             })
             .unwrap_or(false);
 
-        let Some(target_pid) = frontmost_pid() else {
+        let Some((target_pid, target_bundle)) = frontmost_app_info() else {
             std::thread::sleep(Duration::from_millis(POLL_MS));
             continue;
         };
@@ -365,7 +413,12 @@ fn watch(app_handle: AppHandle, gen: u64) {
 
         let info = crate::ax_focus::read_focused_element(target_pid, true);
         let role = info.as_ref().and_then(|i| i.role.as_deref());
-        let editability = role_editability(role);
+        let nested_role = info.as_ref().and_then(|i| i.nested_role.as_deref());
+        let editability = if is_paste_anywhere_bundle(&target_bundle) {
+            Editability::Editable
+        } else {
+            resolve_editability(role, nested_role)
+        };
         let value = info.as_ref().and_then(|i| i.value.as_deref());
 
         // Read the pending text under the slot lock. If the slot is gone or the
@@ -384,6 +437,13 @@ fn watch(app_handle: AppHandle, gen: u64) {
                     && v.contains(pending_text.trim_end()))
         });
 
+        if editability == Editability::NotEditable {
+            debug!(
+                "Delayed paste tick: frontmost bundle={} role={:?} nested_role={:?} — not editable, keeping pending",
+                target_bundle, role, nested_role
+            );
+        }
+
         match decide_tick(
             busy,
             frontmost_is_self,
@@ -393,21 +453,34 @@ fn watch(app_handle: AppHandle, gen: u64) {
             method_pasteable_now,
         ) {
             TickDecision::Fire => {
-                // Re-check generation right before firing to shrink the
+                // Re-check generation right before dispatching to shrink the
                 // cancel-after-decide race window.
                 if !gen_is_current(gen) {
                     return;
                 }
 
-                info!("Focused element is editable — firing delayed paste");
-                if let Err(e) = crate::clipboard::paste_pending_now(&pending_text, &app_handle) {
-                    warn!(
-                        "Delayed paste fire failed ({}); keeping text on clipboard",
-                        e
-                    );
-                    let _ = crate::clipboard::write_to_clipboard(&pending_text, &app_handle);
-                }
-                clear_if_gen(gen);
+                info!("Focused element is editable — dispatching delayed paste to main thread");
+
+                // Enigo's macOS path calls TIS/TSM APIs that dispatch-assert the
+                // main queue on modern macOS. The normal immediate paste() path
+                // always runs on the main thread; delayed paste must hop there
+                // too before sending keystrokes.
+                let app = app_handle.clone();
+                let text = pending_text.clone();
+                let _ = app_handle.run_on_main_thread(move || {
+                    if !gen_is_current(gen) {
+                        return;
+                    }
+                    info!("Delayed paste firing on main thread");
+                    if let Err(e) = crate::clipboard::paste_pending_now(&text, &app) {
+                        warn!(
+                            "Delayed paste fire failed ({}); keeping text on clipboard",
+                            e
+                        );
+                        let _ = crate::clipboard::write_to_clipboard(&text, &app);
+                    }
+                    clear_if_gen(gen);
+                });
                 return;
             }
             TickDecision::Disarm => {
@@ -429,20 +502,72 @@ mod tests {
 
     #[test]
     fn editable_roles_are_recognized() {
-        assert_eq!(role_editability(Some("AXTextArea")), Editability::Editable);
-        assert_eq!(role_editability(Some("AXTextField")), Editability::Editable);
-        assert_eq!(role_editability(Some("AXComboBox")), Editability::Editable);
         assert_eq!(
-            role_editability(Some("AXSearchField")),
+            resolve_editability(Some("AXTextArea"), None),
+            Editability::Editable
+        );
+        assert_eq!(
+            resolve_editability(Some("AXTextField"), None),
+            Editability::Editable
+        );
+        assert_eq!(
+            resolve_editability(Some("AXComboBox"), None),
+            Editability::Editable
+        );
+        assert_eq!(
+            resolve_editability(Some("AXSearchField"), None),
             Editability::Editable
         );
     }
 
     #[test]
     fn non_editable_and_unknown_roles() {
-        assert_eq!(role_editability(Some("AXGroup")), Editability::NotEditable);
-        assert_eq!(role_editability(Some("AXButton")), Editability::NotEditable);
-        assert_eq!(role_editability(None), Editability::Unknown);
+        assert_eq!(
+            resolve_editability(Some("AXGroup"), None),
+            Editability::NotEditable
+        );
+        assert_eq!(
+            resolve_editability(Some("AXButton"), None),
+            Editability::NotEditable
+        );
+        assert_eq!(resolve_editability(None, None), Editability::Unknown);
+    }
+
+    #[test]
+    fn web_area_nested_roles() {
+        // Web area with a focused text input inside → editable.
+        assert_eq!(
+            resolve_editability(Some("AXWebArea"), Some("AXTextArea")),
+            Editability::Editable
+        );
+        assert_eq!(
+            resolve_editability(Some("AXWebArea"), Some("AXTextField")),
+            Editability::Editable
+        );
+
+        // Web area but no focused DOM node → unknown (fallback to immediate paste).
+        assert_eq!(
+            resolve_editability(Some("AXWebArea"), None),
+            Editability::Unknown
+        );
+
+        // Web area with a focused non-text node → not editable (arm and wait).
+        assert_eq!(
+            resolve_editability(Some("AXWebArea"), Some("AXGroup")),
+            Editability::NotEditable
+        );
+        assert_eq!(
+            resolve_editability(Some("AXWebArea"), Some("AXButton")),
+            Editability::NotEditable
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn paste_anywhere_bundle_whitelist() {
+        assert!(is_paste_anywhere_bundle("com.runningwithcrayons.Alfred"));
+        assert!(is_paste_anywhere_bundle("com.raycast.macos"));
+        assert!(!is_paste_anywhere_bundle("com.apple.Safari"));
     }
 
     #[test]
