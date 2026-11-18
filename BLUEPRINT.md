@@ -2,20 +2,27 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-17
+updated: 2026-11-18
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (tip afc441ab): new "Delayed paste" feature — when the focused element isn't an editable text field (macOS Accessibility check via new ax_focus.rs FFI), the transcription stays on a concealed clipboard and auto-pastes once an editable field is focused (250ms poll, 300s timeout, manual paste disarms); toggle in Settings→Advanced→Output, on by default. Not yet runtime-tested — Pamela will verify manually.
-- Delayed paste hardened in two fix passes (peek-vs-take of the frontmost app, pending survives busy states, arm probe on a helper thread, generation off-by-one fixed so armed pastes fire); pending_paste tests 7/7, full lib suite 682 passed / 0 failed.
+- On branch `feature/voice-insert-api` (tip 19f6668e): delayed paste got its first field test, which surfaced two bugs already fixed — a TSM assert crash (enigo key-sends must run on the main thread; the fire path now dispatches there) and app recognition in Electron/chat apps (Discord verified): the focused element resolves to role AXWebArea, now handled by a one-level nested AXFocusedUIElement read in ax_focus.rs, plus a paste-anywhere whitelist for launchers (Alfred, Alfred-Preferences, Raycast, Spotlight).
+- Fix verification is test-level only so far (pending_paste 9/9, cargo check clean, bun build green) — Pamela has not runtime-verified the crash fix; next step is rebuild + reinstall via scripts/build-reinstall.sh.
 - Still standing: voice insert API Phase 1 — opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) splices external text tokens into an active recording, 32 voice_insert tests; and the live-captions pre-buffer fix (37560c58) so streaming partials no longer clip the first ~1s of an utterance.
 - Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
-- Planned next: manual runtime verification of delayed paste, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API.
-- Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
+- Planned next: runtime verification of delayed paste after reinstall, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API.
 
 ## Log
+
+### 2026-11-18 — Delayed paste crash + recognition fixes
+
+The first field test of delayed paste surfaced two bugs, both fixed in commit 19f6668e (pushed): Handy crashed (EXC_BREAKPOINT, `_dispatch_assert_queue_fail` via TSMGetInputSourceProperty) because enigo 0.6.1's TIS/TSM calls assert the main queue on modern macOS and the delayed fire ran on a background watcher thread — the fire path now dispatches onto the main thread; and in Electron/chat apps (Discord, verified live) the focused element resolves to role AXWebArea rather than AXTextField, so ax_focus.rs now reads the role of a one-level nested AXFocusedUIElement inside web areas. Launcher windows that expose no pasteable roles (Alfred, Alfred-Preferences, Raycast, Spotlight) are covered by a PASTE_ANYWHERE_BUNDLE_IDS whitelist: paste immediately when the launcher was focused at arm time and an editable field is focused at fire time. Pending_paste tests 9/9, cargo check clean, bun build green; the crash fix is not yet runtime-verified by Pamela.
+
+Next: rebuild + reinstall (scripts/build-reinstall.sh) and re-test the crash scenario in Discord.
+
+https://discord.com/channels/1486966847810043924/1572247541817544865
 
 ### 2026-11-17 — Delayed paste feature
 
