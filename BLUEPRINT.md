@@ -2,19 +2,27 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-18
+updated: 2026-11-20
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (tip 19f6668e): delayed paste got its first field test, which surfaced two bugs already fixed — a TSM assert crash (enigo key-sends must run on the main thread; the fire path now dispatches there) and app recognition in Electron/chat apps (Discord verified): the focused element resolves to role AXWebArea, now handled by a one-level nested AXFocusedUIElement read in ax_focus.rs, plus a paste-anywhere whitelist for launchers (Alfred, Alfred-Preferences, Raycast, Spotlight).
-- Fix verification is test-level only so far (pending_paste 9/9, cargo check clean, bun build green) — Pamela has not runtime-verified the crash fix; next step is rebuild + reinstall via scripts/build-reinstall.sh.
+- On branch `feature/voice-insert-api` (tip 1e9ffb48): delayed-paste web-field detection reworked (4fb6fe09) — `read_focused_element` now walks the AXFocusedUIElement chain recursively (depth cap 5, chain ≤6, cycle-guarded via CFEqual since AXUIElementEqual isn't exported by modern HIServices), fixing browser text boxes the one-level Electron fix (19f6668e) missed; editability is resolved from the full role chain, with DepthCap falling back to Unknown (safe immediate paste at arm). A cfg-gate follow-up keeps non-macOS targets compiling.
+- Verification is test-level only: pending_paste 15/15, cargo check/clippy/fmt clean, bun build green; deep FFI review verdict SOUND (zero-leak exit paths, ABI correct). Runtime verification by Pamela is still PENDING.
+- Behavior note: a bare AXWebArea with an unreadable nested role now flips Unknown→NotEditable at arm (intended); targeted revert = special-case it back to Unknown if it misfires. NotEditable tick logs now print role_chain + chain_end for diagnosing real browser chains.
 - Still standing: voice insert API Phase 1 — opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) splices external text tokens into an active recording, 32 voice_insert tests; and the live-captions pre-buffer fix (37560c58) so streaming partials no longer clip the first ~1s of an utterance.
-- Carrying earlier fork fixes: missing-first-syllable hold on standing-stream rebuild, live-captions streaming rework, Bluetooth mic excluded from USB watchdog, purged British spelling dictionary (284 entries).
-- Planned next: runtime verification of delayed paste after reinstall, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin as a thin client over Handy's API.
+- Planned next: runtime verification of delayed paste (browsers + Discord) after reinstall, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
 
 ## Log
+
+### 2026-11-20 — Browser text-field fix for delayed paste
+
+Fixed delayed-paste detection failing in browsers: ax_focus.rs only descended one level under an exact AXWebArea top role (the Electron fix), while browsers expose wrapper chains like AXGroup→AXScrollArea→AXWebArea→AXTextArea, so web text boxes were classified NotEditable and the paste never fired (300s timeout). Commit 4fb6fe09 makes read_focused_element walk the focus chain recursively (depth cap MAX_AX_FOCUS_DEPTH=5, chain ≤6, cycle-guarded via pointer equality + CFEqual — AXUIElementEqual is not exported by modern HIServices, verified) and resolve_editability decides from the whole role chain, with unreadable/depth-capped ends falling back to Unknown so the paste fires immediately at arm; commit 1e9ffb48 cfg-gates the new types for non-macOS compile. Reviews: analytic pass caught the cfg bug, deep FFI pass verdict SOUND (all exit paths zero-leak, ABI bool correct, no double-release); pending_paste tests 15/15, cargo check/clippy/fmt clean, bun build green, both commits pushed. Runtime verification by Pamela is still pending — build-reinstall.sh was running at session end.
+
+Next: Pamela runtime-verifies delayed paste in a browser text box and Discord after the reinstall.
+
+https://discord.com/channels/1486966847810043924/1573165889254072411
 
 ### 2026-11-18 — Delayed paste crash + recognition fixes
 
