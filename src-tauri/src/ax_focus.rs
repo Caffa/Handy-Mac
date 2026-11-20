@@ -41,13 +41,39 @@ pub const K_CFSTRING_ENCODING_UTF8: u32 = 0x08000100;
 /// keep-on-clipboard) instead of parking the caller forever.
 const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
 
+/// Maximum number of descents below the app-level focused element while
+/// following AXFocusedUIElement links (chain length ≤ 6 including the
+/// app-level element). Browsers and Electron apps nest the real text field
+/// several levels below generic wrappers.
+const MAX_AX_FOCUS_DEPTH: usize = 5;
+
+/// Roles that are directly editable text fields; encountering one ends the
+/// focus-chain walk early (its AXValue is the pending-paste text target).
+/// Mirrors `EDITABLE_ROLES` in pending_paste.rs.
+const EDITABLE_AX_ROLES: [&str; 4] = ["AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"];
+
 /// Information about the currently focused accessibility element.
 pub struct FocusedElementInfo {
-    pub role: Option<String>,
-    /// When `role` is `AXWebArea`, this is the role of the focused web node
-    /// inside the web area (e.g. AXTextArea/AXTextField if a DOM input has focus).
-    pub nested_role: Option<String>,
+    /// AXRoles from the app-level focused element down to the deepest
+    /// element reached, in descent order.
+    pub role_chain: Vec<String>,
+    /// Why the bounded focus-chain walk stopped.
+    pub chain_end: FocusChainEnd,
+    /// AXValue of the deepest role-identified element, when requested and
+    /// readable.
     pub value: Option<String>,
+}
+
+/// Why the bounded AXFocusedUIElement walk stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusChainEnd {
+    /// The deepest element exposes no distinct, not-already-visited
+    /// AXFocusedUIElement (read error, null, self-equal, or cycle).
+    NoDeeperFocus,
+    /// AXRole of the deepest element was unreadable.
+    UnreadableRole,
+    /// A distinct child existed when the depth cap was hit (likely a cycle).
+    DepthCap,
 }
 
 /// Create a CFString for the `AXFocusedUIElement` accessibility attribute.
@@ -126,14 +152,29 @@ extern "C" {
         cStr: *const i8,
         encoding: CFStringEncoding,
     ) -> CFStringRef;
+    /// Semantic equality of two CoreFoundation objects (C Boolean: nonzero
+    /// = equal). For AXUIElementRef this dispatches to the equality callback
+    /// HIServices registers for the AXUIElement type, i.e. semantic element
+    /// equality. Used as the descent-loop guard so cyclic
+    /// AXFocusedUIElement chains terminate instead of looping forever.
+    /// (AXUIElementEqual itself is not exported by modern macOS HIServices;
+    /// CFEqual is the documented polymorphic equivalent.)
+    pub fn CFEqual(cf1: CFTypeRef, cf2: CFTypeRef) -> bool;
 }
 
-/// Read the focused element of the given application and extract its AXRole
-/// and optionally its AXValue.
+/// Read the focused element of the given application by walking the
+/// AXFocusedUIElement chain and collect the roles of every element visited.
 ///
-/// ANY AX failure returns None for the relevant field. A `role` of None
-/// should be treated as Unknown by callers so they fall back to immediate
-/// paste rather than waiting forever.
+/// Web content and Electron apps expose the real focused node (a text input,
+/// etc.) one or more AXFocusedUIElement links below generic wrappers such as
+/// AXWebArea/AXGroup, so a single-level read misses it. This walk descends up
+/// to MAX_AX_FOCUS_DEPTH levels, guards against cycles with CFEqual,
+/// and stops early at an editable role.
+///
+/// ANY AX failure stops the walk; the collected chain plus `chain_end`
+/// describe where it stopped. Callers should treat chains ending in
+/// `UnreadableRole` or `DepthCap` as Unknown so they fall back to
+/// conservative behavior rather than guessing.
 pub fn read_focused_element(pid: i32, include_value: bool) -> Option<FocusedElementInfo> {
     use objc2::rc::autoreleasepool;
 
@@ -178,68 +219,108 @@ pub fn read_focused_element(pid: i32, include_value: bool) -> Option<FocusedElem
         let _ =
             unsafe { AXUIElementSetMessagingTimeout(focused_element, AX_MESSAGING_TIMEOUT_SECS) };
 
-        let top_role = read_string_attribute(focused_element, role_attr);
-        let top_value = if include_value {
-            read_string_attribute(focused_element, value_attr)
-        } else {
-            None
-        };
+        // Bounded walk down the AXFocusedUIElement chain. Every element we
+        // take ownership of goes into `visited` and is released exactly once
+        // at function exit.
+        let mut visited: Vec<AXUIElementRef> = vec![focused_element];
+        let mut current = focused_element;
+        let mut role_chain: Vec<String> = Vec::new();
+        let mut value: Option<String> = None;
+        let mut chain_end = FocusChainEnd::NoDeeperFocus;
 
-        // For web content, the top-level focused element is often a generic
-        // AXWebArea; the actual focused DOM node (text input, etc.) is exposed
-        // as the AXFocusedUIElement of that web area. Resolve one level deeper
-        // so chat/ Electron apps are recognized as editable when a text field
-        // has DOM focus.
-        let mut nested_role: Option<String> = None;
-        let mut nested_value: Option<String> = None;
-        if top_role.as_deref() == Some("AXWebArea") {
-            let mut nested_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let nested_result = unsafe {
-                AXUIElementCopyAttributeValue(
-                    focused_element,
-                    focused_attr,
-                    &mut nested_ptr as *mut _,
-                )
+        // At most MAX_AX_FOCUS_DEPTH descents below the app-level focused
+        // element, i.e. at most MAX_AX_FOCUS_DEPTH + 1 role reads.
+        for _ in 0..=MAX_AX_FOCUS_DEPTH {
+            // Each iteration terminates the walk here unless a distinct
+            // child is descended into at the bottom.
+            chain_end = FocusChainEnd::NoDeeperFocus;
+
+            let Some(role) = read_string_attribute(current, role_attr) else {
+                chain_end = FocusChainEnd::UnreadableRole;
+                break;
             };
-            if nested_result == KAX_ERROR_SUCCESS && !nested_ptr.is_null() {
-                let nested_element: AXUIElementRef = nested_ptr as AXUIElementRef;
-                let _ = unsafe {
-                    AXUIElementSetMessagingTimeout(nested_element, AX_MESSAGING_TIMEOUT_SECS)
-                };
-                nested_role = read_string_attribute(nested_element, role_attr);
+            role_chain.push(role.clone());
+
+            // Editable leaf: this element is the paste target; stop early.
+            if EDITABLE_AX_ROLES.contains(&role.as_str()) {
                 if include_value {
-                    nested_value = read_string_attribute(nested_element, value_attr);
+                    value = read_string_attribute(current, value_attr);
                 }
-                // Release the nested element (Create-rule +1 reference).
-                unsafe { CFRelease(nested_ptr as CFTypeRef) };
+                break;
             }
+
+            // Non-editable: try to descend into its focused child (web
+            // content nests the real focus under AXWebArea/AXGroup wrappers).
+            let Some(child) = read_focused_child(current, focused_attr) else {
+                if include_value {
+                    value = read_string_attribute(current, value_attr);
+                }
+                break;
+            };
+
+            // Children live in the target process too — bound their messages.
+            let _ = unsafe { AXUIElementSetMessagingTimeout(child, AX_MESSAGING_TIMEOUT_SECS) };
+
+            // Cycle guard: some trees expose an AXFocusedUIElement that
+            // points back at an ancestor (or itself). Compare by pointer and
+            // by CFEqual (semantic AX element equality) before keeping the
+            // child.
+            let revisits_chain = child == current
+                || visited.iter().any(|visited_element| unsafe {
+                    CFEqual(child as CFTypeRef, *visited_element as CFTypeRef)
+                });
+            if revisits_chain {
+                unsafe { CFRelease(child as CFTypeRef) };
+                if include_value {
+                    value = read_string_attribute(current, value_attr);
+                }
+                break;
+            }
+
+            visited.push(child);
+            current = child;
+            // A distinct child is pending; if the loop exhausts here the
+            // chain is deeper than the cap (likely a cycle).
+            chain_end = FocusChainEnd::DepthCap;
         }
 
-        // Release the top-level focused element (Create-rule +1 reference)
-        // now that we no longer need it.
-        unsafe { CFRelease(focused_element_ptr as CFTypeRef) };
-
         unsafe {
-            // Release attribute CFStrings and ax_app.
+            // Release every visited element (Create-rule +1 references), the
+            // attribute CFStrings, and ax_app.
+            for element in visited {
+                CFRelease(element as CFTypeRef);
+            }
             CFRelease(focused_attr as CFTypeRef);
             CFRelease(role_attr as CFTypeRef);
             CFRelease(value_attr as CFTypeRef);
             CFRelease(ax_app as CFTypeRef);
         }
 
-        let is_web_area = top_role.as_deref() == Some("AXWebArea");
-        let value = if is_web_area {
-            nested_value.or(top_value)
-        } else {
-            top_value
-        };
-
         Some(FocusedElementInfo {
-            role: top_role,
-            nested_role,
+            role_chain,
+            chain_end,
             value,
         })
     })
+}
+
+/// Read the AXFocusedUIElement attribute of `element`.
+///
+/// Returns the child element (Create Rule: caller owns a +1 reference and
+/// must CFRelease it) or None if the read failed or the value is null.
+fn read_focused_child(
+    element: AXUIElementRef,
+    focused_attr: CFStringRef,
+) -> Option<AXUIElementRef> {
+    let mut child_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    let result =
+        unsafe { AXUIElementCopyAttributeValue(element, focused_attr, &mut child_ptr as *mut _) };
+
+    if result != KAX_ERROR_SUCCESS || child_ptr.is_null() {
+        return None;
+    }
+
+    Some(child_ptr as AXUIElementRef)
 }
 
 /// Read a string-valued AX attribute. Returns None if the attribute is

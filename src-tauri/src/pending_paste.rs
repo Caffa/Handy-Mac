@@ -6,6 +6,7 @@
 //! editable field becomes focused. If AX is unavailable, the focused app cannot
 //! be determined, or the user manually pastes, the watcher disarms.
 
+use crate::ax_focus::FocusChainEnd;
 use crate::settings::{get_settings, PasteMethod};
 use log::{debug, info, warn};
 use parking_lot::Mutex;
@@ -61,32 +62,37 @@ pub(crate) enum TickDecision {
     Disarm,
 }
 
-/// Resolve editability from the focused element's role and, for web content,
-/// the focused nested node's role.
+/// Resolve editability from the focused element's AXRole chain (app-level
+/// focused element first, deepest reached element last) and how the walk
+/// ended.
 ///
-/// - Top-level editable role → Editable.
-/// - Top-level AXWebArea with nested editable role → Editable.
-/// - Top-level AXWebArea with nested missing → Unknown (fallback to immediate paste).
-/// - Top-level AXWebArea with nested non-editable → NotEditable (arm and wait).
-/// - Any other non-editable role → NotEditable.
-/// - No role at all → Unknown.
+/// - Any role anywhere in the chain is an editable text role → Editable
+///   (e.g. AXGroup → AXWebArea → AXTextArea in browsers/Electron).
+/// - Empty chain (no role read at all) → Unknown.
+/// - Chain ending in UnreadableRole or DepthCap → Unknown: the deepest
+///   element's identity is unknown, so treat it like no role at all.
+/// - Otherwise the deepest reachable element is a known non-editable role
+///   with no distinct focused child → NotEditable (definitive: arm and wait).
 #[cfg(target_os = "macos")]
-fn resolve_editability(top_role: Option<&str>, nested_role: Option<&str>) -> Editability {
-    match top_role {
-        Some(r) if EDITABLE_ROLES.contains(&r) => Editability::Editable,
-        Some("AXWebArea") => match nested_role {
-            Some(r) if EDITABLE_ROLES.contains(&r) => Editability::Editable,
-            Some(_) => Editability::NotEditable,
-            None => Editability::Unknown,
-        },
-        Some(_) => Editability::NotEditable,
-        None => Editability::Unknown,
+fn resolve_editability(role_chain: &[&str], chain_end: FocusChainEnd) -> Editability {
+    if role_chain.iter().any(|r| EDITABLE_ROLES.contains(r)) {
+        return Editability::Editable;
     }
+    if role_chain.is_empty() {
+        return Editability::Unknown;
+    }
+    if matches!(
+        chain_end,
+        FocusChainEnd::UnreadableRole | FocusChainEnd::DepthCap
+    ) {
+        return Editability::Unknown;
+    }
+    Editability::NotEditable
 }
 
 /// Legacy helper kept for non-macOS compile paths.
 #[cfg(not(target_os = "macos"))]
-fn resolve_editability(_top_role: Option<&str>, _nested_role: Option<&str>) -> Editability {
+fn resolve_editability(_role_chain: &[&str], _chain_end: FocusChainEnd) -> Editability {
     Editability::Unknown
 }
 
@@ -331,7 +337,10 @@ fn probe_editability(target_pid: i32, target_bundle: &str) -> Editability {
         .spawn(move || {
             let info = crate::ax_focus::read_focused_element(target_pid, false);
             let editability = match info {
-                Some(ref i) => resolve_editability(i.role.as_deref(), i.nested_role.as_deref()),
+                Some(ref i) => {
+                    let role_chain: Vec<&str> = i.role_chain.iter().map(String::as_str).collect();
+                    resolve_editability(&role_chain, i.chain_end)
+                }
                 None => Editability::Unknown,
             };
             let _ = tx.send(editability);
@@ -412,12 +421,18 @@ fn watch(app_handle: AppHandle, gen: u64) {
         let frontmost_is_self = target_pid == own_pid;
 
         let info = crate::ax_focus::read_focused_element(target_pid, true);
-        let role = info.as_ref().and_then(|i| i.role.as_deref());
-        let nested_role = info.as_ref().and_then(|i| i.nested_role.as_deref());
+        let role_chain: Vec<&str> = info
+            .as_ref()
+            .map(|i| i.role_chain.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let chain_end = info
+            .as_ref()
+            .map(|i| i.chain_end)
+            .unwrap_or(FocusChainEnd::NoDeeperFocus);
         let editability = if is_paste_anywhere_bundle(&target_bundle) {
             Editability::Editable
         } else {
-            resolve_editability(role, nested_role)
+            resolve_editability(&role_chain, chain_end)
         };
         let value = info.as_ref().and_then(|i| i.value.as_deref());
 
@@ -439,8 +454,8 @@ fn watch(app_handle: AppHandle, gen: u64) {
 
         if editability == Editability::NotEditable {
             debug!(
-                "Delayed paste tick: frontmost bundle={} role={:?} nested_role={:?} — not editable, keeping pending",
-                target_bundle, role, nested_role
+                "Delayed paste tick: frontmost bundle={} role_chain={:?} chain_end={:?} — not editable, keeping pending",
+                target_bundle, role_chain, chain_end
             );
         }
 
@@ -503,19 +518,19 @@ mod tests {
     #[test]
     fn editable_roles_are_recognized() {
         assert_eq!(
-            resolve_editability(Some("AXTextArea"), None),
+            resolve_editability(&["AXTextArea"], FocusChainEnd::NoDeeperFocus),
             Editability::Editable
         );
         assert_eq!(
-            resolve_editability(Some("AXTextField"), None),
+            resolve_editability(&["AXTextField"], FocusChainEnd::NoDeeperFocus),
             Editability::Editable
         );
         assert_eq!(
-            resolve_editability(Some("AXComboBox"), None),
+            resolve_editability(&["AXComboBox"], FocusChainEnd::NoDeeperFocus),
             Editability::Editable
         );
         assert_eq!(
-            resolve_editability(Some("AXSearchField"), None),
+            resolve_editability(&["AXSearchField"], FocusChainEnd::NoDeeperFocus),
             Editability::Editable
         );
     }
@@ -523,41 +538,113 @@ mod tests {
     #[test]
     fn non_editable_and_unknown_roles() {
         assert_eq!(
-            resolve_editability(Some("AXGroup"), None),
+            resolve_editability(&["AXGroup"], FocusChainEnd::NoDeeperFocus),
             Editability::NotEditable
         );
         assert_eq!(
-            resolve_editability(Some("AXButton"), None),
+            resolve_editability(&["AXButton"], FocusChainEnd::NoDeeperFocus),
             Editability::NotEditable
         );
-        assert_eq!(resolve_editability(None, None), Editability::Unknown);
+        assert_eq!(
+            resolve_editability(&[], FocusChainEnd::NoDeeperFocus),
+            Editability::Unknown
+        );
     }
 
     #[test]
     fn web_area_nested_roles() {
         // Web area with a focused text input inside → editable.
         assert_eq!(
-            resolve_editability(Some("AXWebArea"), Some("AXTextArea")),
+            resolve_editability(&["AXWebArea", "AXTextArea"], FocusChainEnd::NoDeeperFocus),
             Editability::Editable
-        );
-        assert_eq!(
-            resolve_editability(Some("AXWebArea"), Some("AXTextField")),
-            Editability::Editable
-        );
-
-        // Web area but no focused DOM node → unknown (fallback to immediate paste).
-        assert_eq!(
-            resolve_editability(Some("AXWebArea"), None),
-            Editability::Unknown
         );
 
         // Web area with a focused non-text node → not editable (arm and wait).
         assert_eq!(
-            resolve_editability(Some("AXWebArea"), Some("AXGroup")),
+            resolve_editability(&["AXWebArea", "AXGroup"], FocusChainEnd::NoDeeperFocus),
             Editability::NotEditable
         );
         assert_eq!(
-            resolve_editability(Some("AXWebArea"), Some("AXButton")),
+            resolve_editability(&["AXWebArea", "AXButton"], FocusChainEnd::NoDeeperFocus),
+            Editability::NotEditable
+        );
+    }
+
+    #[test]
+    fn browser_wrapper_chains_are_editable() {
+        // Regression: browsers nest the real text field several wrapper levels
+        // below the app-level focused element; the chain walk must find it.
+        assert_eq!(
+            resolve_editability(
+                &["AXGroup", "AXWebArea", "AXTextArea"],
+                FocusChainEnd::NoDeeperFocus
+            ),
+            Editability::Editable
+        );
+        assert_eq!(
+            resolve_editability(
+                &[
+                    "AXGroup",
+                    "AXScrollArea",
+                    "AXWebArea",
+                    "AXGroup",
+                    "AXTextField"
+                ],
+                FocusChainEnd::NoDeeperFocus
+            ),
+            Editability::Editable
+        );
+    }
+
+    #[test]
+    fn electron_single_level_still_editable() {
+        assert_eq!(
+            resolve_editability(&["AXWebArea", "AXTextArea"], FocusChainEnd::NoDeeperFocus),
+            Editability::Editable
+        );
+    }
+
+    #[test]
+    fn editable_anywhere_in_chain_wins() {
+        // An editable role anywhere in the chain beats an inconclusive end.
+        assert_eq!(
+            resolve_editability(&["AXGroup", "AXTextArea"], FocusChainEnd::UnreadableRole),
+            Editability::Editable
+        );
+    }
+
+    #[test]
+    fn unreadable_role_chain_is_unknown() {
+        assert_eq!(
+            resolve_editability(&["AXGroup"], FocusChainEnd::UnreadableRole),
+            Editability::Unknown
+        );
+        assert_eq!(
+            resolve_editability(&[], FocusChainEnd::DepthCap),
+            Editability::Unknown
+        );
+    }
+
+    #[test]
+    fn depth_cap_is_unknown_not_not_editable() {
+        // Cap hit with a distinct child pending: identity of the deepest
+        // element is unknown, so keep pending rather than arming on a guess.
+        assert_eq!(
+            resolve_editability(
+                &["AXGroup", "AXGroup", "AXGroup", "AXGroup", "AXGroup", "AXGroup"],
+                FocusChainEnd::DepthCap
+            ),
+            Editability::Unknown
+        );
+    }
+
+    #[test]
+    fn non_editable_leaf_after_wrapper_is_definitive() {
+        assert_eq!(
+            resolve_editability(
+                &["AXGroup", "AXScrollArea", "AXWebArea", "AXButton"],
+                FocusChainEnd::NoDeeperFocus
+            ),
             Editability::NotEditable
         );
     }
