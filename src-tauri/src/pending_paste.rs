@@ -6,6 +6,7 @@
 //! editable field becomes focused. If AX is unavailable, the focused app cannot
 //! be determined, or the user manually pastes, the watcher disarms.
 
+#[cfg(target_os = "macos")]
 use crate::ax_focus::FocusChainEnd;
 use crate::settings::{get_settings, PasteMethod};
 use log::{debug, info, warn};
@@ -88,6 +89,19 @@ fn resolve_editability(role_chain: &[&str], chain_end: FocusChainEnd) -> Editabi
         return Editability::Unknown;
     }
     Editability::NotEditable
+}
+
+/// Non-macOS mirror of `ax_focus::FocusChainEnd` (that module is
+/// macOS-only) so `resolve_editability` keeps a signature parallel to the
+/// macOS path. The variants are never constructed here because non-macOS
+/// never reads an AX chain.
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusChainEnd {
+    NoDeeperFocus,
+    UnreadableRole,
+    DepthCap,
 }
 
 /// Legacy helper kept for non-macOS compile paths.
