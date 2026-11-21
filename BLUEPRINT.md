@@ -2,19 +2,26 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-20
+updated: 2026-11-21
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (tip 1e9ffb48): delayed-paste web-field detection reworked (4fb6fe09) — `read_focused_element` now walks the AXFocusedUIElement chain recursively (depth cap 5, chain ≤6, cycle-guarded via CFEqual since AXUIElementEqual isn't exported by modern HIServices), fixing browser text boxes the one-level Electron fix (19f6668e) missed; editability is resolved from the full role chain, with DepthCap falling back to Unknown (safe immediate paste at arm). A cfg-gate follow-up keeps non-macOS targets compiling.
-- Verification is test-level only: pending_paste 15/15, cargo check/clippy/fmt clean, bun build green; deep FFI review verdict SOUND (zero-leak exit paths, ABI correct). Runtime verification by Pamela is still PENDING.
-- Behavior note: a bare AXWebArea with an unreadable nested role now flips Unknown→NotEditable at arm (intended); targeted revert = special-case it back to Unknown if it misfires. NotEditable tick logs now print role_chain + chain_end for diagnosing real browser chains.
-- Still standing: voice insert API Phase 1 — opt-in localhost HTTP server (127.0.0.1:48213, bearer token in settings) splices external text tokens into an active recording, 32 voice_insert tests; and the live-captions pre-buffer fix (37560c58) so streaming partials no longer clip the first ~1s of an utterance.
-- Planned next: runtime verification of delayed paste (browsers + Discord) after reinstall, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
+- On branch `feature/voice-insert-api` (tip 268e50b3): "Cannot Control Mic with AirPods Pro" fixed (upstream issue cjpais/Handy#2045 — macOS reroutes AirPods stem presses as mute commands to any app holding a record session, via audioaccessoryd). Bluetooth input mics never hold a standing stream now (`should_hold_standing_stream` predicate applied at all 12 lifecycle sites), and mic_mute_gesture.rs registers the AVAudioApplication mute-gesture handler once at startup so a stem press during recording stops-and-transcribes.
+- Verified at test level: 696 lib + 59 integration tests pass; app rebuilt and reinstalled to /Applications/Handy.app via build-reinstall.sh with gesture-handler registration confirmed in live logs. Mechanics memo: research/airpods-cannot-control-mic-alert-hfp-mechanics.md.
+- Still standing: delayed-paste web-field detection (recursive AX focus chain, 4fb6fe09) — runtime verification by Pamela still PENDING; voice insert API Phase 1 (opt-in localhost HTTP server 127.0.0.1:48213, 32 tests); live-captions pre-buffer fix (37560c58).
+- Planned next: Pamela runtime-verifies delayed paste (browsers + Discord) and AirPods stem-press behavior in daily dictation, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
 
 ## Log
+
+### 2026-11-21 — AirPods mute-gesture fix
+
+Fixed "Cannot Control Mic with AirPods Pro" (upstream issue cjpais/Handy#2045): macOS's audioaccessoryd reroutes AirPods stem presses as mute commands to whichever app holds a record session, so the media controls stopped working while Handy ran. Fix B (8b8d0ea5 + 268e50b3) stops Bluetooth input mics from ever holding a standing stream — a `should_hold_standing_stream` predicate is applied at all 12 stream lifecycle sites including settings-driven reopens; Fix A (7515fcc4) adds mic_mute_gesture.rs, registering `AVAudioApplication.setInputMuteStateChangeHandler` once at startup so a stem press during recording routes to Command::StopIfRecording (stop-and-transcribe). Commits pushed; 696 lib + 59 integration tests pass; app rebuilt and reinstalled to /Applications/Handy.app via scripts/build-reinstall.sh with handler registration confirmed in live logs. Mechanics memo saved at research/airpods-cannot-control-mic-alert-hfp-mechanics.md.
+
+Next: Pamela confirms AirPods stem presses work normally again and stop dictation during recording.
+
+https://discord.com/channels/1486966847810043924/1573606590282600479
 
 ### 2026-11-20 — Browser text-field fix for delayed paste
 
