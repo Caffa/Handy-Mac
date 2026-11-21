@@ -1,5 +1,26 @@
 # Architecture Decisions
 
+## 2026-11-21: Bluetooth input devices never hold a standing stream
+
+### Status
+
+**Accepted**
+
+### Context
+
+With an always-on mic (or the BT-output keep-alive), the fork held a standing record session open 24/7. When the input device is AirPods/Beats, that held session is exactly what makes macOS reroute every stem press into a mute command aimed at Handy: `audioaccessoryd` → `audiomxd toggleInputMuteForRecordingProcess:` fails (no `AVAudioApplication` handler), and the user gets the "Cannot Control Mic with AirPods …" rejection banner + chime attributed to Handy, on every press (upstream issue cjpais/Handy#2045). The held mic also pins the headset in HFP call quality all day and mutes AVRCP media-key delivery. Product-category consensus (Sprecho, Epilude, Typeflux, MacParakeet) is to never hold a BT headset mic open. Full mechanics: research/airpods-cannot-control-mic-alert-hfp-mechanics.md.
+
+### Decision
+
+All hold/open/keep decisions route through one pure predicate, `should_hold_standing_stream(is_always_on, bt_keep_alive, bt_input)` in `managers/audio.rs`: hold only when (always-on or BT keep-alive) AND the input device is not Bluetooth (name-classified via the existing `is_bluetooth_device_name` heuristic, selected device first, then host default — `audio_toolkit::is_bluetooth_input_active`). `wants_stream_held_open()` consumes it everywhere: startup deferred open, liveness monitor self-heal/zombie branches, `wants_standing_capture`, `update_mode`, `recreate_recorder`, stop/cancel dispositions (shared `settle_stream_after_stop`), cancel-timeout recovery, and `restart_microphone_if_needed` (which now stops stray streams instead of reopening). A Bluetooth input never holds the stream; always-on mode with BT input silently behaves as on-demand (hotkey still opens per dictation). As a belt-and-suspenders for presses that reach us while a recording IS active, the `AVAudioApplication` input-mute handler (`mic_mute_gesture.rs`, macOS 14+) treats the gesture as stop-and-transcribe and returns "handled" so the rejection banner never plays.
+
+Known pre-existing quirk (not fixed here): mid-session default-device flips during the A2DP↔HFP transition keep the same device and only change its format, so no input device-list change fires and the standing stream is not rebuilt (Biscotti #88; research memo §2).
+
+### Reconsider when
+
+- Apple ships a mic fast-wake/standby API (removing the need to choose between open-on-demand latency and holding BT in HFP).
+- Users report the on-demand BT open latency (~0.4–2 s HFP switch) as worse than the stem-control loss.
+
 ## 2026-11-16: Voice insert API (localhost HTTP → live-token splice into transcription)
 
 ### Status

@@ -1,5 +1,18 @@
 # Handy-Fork Learning Log
 
+## AirPods stem presses popped "Cannot Control Mic" while Handy's standing stream was held open (2026-11-21)
+
+### Problem
+- With AirPods as mic and the always-on standing stream (or BT keep-alive) held open, every AirPods stem press produced a system banner "Microphone: Cannot Control Mic with AirPods Pro/Max" bearing Handy's icon plus a rejection chime, instead of the expected play/pause. The same press behaved as a normal media key before Handy opened its mic.
+
+### Root Cause
+- A held record session is what makes macOS (14+) reroute AirPods/Beats stem presses as mute commands aimed at the recording process (`audioaccessoryd` → `audiomxd toggleInputMuteForRecordingProcess:`). Handy registered no `AVAudioApplication.setInputMuteStateChangeHandler`, so the mute toggle failed (error 2003329396), `audiomxd` chose `RejectChimeWithBanner`, and `audioaccessoryd` posted the banner attributed to Handy's bundle ID. Before the mic opened, the same press went out as an AVRCP/NX_SYSDEFINED media key — hence the symptom only appearing while the standing stream was held. The held mic also locked the headset in low-quality HFP. Upstream: cjpais/Handy#2045. Full mechanics in research/airpods-cannot-control-mic-alert-hfp-mechanics.md.
+
+### Fix
+- Two layers, both in this branch:
+  1. `managers/audio.rs` — one pure predicate `should_hold_standing_stream(is_always_on, bt_keep_alive, bt_input)` gates every hold/open/keep site (startup deferred open, liveness monitor, `wants_standing_capture`, `update_mode`, `recreate_recorder`, stop/cancel via `settle_stream_after_stop`, cancel-recovery Phase C, `restart_microphone_if_needed`). Bluetooth input devices never hold the stream; the BT-output keep-alive still holds when the input is non-Bluetooth.
+  2. `mic_mute_gesture.rs` (macOS 14+, gated by the `AVAudioApplication` class lookup since the deployment target is 13.4) — registers the input-mute handler at startup; while a recording is active the gesture is forwarded to the coordinator as `StopIfRecording` (stop-and-transcribe via `request_stop_if_recording`), and the handler returns "handled" so the rejection banner never plays. Tests: `standing_stream_hold_predicate` (all 8 truth rows), `stop_if_recording_*` coordinator tests, and the input-name classifier tests in `device.rs`.
+
 ## History tests failed on missing `file_name_vad` column; test fixture drifted from the migration chain (2026-11-17)
 
 ### Problem

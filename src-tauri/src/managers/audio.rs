@@ -1,5 +1,6 @@
 use crate::audio_toolkit::{
-    is_bluetooth_audio_active, is_bluetooth_device_name, list_output_devices,
+    is_bluetooth_audio_active, is_bluetooth_device_name, is_bluetooth_input_active,
+    list_output_devices,
     vad::{frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_ONSET_MS, VAD_PREFILL_MS},
     CaptureControl, CaptureSink, CaptureSinkConfig, CaptureVad, SileroVad, SpeechScorer, VadPolicy,
     VoiceActivityDetector,
@@ -84,6 +85,31 @@ fn should_rebuild_standing_stream(elapsed_ms: u64, recording: bool) -> bool {
         return false;
     }
     elapsed_ms >= STANDING_REBUILD_MIN_INTERVAL_MS
+}
+
+/// Decide whether the standing mic stream should be held open at all.
+/// Holding requires a reason (always-on mode or the BT-output keep-alive)
+/// AND a non-Bluetooth input: a held record session makes macOS reroute
+/// AirPods/Beats stem presses as mute commands aimed at this app (the
+/// audioaccessord "Cannot Control Mic" banner; upstream cjpais/Handy#2045),
+/// and a held Bluetooth input also locks the headset in low-quality HFP —
+/// so Bluetooth input devices never hold a standing stream.
+/// See research/airpods-cannot-control-mic-alert-hfp-mechanics.md.
+pub(crate) fn should_hold_standing_stream(
+    is_always_on: bool,
+    bt_keep_alive: bool,
+    bt_input: bool,
+) -> bool {
+    (is_always_on || bt_keep_alive) && !bt_input
+}
+
+/// Resolve the managed recording manager and ask whether the mic stream
+/// should be held open right now. False when the manager is not managed
+/// (yet). For background threads that hold no manager reference of their
+/// own (a by-value clone runs the full Drop and kills the monitors).
+fn rm_wants_stream_held_open(app: &tauri::AppHandle) -> bool {
+    app.try_state::<Arc<AudioRecordingManager>>()
+        .is_some_and(|rm| rm.wants_stream_held_open())
 }
 
 /// Pure predicate for the standing-rebuild race: a hotkey start should hold
@@ -1148,7 +1174,7 @@ impl AudioRecordingManager {
         // other Tauri initialization is happening concurrently. The stream is
         // not required to be ready before we return the manager; the liveness
         // monitor will self-heal if it isn't open yet.
-        let should_open_stream = bt_active || matches!(mode, MicrophoneMode::AlwaysOn);
+        let should_open_stream = manager.wants_stream_held_open();
         if should_open_stream {
             // Capture only the AppHandle: a thread-owned manager clone runs
             // the FULL Drop when the thread ends (stop_device_monitor +
@@ -1205,6 +1231,11 @@ impl AudioRecordingManager {
             info!("Liveness monitor: sleeping 2 seconds before first check to allow deferred stream startup");
             std::thread::sleep(Duration::from_secs(2));
 
+            // Set after the first "nothing should be held open" report so a
+            // Bluetooth input device (which legitimately never holds the
+            // stream) does not produce the same debug line every 3 seconds.
+            let mut hold_inactive_logged = false;
+
             loop {
                 // Check every 3 seconds
                 std::thread::sleep(Duration::from_secs(3));
@@ -1236,6 +1267,18 @@ impl AudioRecordingManager {
                 let stream_open = *is_open.lock();
 
                 if !stream_open {
+                    // With a Bluetooth input device nothing may be held open
+                    // (upstream cjpais/Handy#2045): the outer gate passed on
+                    // bt_keep_alive alone, so skip the reopen and stay quiet
+                    // after the first report instead of logging every cycle.
+                    if !rm_wants_stream_held_open(&app_handle) {
+                        if !hold_inactive_logged {
+                            debug!("Liveness monitor: stream not open but nothing should be held open (Bluetooth input) — not reopening");
+                            hold_inactive_logged = true;
+                        }
+                        continue;
+                    }
+
                     // Invariant violation: stream should be open but isn't.
                     // Self-heal by restarting it.
                     warn!(
@@ -1288,56 +1331,67 @@ impl AudioRecordingManager {
                             rm.stop_microphone_stream();
                         }
 
-                        // Only show USB-cycling overlay if user was actively recording.
-                        // If the stream died during sleep/wake while not recording,
-                        // silently recover in the background without showing the visualizer.
-                        if was_recording {
-                            utils::show_usb_cycling_overlay(&app_handle);
-                            crate::tray::set_tray_state(
-                                &app_handle,
-                                crate::tray::TrayIconState::Recording,
-                            );
-
-                            // Emit stage event so the overlay shows progress dots and elapsed time
-                            usb_watchdog::emit_stage_event_with_handle(
-                                &Some(app_handle.clone()),
-                                "recovering",
-                                "Recovering microphone stream...",
-                            );
-                        }
-
-                        // Try to restart
-                        if let Err(e) = rm.start_microphone_stream() {
-                            error!("Liveness monitor failed to restart stream: {}", e);
-
-                            if was_recording {
-                                // Emit failed event so frontend can recover from stuck state
-                                usb_watchdog::emit_cycle_event_with_handle(
-                                    &Some(app_handle.clone()),
-                                    "usb-power-cycle-failed",
-                                    &format!("Stream restart failed: {}", e),
-                                );
-                                utils::hide_recording_overlay(&app_handle);
-                            }
-
-                            crate::tray::set_tray_state(
-                                &app_handle,
-                                crate::tray::TrayIconState::Idle,
+                        // A dead stream is only reopened when something should
+                        // be held open (or a live recording needs its stream
+                        // back). With a Bluetooth input device (upstream
+                        // cjpais/Handy#2045) the stop above is already the
+                        // correct disposition: leave the stream closed.
+                        if !was_recording && !rm.wants_stream_held_open() {
+                            debug!(
+                                "Liveness monitor: dead stream stopped; nothing should be held open (Bluetooth input) — not reopening"
                             );
                         } else {
-                            crate::tray::set_tray_state(
-                                &app_handle,
-                                crate::tray::TrayIconState::Idle,
-                            );
-                            info!("Liveness monitor: stream restarted successfully");
-
+                            // Only show USB-cycling overlay if user was actively recording.
+                            // If the stream died during sleep/wake while not recording,
+                            // silently recover in the background without showing the visualizer.
                             if was_recording {
-                                // Emit finished event so frontend clears the USB cycling state
-                                usb_watchdog::emit_cycle_event_with_handle(
-                                    &Some(app_handle.clone()),
-                                    "usb-power-cycle-finished",
-                                    "Stream recovered successfully",
+                                utils::show_usb_cycling_overlay(&app_handle);
+                                crate::tray::set_tray_state(
+                                    &app_handle,
+                                    crate::tray::TrayIconState::Recording,
                                 );
+
+                                // Emit stage event so the overlay shows progress dots and elapsed time
+                                usb_watchdog::emit_stage_event_with_handle(
+                                    &Some(app_handle.clone()),
+                                    "recovering",
+                                    "Recovering microphone stream...",
+                                );
+                            }
+
+                            // Try to restart
+                            if let Err(e) = rm.start_microphone_stream() {
+                                error!("Liveness monitor failed to restart stream: {}", e);
+
+                                if was_recording {
+                                    // Emit failed event so frontend can recover from stuck state
+                                    usb_watchdog::emit_cycle_event_with_handle(
+                                        &Some(app_handle.clone()),
+                                        "usb-power-cycle-failed",
+                                        &format!("Stream restart failed: {}", e),
+                                    );
+                                    utils::hide_recording_overlay(&app_handle);
+                                }
+
+                                crate::tray::set_tray_state(
+                                    &app_handle,
+                                    crate::tray::TrayIconState::Idle,
+                                );
+                            } else {
+                                crate::tray::set_tray_state(
+                                    &app_handle,
+                                    crate::tray::TrayIconState::Idle,
+                                );
+                                info!("Liveness monitor: stream restarted successfully");
+
+                                if was_recording {
+                                    // Emit finished event so frontend clears the USB cycling state
+                                    usb_watchdog::emit_cycle_event_with_handle(
+                                        &Some(app_handle.clone()),
+                                        "usb-power-cycle-finished",
+                                        "Stream recovered successfully",
+                                    );
+                                }
                             }
                         }
                     }
@@ -1864,6 +1918,53 @@ impl AudioRecordingManager {
         is_bluetooth_audio_active(settings.selected_output_device.as_deref())
     }
 
+    /// Whether the currently selected (or system default) *input* device is
+    /// Bluetooth. Uses the same settings-access pattern as the device
+    /// monitor; the classification is name-based (see
+    /// `is_bluetooth_device_name`).
+    fn is_bluetooth_input_active(&self) -> bool {
+        let settings = get_settings(&self.app_handle);
+        is_bluetooth_input_active(settings.selected_microphone.as_deref())
+    }
+
+    /// Whether the mic stream should be held open right now: always-on mode
+    /// or the BT-output keep-alive, but never with a Bluetooth input device.
+    /// Holding a record session open is what makes macOS reroute AirPods/
+    /// Beats stem presses as mute commands aimed at this app (the
+    /// audioaccessord "Cannot Control Mic" banner; upstream
+    /// cjpais/Handy#2045) and what pins the headset in HFP call quality.
+    /// See research/airpods-cannot-control-mic-alert-hfp-mechanics.md.
+    pub fn wants_stream_held_open(&self) -> bool {
+        let is_always_on = matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn);
+        let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
+        should_hold_standing_stream(
+            is_always_on,
+            bt_keep_alive,
+            self.is_bluetooth_input_active(),
+        )
+    }
+
+    /// Post-stop disposition for the mic stream, shared by the stop and
+    /// cancel paths. Callers must NOT hold the state lock (the lazy close
+    /// and `stop_microphone_stream` may take it); both call sites drop it
+    /// before calling this.
+    fn settle_stream_after_stop(&self) {
+        if self.wants_stream_held_open() {
+            if matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn) {
+                // Always-on: a standing capture may be wanted again.
+                self.refresh_standing_capture();
+            } else {
+                debug!("BT keep-alive active (non-BT input): keeping mic stream open");
+            }
+            return;
+        }
+        if get_settings(&self.app_handle).lazy_stream_close {
+            self.schedule_lazy_close();
+        } else {
+            self.stop_microphone_stream();
+        }
+    }
+
     /// The persisted microphone preference currently in effect. Only runs the
     /// clamshell probe (an `ioreg` subprocess, ~10-20ms) when a clamshell
     /// microphone is actually configured.
@@ -2100,11 +2201,12 @@ impl AudioRecordingManager {
 
     /// Whether a standing (idle but sink-running) capture should exist right
     /// now: always-on/BT mode plus a reason to consume idle audio — the
-    /// pre-hotkey buffer or the batch live-captions fallback.
+    /// pre-hotkey buffer or the batch live-captions fallback — and a
+    /// non-Bluetooth input device (see `should_hold_standing_stream`).
     fn wants_standing_capture(&self) -> bool {
         let is_always_on = matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn);
         let bt = self.bt_keep_alive.load(Ordering::Acquire);
-        if !is_always_on && !bt {
+        if !should_hold_standing_stream(is_always_on, bt, self.is_bluetooth_input_active()) {
             return false;
         }
         let pre_buffer = self.capture.pre_buffer_max_samples > 0;
@@ -2473,15 +2575,21 @@ impl AudioRecordingManager {
         match (cur_mode, &new_mode) {
             (MicrophoneMode::AlwaysOn, MicrophoneMode::OnDemand) => {
                 if matches!(*self.state.lock(), RecordingState::Idle)
-                    && !self.bt_keep_alive.load(Ordering::Acquire)
+                    && !self.wants_stream_held_open()
                 {
                     self.close_generation.fetch_add(1, Ordering::SeqCst);
                     self.stop_microphone_stream();
                 }
             }
             (MicrophoneMode::OnDemand, MicrophoneMode::AlwaysOn) => {
-                self.close_generation.fetch_add(1, Ordering::SeqCst);
-                self.start_microphone_stream()?;
+                if self.wants_stream_held_open() {
+                    self.close_generation.fetch_add(1, Ordering::SeqCst);
+                    self.start_microphone_stream()?;
+                } else {
+                    info!(
+                        "always-on requested but input device is Bluetooth — mic stays on-demand"
+                    );
+                }
             }
             _ => {}
         }
@@ -2498,7 +2606,14 @@ impl AudioRecordingManager {
         if *self.is_open.lock() {
             self.stop_microphone_stream();
         }
-        self.start_microphone_stream()
+        // Never reopen when nothing should be held open (e.g. a Bluetooth
+        // input device, upstream cjpais/Handy#2045) unless a recording is
+        // live and needs its stream back.
+        if self.wants_stream_held_open() || self.is_recording() {
+            self.start_microphone_stream()
+        } else {
+            Ok(())
+        }
     }
 
     /// Re-evaluate the standing capture after a settings change that affects
@@ -2981,23 +3096,12 @@ impl AudioRecordingManager {
                     t_start.elapsed()
                 );
 
-                // In on-demand mode, decide whether to close the mic stream.
-                // When a Bluetooth output device is active, we keep the stream
-                // alive permanently to prevent the A2DP↔HFP profile switch that
-                // causes audio dropouts on BT headphones.
-                if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) {
-                    let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
-                    if bt_keep_alive {
-                        debug!("BT keep-alive active: keeping mic stream open");
-                    } else if get_settings(&self.app_handle).lazy_stream_close {
-                        self.schedule_lazy_close();
-                    } else {
-                        self.stop_microphone_stream();
-                    }
-                } else {
-                    // Always-on: a standing capture may be wanted again.
-                    self.refresh_standing_capture();
-                }
+                // Decide whether to close the mic stream. When the stream is
+                // still wanted (always-on, or the BT-output keep-alive with a
+                // non-BT input device) it stays open; a Bluetooth *input*
+                // device never holds the stream open (upstream
+                // cjpais/Handy#2045).
+                self.settle_stream_after_stop();
 
                 if self.was_cancelled_since(cancel_generation) {
                     debug!("Recording stop cancelled; discarding captured samples");
@@ -3273,19 +3377,10 @@ impl AudioRecordingManager {
 
                 *self.is_recording.lock() = false;
 
-                // In on-demand mode, decide whether to close the mic stream.
-                if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) {
-                    let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
-                    if bt_keep_alive {
-                        debug!("BT keep-alive active: keeping mic stream open");
-                    } else if get_settings(&self.app_handle).lazy_stream_close {
-                        self.schedule_lazy_close();
-                    } else {
-                        self.stop_microphone_stream();
-                    }
-                } else {
-                    self.refresh_standing_capture();
-                }
+                // Post-stop disposition, shared with stop_recording: keep the
+                // stream open only when it should be held (never with a
+                // Bluetooth input device, upstream cjpais/Handy#2045).
+                self.settle_stream_after_stop();
             }
             RecordingState::Stopping => {
                 debug!("Cancellation requested while recording is stopping");
@@ -3360,24 +3455,21 @@ impl AudioRecordingManager {
         // Only run if we actually healed; stop_microphone_stream takes the state
         // lock in schedule_lazy_close, so it must NEVER be called while holding
         // the lock.
-        if healed {
-            let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
+        if healed && !self.wants_stream_held_open() {
             let lazy_stream_close = get_settings(&self.app_handle).lazy_stream_close;
-            if matches!(*self.mode.lock(), MicrophoneMode::OnDemand) && !bt_keep_alive {
-                let t = std::time::Instant::now();
-                if lazy_stream_close {
-                    self.schedule_lazy_close();
-                    info!(
-                        "[CANCEL-TIMING] recovery worker: schedule_lazy_close took {:?}",
-                        t.elapsed()
-                    );
-                } else {
-                    self.stop_microphone_stream();
-                    info!(
-                        "[CANCEL-TIMING] recovery worker: stop_microphone_stream took {:?}",
-                        t.elapsed()
-                    );
-                }
+            let t = std::time::Instant::now();
+            if lazy_stream_close {
+                self.schedule_lazy_close();
+                info!(
+                    "[CANCEL-TIMING] recovery worker: schedule_lazy_close took {:?}",
+                    t.elapsed()
+                );
+            } else {
+                self.stop_microphone_stream();
+                info!(
+                    "[CANCEL-TIMING] recovery worker: stop_microphone_stream took {:?}",
+                    t.elapsed()
+                );
             }
         }
 
@@ -3401,22 +3493,26 @@ impl AudioRecordingManager {
             return Ok(());
         }
 
-        let is_always_on = matches!(*self.mode.lock(), MicrophoneMode::AlwaysOn);
-        let bt_keep_alive = self.bt_keep_alive.load(Ordering::Acquire);
-
-        if is_always_on || bt_keep_alive {
-            info!("Restarting microphone stream after USB power cycle");
-            // Stop the current stream if open
+        // Covers every recovery caller (sleep_wake, USB cycle, device-list
+        // rebuild, router, transcribe recovery): when nothing should be held
+        // open — on-demand mode, or a Bluetooth input device (upstream
+        // cjpais/Handy#2045) — stop a stray stream and stay closed.
+        if !self.wants_stream_held_open() {
             if *self.is_open.lock() {
                 self.stop_microphone_stream();
             }
-            // Start a fresh stream (fresh recorder: the crate's failed flag
-            // dies with the old recorder).
-            self.start_microphone_stream()
-        } else {
-            debug!("Microphone stream not needed (not always-on, no BT keep-alive)");
-            Ok(())
+            debug!("Microphone stream not needed (Bluetooth input or not held open)");
+            return Ok(());
         }
+
+        info!("Restarting microphone stream after USB power cycle");
+        // Stop the current stream if open
+        if *self.is_open.lock() {
+            self.stop_microphone_stream();
+        }
+        // Start a fresh stream (fresh recorder: the crate's failed flag
+        // dies with the old recorder).
+        self.start_microphone_stream()
     }
 
     /// Runtime toggle for the batch live-captions fallback (Strategy pattern).
@@ -3555,6 +3651,32 @@ mod tests {
         // First ever rebuild (epoch 0 baseline): elapsed == now, always large
         // enough.
         assert!(should_rebuild_standing_stream(20_000, false));
+    }
+
+    #[test]
+    fn standing_stream_hold_predicate() {
+        // All 8 truth rows of should_hold_standing_stream:
+        // (is_always_on, bt_keep_alive, bt_input) -> held open.
+
+        // Always-on with non-BT input: held open.
+        assert!(should_hold_standing_stream(true, true, false));
+        // Always-on, no keep-alive, non-BT input: held open.
+        assert!(should_hold_standing_stream(true, false, false));
+        // BT keep-alive with non-BT input (e.g. BT headphones out, MacBook
+        // mic in): held open (the keep-alive still prevents A2DP↔HFP churn).
+        assert!(should_hold_standing_stream(false, true, false));
+
+        // Bluetooth input NEVER holds the stream open — holding it reroutes
+        // AirPods/Beats stem presses into mute commands aimed at this app
+        // (upstream cjpais/Handy#2045) and locks the headset in HFP:
+        assert!(!should_hold_standing_stream(true, true, true));
+        assert!(!should_hold_standing_stream(true, false, true));
+        assert!(!should_hold_standing_stream(false, true, true));
+        assert!(!should_hold_standing_stream(false, false, true));
+
+        // No reason to hold (on-demand, no keep-alive) with non-BT input:
+        // not held.
+        assert!(!should_hold_standing_stream(false, false, false));
     }
 
     #[test]

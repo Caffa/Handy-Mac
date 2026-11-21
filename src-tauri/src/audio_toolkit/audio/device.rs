@@ -16,6 +16,12 @@ pub fn output_device_name(device: &cpal::Device) -> Option<String> {
     device.description().ok().map(|d| d.name().to_owned())
 }
 
+/// An input device for recording. Feedback-sound outputs are listed by
+/// `list_output_devices`.
+pub fn input_device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_owned())
+}
+
 pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>, Box<dyn std::error::Error>> {
     let host = crate::audio_toolkit::get_cpal_host();
     let default_name = host
@@ -138,6 +144,44 @@ pub fn is_bluetooth_audio_active(selected_output: Option<&str>) -> bool {
     false
 }
 
+/// Returns true if the system default input device is a Bluetooth device,
+/// or if the given selected input device is Bluetooth.
+///
+/// A held Bluetooth *input* stream is what makes macOS reroute AirPods/Beats
+/// stem presses as mute commands aimed at this app (the "Cannot Control Mic"
+/// audioaccessord banner, upstream cjpais/Handy#2045) and locks the headset
+/// in HFP call quality — so callers must never hold one open (see
+/// research/airpods-cannot-control-mic-alert-hfp-mechanics.md).
+pub fn is_bluetooth_input_active(selected_input: Option<&str>) -> bool {
+    let host = crate::audio_toolkit::get_cpal_host();
+
+    // Check the explicitly selected input device first
+    if let Some(name) = selected_input {
+        if name != "Default" && is_bluetooth_output_device(name) {
+            log::debug!(
+                "Bluetooth input device detected: '{}', will not hold mic stream open",
+                name
+            );
+            return true;
+        }
+    }
+
+    // Fall back to checking the system default input device
+    if let Some(default_device) = host.default_input_device() {
+        if let Some(name) = input_device_name(&default_device) {
+            if is_bluetooth_output_device(&name) {
+                log::debug!(
+                    "Bluetooth default input device detected: '{}', will not hold mic stream open",
+                    name
+                );
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +226,26 @@ mod tests {
             is_bluetooth_output_device("JBL Live"),
             is_bluetooth_device_name("JBL Live")
         );
+    }
+
+    #[test]
+    fn bluetooth_input_names_match_by_name() {
+        // The name-classification part of `is_bluetooth_input_active` (the
+        // host default-input fallback is not unit-testable). Positive names
+        // return true before any host query runs; a non-Bluetooth selected
+        // name falls through to the host query, so for it only the shared
+        // classifier itself is asserted.
+        assert!(is_bluetooth_input_active(Some("Pamela's AirPods Pro")));
+        assert!(is_bluetooth_input_active(Some("WH-1000XM5 Microphone")));
+        assert!(!is_bluetooth_output_device("MacBook Pro Microphone"));
+    }
+
+    #[test]
+    fn default_input_name_does_not_short_circuit_to_bluetooth() {
+        // `Some("Default")` must NOT short-circuit to true: it skips the
+        // selected-name check (`!= "Default"`) and falls through to the
+        // host default-input query, whose result the name classification
+        // alone cannot influence.
+        assert!(!is_bluetooth_output_device("Default"));
     }
 }
