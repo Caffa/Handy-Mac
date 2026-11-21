@@ -2460,6 +2460,7 @@ name = "handy"
 version = "0.13.3"
 dependencies = [
  "anyhow",
+ "block2",
  "chrono",
  "clap",
  "csv",
@@ -2483,6 +2484,7 @@ dependencies = [
  "nnnoiseless",
  "objc2",
  "objc2-app-kit",
+ "objc2-avf-audio",
  "objc2-foundation",
  "objc2-service-management",
  "once_cell",
@@ -3882,6 +3884,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08"
 dependencies = [
  "bitflags 2.11.0",
+ "block2",
  "libc",
  "objc2",
  "objc2-core-audio",
@@ -3908,7 +3911,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13a380031deed8e99db00065c45937da434ca987c034e13b87e4441f9e4090be"
 dependencies = [
  "bitflags 2.11.0",
+ "block2",
  "objc2",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
  "objc2-foundation",
 ]
 

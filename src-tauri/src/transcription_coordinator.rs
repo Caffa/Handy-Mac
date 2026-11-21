@@ -171,6 +171,12 @@ enum Command {
     ExtendRecording {
         seconds: u64,
     },
+    /// AirPods/Beats mute gesture (stem press while a recording is active;
+    /// macOS 14+ `AVAudioApplication` handler). Unlike `Input`, this can
+    /// never START a recording: it only stops an active session.
+    StopIfRecording {
+        source: String,
+    },
 }
 
 /// A press that arrived while the pipeline was still busy processing the
@@ -976,6 +982,42 @@ impl CoordinatorCore {
                 }
                 StageAction::None
             }
+            Command::StopIfRecording { source } => {
+                // AirPods/Beats mute gesture (stem press during an active
+                // recording; macOS reroutes it as a mute command aimed at the
+                // recording process — upstream cjpais/Handy#2045). Act as the
+                // dictation-app "mute": stop + complete the active session.
+                // Unlike Input, this can never start a recording: any other
+                // stage ignores it. The owner binding is kept so the stop flow
+                // (transcribe → paste, router → confirming) matches the
+                // recorder's active binding, mirroring the cross-binding arm.
+                match &self.stage {
+                    Stage::Recording { binding_id, .. } => {
+                        let owner_id = binding_id.clone();
+                        info!(
+                            "Mute gesture received (source='{}'): stopping active session owned by '{}'",
+                            source, owner_id
+                        );
+                        self.hard_cap_extension = Duration::ZERO;
+                        self.transition_to(Stage::Processing {
+                            since: Instant::now(),
+                            binding_id: Some(owner_id.clone()),
+                        });
+                        self.sync_state(active_use, current_state);
+                        StageAction::StopRecording {
+                            binding_id: owner_id,
+                            hotkey_string: format!("mute_gesture:{source}"),
+                        }
+                    }
+                    _ => {
+                        debug!(
+                            "Ignoring mute gesture (source='{}'): stage={:?}",
+                            source, self.stage
+                        );
+                        StageAction::None
+                    }
+                }
+            }
             Command::SetProcessingWithBinding { binding_id } => {
                 if matches!(self.stage, Stage::Idle) {
                     warn!(
@@ -1442,6 +1484,7 @@ impl TranscriptionCoordinator {
                         Command::ProcessingTimeout => "ProcessingTimeout",
                         Command::SetProcessingWithBinding { .. } => "SetProcessingWithBinding",
                         Command::ExtendRecording { .. } => "ExtendRecording",
+                        Command::StopIfRecording { .. } => "StopIfRecording",
                     };
 
                     // Check cancel flag again after receiving a command.
@@ -1787,6 +1830,22 @@ impl TranscriptionCoordinator {
             );
         }
         if result.is_err() {
+            warn!("Transcription coordinator channel closed");
+        }
+    }
+
+    /// Request a stop of the active recording session, if one is running.
+    /// Fired by the AirPods/Beats mute-gesture handler (`mic_mute_gesture`);
+    /// unlike `Input` it can never start a recording — it is a no-op when
+    /// Idle or Processing.
+    pub fn request_stop_if_recording(&self, source: &str) {
+        if self
+            .tx
+            .send(Command::StopIfRecording {
+                source: source.to_string(),
+            })
+            .is_err()
+        {
             warn!("Transcription coordinator channel closed");
         }
     }

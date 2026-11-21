@@ -22,6 +22,8 @@ mod input;
 mod llm_client;
 mod logging;
 mod main_watchdog;
+#[cfg(target_os = "macos")]
+mod mic_mute_gesture;
 
 mod managers;
 mod overlay;
@@ -1145,6 +1147,12 @@ pub fn run(cli_args: CliArgs) {
             ));
 
             initialize_core_logic(&app_handle);
+
+            // AirPods/Beats mute gesture (macOS 14+): turn the stem-press
+            // mute command into "stop dictation" instead of the system's
+            // rejection banner + chime (upstream cjpais/Handy#2045).
+            #[cfg(target_os = "macos")]
+            mic_mute_gesture::register(app_handle.clone());
 
             // Voice insert HTTP server (Phase 1): bind localhost only when
             // the feature is enabled. Port/enable changes require an app

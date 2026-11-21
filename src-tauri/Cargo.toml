@@ -118,7 +118,9 @@ winreg = "0.55"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 transcribe-cpp = { version = "0.4.0", default-features = false, features = ["metal"] }
 objc2 = "0.6"
+block2 = "0.6"
 objc2-service-management = "0.3.2"
+objc2-avf-audio = { version = "0.3.2", features = ["AVAudioApplication", "block2"] }
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSPanel", "NSTrackingArea", "NSView", "NSWindow", "NSPasteboard"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSNotification"] }
 

@@ -1966,7 +1966,10 @@ fn test_hold_or_toggle_tap_locks_then_next_press_stops() {
         hold_threshold: Duration::from_secs(10), // any quick release is a tap
         external: false,
     };
-    assert!(matches!(h.process(start), StageAction::StartRecording { .. }));
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
 
     // Quick release = tap: recording stays on (locked), no action.
     let action = h.process(Command::Input {
@@ -2018,7 +2021,10 @@ fn test_hold_or_toggle_press_while_held_is_ignored() {
         hold_threshold: Duration::from_secs(10),
         external: false,
     };
-    assert!(matches!(h.process(start), StageAction::StartRecording { .. }));
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
 
     // Auto-repeat press while the key is still held (unlocked): ignored.
     let action = h.process(Command::Input {
@@ -2046,7 +2052,10 @@ fn test_toggle_press_stops_hold_started_recording() {
         hold_threshold: Duration::from_secs(10),
         external: false,
     };
-    assert!(matches!(h.process(start), StageAction::StartRecording { .. }));
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
 
     // The setting changed to toggle mid-recording: a press must still stop
     // the session — otherwise nothing but Escape could stop it.
@@ -2199,7 +2208,9 @@ fn test_stale_processing_finished_ignored_while_second_session_processing() {
     assert!(h.is_active());
 
     // A's stale finish must be ignored
-    let action = h.process(Command::ProcessingFinished { session_id: Some(1) });
+    let action = h.process(Command::ProcessingFinished {
+        session_id: Some(1),
+    });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Processing { .. }));
     assert!(h.is_active());
@@ -2250,7 +2261,9 @@ fn test_stale_processing_finished_still_frees_current_session() {
     assert!(matches!(h.state(), AppState::Processing { .. }));
 
     // The *current* session's finish must still reset to Idle
-    let action = h.process(Command::ProcessingFinished { session_id: Some(2) });
+    let action = h.process(Command::ProcessingFinished {
+        session_id: Some(2),
+    });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Idle { .. }));
     assert!(!h.is_active());
@@ -2348,9 +2361,125 @@ fn test_processing_timeout_then_second_session_then_stale_finish() {
     assert_eq!(h.core.current_session, 2);
 
     // A's stale finish must not clobber session 2
-    let action = h.process(Command::ProcessingFinished { session_id: Some(1) });
+    let action = h.process(Command::ProcessingFinished {
+        session_id: Some(1),
+    });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Processing { .. }));
     assert!(h.is_active());
     assert_eq!(h.core.current_session, 2);
+}
+
+// ── Test 37: StopIfRecording stops the active session ──
+// The AirPods/Beats mute gesture (macOS reroutes the stem press as a mute
+// command aimed at the recording process, upstream cjpais/Handy#2045) acts as
+// the dictation-app "mute": stop + complete the ACTIVE session, keeping the
+// owner binding so its stop flow (transcribe → paste, router → confirming)
+// runs.
+
+#[test]
+fn stop_if_recording_stops_active_session() {
+    let mut h = TestHarness::new();
+
+    // Start recording with "transcribe_with_router"
+    let action = h.process(Command::Input {
+        binding_id: "transcribe_with_router".into(),
+        hotkey_string: "Cmd+Shift+R".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // Mute gesture → stop the OWNER's session
+    let action = h.process(Command::StopIfRecording {
+        source: "airpods_mute_gesture".into(),
+    });
+    match action {
+        StageAction::StopRecording {
+            binding_id,
+            hotkey_string,
+        } => {
+            assert_eq!(
+                binding_id, "transcribe_with_router",
+                "mute gesture must stop the owner's session"
+            );
+            assert_eq!(
+                hotkey_string, "mute_gesture:airpods_mute_gesture",
+                "stop action must carry the gesture source, not a hotkey"
+            );
+        }
+        other => panic!("Expected StopRecording, got {:?}", other),
+    }
+    match h.state() {
+        AppState::Processing { binding_id, .. } => {
+            assert_eq!(
+                binding_id.as_deref(),
+                Some("transcribe_with_router"),
+                "Processing must carry the owner binding"
+            );
+        }
+        other => panic!("Expected Processing state, got {:?}", other),
+    }
+    assert!(h.is_active());
+
+    // ProcessingFinished → Idle, session fully completed
+    h.process(Command::ProcessingFinished { session_id: None });
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+}
+
+// ── Test 38: StopIfRecording is ignored when Idle or Processing ──
+// Unlike Input, the mute gesture can never START a recording: in Idle it is a
+// no-op (the same press would have been a media key), and during Processing it
+// must not interrupt the pipeline.
+
+#[test]
+fn stop_if_recording_ignored_when_idle_or_processing() {
+    let mut h = TestHarness::new();
+
+    // Idle: gesture is a no-op and stays Idle
+    let action = h.process(Command::StopIfRecording {
+        source: "airpods_mute_gesture".into(),
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "mute gesture while Idle must be a no-op, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Idle { .. }));
+    assert!(!h.is_active());
+
+    // Recording → Processing
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Processing: gesture must not interrupt the pipeline
+    let action = h.process(Command::StopIfRecording {
+        source: "airpods_mute_gesture".into(),
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "mute gesture while Processing must be a no-op, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+    assert!(h.is_active());
 }
