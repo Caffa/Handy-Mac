@@ -2858,9 +2858,11 @@ impl AudioRecordingManager {
     }
 
     /// Replace the VAD implementation while idle. If the microphone stream is
-    /// currently warm (always-on or lazy-close mode), reopen it with the new
-    /// detector's chunk size before reporting success. A failed reopen restores
-    /// the previous detector so the persisted setting can remain unchanged.
+    /// currently warm AND should stay warm (always-on or BT keep-alive with a
+    /// non-Bluetooth input — see `should_hold_standing_stream`), reopen it with
+    /// the new detector's chunk size before reporting success. A failed reopen
+    /// restores the previous detector so the persisted setting can remain
+    /// unchanged.
     pub fn update_vad_backend(&self, backend: VadBackend) -> Result<(), anyhow::Error> {
         let state = self.state.lock();
         if !matches!(*state, RecordingState::Idle) {
@@ -2871,6 +2873,12 @@ impl AudioRecordingManager {
 
         let replacement = create_capture_vad(backend, &self.app_handle)?;
         let was_open = *self.is_open.lock();
+        // A Bluetooth input device never holds the standing stream (upstream
+        // cjpais/Handy#2045): stop-if-open still runs, but the reopen (and its
+        // rollback) happen only when the stream should be held open or a
+        // recording is live. Accepted tradeoff: no device-open error surfaces
+        // for BT selections until first use.
+        let reopen = was_open && (self.wants_stream_held_open() || self.is_recording());
 
         // Invalidate any delayed close before swapping the detector.
         self.close_generation.fetch_add(1, Ordering::SeqCst);
@@ -2879,7 +2887,7 @@ impl AudioRecordingManager {
         }
 
         let previous = std::mem::replace(&mut *self.vad.lock(), VadSlot::Idle(replacement));
-        if was_open {
+        if reopen {
             if let Err(change_error) = self.start_microphone_stream() {
                 *self.vad.lock() = previous;
 
@@ -2907,6 +2915,14 @@ impl AudioRecordingManager {
         if was_open {
             self.close_generation.fetch_add(1, Ordering::SeqCst);
             self.stop_microphone_stream();
+        }
+        // Mirror recreate_recorder: only reopen when the stream should be
+        // held open (or a recording is live). Selecting a Bluetooth mic with
+        // always-on/BT keep-alive must NOT recreate the held BT-input stream
+        // (upstream cjpais/Handy#2045) — the stream stays closed and opens
+        // on-demand at the next hotkey. Accepted tradeoff: a BT selection
+        // surfaces no device-open error here; first use reports it.
+        if self.wants_stream_held_open() || self.is_recording() {
             self.start_microphone_stream()?;
         }
         Ok(())
@@ -2927,13 +2943,20 @@ impl AudioRecordingManager {
         }
 
         let was_open = *self.is_open.lock();
+        // Same standing-stream rule as update_selected_device: a Bluetooth
+        // input device never holds the stream open (upstream
+        // cjpais/Handy#2045), so stop-if-open runs but the reopen happens
+        // only when the stream should be held open or a recording is live.
+        // Accepted tradeoff: no device-open error surfaces for BT selections
+        // until first use.
+        let reopen = was_open && (self.wants_stream_held_open() || self.is_recording());
         if was_open {
             self.close_generation.fetch_add(1, Ordering::SeqCst);
             self.stop_microphone_stream();
         }
         let previous_channel =
             std::mem::replace(&mut *self.selected_channel.lock(), selected_channel);
-        if was_open {
+        if reopen {
             if let Err(error) = self.start_microphone_stream() {
                 *self.selected_channel.lock() = previous_channel;
                 return Err(error);
@@ -3451,10 +3474,12 @@ impl AudioRecordingManager {
             }
         }
 
-        // Phase C — on-demand stream close parity with the normal cancel path.
-        // Only run if we actually healed; stop_microphone_stream takes the state
-        // lock in schedule_lazy_close, so it must NEVER be called while holding
-        // the lock.
+        // Phase C — stream close parity with the normal stop/cancel
+        // disposition. Only run if we actually healed, and with NO lock held:
+        // the lazy close's deferred worker acquires the state lock, and
+        // stop_microphone_stream (which itself only takes the is_open,
+        // recorder, mute, and is_recording locks — never the state lock)
+        // is kept to the same lock-free calling convention for consistency.
         if healed && !self.wants_stream_held_open() {
             let lazy_stream_close = get_settings(&self.app_handle).lazy_stream_close;
             let t = std::time::Instant::now();
