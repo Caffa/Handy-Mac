@@ -1,5 +1,25 @@
 # Handy-Fork Learning Log
 
+## Chord hotkey reaction-time collisions: tap floor + stop-press grace in the coordinator (2026-11-23)
+
+### Problem
+
+- HoldOrToggle with a 3-key chord: an accidental second press within ~the same second of starting a recording stopped it and pasted garbage. With tap-to-lock semantics the first short press locks the session on, and the second press of the chord (typically 150-350ms later — the human double-tap interval) is then a stop press on a locked session.
+- The user's slow tap dwell (300-400ms from chord press to release) exceeded the stored 300ms hold threshold, so the release she meant to lock the recording on was classified as a hold and stopped it instead.
+
+### Root Cause
+
+- The tap/hold boundary sat exactly at chord dwell time with zero hysteresis: `held >= hold_threshold` at both release-resolution sites in `CoordinatorCore::process_command` (src-tauri/src/transcription_coordinator.rs) decided lock-vs-stop, and multi-key chords make that single boundary tighter than human timing.
+- Nothing distinguished an accidental immediate stop press from a deliberate one: any keyboard press on the same binding of a locked/toggle session stopped the recording, no matter how close to the start it landed.
+
+### Fix
+
+- Two state-machine timing knobs on `CoordinatorCore` (pure fields, no settings/UI changes), initialized from new file-level consts `DEFAULT_MIN_TAP_WINDOW` (450ms) and `DEFAULT_STOP_PRESS_GRACE` (500ms):
+  - Tap hysteresis floor: effective tap threshold = `hold_threshold.max(min_tap_window)`, applied at both release-resolution sites — the live hold-release arm and the busy-window release resolution against `PendingPress.pressed_at`. Any release below the floor locks the recording on; at/after it stops PTT-style. PushToTalk short-circuits before the comparison and is untouched.
+  - Stop-press grace: a keyboard (`external: false`) press on the same binding while `Stage::Recording.since.elapsed() < stop_press_grace` is swallowed with an `info!` log and the recording continues in its current locked/unlocked state (covers tap-locked HoldOrToggle sessions and Toggle stops). Exemptions kept byte-for-byte: `external: true` inputs, cross-binding stop presses, `Command::Cancel`, `StopIfRecording`, `try_recover_stop`. Escape-cancel remains the instant abort hatch.
+  - Busy-window extension: after `classify_busy_input` returns `Forget` for a keyboard press2 within the grace, it is treated as `Ignore` (the pending press survives); external and late press2 keep the exact old `Forget` behavior, preserving toggle parity (upstream c6fa60da). `DEBOUNCE` (30ms, key-repeat protection) unchanged and semantically separate.
+- Tests: `TestHarness::with_timeout` zeroes both fields so existing tests keep modeling instant deliberate sequences; 11 opt-in tests (`test_stop_press_within_grace_is_swallowed`, `test_busy_press2_within_grace_does_not_forget`, `test_slow_tap_within_tap_floor_locks`, etc.) raise the fields explicitly to cover swallow/expire, external bypass, toggle parity, floor lock/hold boundary, PTT exemption, and busy-window cases.
+
 ## Selected microphone preference erased on fallback, breaking auto-reselect on reconnect (2026-11-23)
 
 ### Problem

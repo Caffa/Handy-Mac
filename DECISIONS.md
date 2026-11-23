@@ -1,5 +1,29 @@
 # Architecture Decisions
 
+## 2026-11-23: Reaction-time floor and stop-press grace in the hotkey state machine
+
+### Status
+
+**Accepted**
+
+### Context
+
+A user dictating with a 3-key chord in hold-or-toggle mode hit two reaction-time collisions in `CoordinatorCore::process_command` (src-tauri/src/transcription_coordinator.rs). First, an accidental second press within ~the same second of starting a recording stopped it and pasted garbage: with tap-to-lock, the first press locks the session on and the second (typically 150-350ms later, the human double-tap interval) is a stop press. Second, her slow chord tap dwell (300-400ms) exceeded the stored 300ms hold threshold, so the release she meant to lock the recording on was classified as a hold and stopped it. The tap/hold boundary and the "any press stops" rule both sit at times shorter than deliberate-multi-key-chord human timing, with no hysteresis separating fumbles from intent.
+
+### Decision
+
+Two pure timing fields on `CoordinatorCore` (tests mutate them directly; no settings surface, no UI):
+
+- **Tap hysteresis floor `min_tap_window` (default 450ms, `DEFAULT_MIN_TAP_WINDOW`).** The effective tap threshold for hold-or-toggle releases is `hold_threshold.max(min_tap_window)`, applied at both release-resolution sites (the live hold-release arm and the busy-window release resolution against `PendingPress.pressed_at`). Releases below the floor lock the recording on; releases at/after it stop the session PTT-style. PushToTalk short-circuits before this check and is untouched.
+- **Stop-press grace `stop_press_grace` (default 500ms, `DEFAULT_STOP_PRESS_GRACE`).** A keyboard (`external: false`) press on the recording's own binding while `Stage::Recording.since.elapsed() < grace` is swallowed (`info!` log) and the recording continues in its current locked/unlocked state, covering tap-locked HoldOrToggle sessions and Toggle stops. Extended into the busy window: a keyboard press2 that would `Forget` a pending press within the grace is treated as `Ignore` so the pending press survives; external and late press2 keep exact old `Forget` behavior (toggle parity, upstream c6fa60da).
+
+Exemptions remain byte-for-byte: `external: true` inputs, cross-binding stop presses, `Command::Cancel`, `StopIfRecording`, and `try_recover_stop`. Escape-cancel remains the instant abort hatch for either knob being wrong. `DEBOUNCE` (30ms, key-repeat protection) is unchanged and semantically separate from both.
+
+### Reconsider when
+
+- Users report deliberate stop presses being ignored (the grace eating intentional quick stops) — shorten `DEFAULT_STOP_PRESS_GRACE`, or re-examine whether fumble protection needs to be a setting.
+- PTT-hold users feel short holds locking instead of stopping — the floor may need to apply only when the configured hold threshold is below it, or `min_tap_window` needs a settings surface.
+
 ## 2026-11-23: Retain selected microphone preference when it disconnects, auto-reselect on reconnect
 
 ### Status
