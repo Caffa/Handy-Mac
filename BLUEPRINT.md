@@ -8,13 +8,21 @@ discord_channel: https://discord.com/channels/1529123294631166223
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (tip f900ae50): reaction-time timing fixes for the recording hotkey coordinator (transcription_coordinator.rs) — 450ms minimum tap window at both release sites, a 500ms grace that swallows same-binding keyboard stop presses right after recording starts (external triggers, cancels, and other bindings exempt), and the grace measured from the immutable recording start rather than the VAD-slid timestamp; coordinator tests 65→80, all pushed.
+- On branch `feature/voice-insert-api` (tip 18849f69): fuzzy fallback tier in `apply_word_replacements` (audio_toolkit/text.rs) — Exact Replacements mode now fuzzy-corrects 1–3-word n-grams against replacement strings of ≥8 normalized ASCII chars via the existing find_best_match scoring (normalized Levenshtein + Soundex ×0.3 boost, threshold from settings.word_correction_threshold, default 0.18); one table entry now fixes Parakeet's "Zattell Casten" mishearings of "Zettelkasten"; 18 apply_word_replacements tests (12 migrated + 6 new) + 303 text::tests pass.
+- Reaction-time timing fixes for the recording hotkey coordinator (transcription_coordinator.rs, f900ae50): 450ms minimum tap window at both release sites, a 500ms grace that swallows same-binding keyboard stop presses right after recording starts (external triggers, cancels, and other bindings exempt), grace measured from the immutable recording start rather than the VAD-slid timestamp; coordinator tests 65→80.
 - Mic retention across fallback (a636ba86) landed: the selected mic survives default-fallback, and MicrophoneSelector shows the retained-but-absent mic as a disabled option.
-- Runtime verification still pending: AirPods Pro mute-gesture fix, delayed-paste web-field detection, voice insert API Phase 1, live-captions pre-buffer fix.
-- Two pre-existing bugs surfaced in the timing review, not yet fixed: the VAD slide makes the 300s silence timeout / 30s warning unreachable in the live loop (recordings run to the 1h hard cap), and live hold-release tap/hold detection measures `held` from the slid `since` rather than `started_at`.
-- Planned next: patch those two VAD-slide timing bugs; Pamela runtime-verifies delayed paste, AirPods stem presses, and mic retention; then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
+- Runtime verification still pending: fuzzy word replacements, AirPods Pro mute-gesture fix, delayed-paste web-field detection, voice insert API Phase 1, live-captions pre-buffer fix.
+- Planned next: patch the two VAD-slide timing bugs surfaced in the timing review (300s silence timeout / 30s warning unreachable in the live loop — recordings run to the 1h hard cap — and live hold-release tap/hold detection measuring `held` from the slid `since` rather than `started_at`); then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
 
 ## Log
+
+### 2026-11-23 — Fuzzy fallback for word replacements
+
+Exact Replacements mode gained a fuzzy fallback tier in `apply_word_replacements` (audio_toolkit/text.rs, commit 18849f69, pushed to origin): 1–3-word transcript n-grams are fuzzy-matched against replacement correction strings of ≥8 normalized ASCII chars using the existing find_best_match scoring (normalized Levenshtein plus a Soundex ×0.3 boost), with the acceptance threshold from settings.word_correction_threshold (default 0.18). Motivation: Parakeet kept mishearing the proper noun "Zettelkasten" as "Zattell Casten"/"Zettel Casten"/"Zattel Casten" and exact-match replacements could never catch every variant — one table entry now fixes all of them at the default threshold. Verification: 18 apply_word_replacements tests pass (12 migrated + 6 new), 303 text::tests pass, clippy clean apart from pre-existing warnings, review verdict PASS.
+
+Next: Pamela confirms "Zettelkasten" corrections hold up in daily dictation at the default threshold.
+
+https://discord.com/channels/1486966847810043924/1574324092742533212
 
 ### 2026-11-23 — Reaction-time fixes for hotkey tap and stop presses
 
