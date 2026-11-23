@@ -34,8 +34,15 @@ impl TestHarness<tauri::test::MockRuntime> {
             .unwrap()
             .handle()
             .clone();
+        let mut core = CoordinatorCore::new_for_test(processing_timeout);
+        // Tests drive instant, deliberate sequences: with production
+        // reaction-time defaults the very stop presses and quick releases
+        // these tests assert on would be swallowed. Zero the reaction-time
+        // knobs here; opt-in tests set them explicitly to exercise the
+        // fork's reaction-time behavior.
+        core.min_tap_window = Duration::ZERO;
         Self {
-            core: CoordinatorCore::new_for_test(processing_timeout),
+            core,
             active_use: Arc::new(AtomicBool::new(false)),
             current_state: Arc::new(RwLock::new(AppState::Idle { session_id: 0 })),
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -2156,6 +2163,111 @@ fn test_hold_or_toggle_busy_hold_drops_on_release() {
     let action = h.process(Command::ProcessingFinished { session_id: None });
     assert!(matches!(action, StageAction::None));
     assert!(matches!(h.state(), AppState::Idle { .. }));
+}
+
+// ── Tap hysteresis floor (fork: reaction-time tap protection) ──
+//
+// The effective tap threshold is `hold_threshold.max(core.min_tap_window)`:
+// any release below the floor locks the recording on even when the
+// configured hold threshold would classify it as a hold. PushToTalk
+// short-circuits before the floor and is untouched.
+
+#[test]
+fn test_slow_tap_within_tap_floor_locks() {
+    let mut h = TestHarness::new();
+    // Floor of 10s makes every release in this test a tap, regardless of
+    // the configured threshold.
+    h.core.min_tap_window = Duration::from_secs(10);
+
+    // Press starts the recording (unlocked); the configured threshold is
+    // ZERO, which alone would classify any release as a hold.
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    };
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
+
+    // Immediate release: below the floor → tap, the session locks on.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "release below the tap floor must lock the session on, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // A tap-locked session ignores later releases and stops on the next
+    // press.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_hold_release_beyond_floor_stops() {
+    let mut h = TestHarness::new();
+    // Explicitly no floor: the configured threshold decides alone.
+    h.core.min_tap_window = Duration::ZERO;
+
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_millis(20),
+        external: false,
+    };
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
+
+    // Genuine hold: dwell beyond the threshold → release stops.
+    std::thread::sleep(Duration::from_millis(60));
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_millis(20),
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::StopRecording { .. }),
+        "release at/after the effective threshold must stop, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Processing { .. }));
 }
 
 // ── Session-scoped ProcessingFinished regression tests ──

@@ -59,6 +59,16 @@ impl Default for CancelSignal {
 
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
+/// Reaction-time floor on the effective tap threshold in hold-or-toggle
+/// mode. The effective threshold is `hold_threshold.max(min_tap_window)`:
+/// a release below it locks the recording on (tap), at/after it stops the
+/// session (PTT-style). Chord tap dwell can run up to ~400ms, above the
+/// configurable hold threshold, so meant-to-lock releases were misread as
+/// holds and stopped the recording; the floor keeps every release short of
+/// 450ms a lock-on while a genuinely long hold still stops. Escape/
+/// `Command::Cancel` remains the instant abort hatch.
+const DEFAULT_MIN_TAP_WINDOW: Duration = Duration::from_millis(450);
+
 /// Maximum time the coordinator will stay in `Recording` before it is
 /// forcibly cancelled and returned to `Idle`. This is a safety net for the
 /// rare case where every hotkey path fails (missed key-release after
@@ -142,6 +152,8 @@ enum Command {
         /// Hold-or-toggle only: a hold at least this long stops the
         /// recording on release; anything shorter is a tap that locks the
         /// recording on. Push-to-talk resolves as if the threshold were zero.
+        /// The effective threshold is floored at `min_tap_window`
+        /// (reaction-time tap floor).
         hold_threshold: Duration,
         /// True for non-keyboard triggers (signals, CLI flags). External
         /// triggers are exempt from the keyboard debounce: each one is a
@@ -357,6 +369,13 @@ struct CoordinatorCore {
     /// teardown commands from superseded sessions; the only sync point is
     /// after `start()` allocates a new session.
     current_session: u64,
+    /// Floor on the effective tap threshold in hold-or-toggle mode (see
+    /// `DEFAULT_MIN_TAP_WINDOW`).
+    ///
+    /// Tests override this directly: the shared harness zeroes it so its
+    /// instant, deliberate sequences model the old behavior, and opt-in
+    /// tests set it to exercise the floor.
+    min_tap_window: Duration,
 }
 
 impl CoordinatorCore {
@@ -368,6 +387,7 @@ impl CoordinatorCore {
             processing_timeout,
             hard_cap_extension: Duration::ZERO,
             current_session: 0,
+            min_tap_window: DEFAULT_MIN_TAP_WINDOW,
         }
     }
 
@@ -605,13 +625,18 @@ impl CoordinatorCore {
                     // without the extra machinery). A completed hold has
                     // nothing left to start; a tap locks the drained session on.
                     if !is_pressed && activation != ShortcutActivation::Toggle {
+                        // Effective tap threshold with the reaction-time
+                        // floor: a release below it locks the drained session
+                        // on, at/after it drops the pending press. PTT
+                        // short-circuits before the comparison is reached.
+                        let effective_threshold = hold_threshold.max(self.min_tap_window);
                         let mut drop_pending = false;
                         if let Some(pending) = self.pending_press.as_mut() {
                             if pending.binding_id == binding_id && !pending.locked {
                                 let held =
                                     Instant::now().saturating_duration_since(pending.pressed_at);
                                 if activation == ShortcutActivation::PushToTalk
-                                    || held >= hold_threshold
+                                    || held >= effective_threshold
                                 {
                                     debug!(
                                         "Hold completed before drain for '{}': dropping pending press",
@@ -768,6 +793,11 @@ impl CoordinatorCore {
                     }
                 } else if activation != ShortcutActivation::Toggle {
                     // Hold-mode release (push-to-talk or hold-or-toggle).
+                    // Effective tap threshold with the reaction-time floor
+                    // (see `DEFAULT_MIN_TAP_WINDOW`): a release below it
+                    // locks the recording on, at/after it stops. PTT
+                    // short-circuits before the comparison is reached.
+                    let effective_threshold = hold_threshold.max(self.min_tap_window);
                     match &self.stage {
                         Stage::Recording {
                             binding_id: id,
@@ -788,7 +818,7 @@ impl CoordinatorCore {
                             } else {
                                 let held = Instant::now().duration_since(*since);
                                 if activation == ShortcutActivation::PushToTalk
-                                    || held >= hold_threshold
+                                    || held >= effective_threshold
                                 {
                                     info!(
                                         "Stop input received (hold release): stage={:?} recorder_is_recording={}",
@@ -808,8 +838,8 @@ impl CoordinatorCore {
                                     // Tap: lock the recording on until the next
                                     // press (upstream c62a5fcd).
                                     info!(
-                                        "Tap detected for '{}' (held {:?} < {:?}): locking recording on",
-                                        binding_id, held, hold_threshold
+                                        "Tap detected for '{}' (held {:?} < {:?} effective threshold): locking recording on",
+                                        binding_id, held, effective_threshold
                                     );
                                     let (since_c, se_c, warned_c) =
                                         (*since, *silence_extension, *warned);
