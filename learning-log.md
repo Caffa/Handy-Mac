@@ -1,5 +1,23 @@
 # Handy-Fork Learning Log
 
+## Selected microphone preference erased on fallback, breaking auto-reselect on reconnect (2026-11-23)
+
+### Problem
+
+- When the user's selected USB microphone disappeared (dock disconnect, sleep-wake, USB hub flap), Handy fell back to the system default microphone and the preference was lost from settings. When the device reconnected, the 2-second device monitor detected it and called `invalidate_device_cache()` + `restart_microphone_if_needed()`, but the rebuild re-resolved from settings where `selected_microphone` had already been cleared to `None`, so it stayed on the system default.
+
+### Root Cause
+
+- `managers/audio.rs::persist_default_microphone_after_fallback()` wrote `selected_microphone = None` into settings every time a named selected mic could not be enumerated. This was originally intended to keep the UI aligned with the runtime fallback, but it destroyed the information needed to auto-heal when the device came back.
+
+### Fix
+
+- Deleted `persist_default_microphone_after_fallback()` and the `settings-changed` emit it produced.
+- Replaced the persist call with a single post-open `warn!` ("Selected microphone '...' is unavailable; using system default while absent. Preference retained, will reselect when it reconnects").
+- Removed the pre-open watchdog-gated warn so absent-device rebuilds do not double-warn.
+- Extracted the resolution core into a pure `resolve_microphone_device_pure()` helper and added unit tests covering: name found, name absent with enumeration ok (unavailable populated), enumeration error (unavailable None), and cache hit.
+- The frontend now shows the retained selected microphone as a disabled dropdown option with tooltip (`settings.sound.microphone.unavailable`) when it is absent.
+
 ## AirPods stem presses popped "Cannot Control Mic" while Handy's standing stream was held open (2026-11-21)
 
 ### Problem

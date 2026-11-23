@@ -1,5 +1,23 @@
 # Architecture Decisions
 
+## 2026-11-23: Retain selected microphone preference when it disconnects, auto-reselect on reconnect
+
+### Status
+
+**Accepted**
+
+### Context
+
+USB docks, sleep-wake, and hub power events can make the user's chosen input microphone disappear briefly. Previously Handy erased `selected_microphone` from settings the moment the device could not be enumerated, falling back to the system default. The 2-second device monitor already detects reconnects and rebuilds the stream, but because the preference was already cleared, the rebuild stayed on the default microphone.
+
+### Decision
+
+Always retain the user's selected microphone preference when it is temporarily absent. `managers/audio.rs::resolve_microphone_device()` still falls back to the system default for recording, but no code path writes `selected_microphone = None` on fallback. The frontend shows the retained choice as a disabled dropdown option with a tooltip explaining it will be used again when it reconnects. The 2-second device monitor naturally reselects the device when it reappears.
+
+### Reconsider when
+
+- Users request an opt-in "revert to default when selected mic disconnects" setting.
+
 ## 2026-11-21: Bluetooth input devices never hold a standing stream
 
 ### Status
