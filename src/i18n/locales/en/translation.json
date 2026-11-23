@@ -266,7 +266,8 @@
         "title": "Microphone",
         "description": "Select your preferred microphone device",
         "placeholder": "Select microphone...",
-        "loading": "Loading..."
+        "loading": "Loading...",
+        "unavailable": "Currently unavailable — will be used when it reconnects"
       },
       "channel": {
         "title": "Input Channel",

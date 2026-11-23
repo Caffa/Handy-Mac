@@ -1,6 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Dropdown } from "../ui/Dropdown";
+import { Dropdown, DropdownOption } from "../ui/Dropdown";
 import { SettingContainer } from "../ui/SettingContainer";
 import { ResetButton } from "../ui/ResetButton";
 import { useSettings } from "../../hooks/useSettings";
@@ -36,10 +36,22 @@ export const MicrophoneSelector: React.FC<MicrophoneSelectorProps> = React.memo(
       await resetSetting("selected_microphone");
     };
 
-    const microphoneOptions = audioDevices.map((device) => ({
+    let microphoneOptions: DropdownOption[] = audioDevices.map((device) => ({
       value: device.name,
       label: device.name,
     }));
+
+    if (
+      selectedMicrophone !== "Default" &&
+      !microphoneOptions.some((option) => option.value === selectedMicrophone)
+    ) {
+      microphoneOptions.push({
+        value: selectedMicrophone,
+        label: selectedMicrophone,
+        disabled: true,
+        tooltip: t("settings.sound.microphone.unavailable"),
+      });
+    }
 
     return (
       <SettingContainer
