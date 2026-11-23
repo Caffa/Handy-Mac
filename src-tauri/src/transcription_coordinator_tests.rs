@@ -35,11 +35,13 @@ impl TestHarness<tauri::test::MockRuntime> {
             .handle()
             .clone();
         let mut core = CoordinatorCore::new_for_test(processing_timeout);
-        // Tests drive instant, deliberate sequences: with production
+        // Tests drive instant, deliberate sequences: with the production
         // reaction-time defaults the very stop presses and quick releases
-        // these tests assert on would be swallowed. Zero the reaction-time
-        // knobs here; opt-in tests set them explicitly to exercise the
-        // fork's reaction-time behavior.
+        // these tests assert on would be swallowed as fumbles. Zero both
+        // knobs here; opt-in tests set `core.stop_press_grace` /
+        // `core.min_tap_window` explicitly to exercise the fork's
+        // reaction-time behavior.
+        core.stop_press_grace = Duration::ZERO;
         core.min_tap_window = Duration::ZERO;
         Self {
             core,
@@ -1926,6 +1928,237 @@ fn test_external_trigger_bypasses_debounce() {
     assert!(matches!(h.state(), AppState::Processing { .. }));
 }
 
+// ── Stop-press grace window (fork: reaction-time fumble protection) ──
+//
+// An accidental second press on a chord within the grace window after a
+// recording starts must not stop it. The harness zeroes the grace by
+// default; opt-in tests here raise `core.stop_press_grace` to exercise it.
+
+#[test]
+fn test_stop_press_within_grace_is_swallowed() {
+    let mut h = TestHarness::new();
+    // Grace of 10s: every stop press in this test lands within the window.
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    // Press starts the recording (unlocked; key believed held).
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    };
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
+
+    // Quick release = tap: locks the session on (the chord's second press
+    // scenario begins from a tap-locked session).
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // Fumble press within the grace: swallowed, recording continues.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "stop press within grace must be swallowed, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+    assert!(h.is_active());
+
+    // With the grace disabled the next press stops normally.
+    h.core.stop_press_grace = Duration::ZERO;
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_stop_press_after_grace_stops_normally() {
+    let mut h = TestHarness::new();
+    // Harness default: no grace. A tap-locked session stops on the first
+    // press — elapsed is never inside a ZERO window.
+    h.core.stop_press_grace = Duration::ZERO;
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    };
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
+    // Tap lock.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    // Stop press immediately: outside a ZERO grace.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_external_stop_press_bypasses_grace() {
+    let mut h = TestHarness::new();
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    // Keyboard press starts a recording.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+
+    // An external edge within the grace is a deliberate event from the
+    // user's own integration: it must still stop.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "SIGUSR2".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: true,
+    });
+    assert!(
+        matches!(action, StageAction::StopRecording { .. }),
+        "external stop press must bypass grace, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_toggle_stop_press_within_grace_is_swallowed() {
+    let mut h = TestHarness::new();
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    let start = Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    };
+    assert!(matches!(
+        h.process(start),
+        StageAction::StartRecording { .. }
+    ));
+
+    // Immediate second press = chord fumble: swallowed.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "toggle stop press within grace must be swallowed, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+    assert!(h.is_active());
+
+    // Grace disabled: the press stops normally.
+    h.core.stop_press_grace = Duration::ZERO;
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_cross_binding_stop_within_grace_still_stops() {
+    let mut h = TestHarness::new();
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    // A recording started with the first binding.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+
+    // A second binding's press within the grace is still a deliberate
+    // universal stop: the grace only guards same-binding fumbles.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe_with_router".into(),
+        hotkey_string: "Cmd+Shift+R".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    match action {
+        StageAction::StopRecording { binding_id, .. } => {
+            assert_eq!(binding_id, "transcribe", "owner binding must be kept");
+        }
+        other => panic!(
+            "Expected StopRecording for cross-binding press, got {:?}",
+            other
+        ),
+    }
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
 // ── Hold-or-toggle activation mode (upstream c62a5fcd) ──
 //
 // A hold (release at/after the threshold) stops the recording; a tap
@@ -2268,6 +2501,196 @@ fn test_hold_release_beyond_floor_stops() {
         action
     );
     assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+#[test]
+fn test_ptt_unaffected_by_floor_and_grace() {
+    let mut h = TestHarness::new();
+    // Maximally hostile knobs: any release looks like a tap and any press
+    // looks like a fumble, yet push-to-talk resolves on the edges exactly
+    // as before because it short-circuits before both checks.
+    h.core.min_tap_window = Duration::from_secs(10);
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StartRecording { .. }));
+
+    // Immediate release stops (PTT semantics), no floor interference.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::PushToTalk,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::StopRecording { .. }),
+        "PTT release must stop regardless of floor and grace, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
+// ── Busy-window stop-press grace (fork) ──
+//
+// While the pipeline is busy, a keyboard second press within the grace of a
+// just-remembered press keeps that pending press instead of forgetting it.
+// External and late press2 keep the Forget behavior (toggle parity,
+// upstream c6fa60da).
+
+#[test]
+fn test_busy_press2_within_grace_does_not_forget() {
+    let mut h = TestHarness::new();
+    enter_processing(&mut h);
+    // The grace must be raised AFTER enter_processing: its internal toggle
+    // stop press relies on the zero-grace harness default.
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    // Press while busy → remembered (key believed held).
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+
+    // Quick release while busy = tap: the pending press is now locked.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+
+    // Keyboard press2 within the grace would normally forget the pending
+    // press (second press on a tap-locked pending session); within grace it
+    // is swallowed instead.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "press2 must be swallowed within grace, got {:?}",
+        action
+    );
+
+    // Drain → the remembered (locked) session starts.
+    let action = h.process(Command::ProcessingFinished { session_id: None });
+    assert!(
+        matches!(action, StageAction::StartRecording { .. }),
+        "pending press must survive the grace-swallowed press2, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+
+    // Prove the session is locked: releases ignored, grace-disabled press
+    // stops it.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    h.core.stop_press_grace = Duration::ZERO;
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+}
+
+#[test]
+fn test_busy_toggle_press2_within_grace_remembered() {
+    let mut h = TestHarness::new();
+    enter_processing(&mut h);
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    // Two toggle presses during one busy window used to net to a no-op
+    // (parity). Within the grace the second press is a fumble: the first
+    // press stays remembered.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    // Drain → the remembered press starts a recording.
+    let action = h.process(Command::ProcessingFinished { session_id: None });
+    assert!(
+        matches!(action, StageAction::StartRecording { .. }),
+        "toggle press2 within grace must not forget the pending press, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+}
+
+#[test]
+fn test_external_busy_press2_still_forgets() {
+    let mut h = TestHarness::new();
+    enter_processing(&mut h);
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    // Keyboard press remembered while busy.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    // An external second edge within the grace is deliberate: it cancels
+    // the remembered press exactly as before the grace existed.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "SIGUSR2".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: true,
+    });
+    assert!(matches!(action, StageAction::None));
+
+    // Drain → nothing remembered.
+    let action = h.process(Command::ProcessingFinished { session_id: None });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
 }
 
 // ── Session-scoped ProcessingFinished regression tests ──

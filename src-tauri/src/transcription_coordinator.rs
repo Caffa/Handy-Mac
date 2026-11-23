@@ -59,6 +59,16 @@ impl Default for CancelSignal {
 
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
+/// Reaction-time grace window for stopping a just-started recording. A
+/// keyboard press on the recording's own binding is swallowed (the recording
+/// continues) while the session is younger than this window. Rationale: the
+/// accidental second press of a multi-key chord ("double tap") typically
+/// lands 150-350ms after the first, and honoring it stops the recording and
+/// pastes garbage; Escape/`Command::Cancel` remains the instant abort hatch.
+/// Semantically separate from `DEBOUNCE` (30ms), which only protects against
+/// key-repeat jitter around a single edge.
+const DEFAULT_STOP_PRESS_GRACE: Duration = Duration::from_millis(500);
+
 /// Reaction-time floor on the effective tap threshold in hold-or-toggle
 /// mode. The effective threshold is `hold_threshold.max(min_tap_window)`:
 /// a release below it locks the recording on (tap), at/after it stops the
@@ -369,12 +379,17 @@ struct CoordinatorCore {
     /// teardown commands from superseded sessions; the only sync point is
     /// after `start()` allocates a new session.
     current_session: u64,
-    /// Floor on the effective tap threshold in hold-or-toggle mode (see
-    /// `DEFAULT_MIN_TAP_WINDOW`).
+    /// How long after a recording starts that a keyboard stop press on the
+    /// same binding is swallowed as a fumble (see `DEFAULT_STOP_PRESS_GRACE`).
     ///
     /// Tests override this directly: the shared harness zeroes it so its
     /// instant, deliberate sequences model the old behavior, and opt-in
-    /// tests set it to exercise the floor.
+    /// tests set it to exercise the grace.
+    stop_press_grace: Duration,
+    /// Floor on the effective tap threshold in hold-or-toggle mode (see
+    /// `DEFAULT_MIN_TAP_WINDOW`).
+    ///
+    /// Tests override this directly, same as `stop_press_grace`.
     min_tap_window: Duration,
 }
 
@@ -387,6 +402,7 @@ impl CoordinatorCore {
             processing_timeout,
             hard_cap_extension: Duration::ZERO,
             current_session: 0,
+            stop_press_grace: DEFAULT_STOP_PRESS_GRACE,
             min_tap_window: DEFAULT_MIN_TAP_WINDOW,
         }
     }
@@ -659,7 +675,28 @@ impl CoordinatorCore {
                     }
 
                     let remembered = self.pending_press.as_ref().map(|p| p.remembered());
-                    match classify_busy_input(activation, is_pressed, remembered) {
+                    let mut classification =
+                        classify_busy_input(activation, is_pressed, remembered);
+                    // Busy-window extension of the stop-press grace: a
+                    // keyboard press that would cancel a just-remembered
+                    // press is also a fumble, so the pending press survives.
+                    // External (deliberate) and late press2 keep the old
+                    // forget behavior, preserving toggle parity
+                    // (upstream c6fa60da).
+                    if classification == BusyAction::Forget
+                        && !external
+                        && self
+                            .pending_press
+                            .as_ref()
+                            .is_some_and(|p| p.pressed_at.elapsed() < self.stop_press_grace)
+                    {
+                        info!(
+                            "Press for '{}' swallowed within stop-press grace of the pending press: recording continues",
+                            binding_id
+                        );
+                        classification = BusyAction::Ignore;
+                    }
+                    match classification {
                         BusyAction::Remember => {
                             debug!("Remembering press for '{}': pipeline busy", binding_id);
                             self.pending_press = Some(PendingPress {
@@ -701,6 +738,7 @@ impl CoordinatorCore {
                         }
                         Stage::Recording {
                             binding_id: id,
+                            since,
                             locked,
                             ..
                         } if id == &binding_id => {
@@ -712,6 +750,21 @@ impl CoordinatorCore {
                             // is still held (auto-repeat): a repeated press is
                             // meaningless.
                             if *locked || activation == ShortcutActivation::Toggle {
+                                // Reaction-time grace (fork): an accidental
+                                // second press on the chord right after the
+                                // recording started is a fumble, not a stop;
+                                // swallow it and keep recording in its current
+                                // locked/unlocked state. External triggers are
+                                // deliberate events and always honor the stop.
+                                if !external && since.elapsed() < self.stop_press_grace {
+                                    info!(
+                                        "Stop press for '{}' swallowed within grace ({:?} after recording start < {:?}): recording continues",
+                                        binding_id,
+                                        since.elapsed(),
+                                        self.stop_press_grace
+                                    );
+                                    return StageAction::None;
+                                }
                                 info!(
                                     "Stop input received: stage={:?} recorder_is_recording={}",
                                     self.stage, recorder_is_recording
