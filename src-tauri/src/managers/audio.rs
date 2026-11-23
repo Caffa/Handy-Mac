@@ -919,11 +919,32 @@ impl StreamingSeamState {
     }
 }
 
+/// Cache hit decision used by `resolve_microphone_device`.
+///
+/// Returns `Some(MicrophoneResolution)` when the cached name matches the
+/// desired name, so the caller can skip a device-list round-trip. A stale
+/// ID is the caller's problem: it fails at open and the caller invalidates.
+fn cached_resolution(
+    cached: Option<&(String, String)>,
+    device_name: &str,
+) -> Option<MicrophoneResolution> {
+    let (cached_name, id) = cached?;
+    if *cached_name != device_name {
+        return None;
+    }
+    Some(MicrophoneResolution {
+        device: Some(id.clone()),
+        device_name: Some(device_name.to_string()),
+        from_cache: true,
+        unavailable_selected_microphone: None,
+    })
+}
+
 /// Pure match-decision core for `resolve_microphone_device`.
 ///
-/// This helper does NOT handle the cache fast path; the caller is
-/// expected to check `cached_device` before enumerating so the cache can
-/// skip a device-list round-trip.
+/// This helper does NOT handle the cache fast path; call
+/// `cached_resolution()` before enumerating so the cache can skip a
+/// device-list round-trip.
 ///
 /// `enumeration` is `Ok(devices)` when the backend list succeeded and
 /// `Err(())` when it failed. A failed enumeration must not mark the
@@ -2056,16 +2077,11 @@ impl AudioRecordingManager {
 
         // Cache hit: skip the enumeration. A stale ID (device unplugged)
         // fails at open, where the caller invalidates and retries fresh.
-        if let Some((cached_name, id)) = self.cached_device.lock().clone().as_ref() {
-            if *cached_name == device_name {
-                debug!("device resolve: cache hit for '{}'", device_name);
-                return MicrophoneResolution {
-                    device: Some(id.clone()),
-                    device_name: Some(device_name),
-                    from_cache: true,
-                    unavailable_selected_microphone: None,
-                };
-            }
+        if let Some(resolution) =
+            cached_resolution(self.cached_device.lock().clone().as_ref(), &device_name)
+        {
+            debug!("device resolve: cache hit for '{}'", device_name);
+            return resolution;
         }
 
         // Only report a selected microphone as unavailable when enumeration
@@ -3973,10 +3989,37 @@ mod tests {
         assert!(!res.from_cache);
         assert_eq!(res.unavailable_selected_microphone, None);
 
-        // 4. Cache hit is handled by the caller's fast path; the pure helper
-        // does not take the cache, so there is no from_cache=true case here.
-        // The caller test coverage for cache hits is via the existing
-        // `start_microphone_stream` integration surface, not this pure core.
+        // 4. Clamshell name is not treated as unavailable_selected_microphone.
+        let res = resolve_microphone_device_pure(&usb_mic, None, Ok(vec![]));
+        assert_eq!(res.device, None);
+        assert!(res.device_name.is_some());
+        assert!(!res.from_cache);
+        assert_eq!(res.unavailable_selected_microphone, None);
+    }
+
+    #[test]
+    fn cached_resolution_cases() {
+        let usb_mic = "USB Mic".to_string();
+        let usb_id = "usb-id".to_string();
+        let other_mic = "Other Mic".to_string();
+        let other_id = "other-id".to_string();
+
+        // No cache at all -> None.
+        assert!(cached_resolution(None, &usb_mic).is_none());
+
+        // Cache miss (different name) -> None.
+        assert!(
+            cached_resolution(Some(&(other_mic.clone(), other_id.clone())), &usb_mic).is_none()
+        );
+
+        // Cache hit -> Some with cached id, from_cache=true, no unavailable.
+        let res = cached_resolution(Some(&(usb_mic.clone(), usb_id.clone())), &usb_mic);
+        assert!(res.is_some());
+        let res = res.unwrap();
+        assert_eq!(res.device, Some(usb_id));
+        assert_eq!(res.device_name, Some(usb_mic));
+        assert!(res.from_cache);
+        assert_eq!(res.unavailable_selected_microphone, None);
     }
 }
 
