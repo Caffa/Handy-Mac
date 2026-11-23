@@ -8,12 +8,21 @@ discord_channel: https://discord.com/channels/1529123294631166223
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (tip a636ba86): microphone retention — falling back to the default mic no longer erases the user's selected microphone from settings (persist_default_microphone_after_fallback deleted from managers/audio.rs), resolution split into resolve_microphone_device_pure + cached_resolution helpers with unit tests, cache-hit fast path restored, absent-mic warn rate-limited.
-- MicrophoneSelector.tsx shows the retained-but-absent mic as a disabled dropdown option (new i18n key settings.sound.microphone.unavailable); docs updated (learning-log.md, usb-watchdog-wake-recovery.md fallback-masking note, DECISIONS.md ADR).
-- Recently landed, runtime verification pending: AirPods Pro mute-gesture fix (upstream cjpais/Handy#2045, 696 lib + 59 integration tests pass), delayed-paste web-field detection (4fb6fe09), voice insert API Phase 1 (127.0.0.1:48213, 32 tests), live-captions pre-buffer fix (37560c58).
-- Planned next: Pamela runtime-verifies delayed paste, AirPods stem presses, and mic-retention reconnect behavior in daily dictation, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
+- On branch `feature/voice-insert-api` (tip f900ae50): reaction-time timing fixes for the recording hotkey coordinator (transcription_coordinator.rs) — 450ms minimum tap window at both release sites, a 500ms grace that swallows same-binding keyboard stop presses right after recording starts (external triggers, cancels, and other bindings exempt), and the grace measured from the immutable recording start rather than the VAD-slid timestamp; coordinator tests 65→80, all pushed.
+- Mic retention across fallback (a636ba86) landed: the selected mic survives default-fallback, and MicrophoneSelector shows the retained-but-absent mic as a disabled option.
+- Runtime verification still pending: AirPods Pro mute-gesture fix, delayed-paste web-field detection, voice insert API Phase 1, live-captions pre-buffer fix.
+- Two pre-existing bugs surfaced in the timing review, not yet fixed: the VAD slide makes the 300s silence timeout / 30s warning unreachable in the live loop (recordings run to the 1h hard cap), and live hold-release tap/hold detection measures `held` from the slid `since` rather than `started_at`.
+- Planned next: patch those two VAD-slide timing bugs; Pamela runtime-verifies delayed paste, AirPods stem presses, and mic retention; then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
 
 ## Log
+
+### 2026-11-23 — Reaction-time fixes for hotkey tap and stop presses
+
+Fixed late reactions to the record hotkey in transcription_coordinator.rs: releases now keep a 450ms minimum tap window at both release sites (396e37c7), and a 500ms grace window swallows a same-binding keyboard stop press right after recording starts — external triggers, cancels, and other bindings still stop normally (b407836b). A review pass caught the grace being measured from the VAD-slid timestamp; it now measures from the immutable recording start (f900ae50). The decision is recorded in DECISIONS.md and learning-log.md (2187a2a7), coordinator tests grew from 65 to 80, and all commits are pushed. Two pre-existing bugs surfaced in review but were left as follow-ups: the VAD slide makes the 300s silence timeout and 30s warning unreachable in the live loop, and live hold-release tap/hold detection measures held time from the slid timestamp.
+
+Next: fix the two surfaced VAD-slide timing bugs.
+
+https://discord.com/channels/1486966847810043924/1574339605677871137
 
 ### 2026-11-23 — Mic retention across fallback
 
