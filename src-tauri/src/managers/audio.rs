@@ -915,6 +915,57 @@ impl StreamingSeamState {
     }
 }
 
+/// Pure core of `resolve_microphone_device`.
+///
+/// `enumeration` is `Ok(devices)` when the backend list succeeded and
+/// `Err(())` when it failed. A failed enumeration must not mark the
+/// selected mic as unavailable (the preference is retained for a
+/// transient failure). `selected_microphone` is `Some(name)` only when the
+/// desired source is the user's regular selected microphone, so an absent
+/// device can populate `unavailable_selected_microphone`.
+fn resolve_microphone_device_pure(
+    device_name: &str,
+    selected_microphone: Option<&str>,
+    cached: Option<&(String, String)>,
+    enumeration: Result<Vec<(String, String)>, ()>,
+) -> MicrophoneResolution {
+    // Cache hit wins; a stale ID fails at open and the caller invalidates.
+    if let Some((cached_name, id)) = cached {
+        if *cached_name == device_name {
+            return MicrophoneResolution {
+                device: Some(id.clone()),
+                device_name: Some(device_name.to_string()),
+                from_cache: true,
+                unavailable_selected_microphone: None,
+            };
+        }
+    }
+
+    let (device, enumeration_succeeded) = match enumeration {
+        Ok(devices) => (
+            devices
+                .into_iter()
+                .find(|(name, _)| name == device_name)
+                .map(|(_, id)| id),
+            true,
+        ),
+        Err(()) => (None, false),
+    };
+
+    let unavailable_selected_microphone = if enumeration_succeeded && device.is_none() {
+        selected_microphone.map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    MicrophoneResolution {
+        device,
+        device_name: Some(device_name.to_string()),
+        from_cache: false,
+        unavailable_selected_microphone,
+    }
+}
+
 // Helper types for microphone resolution live in the parent module so that
 // methods below can reference them without scoping issues inside an impl block.
 impl AudioRecordingManager {
@@ -2007,79 +2058,45 @@ impl AudioRecordingManager {
             DesiredMicrophone::Clamshell(name) => (name, None),
         };
 
-        // Cache hit: skip the enumeration. A stale ID (device unplugged)
-        // fails at open, where the caller invalidates and retries fresh.
-        if let Some((cached_name, id)) = self.cached_device.lock().clone().as_ref() {
-            if *cached_name == device_name {
-                debug!("device resolve: cache hit for '{}'", device_name);
-                return MicrophoneResolution {
-                    device: Some(id.clone()),
-                    device_name: Some(device_name.clone()),
-                    from_cache: true,
-                    unavailable_selected_microphone: None,
-                };
-            }
-        }
+        let cached = self.cached_device.lock().clone();
 
         // Only report a selected microphone as unavailable when enumeration
         // itself succeeded. A backend enumeration error may be transient and
         // must not erase the user's persisted preference.
         let enumerate_started = Instant::now();
-        let (device, enumeration_succeeded) = match handy_recorder::list_input_devices() {
-            Ok(devices) => (
-                devices
-                    .into_iter()
-                    .find(|d| d.name == device_name)
-                    .map(|d| d.id),
-                true,
-            ),
+        let enumeration = match handy_recorder::list_input_devices() {
+            Ok(devices) => Ok(devices
+                .into_iter()
+                .map(|d| (d.name, d.id))
+                .collect::<Vec<_>>()),
             Err(e) => {
                 debug!("Failed to list devices, using default: {}", e);
-                (None, false)
+                Err(())
             }
         };
+
+        let resolution = resolve_microphone_device_pure(
+            &device_name,
+            selected_microphone.as_deref(),
+            cached.as_ref(),
+            enumeration,
+        );
+
         debug!(
             "device resolve: enumerate={:?} (found={})",
             enumerate_started.elapsed(),
-            device.is_some()
+            resolution.device.is_some()
         );
-        if let Some(id) = &device {
-            *self.cached_device.lock() = Some((device_name.clone(), id.clone()));
-        }
 
-        let unavailable_selected_microphone = if enumeration_succeeded && device.is_none() {
-            selected_microphone
-        } else {
-            None
-        };
-        MicrophoneResolution {
-            device,
-            device_name: Some(device_name),
-            from_cache: false,
-            unavailable_selected_microphone,
-        }
-    }
-
-    /// Keep persisted settings and the UI aligned with a successful runtime
-    /// fallback. Re-read first so recovery cannot clear a microphone the user
-    /// selected concurrently while the stream was being rebuilt.
-    fn persist_default_microphone_after_fallback(&self, unavailable_name: &str) {
-        let mut cleared = false;
-        crate::settings::patch_settings(&self.app_handle, |s| {
-            if s.selected_microphone.as_deref() == Some(unavailable_name) {
-                s.selected_microphone = None;
-                cleared = true;
+        // Update the cache only when the ID came from a fresh enumeration,
+        // not from the cache itself.
+        if !resolution.from_cache {
+            if let Some(id) = &resolution.device {
+                *self.cached_device.lock() = Some((device_name, id.clone()));
             }
-        });
-        if cleared {
-            let _ = self.app_handle.emit(
-                "settings-changed",
-                serde_json::json!({
-                    "setting": "selected_microphone",
-                    "value": "Default"
-                }),
-            );
         }
+
+        resolution
     }
 
     fn schedule_lazy_close(&self) {
@@ -2413,20 +2430,6 @@ impl AudioRecordingManager {
             result => result,
         };
 
-        // Diagnostics only: selected mic disappeared and we silently fell back
-        // to the default. Do NOT count this as an open failure — a later
-        // successful recording resets the counter, and direct-cycling on
-        // fallback would over-cycle during dock/clamshell transitions.
-        if let Some(ref unavailable_name) = resolution.unavailable_selected_microphone {
-            if settings.usb_watchdog_enabled && !settings.usb_watchdog_device_name.is_empty() {
-                warn!(
-                    "Selected microphone '{}' is missing; watchdog enabled for '{}', falling back to default mic without cycling",
-                    unavailable_name,
-                    settings.usb_watchdog_device_name
-                );
-            }
-        }
-
         let microphone = match open_result {
             Ok(m) => m,
             Err(e) => {
@@ -2476,10 +2479,16 @@ impl AudioRecordingManager {
         self.usb_watchdog.on_stream_open_confirmed();
 
         *open_flag = true;
+        // Do this only after the default stream opened successfully. A
+        // failed fallback must not erase the user's microphone preference.
+        // Do NOT count this as an open failure — a later successful recording
+        // resets the counter, and direct-cycling on fallback would over-cycle
+        // during dock/clamshell transitions.
         if let Some(unavailable_name) = resolution.unavailable_selected_microphone {
-            // Do this only after the default stream opened successfully. A
-            // failed fallback must not erase the user's microphone preference.
-            self.persist_default_microphone_after_fallback(&unavailable_name);
+            warn!(
+                "Selected microphone '{}' is unavailable; using system default while absent. Preference retained, will reselect when it reconnects",
+                unavailable_name
+            );
         }
         // The stream is running, but the device may not be delivering audio
         // yet (Bluetooth can take seconds); a recording's readiness waits for
@@ -3907,6 +3916,47 @@ mod tests {
         // never dispatch a synthetic press.
         assert!(!retry_decision(true, false));
         assert!(!retry_decision(false, false));
+    }
+
+    #[test]
+    fn resolve_microphone_device_pure_cases() {
+        let usb_mic = "USB Mic".to_string();
+        let usb_id = "usb-id".to_string();
+        let default_id = "default-id".to_string();
+
+        // 1. Name found -> device Some(id), unavailable None.
+        let devices = vec![
+            ("Default".to_string(), default_id.clone()),
+            (usb_mic.clone(), usb_id.clone()),
+        ];
+        let res = resolve_microphone_device_pure(&usb_mic, Some(&usb_mic), None, Ok(devices));
+        assert_eq!(res.device, Some(usb_id.clone()));
+        assert_eq!(res.device_name, Some(usb_mic.clone()));
+        assert!(!res.from_cache);
+        assert_eq!(res.unavailable_selected_microphone, None);
+
+        // 2. Name absent, enumeration ok -> device None, unavailable Some(name).
+        let devices = vec![("Default".to_string(), default_id.clone())];
+        let res = resolve_microphone_device_pure(&usb_mic, Some(&usb_mic), None, Ok(devices));
+        assert_eq!(res.device, None);
+        assert!(res.device_name.is_some());
+        assert!(!res.from_cache);
+        assert_eq!(res.unavailable_selected_microphone, Some(usb_mic.clone()));
+
+        // 3. Enumeration error -> device None, unavailable None.
+        let res = resolve_microphone_device_pure(&usb_mic, Some(&usb_mic), None, Err(()));
+        assert_eq!(res.device, None);
+        assert!(!res.from_cache);
+        assert_eq!(res.unavailable_selected_microphone, None);
+
+        // 4. Cache hit -> device Some(cached), from_cache true.
+        let cached = (usb_mic.clone(), "cached-id".to_string());
+        let res =
+            resolve_microphone_device_pure(&usb_mic, Some(&usb_mic), Some(&cached), Ok(vec![]));
+        assert_eq!(res.device, Some("cached-id".to_string()));
+        assert_eq!(res.device_name, Some(usb_mic.clone()));
+        assert!(res.from_cache);
+        assert_eq!(res.unavailable_selected_microphone, None);
     }
 }
 
