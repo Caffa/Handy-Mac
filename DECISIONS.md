@@ -12,7 +12,11 @@ USB docks, sleep-wake, and hub power events can make the user's chosen input mic
 
 ### Decision
 
-Always retain the user's selected microphone preference when it is temporarily absent. `managers/audio.rs::resolve_microphone_device()` still falls back to the system default for recording, but no code path writes `selected_microphone = None` on fallback. The frontend shows the retained choice as a disabled dropdown option with a tooltip explaining it will be used again when it reconnects. The 2-second device monitor naturally reselects the device when it reappears.
+Always retain the user's selected microphone preference when it is temporarily absent. `managers/audio.rs::resolve_microphone_device()` still falls back to the system default for recording, but no code path writes `selected_microphone = None` on fallback. The frontend shows the retained choice as a disabled dropdown option with a tooltip explaining it will be used again when it reconnects. The cache-hit fast path is preserved so on-demand recording starts skip an extra device-list round-trip. A single `warn!` is emitted the first time a given absent microphone is encountered; subsequent opens while the same mic is absent log at `debug` to avoid per-dictation warn spam.
+
+Auto-reselect behavior depends on microphone mode:
+- In always-on or BT-output keep-alive mode, the 2-second device monitor calls `invalidate_device_cache()` + `restart_microphone_if_needed()` on reconnect, rebuilding the standing stream on the selected mic within ~2 seconds.
+- In on-demand mode, `restart_microphone_if_needed()` does not hold the stream open; the next recording will re-resolve the preference and pick up the reconnected mic automatically.
 
 ### Reconsider when
 

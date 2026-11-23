@@ -13,7 +13,8 @@
 ### Fix
 
 - Deleted `persist_default_microphone_after_fallback()` and the `settings-changed` emit it produced.
-- Replaced the persist call with a single post-open `warn!` ("Selected microphone '...' is unavailable; using system default while absent. Preference retained, will reselect when it reconnects").
+- Replaced the persist call with a post-open `warn!` ("Selected microphone '...' is unavailable; using system default while absent. Preference retained, will reselect when it reconnects"), rate-limited to once per absence via `last_warned_absent_mic` so dictations while the mic is absent log at `debug` instead of spamming a warn.
+- Restored the cache-hit fast path before enumeration in `resolve_microphone_device()` so on-demand starts skip the device-list round-trip when the selected mic hasn't changed.
 - Removed the pre-open watchdog-gated warn so absent-device rebuilds do not double-warn.
 - Extracted the resolution core into a pure `resolve_microphone_device_pure()` helper and added unit tests covering: name found, name absent with enumeration ok (unavailable populated), enumeration error (unavailable None), and cache hit.
 - The frontend now shows the retained selected microphone as a disabled dropdown option with tooltip (`settings.sound.microphone.unavailable`) when it is absent.

@@ -60,7 +60,7 @@ The watchdog's consecutive-failure counter could only be incremented by `on_reco
 
 When the selected microphone is missing, `resolve_microphone_device()` falls back to the system default and sets `unavailable_selected_microphone`. This fallback is **not** counted as an open failure (unchanged) — treating it as one would cause the watchdog to power-cycle during benign transitions (dock/undock, clamshell mode changes) where the selected mic legitimately disappears.
 
-The preference is now retained while the device is absent, and the 2-second device monitor automatically reselects it on reconnect (`invalidate_device_cache()` + `restart_microphone_if_needed()` rebuild from the still-present preference). The warn now fires after the default stream opens successfully, so absent-device rebuilds do not double-warn.
+The preference is now retained while the device is absent. In always-on or BT-output keep-alive mode, the 2-second device monitor automatically reselects it on reconnect (`invalidate_device_cache()` + `restart_microphone_if_needed()` rebuild from the still-present preference). In on-demand mode, the next recording re-resolves the preference and picks up the reconnected mic automatically. The warn now fires after the default stream opens successfully and is rate-limited to once per absence, so absent-device rebuilds do not double-warn or spam one warn per dictation.
 
 ---
 
