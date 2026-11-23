@@ -20,6 +20,13 @@
   - Busy-window extension: after `classify_busy_input` returns `Forget` for a keyboard press2 within the grace, it is treated as `Ignore` (the pending press survives); external and late press2 keep the exact old `Forget` behavior, preserving toggle parity (upstream c6fa60da). `DEBOUNCE` (30ms, key-repeat protection) unchanged and semantically separate.
 - Tests: `TestHarness::with_timeout` zeroes both fields so existing tests keep modeling instant deliberate sequences; 11 opt-in tests (`test_stop_press_within_grace_is_swallowed`, `test_busy_press2_within_grace_does_not_forget`, `test_slow_tap_within_tap_floor_locks`, etc.) raise the fields explicitly to cover swallow/expire, external bypass, toggle parity, floor lock/hold boundary, PTT exemption, and busy-window cases.
 
+### Review round (2026-11-23)
+
+- Review found the grace was initially measured from the VAD-slid `Stage::Recording.since` — which the thread loop slides back to `Instant::now()` on every wake while audio is recent. That made the 500ms grace measure "ms since the last loop wake", not "since recording start": a genuine mid-session stop press landing <500ms after a 30s timer wake got swallowed, and so did a recovery press after a swallowed fumble (sustained rapid presses all swallowed too).
+- Fix: added an immutable `started_at: Instant` to `Stage::Recording` — never rewritten, carried unchanged through the VAD slide and tap-lock; set from `Instant::now()` on Idle-start, from the pending press's real `pressed_at` on drain-start, and from recovery time on drift recovery. The grace now measures `started_at.elapsed()`; the busy-window extension already measured `PendingPress.pressed_at` and is unchanged.
+- Why a field instead of the loop-local `recording_start` used for the hard cap: `recording_start` lives only in the thread loop (not accessible to `process_command`) and is stamped when the loop first observes Recording, which for drain-started sessions is later than the true press time the grace should measure from. A test-accessor redesign of that local would have been more invasive than the field.
+- Review-gap tests added: production-default pinning (500ms/450ms), grace-vs-slide contract (fresh `since` + `started_at` older than grace → press must STOP; fresh `started_at` → swallow), late press2 keeping `Forget` under a nonzero grace (stale `pressed_at` constructed directly, no sleep), and busy-window release tap-locking via the floor (`min_tap_window` > hold threshold, complementing the drop test). Also fixed the busy-window swallow log wording ("recording continues" → "pending press survives").
+
 ## Selected microphone preference erased on fallback, breaking auto-reselect on reconnect (2026-11-23)
 
 ### Problem

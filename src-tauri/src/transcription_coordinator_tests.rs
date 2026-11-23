@@ -603,6 +603,7 @@ fn test_stage_is_active() {
     let recording = Stage::Recording {
         binding_id: "transcribe".into(),
         since: Instant::now(),
+        started_at: Instant::now(),
         silence_extension: Duration::ZERO,
         warned: false,
         locked: false,
@@ -628,6 +629,7 @@ fn test_stage_to_app_state() {
     let recording = Stage::Recording {
         binding_id: "transcribe".into(),
         since: Instant::now(),
+        started_at: Instant::now(),
         silence_extension: Duration::ZERO,
         warned: false,
         locked: false,
@@ -1935,6 +1937,81 @@ fn test_external_trigger_bypasses_debounce() {
 // default; opt-in tests here raise `core.stop_press_grace` to exercise it.
 
 #[test]
+fn test_production_defaults_pin_timing() {
+    // Pin the production timing knobs so an accidental const change cannot
+    // silently alter the reaction-time behavior the UI copy is built around.
+    let core = CoordinatorCore::new_production();
+    assert_eq!(core.stop_press_grace, Duration::from_millis(500));
+    assert_eq!(core.min_tap_window, Duration::from_millis(450));
+}
+
+#[test]
+fn test_grace_measured_from_started_at_not_vad_slid_since() {
+    let mut h = TestHarness::new();
+    // Production-realistic grace, fixed so no real sleeps are involved.
+    h.core.stop_press_grace = Duration::from_millis(500);
+
+    // The bug under review: the thread loop slides `since` forward on every
+    // wake while audio is recent, so a genuine stop press landing shortly
+    // after a 30s timer wake used to look "fresh" and got swallowed. The
+    // grace must measure from the immutable `started_at` instead.
+    //
+    // Simulate the exact collision without sleeps: `since` was just slid to
+    // now, while `started_at` shows the session actually began 2s ago —
+    // outside the 500ms grace.
+    h.core.stage = Stage::Recording {
+        binding_id: "transcribe".into(),
+        since: Instant::now(),
+        started_at: Instant::now() - Duration::from_secs(2),
+        silence_extension: Duration::ZERO,
+        warned: false,
+        locked: true,
+    };
+    h.core.sync_state(&h.active_use, &h.current_state);
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::StopRecording { .. }),
+        "stop press must land once started_at exceeds the grace even with a fresh since, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+
+    // Mirror case: identical fresh `since`, but `started_at` inside the
+    // grace — the very same press is swallowed. Together the two cases pin
+    // that the measurement source is `started_at`, not `since`.
+    h.core.stage = Stage::Recording {
+        binding_id: "transcribe".into(),
+        since: Instant::now(),
+        started_at: Instant::now(),
+        silence_extension: Duration::ZERO,
+        warned: false,
+        locked: true,
+    };
+    h.core.sync_state(&h.active_use, &h.current_state);
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::Toggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(
+        matches!(action, StageAction::None),
+        "stop press with started_at inside the grace must be swallowed, got {:?}",
+        action
+    );
+    assert!(matches!(h.state(), AppState::Recording { .. }));
+}
+
+#[test]
 fn test_stop_press_within_grace_is_swallowed() {
     let mut h = TestHarness::new();
     // Grace of 10s: every stop press in this test lands within the window.
@@ -2398,6 +2475,80 @@ fn test_hold_or_toggle_busy_hold_drops_on_release() {
     assert!(matches!(h.state(), AppState::Idle { .. }));
 }
 
+#[test]
+fn test_busy_release_uses_tap_floor_to_drain_locked() {
+    let mut h = TestHarness::new();
+    // Floor that dominates the configured threshold everywhere in this test.
+    h.core.min_tap_window = Duration::from_secs(10);
+    enter_processing(&mut h);
+
+    // Press while busy (HoldOrToggle, ZERO threshold) → remembered, key
+    // believed held.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+
+    // Release while busy: alone, a ZERO hold threshold would classify this
+    // as a completed hold and drop the pending press (see
+    // `test_hold_or_toggle_busy_hold_drops_on_release`), but the floor lifts
+    // the effective threshold to 10s → tap → the drained session starts
+    // locked on. The floor must apply at the busy-window release-resolution
+    // site too, not just the live arm.
+    let _ = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(
+        matches!(
+            &h.core.pending_press,
+            Some(PendingPress { locked: true, .. })
+        ),
+        "busy-window release below the tap floor must lock the pending press"
+    );
+
+    // Drain → the locked session starts.
+    let action = h.process(Command::ProcessingFinished { session_id: None });
+    assert!(
+        matches!(action, StageAction::StartRecording { .. }),
+        "locked pending press must start recording after drain, got {:?}",
+        action
+    );
+    assert!(matches!(
+        &h.core.stage,
+        Stage::Recording { locked: true, .. }
+    ));
+
+    // Locked-session behavior: releases are ignored; a press stops it.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: false,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::ZERO,
+        external: false,
+    });
+    assert!(matches!(action, StageAction::StopRecording { .. }));
+    assert!(matches!(h.state(), AppState::Processing { .. }));
+}
+
 // ── Tap hysteresis floor (fork: reaction-time tap protection) ──
 //
 // The effective tap threshold is `hold_threshold.max(core.min_tap_window)`:
@@ -2657,6 +2808,50 @@ fn test_busy_toggle_press2_within_grace_remembered() {
         action
     );
     assert!(matches!(h.state(), AppState::Recording { .. }));
+}
+
+#[test]
+fn test_busy_press2_after_grace_keeps_forget() {
+    let mut h = TestHarness::new();
+    enter_processing(&mut h);
+    // The grace must be raised AFTER enter_processing: its internal toggle
+    // stop press relies on the zero-grace harness default.
+    h.core.stop_press_grace = Duration::from_secs(10);
+
+    // Remember a tap-locked press whose real key-down was 11s ago. The stale
+    // `pressed_at` is constructed directly instead of sleeping 11s, so the
+    // test stays instant while exactly modeling "press2 lands after the
+    // grace relative to true press time" (the same measurement source as
+    // production, `PendingPress::pressed_at`).
+    h.core.pending_press = Some(PendingPress {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        pressed_at: Instant::now() - Duration::from_secs(11),
+        locked: true,
+    });
+
+    // A keyboard press2 at/after the grace window is not a fumble: the full
+    // old Forget behavior applies (toggle parity, upstream c6fa60da) and the
+    // pending press is cancelled — the grace only buys protection inside
+    // the window.
+    let action = h.process(Command::Input {
+        binding_id: "transcribe".into(),
+        hotkey_string: "Cmd+Shift+S".into(),
+        is_pressed: true,
+        activation: ShortcutActivation::HoldOrToggle,
+        hold_threshold: Duration::from_secs(10),
+        external: false,
+    });
+    assert!(matches!(action, StageAction::None));
+    assert!(
+        h.core.pending_press.is_none(),
+        "press2 after the grace must forget the pending press"
+    );
+
+    // Drain → nothing remembered, back to Idle.
+    let action = h.process(Command::ProcessingFinished { session_id: None });
+    assert!(matches!(action, StageAction::None));
+    assert!(matches!(h.state(), AppState::Idle { .. }));
 }
 
 #[test]

@@ -286,7 +286,17 @@ enum Stage {
     Idle,
     Recording {
         binding_id: String,
+        /// Base for the silence deadline. Slid forward by VAD on every loop
+        /// wake while audio is recent, and seeded from the real press time on
+        /// drain-start — so it measures "ms since the last silence-deadline
+        /// reset", never true recording age.
         since: Instant,
+        /// Immutable wall-clock start of this recording session. Never
+        /// rewritten after construction (only set at the construction sites
+        /// that begin a session): the stop-press grace is measured from it,
+        /// because the VAD slide keeps rewriting `since` and would re-arm the
+        /// fumble window on every 30s timer wake.
+        started_at: Instant,
         /// Additional silence tolerance accumulated via "Extend" clicks.
         silence_extension: Duration,
         /// Whether we've already emitted the 30s warning for the current deadline.
@@ -381,6 +391,8 @@ struct CoordinatorCore {
     current_session: u64,
     /// How long after a recording starts that a keyboard stop press on the
     /// same binding is swallowed as a fumble (see `DEFAULT_STOP_PRESS_GRACE`).
+    /// Measured from the immutable `Stage::Recording::started_at` (true
+    /// recording start), never from the VAD-slid `since`.
     ///
     /// Tests override this directly: the shared harness zeroes it so its
     /// instant, deliberate sequences model the old behavior, and opt-in
@@ -464,6 +476,7 @@ impl CoordinatorCore {
         self.transition_to(Stage::Recording {
             binding_id,
             since: Instant::now(),
+            started_at: Instant::now(),
             silence_extension: Duration::ZERO,
             warned: false,
             // A recovered session is managed by the recovery stop flow, not
@@ -691,7 +704,7 @@ impl CoordinatorCore {
                             .is_some_and(|p| p.pressed_at.elapsed() < self.stop_press_grace)
                     {
                         info!(
-                            "Press for '{}' swallowed within stop-press grace of the pending press: recording continues",
+                            "Press for '{}' swallowed within stop-press grace of the pending press: pending press survives",
                             binding_id
                         );
                         classification = BusyAction::Ignore;
@@ -726,6 +739,7 @@ impl CoordinatorCore {
                             self.transition_to(Stage::Recording {
                                 binding_id: binding_id.clone(),
                                 since: Instant::now(),
+                                started_at: Instant::now(),
                                 silence_extension: Duration::ZERO,
                                 warned: false,
                                 locked,
@@ -738,7 +752,7 @@ impl CoordinatorCore {
                         }
                         Stage::Recording {
                             binding_id: id,
-                            since,
+                            started_at,
                             locked,
                             ..
                         } if id == &binding_id => {
@@ -754,13 +768,18 @@ impl CoordinatorCore {
                                 // second press on the chord right after the
                                 // recording started is a fumble, not a stop;
                                 // swallow it and keep recording in its current
-                                // locked/unlocked state. External triggers are
-                                // deliberate events and always honor the stop.
-                                if !external && since.elapsed() < self.stop_press_grace {
+                                // locked/unlocked state. Measured from the
+                                // immutable `started_at`, not the VAD-slid
+                                // `since`, so a 30s timer wake right after a
+                                // real press re-arms nothing. External triggers
+                                // are deliberate events and always honor the
+                                // stop.
+                                let grace_elapsed = started_at.elapsed();
+                                if !external && grace_elapsed < self.stop_press_grace {
                                     info!(
                                         "Stop press for '{}' swallowed within grace ({:?} after recording start < {:?}): recording continues",
                                         binding_id,
-                                        since.elapsed(),
+                                        grace_elapsed,
                                         self.stop_press_grace
                                     );
                                     return StageAction::None;
@@ -855,6 +874,7 @@ impl CoordinatorCore {
                         Stage::Recording {
                             binding_id: id,
                             since,
+                            started_at,
                             silence_extension,
                             warned,
                             locked,
@@ -894,11 +914,12 @@ impl CoordinatorCore {
                                         "Tap detected for '{}' (held {:?} < {:?} effective threshold): locking recording on",
                                         binding_id, held, effective_threshold
                                     );
-                                    let (since_c, se_c, warned_c) =
-                                        (*since, *silence_extension, *warned);
+                                    let (since_c, started_c, se_c, warned_c) =
+                                        (*since, *started_at, *silence_extension, *warned);
                                     self.transition_to(Stage::Recording {
                                         binding_id,
                                         since: since_c,
+                                        started_at: started_c,
                                         silence_extension: se_c,
                                         warned: warned_c,
                                         locked: true,
@@ -1018,7 +1039,10 @@ impl CoordinatorCore {
                     // mirrors the normal input path; the thread's start()
                     // rolls it back if the recorder fails to begin. `since`
                     // uses the real press time so a hold straddling the drain
-                    // is measured from the actual key-down (upstream c62a5fcd).
+                    // is measured from the actual key-down (upstream c62a5fcd);
+                    // `started_at` anchors to the same press so drain-started
+                    // sessions keep the full stop-press grace against true
+                    // press time.
                     if let Some(pending) = self.pending_press.take() {
                         debug!(
                             "Pipeline drained; starting remembered press for '{}'",
@@ -1027,6 +1051,7 @@ impl CoordinatorCore {
                         self.transition_to(Stage::Recording {
                             binding_id: pending.binding_id.clone(),
                             since: pending.pressed_at,
+                            started_at: pending.pressed_at,
                             silence_extension: Duration::ZERO,
                             warned: false,
                             locked: pending.locked,
@@ -1346,6 +1371,7 @@ impl TranscriptionCoordinator {
                         Stage::Recording {
                             since,
                             binding_id,
+                            started_at,
                             silence_extension,
                             warned,
                             locked,
@@ -1361,6 +1387,7 @@ impl TranscriptionCoordinator {
                             // recording start, to avoid cross-thread Instant
                             // arithmetic.
                             let mut since = *since;
+                            let started_at_local = *started_at;
                             let mut warned_local = *warned;
                             let silence_extension_local = *silence_extension;
                             let binding_id_local = binding_id.clone();
@@ -1471,10 +1498,13 @@ impl TranscriptionCoordinator {
 
                             // Push the re-armed `warned` flag back into the stage
                             // so the warning only re-fires after a VAD slide or
-                            // an extend resets it.
+                            // an extend resets it. `started_at` is carried
+                            // through UNCHANGED — the VAD slide must never
+                            // re-base the stop-press grace.
                             core.stage = Stage::Recording {
                                 binding_id: binding_id_local,
                                 since,
+                                started_at: started_at_local,
                                 silence_extension: silence_extension_local,
                                 warned: warned_local,
                                 locked: locked_local,
@@ -1970,15 +2000,23 @@ fn start(
         // `since` is the real press time (a press remembered while busy is
         // measured from when the user pressed, upstream c62a5fcd) and
         // `locked` records a tap-locked drain or a toggle-mode start.
-        let (since, locked) = match &*stage {
-            Stage::Recording { since, locked, .. } => (*since, *locked),
-            _ => (Instant::now(), false),
+        // `started_at` is likewise preserved so the stop-press grace stays
+        // anchored to the true recording start.
+        let (since, started_at, locked) = match &*stage {
+            Stage::Recording {
+                since,
+                started_at,
+                locked,
+                ..
+            } => (*since, *started_at, *locked),
+            _ => (Instant::now(), Instant::now(), false),
         };
         set_stage(
             stage,
             Stage::Recording {
                 binding_id: binding_id.to_string(),
                 since,
+                started_at,
                 silence_extension: Duration::ZERO,
                 warned: false,
                 locked,
