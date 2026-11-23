@@ -377,15 +377,27 @@ pub fn apply_advanced_custom_words(
     result.join(" ")
 }
 
-/// Applies exact word replacements to transcribed text.
+/// Applies word replacements to transcribed text.
 ///
-/// This is a simpler mode than pronunciation matching: when a mistranslation
-/// appears in the transcript (respecting word boundaries), it is replaced
-/// with the correction.
+/// Operates in two tiers:
+/// 1. **Exact matches** — the original replacement mode. When a mistranslation
+///    appears in the transcript (respecting word boundaries), it is replaced
+///    with the correction verbatim.
+/// 2. **Fuzzy fallback** — only when no exact match is found at a position. It
+///    compares 1- to 3-word n-grams (joined, punctuation-stripped, lowercase)
+///    against each replacement's *correction* using the same
+///    Levenshtein + Soundex scoring as `apply_custom_words`. This catches
+///    model variants of proper nouns such as "Zattell Casten", "Zettel Casten",
+///    and "Zattel Casten" when the intended correction is "Zettelkasten".
+///
+/// Exact matches always win. The fuzzy tier is limited to correction strings
+/// with at least 8 ASCII alphanumeric characters to avoid over-correcting
+/// short words.
 ///
 /// # Arguments
 /// * `text` - The input text to correct
 /// * `replacements` - List of word replacement rules (mistranslation → correction)
+/// * `threshold` - Maximum similarity score to accept for fuzzy fallback
 ///
 /// # Returns
 /// The corrected text with replacements applied
@@ -394,9 +406,11 @@ pub fn apply_advanced_custom_words(
 /// - "open a i" → "OpenAI" (with replacement {mistranslation: "open a i", correction: "OpenAI"})
 /// - "the" will NOT match within "there" or "them" (word boundary enforcement)
 /// - Multi-word mistranslations are supported: "charge b" → "ChargeBee"
+/// - Fuzzy fallback: "Zattell Casten" → "Zettelkasten" at the default threshold
 pub fn apply_word_replacements(
     text: &str,
     replacements: &[crate::settings::WordReplacement],
+    threshold: f64,
 ) -> String {
     if replacements.is_empty() {
         return text.to_string();
@@ -415,6 +429,21 @@ pub fn apply_word_replacements(
         })
         .collect();
 
+    // Build fuzzy comparison targets from the *correction* side of each
+    // replacement. Short or non-ASCII keys are skipped to avoid over-matching.
+    let correction_strings: Vec<String> =
+        replacements.iter().map(|r| r.correction.clone()).collect();
+    let correction_keys: Vec<CustomWordMatchKey> = correction_strings
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            let key = build_match_key(c);
+            key.len() >= 8 && is_supported_fuzzy_key(&key)
+        })
+        .flat_map(|(index, word)| build_custom_word_match_keys(word, index))
+        .collect();
+    let has_fuzzy_targets = !correction_keys.is_empty();
+
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut result = Vec::new();
     let mut i = 0;
@@ -422,6 +451,7 @@ pub fn apply_word_replacements(
     while i < words.len() {
         let mut matched = false;
 
+        // Tier 1: exact matches (unchanged behavior).
         // Try to match each replacement (from longest to shortest to prefer longer matches)
         // Sort by mistranslation word count would be expensive, so we try all and take the best match
         for (_mistranslation_orig, correction, mistranslation_lower) in &replacement_map {
@@ -486,6 +516,54 @@ pub fn apply_word_replacements(
                 i += num_words;
                 matched = true;
                 break;
+            }
+        }
+
+        // Tier 2: fuzzy fallback. Only run if exact matching did not consume
+        // this position and there are correction strings long enough to safely
+        // fuzzy-match.
+        if !matched && has_fuzzy_targets {
+            let mut best_match: Option<(usize, &String, f64)> = None;
+
+            for n in (1..=3).rev() {
+                if i + n > words.len() {
+                    continue;
+                }
+
+                let ngram_words = &words[i..i + n];
+                // Do not consume across a punctuation boundary. The comma in
+                // "Zattell, Casten" closes the candidate at "Zattell,".
+                if ngram_words[..n.saturating_sub(1)]
+                    .iter()
+                    .any(|word| !extract_punctuation(word).1.is_empty())
+                {
+                    continue;
+                }
+
+                let ngram = build_ngram(ngram_words);
+
+                if let Some((correction, score)) =
+                    find_best_match(&ngram, &correction_strings, &correction_keys, threshold)
+                {
+                    let is_better = best_match
+                        .as_ref()
+                        .is_none_or(|(_, _, best_score)| score < *best_score);
+                    if is_better {
+                        best_match = Some((n, correction, score));
+                    }
+                }
+            }
+
+            if let Some((n, correction, _)) = best_match {
+                let ngram_words = &words[i..i + n];
+                let (prefix, _) = extract_punctuation(ngram_words[0]);
+                let (_, suffix) = extract_punctuation(ngram_words[n - 1]);
+
+                let corrected = preserve_case_pattern(ngram_words[0], correction);
+
+                result.push(format!("{}{}{}", prefix, corrected, suffix));
+                i += n;
+                matched = true;
             }
         }
 
@@ -1834,7 +1912,7 @@ pub fn process_transcription_text(
     // WordBias/Pronunciation only apply for models that were not prompted.
     let mut result = match word_correction_mode {
         WordCorrectionMode::Replacement if !word_replacements.is_empty() => {
-            apply_word_replacements(&text, word_replacements)
+            apply_word_replacements(&text, word_replacements, word_correction_threshold)
         }
         _ if has_words && !custom_words_prompted => match word_correction_mode {
             WordCorrectionMode::WordBias => {
@@ -4244,7 +4322,7 @@ mod tests {
             correction: "definitely".to_string(),
         }];
         let text = "I will definately do it";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "I will definitely do it");
     }
 
@@ -4255,7 +4333,7 @@ mod tests {
             correction: "OpenAI".to_string(),
         }];
         let text = "I use openai for work";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "I use OpenAI for work");
     }
 
@@ -4266,7 +4344,7 @@ mod tests {
             correction: "OpenAI".to_string(),
         }];
         let text = "I USE OPENAI FOR WORK";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "I USE OPENAI FOR WORK");
     }
 
@@ -4277,7 +4355,7 @@ mod tests {
             correction: "ChargeBee".to_string(),
         }];
         let text = "Chargebee is great";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "ChargeBee is great");
     }
 
@@ -4288,7 +4366,7 @@ mod tests {
             correction: "OpenAI".to_string(),
         }];
         let text = "I use open a i every day";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "I use OpenAI every day");
     }
 
@@ -4299,7 +4377,7 @@ mod tests {
             correction: "ChargeBee".to_string(),
         }];
         let text = "I use charge b, it's great.";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "I use ChargeBee, it's great.");
     }
 
@@ -4311,7 +4389,7 @@ mod tests {
         }];
         // "the" should NOT match within "there" or "them"
         let text = "the cat is there with them";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "a cat is there with them");
     }
 
@@ -4328,7 +4406,7 @@ mod tests {
             },
         ];
         let text = "They are definately seperate things";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "They are definitely separate things");
     }
 
@@ -4339,7 +4417,7 @@ mod tests {
             correction: "OpenAI".to_string(),
         }];
         let text = "OpenAI's API is great.";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         // Should match "OpenAI" part but preserve punctuation
         assert_eq!(result, "OpenAI's API is great.");
     }
@@ -4348,7 +4426,7 @@ mod tests {
     fn test_apply_word_replacements_empty_replacements() {
         let replacements: Vec<crate::settings::WordReplacement> = vec![];
         let text = "no replacements here";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "no replacements here");
     }
 
@@ -4359,7 +4437,7 @@ mod tests {
             correction: "ChargeBee".to_string(),
         }];
         let text = "nothing to replace here";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "nothing to replace here");
     }
 
@@ -4377,8 +4455,95 @@ mod tests {
         ];
         // Should prefer longer match
         let text = "I use open a i and openai both";
-        let result = apply_word_replacements(text, &replacements);
+        let result = apply_word_replacements(text, &replacements, 0.18);
         assert_eq!(result, "I use OpenAI and OpenAI both");
+    }
+
+    // --- apply_word_replacements fuzzy fallback tests ---
+    //
+    // The fuzzy tier matches transcript n-grams against the *correction* side
+    // of a replacement. An identity pair (mistranslation == correction) is
+    // used below so the exact tier never fires and the fuzzy tier is what is
+    // actually under test.
+
+    #[test]
+    fn test_apply_word_replacements_fuzzy_two_word_variants() {
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "Zettelkasten".to_string(),
+            correction: "Zettelkasten".to_string(),
+        }];
+
+        // Model variants of the two-word form all collapse to the correction.
+        assert_eq!(
+            apply_word_replacements("Zattell Casten", &replacements, 0.18),
+            "Zettelkasten"
+        );
+        assert_eq!(
+            apply_word_replacements("Zettel Casten", &replacements, 0.18),
+            "Zettelkasten"
+        );
+        assert_eq!(
+            apply_word_replacements("Zattel Casten", &replacements, 0.18),
+            "Zettelkasten"
+        );
+    }
+
+    #[test]
+    fn test_apply_word_replacements_fuzzy_mid_sentence() {
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "Zettelkasten".to_string(),
+            correction: "Zettelkasten".to_string(),
+        }];
+        let text = "I use Zattell Casten daily.";
+        let result = apply_word_replacements(text, &replacements, 0.18);
+        assert_eq!(result, "I use Zettelkasten daily.");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_fuzzy_single_token_variant() {
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "Zettelkasten".to_string(),
+            correction: "Zettelkasten".to_string(),
+        }];
+        // Lowercased input leaves the correction as-is (preserve_case_pattern).
+        let result = apply_word_replacements("zattellkasten", &replacements, 0.18);
+        assert_eq!(result, "Zettelkasten");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_exact_wins_over_fuzzy() {
+        // "OpenCode" normalizes to 8 chars, so a fuzzy target exists — but the
+        // exact tier must consume the position and the result must be verbatim.
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "open code".to_string(),
+            correction: "OpenCode".to_string(),
+        }];
+        let result = apply_word_replacements("open code", &replacements, 0.18);
+        assert_eq!(result, "OpenCode");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_short_correction_never_fuzzy() {
+        // Correction "Mervin" normalizes to 6 chars (< 8), so the fuzzy tier
+        // must never fire for it — "Merbyn" stays unchanged.
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "Mervyn".to_string(),
+            correction: "Mervin".to_string(),
+        }];
+        let result = apply_word_replacements("Merbyn", &replacements, 0.18);
+        assert_eq!(result, "Merbyn");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_fuzzy_false_positive_guard() {
+        let replacements = vec![crate::settings::WordReplacement {
+            mistranslation: "Zettelkasten".to_string(),
+            correction: "Zettelkasten".to_string(),
+        }];
+        // "skeleton" is too short a Levenshtein neighbour of "zettelkasten"
+        // (length diff 4 exceeds the 25% allowance) and must be left alone.
+        let result = apply_word_replacements("skeleton", &replacements, 0.18);
+        assert_eq!(result, "skeleton");
     }
 
     // --- replace_unk_with_accent_recovery tests ---
