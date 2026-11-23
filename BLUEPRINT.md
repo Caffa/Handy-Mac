@@ -2,18 +2,26 @@
 title: Handy (stable fork)
 one_liner: Pamela's working fork of Handy, the free offline speech-to-text Mac app, carrying local fixes for live captions, overlays, and mic watchdogs.
 status: active
-updated: 2026-11-21
+updated: 2026-11-23
 discord_channel: https://discord.com/channels/1529123294631166223
 ---
 
 ## Where it stands
 
-- On branch `feature/voice-insert-api` (tip 268e50b3): "Cannot Control Mic with AirPods Pro" fixed (upstream issue cjpais/Handy#2045 — macOS reroutes AirPods stem presses as mute commands to any app holding a record session, via audioaccessoryd). Bluetooth input mics never hold a standing stream now (`should_hold_standing_stream` predicate applied at all 12 lifecycle sites), and mic_mute_gesture.rs registers the AVAudioApplication mute-gesture handler once at startup so a stem press during recording stops-and-transcribes.
-- Verified at test level: 696 lib + 59 integration tests pass; app rebuilt and reinstalled to /Applications/Handy.app via build-reinstall.sh with gesture-handler registration confirmed in live logs. Mechanics memo: research/airpods-cannot-control-mic-alert-hfp-mechanics.md.
-- Still standing: delayed-paste web-field detection (recursive AX focus chain, 4fb6fe09) — runtime verification by Pamela still PENDING; voice insert API Phase 1 (opt-in localhost HTTP server 127.0.0.1:48213, 32 tests); live-captions pre-buffer fix (37560c58).
-- Planned next: Pamela runtime-verifies delayed paste (browsers + Discord) and AirPods stem-press behavior in daily dictation, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
+- On branch `feature/voice-insert-api` (tip a636ba86): microphone retention — falling back to the default mic no longer erases the user's selected microphone from settings (persist_default_microphone_after_fallback deleted from managers/audio.rs), resolution split into resolve_microphone_device_pure + cached_resolution helpers with unit tests, cache-hit fast path restored, absent-mic warn rate-limited.
+- MicrophoneSelector.tsx shows the retained-but-absent mic as a disabled dropdown option (new i18n key settings.sound.microphone.unavailable); docs updated (learning-log.md, usb-watchdog-wake-recovery.md fallback-masking note, DECISIONS.md ADR).
+- Recently landed, runtime verification pending: AirPods Pro mute-gesture fix (upstream cjpais/Handy#2045, 696 lib + 59 integration tests pass), delayed-paste web-field detection (4fb6fe09), voice insert API Phase 1 (127.0.0.1:48213, 32 tests), live-captions pre-buffer fix (37560c58).
+- Planned next: Pamela runtime-verifies delayed paste, AirPods stem presses, and mic-retention reconnect behavior in daily dictation, then Phase 2 — exact token placement via split transcription; Phase 3 — Obsidian "Link Dictate Co" plugin.
 
 ## Log
+
+### 2026-11-23 — Mic retention across fallback
+
+Fixed selected-mic loss on fallback: deleted persist_default_microphone_after_fallback in managers/audio.rs — it rewrote selected_microphone to the default whenever the chosen mic was absent, so the user's pick now survives until the device returns. Mic resolution split into resolve_microphone_device_pure + cached_resolution helpers with unit tests, the cache-hit fast path was restored, and the absent-mic warning is rate-limited (commits b87c62f5, 6f527e86, 0a746ca4, 251a3616, a636ba86, pushed on feature/voice-insert-api). Frontend: MicrophoneSelector.tsx shows the retained-but-absent mic as a disabled dropdown option (new i18n key settings.sound.microphone.unavailable); docs updated in learning-log.md, research/usb-watchdog-wake-recovery.md fallback-masking note, and a DECISIONS.md ADR.
+
+Next: Pamela verifies the retained mic re-selects itself when it reconnects in daily dictation.
+
+https://discord.com/channels/1486966847810043924/1574296533216530456
 
 ### 2026-11-21 — AirPods mute-gesture fix
 
